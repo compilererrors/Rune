@@ -1,0 +1,149 @@
+import Foundation
+
+public protocol ContextListingService: Sendable {
+    func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext]
+}
+
+public protocol PodListingService: Sendable {
+    func listPods(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [PodSummary]
+}
+
+public protocol DeploymentListingService: Sendable {
+    func listDeployments(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [DeploymentSummary]
+}
+
+public protocol ServiceListingService: Sendable {
+    func listServices(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ServiceSummary]
+}
+
+public protocol EventListingService: Sendable {
+    func listEvents(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [EventSummary]
+}
+
+public protocol GenericResourceListingService: Sendable {
+    func listStatefulSets(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listDaemonSets(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listIngresses(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listConfigMaps(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listSecrets(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listNodes(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary]
+}
+
+public protocol PodLogService: Sendable {
+    func podLogs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        filter: LogTimeFilter,
+        previous: Bool
+    ) async throws -> String
+}
+
+public protocol UnifiedServiceLogService: Sendable {
+    func unifiedLogsForService(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        service: ServiceSummary,
+        filter: LogTimeFilter,
+        previous: Bool
+    ) async throws -> UnifiedServiceLogs
+}
+
+public protocol UnifiedDeploymentLogService: Sendable {
+    func unifiedLogsForDeployment(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deployment: DeploymentSummary,
+        filter: LogTimeFilter,
+        previous: Bool
+    ) async throws -> UnifiedDeploymentLogs
+}
+
+public protocol ManifestService: Sendable {
+    func resourceYAML(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws -> String
+}
+
+public protocol ResourceWriteService: Sendable {
+    func deleteResource(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws
+
+    func scaleDeployment(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        replicas: Int
+    ) async throws
+
+    func restartDeploymentRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String
+    ) async throws
+
+    func applyYAML(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        yaml: String
+    ) async throws
+}

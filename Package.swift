@@ -1,0 +1,73 @@
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "Rune",
+    platforms: [
+        .macOS(.v14)
+    ],
+    products: [
+        .executable(name: "RuneApp", targets: ["RuneApp"]),
+        .library(name: "RuneCore", targets: ["RuneCore"]),
+        .library(name: "RuneUI", targets: ["RuneUI"]),
+        .library(name: "RuneKube", targets: ["RuneKube"]),
+        .library(name: "RuneStore", targets: ["RuneStore"]),
+        .library(name: "RuneSecurity", targets: ["RuneSecurity"]),
+        .library(name: "RuneExport", targets: ["RuneExport"]),
+        .library(name: "RuneHelm", targets: ["RuneHelm"]),
+        .library(name: "RuneDiagnostics", targets: ["RuneDiagnostics"])
+    ],
+    targets: [
+        .executableTarget(
+            name: "RuneApp",
+            dependencies: ["RuneUI"]
+        ),
+        .target(name: "RuneCore"),
+        .target(
+            name: "RuneSecurity",
+            dependencies: ["RuneCore"]
+        ),
+        .target(
+            name: "RuneKube",
+            dependencies: ["RuneCore", "RuneSecurity"]
+        ),
+        .target(
+            name: "RuneStore",
+            dependencies: ["RuneCore"]
+        ),
+        .target(
+            name: "RuneExport",
+            dependencies: ["RuneCore"]
+        ),
+        .target(
+            name: "RuneHelm",
+            dependencies: ["RuneCore"]
+        ),
+        .target(
+            name: "RuneDiagnostics",
+            dependencies: ["RuneCore"]
+        ),
+        .target(
+            name: "RuneUI",
+            dependencies: [
+                "RuneCore",
+                "RuneKube",
+                "RuneStore",
+                "RuneSecurity",
+                "RuneExport"
+            ]
+        ),
+        .testTarget(
+            name: "RuneCoreTests",
+            dependencies: ["RuneCore"]
+        ),
+        .testTarget(
+            name: "RuneKubeTests",
+            dependencies: ["RuneKube", "RuneCore"]
+        ),
+        .testTarget(
+            name: "RuneUITests",
+            dependencies: ["RuneUI", "RuneKube", "RuneCore", "RuneSecurity", "RuneExport"]
+        )
+    ]
+)

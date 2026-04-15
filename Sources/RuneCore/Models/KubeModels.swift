@@ -1,0 +1,291 @@
+import Foundation
+
+public struct KubeConfigSource: Identifiable, Hashable, Codable, Sendable {
+    public let id: String
+    public let path: String
+    public let displayName: String
+
+    public init(url: URL) {
+        self.id = url.path
+        self.path = url.path
+        self.displayName = url.lastPathComponent
+    }
+
+    public var url: URL {
+        URL(fileURLWithPath: path)
+    }
+}
+
+public struct KubeContext: Identifiable, Hashable, Codable, Sendable {
+    public let name: String
+
+    public init(name: String) {
+        self.name = name
+    }
+
+    public var id: String { name }
+}
+
+public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifiable {
+    case pod
+    case deployment
+    case statefulSet
+    case daemonSet
+    case service
+    case ingress
+    case configMap
+    case secret
+    case node
+    case event
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .pod: return "Pods"
+        case .deployment: return "Deployments"
+        case .statefulSet: return "StatefulSets"
+        case .daemonSet: return "DaemonSets"
+        case .service: return "Services"
+        case .ingress: return "Ingresses"
+        case .configMap: return "ConfigMaps"
+        case .secret: return "Secrets"
+        case .node: return "Nodes"
+        case .event: return "Events"
+        }
+    }
+
+    public var kubectlName: String {
+        switch self {
+        case .pod: return "pod"
+        case .deployment: return "deployment"
+        case .statefulSet: return "statefulset"
+        case .daemonSet: return "daemonset"
+        case .service: return "service"
+        case .ingress: return "ingress"
+        case .configMap: return "configmap"
+        case .secret: return "secret"
+        case .node: return "node"
+        case .event: return "event"
+        }
+    }
+
+    public var isNamespaced: Bool {
+        switch self {
+        case .node:
+            return false
+        default:
+            return true
+        }
+    }
+}
+
+public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
+    public let name: String
+    public let namespace: String
+    public let status: String
+
+    public init(name: String, namespace: String, status: String) {
+        self.name = name
+        self.namespace = namespace
+        self.status = status
+    }
+
+    public var id: String { "\(namespace)/\(name)" }
+}
+
+public struct DeploymentSummary: Identifiable, Hashable, Codable, Sendable {
+    public let name: String
+    public let namespace: String
+    public let readyReplicas: Int
+    public let desiredReplicas: Int
+
+    public init(name: String, namespace: String, readyReplicas: Int, desiredReplicas: Int) {
+        self.name = name
+        self.namespace = namespace
+        self.readyReplicas = readyReplicas
+        self.desiredReplicas = desiredReplicas
+    }
+
+    public var id: String { "\(namespace)/\(name)" }
+
+    public var replicaText: String {
+        "\(readyReplicas)/\(desiredReplicas)"
+    }
+}
+
+public struct ServiceSummary: Identifiable, Hashable, Codable, Sendable {
+    public let name: String
+    public let namespace: String
+    public let type: String
+    public let clusterIP: String
+
+    public init(name: String, namespace: String, type: String, clusterIP: String) {
+        self.name = name
+        self.namespace = namespace
+        self.type = type
+        self.clusterIP = clusterIP
+    }
+
+    public var id: String { "\(namespace)/\(name)" }
+}
+
+public struct EventSummary: Identifiable, Hashable, Codable, Sendable {
+    public let type: String
+    public let reason: String
+    public let objectName: String
+    public let message: String
+
+    public init(type: String, reason: String, objectName: String, message: String) {
+        self.type = type
+        self.reason = reason
+        self.objectName = objectName
+        self.message = message
+    }
+
+    public var id: String { "\(type)|\(reason)|\(objectName)|\(message.hashValue)" }
+}
+
+public struct UnifiedServiceLogs: Sendable {
+    public let service: ServiceSummary
+    public let podNames: [String]
+    public let mergedText: String
+
+    public init(service: ServiceSummary, podNames: [String], mergedText: String) {
+        self.service = service
+        self.podNames = podNames
+        self.mergedText = mergedText
+    }
+}
+
+public struct UnifiedDeploymentLogs: Sendable {
+    public let deployment: DeploymentSummary
+    public let podNames: [String]
+    public let mergedText: String
+
+    public init(deployment: DeploymentSummary, podNames: [String], mergedText: String) {
+        self.deployment = deployment
+        self.podNames = podNames
+        self.mergedText = mergedText
+    }
+}
+
+public struct ClusterResourceSummary: Identifiable, Hashable, Codable, Sendable {
+    public let kind: KubeResourceKind
+    public let name: String
+    public let namespace: String?
+    public let primaryText: String
+    public let secondaryText: String
+
+    public init(
+        kind: KubeResourceKind,
+        name: String,
+        namespace: String?,
+        primaryText: String,
+        secondaryText: String
+    ) {
+        self.kind = kind
+        self.name = name
+        self.namespace = namespace
+        self.primaryText = primaryText
+        self.secondaryText = secondaryText
+    }
+
+    public var id: String {
+        "\(kind.rawValue)|\(namespace ?? "_cluster")|\(name)"
+    }
+}
+
+public struct PodExecResult: Sendable, Equatable {
+    public let podName: String
+    public let namespace: String
+    public let command: [String]
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int32
+
+    public init(
+        podName: String,
+        namespace: String,
+        command: [String],
+        stdout: String,
+        stderr: String,
+        exitCode: Int32
+    ) {
+        self.podName = podName
+        self.namespace = namespace
+        self.command = command
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+    }
+}
+
+public enum PortForwardTargetKind: String, Codable, Sendable, Identifiable {
+    case pod
+    case service
+
+    public var id: String { rawValue }
+
+    public var kubectlResourceName: String {
+        switch self {
+        case .pod: return "pod"
+        case .service: return "service"
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .pod: return "Pod"
+        case .service: return "Service"
+        }
+    }
+}
+
+public enum PortForwardStatus: String, Codable, Sendable {
+    case starting
+    case active
+    case stopped
+    case failed
+}
+
+public struct PortForwardSession: Identifiable, Hashable, Codable, Sendable {
+    public let id: String
+    public let contextName: String
+    public let namespace: String
+    public let targetKind: PortForwardTargetKind
+    public let targetName: String
+    public let localPort: Int
+    public let remotePort: Int
+    public let address: String
+    public let status: PortForwardStatus
+    public let lastMessage: String
+
+    public init(
+        id: String,
+        contextName: String,
+        namespace: String,
+        targetKind: PortForwardTargetKind,
+        targetName: String,
+        localPort: Int,
+        remotePort: Int,
+        address: String,
+        status: PortForwardStatus,
+        lastMessage: String = ""
+    ) {
+        self.id = id
+        self.contextName = contextName
+        self.namespace = namespace
+        self.targetKind = targetKind
+        self.targetName = targetName
+        self.localPort = localPort
+        self.remotePort = remotePort
+        self.address = address
+        self.status = status
+        self.lastMessage = lastMessage
+    }
+
+    public var resourceLabel: String {
+        "\(targetKind.kubectlResourceName)/\(targetName)"
+    }
+}

@@ -1,0 +1,720 @@
+import Foundation
+import XCTest
+@testable import RuneCore
+@testable import RuneExport
+@testable import RuneKube
+@testable import RuneSecurity
+@testable import RuneUI
+
+@MainActor
+final class RuneSmokeTests: XCTestCase {
+    func testKubeConfigDiscovererUsesKubeconfigAndDefaultPath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rune-discovery-\(UUID().uuidString)", isDirectory: true)
+        let kubeDirectory = root.appendingPathComponent(".kube", isDirectory: true)
+        let envConfig = root.appendingPathComponent("env-config.yaml")
+        let defaultConfig = kubeDirectory.appendingPathComponent("config")
+
+        try FileManager.default.createDirectory(at: kubeDirectory, withIntermediateDirectories: true, attributes: nil)
+        try "apiVersion: v1\n".write(to: envConfig, atomically: true, encoding: .utf8)
+        try "apiVersion: v1\n".write(to: defaultConfig, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let discoverer = KubeConfigDiscoverer(
+            environmentProvider: { ["KUBECONFIG": "\(envConfig.path):\(envConfig.path)"] },
+            homeDirectoryProvider: { root },
+            fileExists: { path in FileManager.default.fileExists(atPath: path) }
+        )
+
+        let paths = discoverer.discoverCandidateFiles().map(\.path)
+        XCTAssertEqual(paths, [defaultConfig.path, envConfig.path].sorted())
+    }
+
+    func testBootstrapAutoLoadsDiscoveredKubeconfig() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(
+            runner: runner,
+            kubeConfigDiscoverer: StaticKubeConfigDiscoverer(urls: [kubeconfigURL])
+        )
+
+        viewModel.bootstrap()
+
+        try await waitUntil {
+            !viewModel.state.contexts.isEmpty
+        }
+
+        XCTAssertEqual(
+            viewModel.state.kubeConfigSources.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path },
+            [kubeconfigURL.standardizedFileURL.path]
+        )
+        XCTAssertEqual(viewModel.state.contexts.first?.name, "prod-main")
+    }
+
+    func testBootstrapWithoutDiscoveredConfigsDoesNotSetMissingConfigError() async throws {
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(
+            runner: runner,
+            kubeConfigDiscoverer: StaticKubeConfigDiscoverer(urls: [])
+        )
+
+        viewModel.bootstrap()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertNil(viewModel.state.lastError)
+        XCTAssertTrue(viewModel.state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(viewModel.state.contexts.isEmpty)
+    }
+
+    func testUnifiedServiceLogsSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let service = viewModel.state.services.first(where: { $0.name == "api-svc" }) else {
+            XCTFail("Expected api-svc")
+            return
+        }
+
+        viewModel.setWorkloadKind(.service)
+        viewModel.selectService(service)
+
+        try await waitUntil {
+            !viewModel.state.unifiedServiceLogs.isEmpty
+        }
+
+        XCTAssertTrue(viewModel.state.unifiedServiceLogs.contains("[api-0]"))
+        XCTAssertTrue(viewModel.state.unifiedServiceLogs.contains("[api-1]"))
+        XCTAssertEqual(viewModel.state.unifiedServiceLogPods, ["api-0", "api-1"])
+
+        let unifiedArgs = ["kubectl"] + builder.podsByLabelSelectorArguments(context: "prod-main", namespace: "default", selector: "app=api")
+        let calledSelector = await runner.didRun(arguments: unifiedArgs)
+        XCTAssertTrue(calledSelector)
+    }
+
+    func testAdditionalResourceTypesLoadIntoState() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(viewModel.state.statefulSets.first?.name, "api-db")
+        XCTAssertEqual(viewModel.state.daemonSets.first?.name, "node-agent")
+        XCTAssertEqual(viewModel.state.ingresses.first?.name, "public-api")
+        XCTAssertEqual(viewModel.state.configMaps.first?.name, "app-config")
+        XCTAssertEqual(viewModel.state.secrets.first?.name, "db-credentials")
+        XCTAssertEqual(viewModel.state.nodes.first?.name, "worker-1")
+    }
+
+    func testUnifiedDeploymentLogsSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let deployment = viewModel.state.deployments.first(where: { $0.name == "api" }) else {
+            XCTFail("Expected api deployment")
+            return
+        }
+
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(deployment)
+
+        try await waitUntil {
+            !viewModel.state.unifiedServiceLogs.isEmpty
+        }
+
+        XCTAssertTrue(viewModel.state.unifiedServiceLogs.contains("[api-0]"))
+        XCTAssertTrue(viewModel.state.unifiedServiceLogs.contains("[api-1]"))
+        XCTAssertEqual(viewModel.state.unifiedServiceLogPods, ["api-0", "api-1"])
+
+        let deploymentJSONArgs = ["kubectl"] + builder.deploymentJSONArguments(context: "prod-main", namespace: "default", deploymentName: "api")
+        let calledDeploymentJSON = await runner.didRun(arguments: deploymentJSONArgs)
+        XCTAssertTrue(calledDeploymentJSON)
+    }
+
+    func testProductionGuardScaleSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let deployment = viewModel.state.deployments.first(where: { $0.name == "api" }) else {
+            XCTFail("Expected deployment api")
+            return
+        }
+
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(deployment)
+        viewModel.scaleReplicaInput = 5
+
+        XCTAssertTrue(viewModel.isProductionContext)
+
+        viewModel.requestScaleSelectedDeployment()
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("PRODUCTION CONTEXT"))
+
+        viewModel.confirmPendingWriteAction()
+
+        let scaleArgs = ["kubectl"] + builder.scaleDeploymentArguments(context: "prod-main", namespace: "default", deploymentName: "api", replicas: 5)
+        try await waitUntil {
+            await runner.didRun(arguments: scaleArgs)
+        }
+
+        let calledScale = await runner.didRun(arguments: scaleArgs)
+        XCTAssertTrue(calledScale)
+    }
+
+    func testReadOnlyModeBlocksWriteActions() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let deployment = viewModel.state.deployments.first(where: { $0.name == "api" }) else {
+            XCTFail("Expected deployment api")
+            return
+        }
+
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(deployment)
+
+        viewModel.setReadOnlyMode(true)
+        viewModel.requestScaleSelectedDeployment()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertEqual(viewModel.state.lastError, RuneError.readOnlyMode.localizedDescription)
+
+        let scaleArgs = ["kubectl"] + builder.scaleDeploymentArguments(context: "prod-main", namespace: "default", deploymentName: "api", replicas: 3)
+        let calledScale = await runner.didRun(arguments: scaleArgs)
+        XCTAssertFalse(calledScale)
+    }
+
+    func testRolloutRestartSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let deployment = viewModel.state.deployments.first(where: { $0.name == "api" }) else {
+            XCTFail("Expected deployment api")
+            return
+        }
+
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(deployment)
+        viewModel.requestRolloutRestartSelectedDeployment()
+
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("PRODUCTION CONTEXT"))
+
+        viewModel.confirmPendingWriteAction()
+
+        let restartArgs = ["kubectl"] + builder.rolloutRestartArguments(context: "prod-main", namespace: "default", deploymentName: "api")
+        try await waitUntil {
+            await runner.didRun(arguments: restartArgs)
+        }
+
+        let calledRestart = await runner.didRun(arguments: restartArgs)
+        XCTAssertTrue(calledRestart)
+    }
+
+    func testSaveVisibleEventsUsesExporter() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let exporter = RecordingExporter()
+        let viewModel = makeViewModel(runner: runner, exporter: exporter)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setSection(.events)
+        viewModel.saveVisibleEvents()
+
+        let saved = exporter.lastSaved
+        XCTAssertNotNil(saved)
+        XCTAssertTrue(saved?.suggestedName.hasPrefix("events-default-") == true)
+        XCTAssertEqual(saved?.allowedFileTypes, ["txt", "log"])
+        XCTAssertTrue(String(decoding: saved?.data ?? Data(), as: UTF8.self).contains("Container started"))
+    }
+
+    func testExecSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let longRunningRunner = ScriptedLongRunningCommandRunner()
+        let viewModel = makeViewModel(runner: runner, longRunningRunner: longRunningRunner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let pod = viewModel.state.pods.first(where: { $0.name == "api-0" }) else {
+            XCTFail("Expected pod api-0")
+            return
+        }
+
+        viewModel.setWorkloadKind(.pod)
+        viewModel.selectPod(pod)
+        viewModel.execCommandInput = "printenv HOSTNAME"
+        viewModel.requestExecInSelectedPod()
+
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("PRODUCTION CONTEXT"))
+
+        viewModel.confirmPendingWriteAction()
+
+        let execArgs = ["kubectl"] + builder.podExecArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            command: ["printenv", "HOSTNAME"]
+        )
+
+        try await waitUntil {
+            await runner.didRun(arguments: execArgs)
+        }
+
+        XCTAssertEqual(viewModel.state.lastExecResult?.podName, "api-0")
+        XCTAssertTrue(viewModel.state.lastExecResult?.stdout.contains("api-0") == true)
+        XCTAssertEqual(viewModel.state.selectedSection, .terminal)
+    }
+
+    func testPortForwardSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let longRunningRunner = ScriptedLongRunningCommandRunner()
+        let viewModel = makeViewModel(runner: runner, longRunningRunner: longRunningRunner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let service = viewModel.state.services.first(where: { $0.name == "api-svc" }) else {
+            XCTFail("Expected service api-svc")
+            return
+        }
+
+        viewModel.setWorkloadKind(.service)
+        viewModel.selectService(service)
+        viewModel.portForwardLocalPortInput = "8080"
+        viewModel.portForwardRemotePortInput = "80"
+        viewModel.portForwardAddressInput = "127.0.0.1"
+        viewModel.startPortForwardForSelection()
+
+        let startArgs = ["kubectl"] + builder.portForwardArguments(
+            context: "prod-main",
+            namespace: "default",
+            targetKind: .service,
+            targetName: "api-svc",
+            localPort: 8080,
+            remotePort: 80,
+            address: "127.0.0.1"
+        )
+
+        try await waitUntil {
+            longRunningRunner.didStart(arguments: startArgs)
+        }
+
+        XCTAssertEqual(viewModel.state.portForwardSessions.first?.targetName, "api-svc")
+        XCTAssertEqual(viewModel.state.portForwardSessions.first?.status, .active)
+        XCTAssertEqual(viewModel.state.selectedSection, .terminal)
+
+        if let session = viewModel.state.portForwardSessions.first {
+            viewModel.stopPortForward(session)
+        } else {
+            XCTFail("Expected port-forward session")
+            return
+        }
+
+        try await waitUntil {
+            viewModel.state.portForwardSessions.first?.status == .stopped
+        }
+    }
+
+    private func makeViewModel(
+        runner: ScriptedCommandRunner,
+        kubeConfigDiscoverer: KubeConfigDiscovering = StaticKubeConfigDiscoverer(urls: []),
+        exporter: FileExporting = NoopExporter(),
+        longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner()
+    ) -> RuneAppViewModel {
+        let kubeClient = KubectlClient(
+            runner: runner,
+            longRunningRunner: longRunningRunner,
+            parser: KubectlOutputParser(),
+            builder: KubectlCommandBuilder(),
+            kubectlPath: "/usr/bin/env",
+            access: SecurityScopedAccess()
+        )
+
+        return RuneAppViewModel(
+            state: RuneAppState(),
+            kubeClient: kubeClient,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            picker: NoopPicker(),
+            kubeConfigDiscoverer: kubeConfigDiscoverer,
+            exporter: exporter,
+            contextPreferences: InMemoryContextPreferencesStore()
+        )
+    }
+
+    private func makeTempKubeconfigFile() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("rune-smoke-kubeconfig-\(UUID().uuidString)")
+        try "apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\nusers: []\n".write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func baseScript(builder: KubectlCommandBuilder) -> [CommandKey: CommandResult] {
+        var script: [CommandKey: CommandResult] = [:]
+
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(stdout: "prod-main\n", stderr: "", exitCode: 0)
+
+        script[key(["kubectl"] + builder.podListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "api-0 Running\napi-1 Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.deploymentListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\"},\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":2}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.statefulSetListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api-db\"},\"spec\":{\"replicas\":2},\"status\":{\"readyReplicas\":2}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.daemonSetListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"node-agent\"},\"status\":{\"numberReady\":3,\"desiredNumberScheduled\":3}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.serviceListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api-svc\"},\"spec\":{\"type\":\"ClusterIP\",\"clusterIP\":\"10.96.0.21\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.ingressListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"public-api\"},\"spec\":{\"rules\":[{\"host\":\"api.example.com\"}]},\"status\":{\"loadBalancer\":{\"ingress\":[{\"hostname\":\"lb.example.com\"}]}}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.configMapListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"app-config\"},\"data\":{\"LOG_LEVEL\":\"info\",\"FEATURE_FLAG\":\"true\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.secretListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"db-credentials\"},\"type\":\"Opaque\",\"data\":{\"username\":\"dXNlcg==\",\"password\":\"c2VjcmV0\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.nodeListArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"worker-1\"},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"nodeInfo\":{\"kubeletVersion\":\"v1.31.0\"}}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.eventListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"type\":\"Normal\",\"reason\":\"Started\",\"message\":\"Container started\",\"involvedObject\":{\"name\":\"api-0\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.podLogsArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: false,
+            follow: false
+        ))] = CommandResult(
+            stdout: "2026-04-16T00:00:01Z started api-0",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.podLogsArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: false,
+            follow: false
+        ))] = CommandResult(
+            stdout: "2026-04-16T00:00:02Z started api-1",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.podExecArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            command: ["printenv", "HOSTNAME"]
+        ))] = CommandResult(
+            stdout: "api-0\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.resourceYAMLArguments(context: "prod-main", namespace: "default", kind: .pod, name: "api-0"))] = CommandResult(
+            stdout: "kind: Pod\nmetadata:\n  name: api-0\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.resourceYAMLArguments(context: "prod-main", namespace: "default", kind: .deployment, name: "api"))] = CommandResult(
+            stdout: "kind: Deployment\nmetadata:\n  name: api\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.resourceYAMLArguments(context: "prod-main", namespace: "default", kind: .service, name: "api-svc"))] = CommandResult(
+            stdout: "kind: Service\nmetadata:\n  name: api-svc\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.serviceJSONArguments(context: "prod-main", namespace: "default", serviceName: "api-svc"))] = CommandResult(
+            stdout: "{\"metadata\":{\"name\":\"api-svc\"},\"spec\":{\"selector\":{\"app\":\"api\"}}}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.deploymentJSONArguments(context: "prod-main", namespace: "default", deploymentName: "api"))] = CommandResult(
+            stdout: "{\"metadata\":{\"name\":\"api\"},\"spec\":{\"selector\":{\"matchLabels\":{\"app\":\"api\"}}}}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.podsByLabelSelectorArguments(context: "prod-main", namespace: "default", selector: "app=api"))] = CommandResult(
+            stdout: "api-0 Running\napi-1 Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.scaleDeploymentArguments(context: "prod-main", namespace: "default", deploymentName: "api", replicas: 5))] = CommandResult(
+            stdout: "scaled",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.scaleDeploymentArguments(context: "prod-main", namespace: "default", deploymentName: "api", replicas: 3))] = CommandResult(
+            stdout: "scaled",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.rolloutRestartArguments(context: "prod-main", namespace: "default", deploymentName: "api"))] = CommandResult(
+            stdout: "deployment.apps/api restarted",
+            stderr: "",
+            exitCode: 0
+        )
+
+        return script
+    }
+
+    private func key(_ arguments: [String]) -> CommandKey {
+        CommandKey(executable: "/usr/bin/env", arguments: arguments)
+    }
+
+    private func waitUntil(timeout: TimeInterval = 2.0, condition: @escaping @MainActor () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if await condition() {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTFail("Condition not met before timeout")
+    }
+}
+
+private struct CommandKey: Hashable, Sendable {
+    let executable: String
+    let arguments: [String]
+}
+
+private actor ScriptedCommandRunner: CommandRunning {
+    private let script: [CommandKey: CommandResult]
+    private var calls: [CommandKey] = []
+
+    init(script: [CommandKey: CommandResult]) {
+        self.script = script
+    }
+
+    func run(executable: String, arguments: [String], environment: [String: String]) async throws -> CommandResult {
+        let key = CommandKey(executable: executable, arguments: arguments)
+        calls.append(key)
+
+        guard let result = script[key] else {
+            throw RuneError.commandFailed(command: "missing scripted command", message: arguments.joined(separator: " "))
+        }
+
+        return result
+    }
+
+    func didRun(arguments: [String]) -> Bool {
+        calls.contains(where: { $0.arguments == arguments })
+    }
+}
+
+private final class InMemoryBookmarkStore: BookmarkStore {
+    private var records: [BookmarkRecord] = []
+
+    func loadRecords() throws -> [BookmarkRecord] {
+        records
+    }
+
+    func saveRecords(_ records: [BookmarkRecord]) throws {
+        self.records = records
+    }
+}
+
+private final class NoopPicker: KubeConfigPicking {
+    @MainActor
+    func pickFiles() throws -> [URL] {
+        []
+    }
+}
+
+private final class NoopExporter: FileExporting {
+    @MainActor
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+private final class ScriptedLongRunningCommandRunner: LongRunningCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var startedArguments: [[String]] = []
+
+    func start(
+        executable: String,
+        arguments: [String],
+        environment: [String : String],
+        onStdout: @escaping @Sendable (String) -> Void,
+        onStderr: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) throws -> any RunningCommandControlling {
+        lock.lock()
+        startedArguments.append(arguments)
+        lock.unlock()
+
+        onStderr("Forwarding from 127.0.0.1:8080 -> 80\n")
+        return ScriptedRunningCommandHandle {
+            onTermination(0)
+        }
+    }
+
+    func didStart(arguments: [String]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return startedArguments.contains(arguments)
+    }
+}
+
+private final class ScriptedRunningCommandHandle: RunningCommandControlling, @unchecked Sendable {
+    let id = UUID()
+    private let onTerminate: @Sendable () -> Void
+    private let lock = NSLock()
+    private var hasTerminated = false
+
+    init(onTerminate: @escaping @Sendable () -> Void) {
+        self.onTerminate = onTerminate
+    }
+
+    func terminate() {
+        lock.lock()
+        let shouldTerminate = !hasTerminated
+        hasTerminated = true
+        lock.unlock()
+
+        if shouldTerminate {
+            onTerminate()
+        }
+    }
+}
+
+@MainActor
+private final class RecordingExporter: FileExporting {
+    struct SavedFile {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+    }
+
+    private(set) var lastSaved: SavedFile?
+
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        lastSaved = SavedFile(data: data, suggestedName: suggestedName, allowedFileTypes: allowedFileTypes)
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+private struct InMemoryContextPreferencesStore: ContextPreferencesStoring {
+    func loadFavoriteContextNames() -> Set<String> { [] }
+    func saveFavoriteContextNames(_ names: Set<String>) {}
+}
+
+private struct StaticKubeConfigDiscoverer: KubeConfigDiscovering {
+    let urls: [URL]
+
+    func discoverCandidateFiles() -> [URL] {
+        urls
+    }
+}
