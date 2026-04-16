@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import RuneCore
 
 public struct CommandResult: Sendable {
@@ -17,8 +18,24 @@ public protocol CommandRunning: Sendable {
     func run(
         executable: String,
         arguments: [String],
-        environment: [String: String]
+        environment: [String: String],
+        timeout: TimeInterval?
     ) async throws -> CommandResult
+}
+
+public extension CommandRunning {
+    func run(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]
+    ) async throws -> CommandResult {
+        try await run(
+            executable: executable,
+            arguments: arguments,
+            environment: environment,
+            timeout: nil
+        )
+    }
 }
 
 public protocol RunningCommandControlling: AnyObject, Sendable {
@@ -43,35 +60,83 @@ public final class ProcessCommandRunner: CommandRunning {
     public func run(
         executable: String,
         arguments: [String],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        timeout: TimeInterval? = nil
     ) async throws -> CommandResult {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
+        let command = renderCommand(executable: executable, arguments: arguments)
+        let timeoutValue = timeout.map { max(1, $0) }
+        let state = ProcessCommandState()
 
-            var mergedEnvironment = ProcessInfo.processInfo.environment
-            environment.forEach { key, value in
-                mergedEnvironment[key] = value
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let process = Process()
+                state.setProcess(process)
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = arguments
+                process.environment = mergedEnvironment(overrides: environment)
+
+                commandLogger.log("Starting command: \(command, privacy: .public)")
+
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+
+                if let timeoutValue {
+                    let timeoutItem = DispatchWorkItem {
+                        guard let activeProcess = state.process(), activeProcess.isRunning else { return }
+
+                        commandLogger.error("Command timed out after \(timeoutValue, privacy: .public)s: \(command, privacy: .public)")
+                        activeProcess.terminate()
+                        state.resume(
+                            continuation,
+                            result: .failure(
+                                RuneError.commandFailed(
+                                    command: command,
+                                    message: "Timed out after \(Int(timeoutValue)) seconds"
+                                )
+                            )
+                        )
+                    }
+                    state.setTimeoutItem(timeoutItem)
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutValue, execute: timeoutItem)
+                }
+
+                process.terminationHandler = { _ in
+                    state.cancelTimeoutItem()
+
+                    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let result = CommandResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
+
+                    commandLogger.log("Finished command (exit \(process.terminationStatus)): \(command, privacy: .public)")
+                    if process.terminationStatus != 0 {
+                        commandLogger.error("Command stderr: \(stderr, privacy: .public)")
+                    }
+
+                    state.resume(continuation, result: .success(result))
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    state.cancelTimeoutItem()
+                    commandLogger.error("Failed to start command: \(command, privacy: .public) :: \(error.localizedDescription, privacy: .public)")
+                    state.resume(
+                        continuation,
+                        result: .failure(
+                            RuneError.commandFailed(
+                                command: executable,
+                                message: error.localizedDescription
+                            )
+                        )
+                    )
+                }
             }
-            process.environment = mergedEnvironment
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            process.terminationHandler = { _ in
-                let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let result = CommandResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
-                continuation.resume(returning: result)
-            }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: RuneError.commandFailed(command: executable, message: error.localizedDescription))
+        } onCancel: {
+            state.cancelTimeoutItem()
+            if let process = state.process(), process.isRunning {
+                process.terminate()
             }
         }
     }
@@ -92,11 +157,8 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 
-        var mergedEnvironment = ProcessInfo.processInfo.environment
-        environment.forEach { key, value in
-            mergedEnvironment[key] = value
-        }
-        process.environment = mergedEnvironment
+        process.environment = mergedEnvironment(overrides: environment)
+        commandLogger.log("Starting long-running command: \(renderCommand(executable: executable, arguments: arguments), privacy: .public)")
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -118,6 +180,9 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         process.terminationHandler = { process in
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+            commandLogger.log(
+                "Long-running command ended (exit \(process.terminationStatus)): \(renderCommand(executable: executable, arguments: arguments), privacy: .public)"
+            )
             onTermination(process.terminationStatus)
         }
 
@@ -126,12 +191,99 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+            commandLogger.error("Failed to start long-running command: \(renderCommand(executable: executable, arguments: arguments), privacy: .public) :: \(error.localizedDescription, privacy: .public)")
             throw RuneError.commandFailed(command: executable, message: error.localizedDescription)
         }
 
         return ProcessCommandHandle(process: process)
     }
 }
+
+private final class ProcessCommandState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processRef: Process?
+    private var timeoutItem: DispatchWorkItem?
+    private var didResume = false
+
+    func setProcess(_ process: Process) {
+        lock.lock()
+        processRef = process
+        lock.unlock()
+    }
+
+    func process() -> Process? {
+        lock.lock()
+        let process = processRef
+        lock.unlock()
+        return process
+    }
+
+    func setTimeoutItem(_ item: DispatchWorkItem) {
+        lock.lock()
+        timeoutItem = item
+        lock.unlock()
+    }
+
+    func cancelTimeoutItem() {
+        lock.lock()
+        let item = timeoutItem
+        timeoutItem = nil
+        lock.unlock()
+        item?.cancel()
+    }
+
+    func resume(
+        _ continuation: CheckedContinuation<CommandResult, Error>,
+        result: Result<CommandResult, Error>
+    ) {
+        lock.lock()
+        let shouldResume = !didResume
+        didResume = true
+        lock.unlock()
+
+        guard shouldResume else { return }
+        continuation.resume(with: result)
+    }
+}
+
+private func mergedEnvironment(overrides: [String: String]) -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    overrides.forEach { key, value in
+        environment[key] = value
+    }
+    environment["PATH"] = augmentedPath(current: environment["PATH"])
+    return environment
+}
+
+private func augmentedPath(current: String?) -> String {
+    let preferredSegments = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin"
+    ]
+
+    var orderedSegments = (current ?? "")
+        .split(separator: ":")
+        .map(String.init)
+        .filter { !$0.isEmpty }
+
+    var seen = Set(orderedSegments)
+    for segment in preferredSegments where !seen.contains(segment) {
+        orderedSegments.append(segment)
+        seen.insert(segment)
+    }
+
+    return orderedSegments.joined(separator: ":")
+}
+
+private func renderCommand(executable: String, arguments: [String]) -> String {
+    ([executable] + arguments).joined(separator: " ")
+}
+
+private let commandLogger = Logger(subsystem: "com.rune.desktop", category: "CommandRunner")
 
 public final class ProcessCommandHandle: RunningCommandControlling, @unchecked Sendable {
     public let id = UUID()

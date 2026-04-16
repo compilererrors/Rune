@@ -1,7 +1,9 @@
 import Foundation
 import XCTest
 @testable import RuneCore
+@testable import RuneDiagnostics
 @testable import RuneExport
+@testable import RuneHelm
 @testable import RuneKube
 @testable import RuneSecurity
 @testable import RuneUI
@@ -53,6 +55,28 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertEqual(viewModel.state.contexts.first?.name, "prod-main")
     }
 
+    func testBootstrapFallsBackToDirectDiscoveredSourcesWhenBookmarkSaveFails() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(
+            runner: runner,
+            bookmarkManager: BookmarkManager(store: FailingSaveBookmarkStore()),
+            kubeConfigDiscoverer: StaticKubeConfigDiscoverer(urls: [kubeconfigURL])
+        )
+
+        viewModel.bootstrap()
+
+        try await waitUntil {
+            !viewModel.state.contexts.isEmpty
+        }
+
+        XCTAssertEqual(viewModel.state.kubeConfigSources.count, 1)
+        XCTAssertEqual(viewModel.state.contexts.first?.name, "prod-main")
+    }
+
     func testBootstrapWithoutDiscoveredConfigsDoesNotSetMissingConfigError() async throws {
         let builder = KubectlCommandBuilder()
         let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
@@ -101,6 +125,48 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertTrue(calledSelector)
     }
 
+    func testPreviousLogsUnavailableShowsFriendlyMessage() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.podLogsArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: true,
+            follow: false
+        ))] = CommandResult(
+            stdout: "",
+            stderr: "Error from server (BadRequest): previous terminated container \"api\" in pod \"api-0\" not found",
+            exitCode: 1
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let pod = viewModel.state.pods.first(where: { $0.name == "api-0" }) else {
+            XCTFail("Expected api-0 pod")
+            return
+        }
+
+        viewModel.setWorkloadKind(.pod)
+        viewModel.selectPod(pod)
+        viewModel.includePreviousLogs = true
+
+        try await waitUntil {
+            viewModel.state.podLogs.contains("No previous logs available")
+        }
+
+        XCTAssertNil(viewModel.state.lastError)
+    }
+
     func testAdditionalResourceTypesLoadIntoState() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -112,12 +178,326 @@ final class RuneSmokeTests: XCTestCase {
         viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
         try await viewModel.reloadContexts()
 
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.statefulSet)
+        try await waitUntil {
+            viewModel.state.statefulSets.first?.name == "api-db"
+        }
+
+        viewModel.setWorkloadKind(.daemonSet)
+        try await waitUntil {
+            viewModel.state.daemonSets.first?.name == "node-agent"
+        }
+
+        viewModel.setSection(.config)
+        viewModel.setWorkloadKind(.configMap)
+        try await waitUntil {
+            viewModel.state.configMaps.first?.name == "app-config"
+        }
+
+        viewModel.setWorkloadKind(.secret)
+        try await waitUntil {
+            viewModel.state.secrets.first?.name == "db-credentials"
+        }
+
+        viewModel.setSection(.storage)
+        try await waitUntil {
+            viewModel.state.nodes.first?.name == "worker-1"
+        }
+
         XCTAssertEqual(viewModel.state.statefulSets.first?.name, "api-db")
         XCTAssertEqual(viewModel.state.daemonSets.first?.name, "node-agent")
-        XCTAssertEqual(viewModel.state.ingresses.first?.name, "public-api")
         XCTAssertEqual(viewModel.state.configMaps.first?.name, "app-config")
         XCTAssertEqual(viewModel.state.secrets.first?.name, "db-credentials")
         XCTAssertEqual(viewModel.state.nodes.first?.name, "worker-1")
+    }
+
+    func testOverviewLoadsNamespaceScopedCounts() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(viewModel.state.overviewPods.count, 2)
+        XCTAssertEqual(viewModel.state.overviewDeploymentsCount, 1)
+        XCTAssertEqual(viewModel.state.overviewServicesCount, 1)
+        XCTAssertEqual(viewModel.state.overviewIngressesCount, 1)
+        XCTAssertEqual(viewModel.state.overviewConfigMapsCount, 1)
+        XCTAssertEqual(viewModel.state.overviewNodesCount, 1)
+        XCTAssertEqual(viewModel.state.overviewEvents.count, 1)
+    }
+
+    func testNavigationBackForwardRestoresView() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        try await waitUntil {
+            viewModel.state.selectedSection == .overview
+        }
+
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.deployment)
+        try await waitUntil {
+            viewModel.state.selectedSection == .workloads
+                && viewModel.state.selectedWorkloadKind == .deployment
+        }
+
+        viewModel.setSection(.networking)
+        viewModel.setWorkloadKind(.service)
+        try await waitUntil {
+            viewModel.state.selectedSection == .networking
+                && viewModel.state.selectedWorkloadKind == .service
+        }
+
+        XCTAssertTrue(viewModel.canNavigateBack)
+        viewModel.navigateBack()
+        try await waitUntil {
+            viewModel.state.selectedSection == .workloads
+                && viewModel.state.selectedWorkloadKind == .deployment
+        }
+
+        XCTAssertTrue(viewModel.canNavigateForward)
+        viewModel.navigateForward()
+        try await waitUntil {
+            viewModel.state.selectedSection == .networking
+                && viewModel.state.selectedWorkloadKind == .service
+        }
+    }
+
+    func testNamespacesLoadFromCluster() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(viewModel.state.namespaces, ["default", "kube-system", "platform"])
+        XCTAssertEqual(viewModel.namespaceOptions, ["default", "kube-system", "platform"])
+    }
+
+    func testContextSwitchResolvesNamespaceBeforeNamespacedLoads() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nqa-main\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "kube-system\nqa\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "qa-api-0 Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.deploymentListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.statefulSetListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.daemonSetListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.serviceListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.ingressListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.configMapListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.secretListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.eventListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.nodeListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "qa qa-api-0 Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.deploymentListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.serviceListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.ingressListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.configMapListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.eventListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podLogsArguments(
+            context: "qa-main",
+            namespace: "qa",
+            podName: "qa-api-0",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: false,
+            follow: false
+        ))] = CommandResult(
+            stdout: "2026-04-16T00:00:03Z started qa-api-0",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.resourceYAMLArguments(context: "qa-main", namespace: "qa", kind: .pod, name: "qa-api-0"))] = CommandResult(
+            stdout: "kind: Pod\nmetadata:\n  name: qa-api-0\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setContext(KubeContext(name: "qa-main"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "qa-main"
+                && viewModel.state.selectedNamespace == "qa"
+                && viewModel.state.namespaces == ["kube-system", "qa"]
+                && viewModel.state.pods.first?.name == "qa-api-0"
+        }
+
+        let staleNamespaceArgs = ["kubectl"] + builder.podListArguments(context: "qa-main", namespace: "default")
+        let didRunWithStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
+        XCTAssertFalse(didRunWithStaleNamespace)
+    }
+
+    func testContextSwitchDoesNotLeakOldContextResourcesWhenLoadsFail() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nqa-main\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "qa\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        XCTAssertFalse(viewModel.state.pods.isEmpty)
+
+        viewModel.setContext(KubeContext(name: "qa-main"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "qa-main"
+                && viewModel.state.selectedNamespace == "qa"
+        }
+
+        XCTAssertTrue(viewModel.state.pods.isEmpty)
+        XCTAssertEqual(viewModel.state.overviewPods.count, 0)
+    }
+
+    func testSnapshotKeepsPodsWhenOneResourceFails() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script.removeValue(forKey: key(["kubectl"] + builder.serviceListArguments(context: "prod-main", namespace: "default")))
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(viewModel.state.pods.count, 2)
+        XCTAssertEqual(viewModel.state.pods.first?.name, "api-0")
+        XCTAssertTrue(viewModel.state.lastError?.contains("Delvis laddning") == true)
+        XCTAssertTrue(viewModel.state.lastError?.contains("services") == true)
+    }
+
+    func testSnapshotDoesNotReuseOldNamespacesWhenNamespaceLoadFails() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script.removeValue(forKey: key(["kubectl"] + builder.namespaceListArguments(context: "prod-main")))
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+        viewModel.state.setNamespaces(["old-ns"])
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertTrue(viewModel.state.namespaces.isEmpty)
+        XCTAssertTrue(viewModel.namespaceOptions.contains("default"))
+        XCTAssertTrue(viewModel.state.lastError?.contains("namespaces") == true)
     }
 
     func testUnifiedDeploymentLogsSmokeFlow() async throws {
@@ -253,6 +633,136 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertTrue(calledRestart)
     }
 
+    func testRolloutHistoryAndUndoSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let deployment = viewModel.state.deployments.first(where: { $0.name == "api" }) else {
+            XCTFail("Expected deployment api")
+            return
+        }
+
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(deployment)
+
+        try await waitUntil {
+            !viewModel.state.deploymentRolloutHistory.isEmpty
+        }
+
+        XCTAssertTrue(viewModel.state.deploymentRolloutHistory.contains("REVISION"))
+
+        viewModel.rolloutRevisionInput = "2"
+        viewModel.requestRolloutUndoSelectedDeployment()
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+
+        viewModel.confirmPendingWriteAction()
+
+        let undoArgs = ["kubectl"] + builder.rolloutUndoArguments(
+            context: "prod-main",
+            namespace: "default",
+            deploymentName: "api",
+            revision: 2
+        )
+
+        try await waitUntil {
+            await runner.didRun(arguments: undoArgs)
+        }
+
+        let didUndo = await runner.didRun(arguments: undoArgs)
+        XCTAssertTrue(didUndo)
+    }
+
+    func testHelmSmokeFlowLoadsDetailsAndRollback() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setSection(.helm)
+
+        try await waitUntil {
+            !viewModel.state.helmReleases.isEmpty && !viewModel.state.helmManifest.isEmpty
+        }
+
+        XCTAssertEqual(viewModel.state.selectedHelmRelease?.name, "platform")
+        XCTAssertTrue(viewModel.state.helmManifest.contains("kind: Deployment"))
+        XCTAssertEqual(viewModel.state.helmHistory.first?.revision, 3)
+
+        viewModel.helmRollbackRevisionInput = "2"
+        viewModel.requestRollbackSelectedHelmRelease()
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+
+        viewModel.confirmPendingWriteAction()
+
+        let helmBuilder = HelmCommandBuilder()
+        let rollbackArgs = ["helm"] + helmBuilder.rollbackArguments(
+            context: "prod-main",
+            namespace: "platform",
+            releaseName: "platform",
+            revision: 2
+        )
+
+        try await waitUntil {
+            await runner.didRun(arguments: rollbackArgs)
+        }
+
+        let didRollback = await runner.didRun(arguments: rollbackArgs)
+        XCTAssertTrue(didRollback)
+    }
+
+    func testSupportBundleExportUsesExporter() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let exporter = RecordingExporter()
+        let viewModel = makeViewModel(runner: runner, exporter: exporter)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.saveSupportBundle()
+
+        let saved = exporter.lastSaved
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(saved?.allowedFileTypes, ["json"])
+        XCTAssertTrue(saved?.suggestedName.hasPrefix("support-bundle-") == true)
+
+        let payload = String(decoding: saved?.data ?? Data(), as: UTF8.self)
+        XCTAssertTrue(payload.contains("\"contextName\""))
+        XCTAssertTrue(payload.contains("\"resourceCounts\""))
+    }
+
+    func testCommandPaletteSupportsK9sStyleQueries() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        let podItems = viewModel.commandPaletteItems(query: ":po api")
+        XCTAssertEqual(podItems.first?.title, "api-0")
+
+        viewModel.executeCommandPaletteQuery(":svc api")
+        XCTAssertEqual(viewModel.state.selectedSection, .networking)
+        XCTAssertEqual(viewModel.state.selectedService?.name, "api-svc")
+    }
+
     func testSaveVisibleEventsUsesExporter() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -374,6 +884,7 @@ final class RuneSmokeTests: XCTestCase {
 
     private func makeViewModel(
         runner: ScriptedCommandRunner,
+        bookmarkManager: BookmarkManager = BookmarkManager(store: InMemoryBookmarkStore()),
         kubeConfigDiscoverer: KubeConfigDiscovering = StaticKubeConfigDiscoverer(urls: []),
         exporter: FileExporting = NoopExporter(),
         longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner()
@@ -386,14 +897,23 @@ final class RuneSmokeTests: XCTestCase {
             kubectlPath: "/usr/bin/env",
             access: SecurityScopedAccess()
         )
+        let helmClient = HelmClient(
+            runner: runner,
+            parser: HelmOutputParser(),
+            builder: HelmCommandBuilder(),
+            helmPath: "/usr/bin/env",
+            access: SecurityScopedAccess()
+        )
 
         return RuneAppViewModel(
             state: RuneAppState(),
             kubeClient: kubeClient,
-            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            helmClient: helmClient,
+            bookmarkManager: bookmarkManager,
             picker: NoopPicker(),
             kubeConfigDiscoverer: kubeConfigDiscoverer,
             exporter: exporter,
+            supportBundleBuilder: JSONSupportBundleBuilder(),
             contextPreferences: InMemoryContextPreferencesStore()
         )
     }
@@ -406,8 +926,15 @@ final class RuneSmokeTests: XCTestCase {
 
     private func baseScript(builder: KubectlCommandBuilder) -> [CommandKey: CommandResult] {
         var script: [CommandKey: CommandResult] = [:]
+        let helmBuilder = HelmCommandBuilder()
 
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(stdout: "prod-main\n", stderr: "", exitCode: 0)
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "prod-main"))] = CommandResult(stdout: "default", stderr: "", exitCode: 0)
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "prod-main"))] = CommandResult(
+            stdout: "default\nkube-system\nplatform\n",
+            stderr: "",
+            exitCode: 0
+        )
 
         script[key(["kubectl"] + builder.podListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
             stdout: "api-0 Running\napi-1 Running\n",
@@ -415,8 +942,20 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
 
+        script[key(["kubectl"] + builder.podListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "default api-0 Running\ndefault api-1 Running\nplatform jobs-0 Pending\n",
+            stderr: "",
+            exitCode: 0
+        )
+
         script[key(["kubectl"] + builder.deploymentListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
             stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\"},\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":2}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.deploymentListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\",\"namespace\":\"default\"},\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":2}},{\"metadata\":{\"name\":\"worker\",\"namespace\":\"platform\"},\"spec\":{\"replicas\":1},\"status\":{\"readyReplicas\":1}}]}",
             stderr: "",
             exitCode: 0
         )
@@ -438,6 +977,37 @@ final class RuneSmokeTests: XCTestCase {
             stderr: "",
             exitCode: 0
         )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "deployments"))] = CommandResult(
+            stdout: "api\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "services"))] = CommandResult(
+            stdout: "api-svc\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "ingresses"))] = CommandResult(
+            stdout: "public-api\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "configmaps"))] = CommandResult(
+            stdout: "app-config\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.clusterResourceCountArguments(context: "prod-main", resource: "nodes"))] = CommandResult(
+            stdout: "worker-1\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.serviceListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api-svc\",\"namespace\":\"default\"},\"spec\":{\"type\":\"ClusterIP\",\"clusterIP\":\"10.96.0.21\"}},{\"metadata\":{\"name\":\"jobs-svc\",\"namespace\":\"platform\"},\"spec\":{\"type\":\"ClusterIP\",\"clusterIP\":\"10.96.0.44\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
 
         script[key(["kubectl"] + builder.ingressListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
             stdout: "{\"items\":[{\"metadata\":{\"name\":\"public-api\"},\"spec\":{\"rules\":[{\"host\":\"api.example.com\"}]},\"status\":{\"loadBalancer\":{\"ingress\":[{\"hostname\":\"lb.example.com\"}]}}}]}",
@@ -445,8 +1015,20 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
 
+        script[key(["kubectl"] + builder.ingressListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"public-api\",\"namespace\":\"default\"},\"spec\":{\"rules\":[{\"host\":\"api.example.com\"}]},\"status\":{\"loadBalancer\":{\"ingress\":[{\"hostname\":\"lb.example.com\"}]}}},{\"metadata\":{\"name\":\"jobs-api\",\"namespace\":\"platform\"},\"spec\":{\"rules\":[{\"host\":\"jobs.example.com\"}]},\"status\":{\"loadBalancer\":{\"ingress\":[{\"hostname\":\"jobs-lb.example.com\"}]}}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
         script[key(["kubectl"] + builder.configMapListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
             stdout: "{\"items\":[{\"metadata\":{\"name\":\"app-config\"},\"data\":{\"LOG_LEVEL\":\"info\",\"FEATURE_FLAG\":\"true\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.configMapListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"app-config\",\"namespace\":\"default\"},\"data\":{\"LOG_LEVEL\":\"info\",\"FEATURE_FLAG\":\"true\"}},{\"metadata\":{\"name\":\"jobs-config\",\"namespace\":\"platform\"},\"data\":{\"QUEUE\":\"payments\"}}]}",
             stderr: "",
             exitCode: 0
         )
@@ -465,6 +1047,12 @@ final class RuneSmokeTests: XCTestCase {
 
         script[key(["kubectl"] + builder.eventListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
             stdout: "{\"items\":[{\"type\":\"Normal\",\"reason\":\"Started\",\"message\":\"Container started\",\"involvedObject\":{\"name\":\"api-0\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.eventListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"type\":\"Warning\",\"reason\":\"BackOff\",\"message\":\"Back-off restarting failed container\",\"involvedObject\":{\"name\":\"jobs-0\"}},{\"type\":\"Normal\",\"reason\":\"Started\",\"message\":\"Container started\",\"involvedObject\":{\"name\":\"api-0\"}}]}",
             stderr: "",
             exitCode: 0
         )
@@ -563,6 +1151,48 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
 
+        script[key(["kubectl"] + builder.rolloutHistoryArguments(context: "prod-main", namespace: "default", deploymentName: "api"))] = CommandResult(
+            stdout: "REVISION  CHANGE-CAUSE\n1         <none>\n2         config update\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.rolloutUndoArguments(context: "prod-main", namespace: "default", deploymentName: "api", revision: 2))] = CommandResult(
+            stdout: "deployment.apps/api rolled back",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["helm"] + helmBuilder.listArguments(context: "prod-main", namespace: nil, allNamespaces: true))] = CommandResult(
+            stdout: "[{\"name\":\"platform\",\"namespace\":\"platform\",\"revision\":\"3\",\"updated\":\"2026-04-16 10:00:00.000000 +0000 UTC\",\"status\":\"deployed\",\"chart\":\"platform-1.4.0\",\"app_version\":\"2.8.1\"}]",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["helm"] + helmBuilder.valuesArguments(context: "prod-main", namespace: "platform", releaseName: "platform"))] = CommandResult(
+            stdout: "replicaCount: 3\nimage:\n  tag: 2.8.1\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["helm"] + helmBuilder.manifestArguments(context: "prod-main", namespace: "platform", releaseName: "platform"))] = CommandResult(
+            stdout: "kind: Deployment\nmetadata:\n  name: platform\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["helm"] + helmBuilder.historyArguments(context: "prod-main", namespace: "platform", releaseName: "platform"))] = CommandResult(
+            stdout: "[{\"revision\":3,\"updated\":\"2026-04-16 10:00:00.000000 +0000 UTC\",\"status\":\"deployed\",\"chart\":\"platform-1.4.0\",\"app_version\":\"2.8.1\",\"description\":\"Upgrade complete\"},{\"revision\":2,\"updated\":\"2026-04-15 08:00:00.000000 +0000 UTC\",\"status\":\"superseded\",\"chart\":\"platform-1.3.0\",\"app_version\":\"2.8.0\",\"description\":\"Upgrade complete\"}]",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["helm"] + helmBuilder.rollbackArguments(context: "prod-main", namespace: "platform", releaseName: "platform", revision: 2))] = CommandResult(
+            stdout: "Rollback was a success",
+            stderr: "",
+            exitCode: 0
+        )
+
         return script
     }
 
@@ -597,7 +1227,12 @@ private actor ScriptedCommandRunner: CommandRunning {
         self.script = script
     }
 
-    func run(executable: String, arguments: [String], environment: [String: String]) async throws -> CommandResult {
+    func run(
+        executable: String,
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval?
+    ) async throws -> CommandResult {
         let key = CommandKey(executable: executable, arguments: arguments)
         calls.append(key)
 
@@ -622,6 +1257,16 @@ private final class InMemoryBookmarkStore: BookmarkStore {
 
     func saveRecords(_ records: [BookmarkRecord]) throws {
         self.records = records
+    }
+}
+
+private final class FailingSaveBookmarkStore: BookmarkStore {
+    func loadRecords() throws -> [BookmarkRecord] {
+        []
+    }
+
+    func saveRecords(_ records: [BookmarkRecord]) throws {
+        throw NSError(domain: "RuneTests", code: 17, userInfo: [NSLocalizedDescriptionKey: "save failed"])
     }
 }
 

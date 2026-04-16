@@ -196,7 +196,64 @@ public struct ClusterResourceSummary: Identifiable, Hashable, Codable, Sendable 
     }
 }
 
-public struct PodExecResult: Sendable, Equatable {
+public struct HelmReleaseSummary: Identifiable, Hashable, Codable, Sendable {
+    public let name: String
+    public let namespace: String
+    public let revision: Int
+    public let updated: String
+    public let status: String
+    public let chart: String
+    public let appVersion: String
+
+    public init(
+        name: String,
+        namespace: String,
+        revision: Int,
+        updated: String,
+        status: String,
+        chart: String,
+        appVersion: String
+    ) {
+        self.name = name
+        self.namespace = namespace
+        self.revision = revision
+        self.updated = updated
+        self.status = status
+        self.chart = chart
+        self.appVersion = appVersion
+    }
+
+    public var id: String { "\(namespace)/\(name)" }
+}
+
+public struct HelmReleaseRevision: Identifiable, Hashable, Codable, Sendable {
+    public let revision: Int
+    public let updated: String
+    public let status: String
+    public let chart: String
+    public let appVersion: String
+    public let description: String
+
+    public init(
+        revision: Int,
+        updated: String,
+        status: String,
+        chart: String,
+        appVersion: String,
+        description: String
+    ) {
+        self.revision = revision
+        self.updated = updated
+        self.status = status
+        self.chart = chart
+        self.appVersion = appVersion
+        self.description = description
+    }
+
+    public var id: String { String(revision) }
+}
+
+public struct PodExecResult: Codable, Sendable, Equatable {
     public let podName: String
     public let namespace: String
     public let command: [String]

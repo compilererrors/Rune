@@ -4,6 +4,13 @@ public protocol ContextListingService: Sendable {
     func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext]
 }
 
+public protocol NamespaceListingService: Sendable {
+    func listNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [String]
+}
+
 public protocol PodListingService: Sendable {
     func listPods(
         from sources: [KubeConfigSource],
@@ -145,5 +152,43 @@ public protocol ResourceWriteService: Sendable {
         context: KubeContext,
         namespace: String,
         yaml: String
+    ) async throws
+}
+
+public protocol HelmReleaseService: Sendable {
+    func listReleases(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?,
+        allNamespaces: Bool
+    ) async throws -> [HelmReleaseSummary]
+
+    func releaseValues(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String
+
+    func releaseManifest(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String
+
+    func releaseHistory(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> [HelmReleaseRevision]
+
+    func rollbackRelease(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String,
+        revision: Int
     ) async throws
 }

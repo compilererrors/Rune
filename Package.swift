@@ -41,7 +41,7 @@ let package = Package(
         ),
         .target(
             name: "RuneHelm",
-            dependencies: ["RuneCore"]
+            dependencies: ["RuneCore", "RuneKube", "RuneSecurity"]
         ),
         .target(
             name: "RuneDiagnostics",
@@ -52,6 +52,8 @@ let package = Package(
             dependencies: [
                 "RuneCore",
                 "RuneKube",
+                "RuneHelm",
+                "RuneDiagnostics",
                 "RuneStore",
                 "RuneSecurity",
                 "RuneExport"
@@ -67,7 +69,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RuneUITests",
-            dependencies: ["RuneUI", "RuneKube", "RuneCore", "RuneSecurity", "RuneExport"]
+            dependencies: ["RuneUI", "RuneKube", "RuneHelm", "RuneDiagnostics", "RuneCore", "RuneSecurity", "RuneExport"]
         )
     ]
 )

@@ -8,6 +8,24 @@ public struct KubectlCommandBuilder {
         ["config", "get-contexts", "-o", "name"]
     }
 
+    public func namespaceListArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "namespaces",
+            "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
+        ]
+    }
+
+    public func contextNamespaceArguments(context: String) -> [String] {
+        [
+            "config", "view",
+            "--minify",
+            "--context", context,
+            "-o", "jsonpath={..namespace}"
+        ]
+    }
+
     public func podListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,
@@ -18,11 +36,30 @@ public struct KubectlCommandBuilder {
         ]
     }
 
+    public func podListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pods",
+            "-A",
+            "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase",
+            "--no-headers"
+        ]
+    }
+
     public func deploymentListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,
             "get", "deployments",
             "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func deploymentListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "deployments",
+            "-A",
             "-o", "json"
         ]
     }
@@ -54,6 +91,15 @@ public struct KubectlCommandBuilder {
         ]
     }
 
+    public func serviceListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "services",
+            "-A",
+            "-o", "json"
+        ]
+    }
+
     public func ingressListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,
@@ -63,11 +109,29 @@ public struct KubectlCommandBuilder {
         ]
     }
 
+    public func ingressListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "ingresses",
+            "-A",
+            "-o", "json"
+        ]
+    }
+
     public func configMapListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,
             "get", "configmaps",
             "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func configMapListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "configmaps",
+            "-A",
             "-o", "json"
         ]
     }
@@ -96,6 +160,42 @@ public struct KubectlCommandBuilder {
             "-n", namespace,
             "--sort-by=.lastTimestamp",
             "-o", "json"
+        ]
+    }
+
+    public func eventListAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "events",
+            "-A",
+            "--sort-by=.lastTimestamp",
+            "-o", "json"
+        ]
+    }
+
+    public func namespacedResourceCountArguments(
+        context: String,
+        namespace: String,
+        resource: String
+    ) -> [String] {
+        [
+            "--context", context,
+            "get", resource,
+            "-n", namespace,
+            "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
+        ]
+    }
+
+    public func clusterResourceCountArguments(
+        context: String,
+        resource: String
+    ) -> [String] {
+        [
+            "--context", context,
+            "get", resource,
+            "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
         ]
     }
 
@@ -230,6 +330,28 @@ public struct KubectlCommandBuilder {
             "rollout", "restart", "deployment", deploymentName,
             "-n", namespace
         ]
+    }
+
+    public func rolloutHistoryArguments(context: String, namespace: String, deploymentName: String) -> [String] {
+        [
+            "--context", context,
+            "rollout", "history", "deployment", deploymentName,
+            "-n", namespace
+        ]
+    }
+
+    public func rolloutUndoArguments(context: String, namespace: String, deploymentName: String, revision: Int?) -> [String] {
+        var args = [
+            "--context", context,
+            "rollout", "undo", "deployment", deploymentName,
+            "-n", namespace
+        ]
+
+        if let revision {
+            args += ["--to-revision", String(revision)]
+        }
+
+        return args
     }
 
     public func portForwardArguments(
