@@ -13,6 +13,18 @@ public struct KubectlOutputParser {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    public func parseNamespaces(from raw: String) -> [String] {
+        Array(
+            Set(
+                raw
+                    .split(whereSeparator: \.isNewline)
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        )
+        .sorted()
+    }
+
     public func parsePods(namespace: String, from raw: String) -> [PodSummary] {
         raw
             .split(whereSeparator: \.isNewline)
@@ -30,13 +42,37 @@ public struct KubectlOutputParser {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    public func parsePodsAllNamespaces(from raw: String) -> [PodSummary] {
+        raw
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+
+                let parts = trimmed.split(whereSeparator: \.isWhitespace)
+                guard parts.count >= 3 else { return nil }
+
+                return PodSummary(
+                    name: String(parts[1]),
+                    namespace: String(parts[0]),
+                    status: String(parts[2])
+                )
+            }
+            .sorted {
+                if $0.namespace != $1.namespace {
+                    return $0.namespace.localizedCaseInsensitiveCompare($1.namespace) == .orderedAscending
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
     public func parseDeployments(namespace: String, from raw: String) throws -> [DeploymentSummary] {
         let decoded = try JSONDecoder().decode(KubeList<KubeDeploymentItem>.self, from: Data(raw.utf8))
         return decoded.items
             .map { item in
                 DeploymentSummary(
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     readyReplicas: item.status.readyReplicas ?? 0,
                     desiredReplicas: item.spec.replicas ?? 0
                 )
@@ -51,7 +87,7 @@ public struct KubectlOutputParser {
                 ClusterResourceSummary(
                     kind: .statefulSet,
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.readyReplicas ?? 0)/\(item.spec.replicas ?? 0) ready",
                     secondaryText: "Stateful workload"
                 )
@@ -66,7 +102,7 @@ public struct KubectlOutputParser {
                 ClusterResourceSummary(
                     kind: .daemonSet,
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.numberReady ?? 0)/\(item.status.desiredNumberScheduled ?? 0) ready",
                     secondaryText: "Daemon workload"
                 )
@@ -80,7 +116,7 @@ public struct KubectlOutputParser {
             .map { item in
                 ServiceSummary(
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     type: item.spec.type ?? "ClusterIP",
                     clusterIP: item.spec.clusterIP ?? "-"
                 )
@@ -100,7 +136,7 @@ public struct KubectlOutputParser {
                 return ClusterResourceSummary(
                     kind: .ingress,
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     primaryText: host,
                     secondaryText: address
                 )
@@ -115,7 +151,7 @@ public struct KubectlOutputParser {
                 ClusterResourceSummary(
                     kind: .configMap,
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.data?.count ?? 0) keys",
                     secondaryText: "Config data"
                 )
@@ -130,7 +166,7 @@ public struct KubectlOutputParser {
                 ClusterResourceSummary(
                     kind: .secret,
                     name: item.metadata.name,
-                    namespace: namespace,
+                    namespace: item.metadata.namespace ?? namespace,
                     primaryText: item.type ?? "Opaque",
                     secondaryText: "\(item.data?.count ?? 0) values"
                 )
@@ -183,6 +219,7 @@ public struct KubectlOutputParser {
 
     private struct KubeMetadata: Decodable {
         let name: String
+        let namespace: String?
     }
 
     private struct KubeDeploymentSpec: Decodable {

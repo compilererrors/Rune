@@ -8,6 +8,49 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(builder.contextListArguments(), ["config", "get-contexts", "-o", "name"])
     }
 
+    func testNamespaceArguments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.namespaceListArguments(context: "prod"),
+            ["--context", "prod", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+        )
+    }
+
+    func testContextNamespaceArguments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.contextNamespaceArguments(context: "prod"),
+            ["config", "view", "--minify", "--context", "prod", "-o", "jsonpath={..namespace}"]
+        )
+    }
+
+    func testNamespacedResourceCountArguments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.namespacedResourceCountArguments(
+                context: "prod",
+                namespace: "default",
+                resource: "deployments"
+            ),
+            ["--context", "prod", "get", "deployments", "-n", "default", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+        )
+    }
+
+    func testClusterResourceCountArguments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.clusterResourceCountArguments(context: "prod", resource: "nodes"),
+            ["--context", "prod", "get", "nodes", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+        )
+    }
+
+    func testPodAllNamespacesArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podListAllNamespacesArguments(context: "prod")
+
+        XCTAssertEqual(args, ["--context", "prod", "get", "pods", "-A", "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase", "--no-headers"])
+    }
+
     func testLogsArgumentsWithRelativeFilter() {
         let builder = KubectlCommandBuilder()
 
@@ -36,6 +79,12 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(pods.count, 2)
         XCTAssertEqual(pods.first?.name, "api-6f99fdcc7f-7sm5x")
         XCTAssertEqual(pods.first?.status, "Running")
+    }
+
+    func testNamespaceParsing() {
+        let parser = KubectlOutputParser()
+        let raw = "kube-system\n default \nplatform\n"
+        XCTAssertEqual(parser.parseNamespaces(from: raw), ["default", "kube-system", "platform"])
     }
 
     func testLogsArgumentsWithAbsoluteTimeUsesSinceTime() {
@@ -134,6 +183,20 @@ final class KubectlTests: XCTestCase {
         )
 
         XCTAssertEqual(args, ["--context", "prod", "port-forward", "service/api-svc", "8080:80", "-n", "default", "--address", "127.0.0.1"])
+    }
+
+    func testRolloutHistoryArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.rolloutHistoryArguments(context: "prod", namespace: "default", deploymentName: "api")
+
+        XCTAssertEqual(args, ["--context", "prod", "rollout", "history", "deployment", "api", "-n", "default"])
+    }
+
+    func testRolloutUndoArgumentsWithRevision() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.rolloutUndoArguments(context: "prod", namespace: "default", deploymentName: "api", revision: 3)
+
+        XCTAssertEqual(args, ["--context", "prod", "rollout", "undo", "deployment", "api", "-n", "default", "--to-revision", "3"])
     }
 
     func testParseDeploymentSelector() throws {

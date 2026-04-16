@@ -2,12 +2,13 @@ import Foundation
 import RuneCore
 import RuneSecurity
 
-public final class KubectlClient: ContextListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ResourceWriteService, @unchecked Sendable {
+public final class KubectlClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ResourceWriteService, @unchecked Sendable {
     private let runner: CommandRunning
     private let longRunningRunner: LongRunningCommandRunning
     private let parser: KubectlOutputParser
     private let builder: KubectlCommandBuilder
     private let kubectlPath: String
+    private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
 
@@ -17,6 +18,7 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         parser: KubectlOutputParser = KubectlOutputParser(),
         builder: KubectlCommandBuilder = KubectlCommandBuilder(),
         kubectlPath: String = "/usr/bin/env",
+        commandTimeout: TimeInterval = 30,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
         self.runner = runner
@@ -24,6 +26,7 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         self.parser = parser
         self.builder = builder
         self.kubectlPath = kubectlPath
+        self.commandTimeout = commandTimeout
         self.access = access
     }
 
@@ -31,6 +34,32 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         let env = try kubeconfigEnvironment(from: sources)
         let result = try await runKubectl(arguments: builder.contextListArguments(), environment: env)
         return parser.parseContexts(from: result.stdout)
+    }
+
+    public func listNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [String] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.namespaceListArguments(context: context.name),
+            environment: env
+        )
+        return parser.parseNamespaces(from: result.stdout)
+    }
+
+    public func contextNamespace(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> String? {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.contextNamespaceArguments(context: context.name),
+            environment: env
+        )
+
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     public func listPods(
@@ -45,6 +74,19 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         )
 
         return parser.parsePods(namespace: namespace, from: result.stdout)
+    }
+
+    public func listPodsAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [PodSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.podListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        return parser.parsePodsAllNamespaces(from: result.stdout)
     }
 
     public func listDeployments(
@@ -65,6 +107,23 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         }
     }
 
+    public func listDeploymentsAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [DeploymentSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.deploymentListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseDeployments(namespace: "", from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "deployments JSON kunde inte tolkas")
+        }
+    }
+
     public func listServices(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -78,6 +137,23 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
 
         do {
             return try parser.parseServices(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "services JSON kunde inte tolkas")
+        }
+    }
+
+    public func listServicesAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ServiceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.serviceListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseServices(namespace: "", from: result.stdout)
         } catch {
             throw RuneError.parseError(message: "services JSON kunde inte tolkas")
         }
@@ -137,6 +213,23 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         }
     }
 
+    public func listIngressesAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.ingressListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseIngresses(namespace: "", from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "ingresses JSON kunde inte tolkas")
+        }
+    }
+
     public func listConfigMaps(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -150,6 +243,23 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
 
         do {
             return try parser.parseConfigMaps(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "configmaps JSON kunde inte tolkas")
+        }
+    }
+
+    public func listConfigMapsAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.configMapListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseConfigMaps(namespace: "", from: result.stdout)
         } catch {
             throw RuneError.parseError(message: "configmaps JSON kunde inte tolkas")
         }
@@ -208,6 +318,57 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         }
     }
 
+    public func listEventsAllNamespaces(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [EventSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.eventListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseEvents(from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "events JSON kunde inte tolkas")
+        }
+    }
+
+    public func countNamespacedResources(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        resource: String
+    ) async throws -> Int {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.namespacedResourceCountArguments(
+                context: context.name,
+                namespace: namespace,
+                resource: resource
+            ),
+            environment: env
+        )
+        return Self.parseLineCount(from: result.stdout)
+    }
+
+    public func countClusterResources(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        resource: String
+    ) async throws -> Int {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.clusterResourceCountArguments(
+                context: context.name,
+                resource: resource
+            ),
+            environment: env
+        )
+        return Self.parseLineCount(from: result.stdout)
+    }
+
     public func podLogs(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -217,18 +378,25 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         previous: Bool
     ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.podLogsArguments(
-                context: context.name,
-                namespace: namespace,
-                podName: podName,
-                container: nil,
-                filter: filter,
-                previous: previous,
-                follow: false
-            ),
-            environment: env
+        let arguments = builder.podLogsArguments(
+            context: context.name,
+            namespace: namespace,
+            podName: podName,
+            container: nil,
+            filter: filter,
+            previous: previous,
+            follow: false
         )
+
+        let result: CommandResult
+        do {
+            result = try await runKubectl(arguments: arguments, environment: env)
+        } catch {
+            if previous, isMissingPreviousLogsError(error) {
+                return "No previous logs available for \(podName)."
+            }
+            throw error
+        }
 
         return result.stdout
     }
@@ -476,6 +644,40 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         )
     }
 
+    public func deploymentRolloutHistory(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String
+    ) async throws -> String {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.rolloutHistoryArguments(context: context.name, namespace: namespace, deploymentName: deploymentName),
+            environment: env
+        )
+
+        return result.stdout
+    }
+
+    public func rollbackDeploymentRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        revision: Int?
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        _ = try await runKubectl(
+            arguments: builder.rolloutUndoArguments(
+                context: context.name,
+                namespace: namespace,
+                deploymentName: deploymentName,
+                revision: revision
+            ),
+            environment: env
+        )
+    }
+
     public func startPortForward(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -602,7 +804,8 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         let result = try await runner.run(
             executable: kubectlPath,
             arguments: ["kubectl"] + arguments,
-            environment: environment
+            environment: environment,
+            timeout: commandTimeout
         )
 
         guard result.exitCode == 0 else {
@@ -684,6 +887,23 @@ public final class KubectlClient: ContextListingService, PodListingService, Depl
         let podName: String
         let text: String
         let timestamp: Date?
+    }
+
+    private static func parseLineCount(from raw: String) -> Int {
+        raw
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { line in
+                !line.isEmpty && !line.lowercased().hasPrefix("no resources found")
+            }
+            .count
+    }
+
+    private func isMissingPreviousLogsError(_ error: Error) -> Bool {
+        let text = String(describing: error).lowercased()
+        return text.contains("previous terminated container")
+            || text.contains("no previous terminated container")
+            || text.contains("previous container not found")
     }
 }
 

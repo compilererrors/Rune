@@ -43,6 +43,7 @@ private enum ServiceInspectorTab: String, CaseIterable, Identifiable {
 private enum DeploymentInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case unifiedLogs
+    case rollout
     case yaml
 
     var id: String { rawValue }
@@ -51,7 +52,26 @@ private enum DeploymentInspectorTab: String, CaseIterable, Identifiable {
         switch self {
         case .overview: return "Overview"
         case .unifiedLogs: return "Unified Logs"
+        case .rollout: return "Rollout"
         case .yaml: return "YAML"
+        }
+    }
+}
+
+private enum HelmInspectorTab: String, CaseIterable, Identifiable {
+    case overview
+    case values
+    case manifest
+    case history
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview: return "Overview"
+        case .values: return "Values"
+        case .manifest: return "Manifest"
+        case .history: return "History"
         }
     }
 }
@@ -59,32 +79,59 @@ private enum DeploymentInspectorTab: String, CaseIterable, Identifiable {
 public struct RuneRootView: View {
     @ObservedObject private var viewModel: RuneAppViewModel
 
-    @State private var namespaceInput: String = "default"
+    @State private var namespaceInput: String = ""
     @State private var podInspectorTab: PodInspectorTab = .overview
     @State private var serviceInspectorTab: ServiceInspectorTab = .overview
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
+    @State private var helmInspectorTab: HelmInspectorTab = .overview
 
     public init(viewModel: RuneAppViewModel = RuneAppViewModel()) {
         self.viewModel = viewModel
     }
 
     public var body: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             background
 
             NavigationSplitView {
                 sidebar
-                    .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 480)
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 460)
+                    .overlay(alignment: .trailing) {
+                        resizeHandle
+                            .offset(x: 7)
+                    }
             } content: {
                 contentPane
-                    .navigationSplitViewColumnWidth(min: 420, ideal: 700, max: 1200)
+                    .navigationSplitViewColumnWidth(min: 560, ideal: 760, max: 1200)
+                    .overlay(alignment: .trailing) {
+                        resizeHandle
+                            .offset(x: 7)
+                    }
             } detail: {
                 detailPane
-                    .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 820)
+                    .navigationSplitViewColumnWidth(min: 340, ideal: 440, max: 820)
             }
             .navigationSplitViewStyle(.balanced)
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
+                    Button {
+                        viewModel.navigateBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .help("Back")
+                    .disabled(!viewModel.canNavigateBack)
+                    .keyboardShortcut("[", modifiers: [.command, .option])
+
+                    Button {
+                        viewModel.navigateForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .help("Forward")
+                    .disabled(!viewModel.canNavigateForward)
+                    .keyboardShortcut("]", modifiers: [.command, .option])
+
                     Menu(viewModel.state.selectedContext?.name ?? "No Context") {
                         ForEach(viewModel.visibleContexts) { context in
                             Button(context.name) {
@@ -93,7 +140,7 @@ public struct RuneRootView: View {
                         }
                     }
 
-                    Menu(viewModel.state.selectedNamespace) {
+                    Menu(namespaceMenuTitle) {
                         ForEach(namespaceSuggestions, id: \.self) { namespace in
                             Button(namespace) {
                                 namespaceInput = namespace
@@ -146,12 +193,6 @@ public struct RuneRootView: View {
             .onChange(of: viewModel.state.selectedNamespace) { _, newValue in
                 namespaceInput = newValue
             }
-
-            if viewModel.isProductionContext {
-                productionBanner
-                    .padding(.top, 6)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
     }
@@ -190,8 +231,25 @@ public struct RuneRootView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(viewModel.visibleContexts) { context in
-                        contextRow(context)
+                    if viewModel.visibleContexts.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("No kubeconfigs loaded")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Rune försöker läsa upptäckta kubeconfig-filer automatiskt. Du kan också importera dem via en native file picker.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+
+                            Button("Import Kubeconfig…") {
+                                viewModel.importKubeConfig()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        .padding(10)
+                        .background(panelFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    } else {
+                        ForEach(viewModel.visibleContexts) { context in
+                            contextRow(context)
+                        }
                     }
                 }
             }
@@ -269,6 +327,14 @@ public struct RuneRootView: View {
 
     private var contentPane: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if viewModel.isProductionContext {
+                HStack {
+                    productionBanner
+                    Spacer(minLength: 0)
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             contentHeader
 
             switch viewModel.state.selectedSection {
@@ -282,6 +348,8 @@ public struct RuneRootView: View {
                 configPane
             case .storage:
                 storagePane
+            case .helm:
+                helmPane
             case .events:
                 eventsPane
             case .terminal:
@@ -324,95 +392,150 @@ public struct RuneRootView: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                TextField("Namespace", text: $namespaceInput)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 260)
+            if viewModel.visibleContexts.isEmpty {
+                HStack(spacing: 10) {
+                    Button("Import Kubeconfig…") {
+                        viewModel.importKubeConfig()
+                    }
+                    .buttonStyle(.borderedProminent)
 
-                Button("Apply") {
-                    viewModel.setNamespace(namespaceInput)
+                    Button("Command Palette") {
+                        viewModel.presentCommandPalette()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
                 }
-                .buttonStyle(.bordered)
-
-                TextField("/ filter resources", text: Binding(get: {
-                    viewModel.state.resourceSearchQuery
-                }, set: { newValue in
-                    viewModel.setResourceSearchQuery(newValue)
-                }))
-                .textFieldStyle(.roundedBorder)
-
-                if viewModel.state.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                }
+                .controlSize(.large)
+            } else if showsNamespaceAndFilterControls {
+                namespaceAndFilterControls
             }
-            .controlSize(.large)
 
-            if viewModel.state.selectedSection == .workloads {
-                Picker("Kind", selection: Binding(get: {
-                    viewModel.state.selectedWorkloadKind
-                }, set: { kind in
-                    viewModel.setWorkloadKind(kind)
-                })) {
-                    ForEach(viewModel.workloadKinds) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
-            } else if viewModel.state.selectedSection == .networking {
-                Picker("Kind", selection: Binding(get: {
-                    viewModel.state.selectedWorkloadKind
-                }, set: { kind in
-                    viewModel.setWorkloadKind(kind)
-                })) {
-                    ForEach(viewModel.networkingKinds) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 320)
-            } else if viewModel.state.selectedSection == .config {
-                Picker("Kind", selection: Binding(get: {
-                    viewModel.state.selectedWorkloadKind
-                }, set: { kind in
-                    viewModel.setWorkloadKind(kind)
-                })) {
-                    ForEach(viewModel.configKinds) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 320)
-            } else if viewModel.state.selectedSection == .storage {
-                Picker("Kind", selection: Binding(get: {
-                    viewModel.state.selectedWorkloadKind
-                }, set: { kind in
-                    viewModel.setWorkloadKind(kind)
-                })) {
-                    ForEach(viewModel.storageKinds) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 200)
+            sectionSpecificControls
+        }
+    }
+
+    private var showsNamespaceAndFilterControls: Bool {
+        switch viewModel.state.selectedSection {
+        case .overview, .terminal:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private var namespaceAndFilterControls: some View {
+        HStack(spacing: 10) {
+            TextField("Namespace", text: $namespaceInput)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 260)
+
+            Button("Apply") {
+                viewModel.setNamespace(namespaceInput)
+            }
+            .buttonStyle(.bordered)
+
+            TextField("/ filter resources", text: Binding(get: {
+                viewModel.state.resourceSearchQuery
+            }, set: { newValue in
+                viewModel.setResourceSearchQuery(newValue)
+            }))
+            .textFieldStyle(.roundedBorder)
+
+            if viewModel.state.isLoading {
+                ProgressView()
+                    .scaleEffect(0.8)
             }
         }
+        .controlSize(.large)
+    }
+
+    @ViewBuilder
+    private var sectionSpecificControls: some View {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            resourceKindPicker(kinds: viewModel.workloadKinds, maxWidth: 420)
+        case .networking:
+            resourceKindPicker(kinds: viewModel.networkingKinds, maxWidth: 320)
+        case .config:
+            resourceKindPicker(kinds: viewModel.configKinds, maxWidth: 320)
+        case .storage:
+            resourceKindPicker(kinds: viewModel.storageKinds, maxWidth: 200)
+        case .helm:
+            Toggle("All namespaces", isOn: Binding(get: {
+                viewModel.state.isHelmAllNamespaces
+            }, set: { value in
+                viewModel.setHelmAllNamespaces(value)
+            }))
+            .toggleStyle(.switch)
+        default:
+            EmptyView()
+        }
+    }
+
+    private func resourceKindPicker(kinds: [KubeResourceKind], maxWidth: CGFloat) -> some View {
+        Picker("Kind", selection: Binding(get: {
+            viewModel.state.selectedWorkloadKind
+        }, set: { kind in
+            viewModel.setWorkloadKind(kind)
+        })) {
+            ForEach(kinds) { kind in
+                Text(kind.title).tag(kind)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: maxWidth)
     }
 
     private var overviewPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                if viewModel.visibleContexts.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Connect Kubernetes")
+                            .font(.title3.weight(.bold))
+                        Text("Rune är GUI-driven först. När kubeconfig är laddad visas contexts, namespaces och resurser direkt här.")
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 10) {
+                            Button("Import Kubeconfig…") {
+                                viewModel.importKubeConfig()
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("Open Command Palette") {
+                                viewModel.presentCommandPalette()
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
                 overviewStatusBanner
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                    overviewStatCard(title: "Pods", value: "\(viewModel.state.pods.count)", symbol: "cube.box.fill", tint: .cyan)
-                    overviewStatCard(title: "Deployments", value: "\(viewModel.state.deployments.count)", symbol: "shippingbox.fill", tint: .blue)
-                    overviewStatCard(title: "Services", value: "\(viewModel.state.services.count)", symbol: "point.3.connected.trianglepath.dotted", tint: .purple)
-                    overviewStatCard(title: "Ingresses", value: "\(viewModel.state.ingresses.count)", symbol: "network", tint: .indigo)
-                    overviewStatCard(title: "ConfigMaps", value: "\(viewModel.state.configMaps.count)", symbol: "doc.text.fill", tint: .teal)
-                    overviewStatCard(title: "Nodes", value: "\(viewModel.state.nodes.count)", symbol: "server.rack", tint: .gray)
-                    overviewStatCard(title: "Events", value: "\(viewModel.state.events.count)", symbol: "bolt.badge.clock.fill", tint: .orange)
+                    overviewStatCard(title: "Pods", value: "\(viewModel.state.overviewPods.count)", symbol: "cube.box.fill", tint: .cyan) {
+                        viewModel.openOverviewModule(.pods)
+                    }
+                    overviewStatCard(title: "Deployments", value: "\(viewModel.state.overviewDeploymentsCount)", symbol: "shippingbox.fill", tint: .blue) {
+                        viewModel.openOverviewModule(.deployments)
+                    }
+                    overviewStatCard(title: "Services", value: "\(viewModel.state.overviewServicesCount)", symbol: "point.3.connected.trianglepath.dotted", tint: .purple) {
+                        viewModel.openOverviewModule(.services)
+                    }
+                    overviewStatCard(title: "Ingresses", value: "\(viewModel.state.overviewIngressesCount)", symbol: "network", tint: .indigo) {
+                        viewModel.openOverviewModule(.ingresses)
+                    }
+                    overviewStatCard(title: "ConfigMaps", value: "\(viewModel.state.overviewConfigMapsCount)", symbol: "doc.text.fill", tint: .teal) {
+                        viewModel.openOverviewModule(.configMaps)
+                    }
+                    overviewStatCard(title: "Nodes", value: "\(viewModel.state.overviewNodesCount)", symbol: "server.rack", tint: .gray) {
+                        viewModel.openOverviewModule(.nodes)
+                    }
+                    overviewStatCard(title: "Events", value: "\(viewModel.state.overviewEvents.count)", symbol: "bolt.badge.clock.fill", tint: .orange) {
+                        viewModel.openOverviewModule(.events)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -423,7 +546,7 @@ public struct RuneRootView: View {
                         healthBadge(label: "Running", value: podStatusCount("running"), color: .green)
                         healthBadge(label: "Pending", value: podStatusCount("pending"), color: .orange)
                         healthBadge(label: "Failed", value: podStatusCount("failed"), color: .red)
-                        healthBadge(label: "Other", value: max(0, viewModel.state.pods.count - podStatusCount("running") - podStatusCount("pending") - podStatusCount("failed")), color: .gray)
+                        healthBadge(label: "Other", value: max(0, viewModel.state.overviewPods.count - podStatusCount("running") - podStatusCount("pending") - podStatusCount("failed")), color: .gray)
                     }
                 }
                 .padding(12)
@@ -433,12 +556,12 @@ public struct RuneRootView: View {
                     Text("Recent Events")
                         .font(.headline)
 
-                    if viewModel.state.events.isEmpty {
+                    if viewModel.state.overviewEvents.isEmpty {
                         Text("No events loaded")
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
                     } else {
-                        ForEach(Array(viewModel.state.events.prefix(8))) { event in
+                        ForEach(Array(viewModel.state.overviewEvents.prefix(8))) { event in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: event.type.lowercased() == "warning" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                     .foregroundStyle(event.type.lowercased() == "warning" ? .orange : .green)
@@ -601,6 +724,45 @@ public struct RuneRootView: View {
         .scrollContentBackground(.hidden)
     }
 
+    private var helmPane: some View {
+        List(viewModel.visibleHelmReleases) { release in
+            Button {
+                viewModel.selectHelmRelease(release)
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(release.name)
+                            .font(.body.weight(.medium))
+                            .help(release.name)
+                        Spacer()
+                        Text(release.status.capitalized)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(statusColor(for: release.status).opacity(0.22), in: Capsule())
+                            .foregroundStyle(statusColor(for: release.status))
+                    }
+
+                    HStack(spacing: 8) {
+                        Text(release.namespace)
+                        Text("Rev \(release.revision)")
+                        Text(release.chart)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(viewModel.state.selectedHelmRelease == release ? Color.accentColor.opacity(0.12) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .scrollContentBackground(.hidden)
+    }
+
     private var eventsPane: some View {
         List(viewModel.visibleEvents) { event in
             Button {
@@ -650,25 +812,34 @@ public struct RuneRootView: View {
 
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            switch viewModel.state.selectedSection {
-            case .overview:
-                overviewDetails
-            case .workloads:
-                workloadDetails
-            case .networking:
-                networkingDetails
-            case .config:
-                configDetails
-            case .storage:
-                storageDetails
-            case .events:
-                eventDetails
-            case .terminal:
-                terminalDetails
-            default:
-                Text("Details for \(viewModel.state.selectedSection.title) will appear here.")
-                    .foregroundStyle(.secondary)
+            Group {
+                switch viewModel.state.selectedSection {
+                case .overview:
+                    overviewDetails
+                case .workloads:
+                    workloadDetails
+                case .networking:
+                    networkingDetails
+                case .config:
+                    configDetails
+                case .storage:
+                    storageDetails
+                case .helm:
+                    helmDetails
+                case .events:
+                    eventDetails
+                case .terminal:
+                    terminalDetails
+                default:
+                    inspectorEmptyState(
+                        "Details for \(viewModel.state.selectedSection.title) will appear here.",
+                        symbol: "sidebar.right"
+                    )
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(12)
+            .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             if let error = viewModel.state.lastError {
                 Text(error)
@@ -677,6 +848,7 @@ public struct RuneRootView: View {
                     .padding(.top, 8)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
         .background(.regularMaterial)
     }
@@ -702,8 +874,16 @@ public struct RuneRootView: View {
                     viewModel.setSection(.events)
                 }
 
+                Button("Open Helm") {
+                    viewModel.setSection(.helm)
+                }
+
                 Button("Reload") {
                     viewModel.refreshCurrentView()
+                }
+
+                Button("Save Bundle") {
+                    viewModel.saveSupportBundle()
                 }
             }
 
@@ -738,8 +918,7 @@ public struct RuneRootView: View {
             case .ingress:
                 genericResourceDetails(resource: viewModel.state.selectedIngress)
             default:
-                Text("Select a networking resource")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a networking resource", symbol: "point.3.connected.trianglepath.dotted")
             }
         }
     }
@@ -752,8 +931,7 @@ public struct RuneRootView: View {
             case .secret:
                 genericResourceDetails(resource: viewModel.state.selectedSecret)
             default:
-                Text("Select a config resource")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a config resource", symbol: "slider.horizontal.3")
             }
         }
     }
@@ -764,8 +942,109 @@ public struct RuneRootView: View {
             case .node:
                 genericResourceDetails(resource: viewModel.state.selectedNode)
             default:
-                Text("Select a node")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a node", symbol: "server.rack")
+            }
+        }
+    }
+
+    private var helmDetails: some View {
+        Group {
+            if let release = viewModel.state.selectedHelmRelease {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(release.name)
+                        .font(.title2.weight(.bold))
+                        .help(release.name)
+
+                    Picker("Inspector", selection: $helmInspectorTab) {
+                        ForEach(HelmInspectorTab.allCases) { tab in
+                            Text(tab.title).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    switch helmInspectorTab {
+                    case .overview:
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Namespace: \(release.namespace)", systemImage: "square.stack.3d.up")
+                            Label("Status: \(release.status.capitalized)", systemImage: "checkmark.seal")
+                            Label("Chart: \(release.chart)", systemImage: "shippingbox")
+                            Label("App Version: \(release.appVersion)", systemImage: "tag")
+                            Label("Revision: \(release.revision)", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                            Text(release.updated)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                TextField("Rollback revision", text: $viewModel.helmRollbackRevisionInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 140)
+
+                                Button("Rollback") {
+                                    viewModel.requestRollbackSelectedHelmRelease()
+                                }
+                                .disabled(!viewModel.writeActionsEnabled)
+                            }
+                        }
+
+                    case .values:
+                        exportableTextPane(
+                            text: viewModel.state.helmValues,
+                            emptyText: "No values loaded",
+                            saveAction: viewModel.saveCurrentHelmValues
+                        )
+
+                    case .manifest:
+                        exportableTextPane(
+                            text: viewModel.state.helmManifest,
+                            emptyText: "No manifest loaded",
+                            saveAction: viewModel.saveCurrentHelmManifest
+                        )
+
+                    case .history:
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Button("Save History") {
+                                    viewModel.saveCurrentHelmHistory()
+                                }
+                                Spacer()
+                            }
+
+                            if viewModel.state.helmHistory.isEmpty {
+                                Text("No history loaded")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        ForEach(viewModel.state.helmHistory) { entry in
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                HStack {
+                                                    Text("Revision \(entry.revision)")
+                                                        .font(.subheadline.weight(.semibold))
+                                                    Spacer()
+                                                    Text(entry.status.capitalized)
+                                                        .font(.caption.weight(.semibold))
+                                                        .foregroundStyle(statusColor(for: entry.status))
+                                                }
+                                                Text(entry.chart + " • " + entry.appVersion)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                Text(entry.description)
+                                                    .font(.footnote)
+                                                Text(entry.updated)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .padding(10)
+                                            .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                inspectorEmptyState("Select a Helm release", symbol: "ferry")
             }
         }
     }
@@ -822,8 +1101,7 @@ public struct RuneRootView: View {
                     }
                 }
             } else {
-                Text("Select a pod")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a pod", symbol: "cube.box")
             }
         }
     }
@@ -885,13 +1163,41 @@ public struct RuneRootView: View {
                             }
                         }
 
+                    case .rollout:
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 10) {
+                                TextField("Revision (optional)", text: $viewModel.rolloutRevisionInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 160)
+
+                                Button("Rollback") {
+                                    viewModel.requestRolloutUndoSelectedDeployment()
+                                }
+                                .disabled(!viewModel.writeActionsEnabled)
+
+                                Button("Save History") {
+                                    viewModel.saveCurrentRolloutHistory()
+                                }
+
+                                Spacer()
+                            }
+
+                            ScrollView {
+                                Text(viewModel.state.deploymentRolloutHistory.isEmpty ? "No rollout history loaded" : viewModel.state.deploymentRolloutHistory)
+                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                    .padding(10)
+                                    .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        }
+
                     case .yaml:
                         yamlBlock
                     }
                 }
             } else {
-                Text("Select a deployment")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a deployment", symbol: "shippingbox")
             }
         }
     }
@@ -953,8 +1259,7 @@ public struct RuneRootView: View {
                     }
                 }
             } else {
-                Text("Select a service")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a service", symbol: "point.3.connected.trianglepath.dotted")
             }
         }
     }
@@ -976,8 +1281,7 @@ public struct RuneRootView: View {
                     }
                 }
             } else {
-                Text("Select an event")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select an event", symbol: "bolt.badge.clock")
             }
         }
     }
@@ -1016,8 +1320,7 @@ public struct RuneRootView: View {
                     yamlBlock
                 }
             } else {
-                Text("Select a resource")
-                    .foregroundStyle(.secondary)
+                inspectorEmptyState("Select a resource", symbol: "list.bullet.rectangle")
             }
         }
     }
@@ -1037,6 +1340,26 @@ public struct RuneRootView: View {
 
             ScrollView {
                 Text(viewModel.state.resourceYAML.isEmpty ? "No YAML loaded" : viewModel.state.resourceYAML)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+    }
+
+    private func exportableTextPane(text: String, emptyText: String, saveAction: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button("Save…") {
+                    saveAction()
+                }
+                Spacer()
+            }
+
+            ScrollView {
+                Text(text.isEmpty ? emptyText : text)
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -1327,6 +1650,25 @@ public struct RuneRootView: View {
         .background(Color.red.opacity(0.87), in: Capsule())
     }
 
+    private var resizeHandle: some View {
+        VStack {
+            Spacer(minLength: 0)
+            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                .fill(Color.secondary.opacity(0.42))
+                .frame(width: 4, height: 44)
+                .overlay {
+                    VStack(spacing: 4) {
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                    }
+                }
+                .allowsHitTesting(false)
+            Spacer(minLength: 0)
+        }
+        .frame(width: 14)
+    }
+
     private var commandPalettePresentedBinding: Binding<Bool> {
         Binding(
             get: { viewModel.state.isCommandPalettePresented },
@@ -1368,22 +1710,34 @@ public struct RuneRootView: View {
         .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func overviewStatCard(title: String, value: String, symbol: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Image(systemName: symbol)
-                    .foregroundStyle(tint)
-                Spacer()
+    private func overviewStatCard(
+        title: String,
+        value: String,
+        symbol: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Image(systemName: symbol)
+                        .foregroundStyle(tint)
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(value)
+                    .font(.title2.weight(.bold))
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
-            Text(value)
-                .font(.title2.weight(.bold))
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .buttonStyle(.plain)
     }
 
     private func healthBadge(label: String, value: Int, color: Color) -> some View {
@@ -1399,10 +1753,28 @@ public struct RuneRootView: View {
         .background(color.opacity(0.14), in: Capsule())
     }
 
+    private func inspectorEmptyState(_ message: String, symbol: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+            Text("Select an item in the center list to inspect details and actions here.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
     private var namespaceSuggestions: [String] {
-        Array(Set([viewModel.state.selectedNamespace, "default", "kube-system", "kube-public", "prod"]))
-            .filter { !$0.isEmpty }
-            .sorted()
+        viewModel.namespaceOptions
+    }
+
+    private var namespaceMenuTitle: String {
+        let trimmed = viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Namespace" : trimmed
     }
 
     private var panelFill: some ShapeStyle {
@@ -1414,7 +1786,7 @@ public struct RuneRootView: View {
     }
 
     private func podStatusCount(_ status: String) -> Int {
-        viewModel.state.pods.filter { $0.status.lowercased() == status }.count
+        viewModel.state.overviewPods.filter { $0.status.lowercased() == status }.count
     }
 
     private func statusColor(for status: String) -> Color {

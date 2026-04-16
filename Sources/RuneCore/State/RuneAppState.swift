@@ -5,6 +5,7 @@ import Foundation
 public final class RuneAppState: ObservableObject {
     @Published public private(set) var kubeConfigSources: [KubeConfigSource] = []
     @Published public private(set) var contexts: [KubeContext] = []
+    @Published public private(set) var namespaces: [String] = []
     @Published public private(set) var favoriteContextNames: Set<String> = []
 
     @Published public var selectedContext: KubeContext?
@@ -22,6 +23,7 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedConfigMap: ClusterResourceSummary?
     @Published public var selectedSecret: ClusterResourceSummary?
     @Published public var selectedNode: ClusterResourceSummary?
+    @Published public var selectedHelmRelease: HelmReleaseSummary?
 
     @Published public private(set) var pods: [PodSummary] = []
     @Published public private(set) var deployments: [DeploymentSummary] = []
@@ -33,16 +35,29 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var configMaps: [ClusterResourceSummary] = []
     @Published public private(set) var secrets: [ClusterResourceSummary] = []
     @Published public private(set) var nodes: [ClusterResourceSummary] = []
+    @Published public private(set) var helmReleases: [HelmReleaseSummary] = []
+    @Published public private(set) var overviewPods: [PodSummary] = []
+    @Published public private(set) var overviewDeploymentsCount: Int = 0
+    @Published public private(set) var overviewServicesCount: Int = 0
+    @Published public private(set) var overviewIngressesCount: Int = 0
+    @Published public private(set) var overviewConfigMapsCount: Int = 0
+    @Published public private(set) var overviewNodesCount: Int = 0
+    @Published public private(set) var overviewEvents: [EventSummary] = []
 
     @Published public private(set) var podLogs: String = ""
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
     @Published public private(set) var resourceYAML: String = ""
+    @Published public private(set) var deploymentRolloutHistory: String = ""
+    @Published public private(set) var helmValues: String = ""
+    @Published public private(set) var helmManifest: String = ""
+    @Published public private(set) var helmHistory: [HelmReleaseRevision] = []
     @Published public private(set) var lastExecResult: PodExecResult?
     @Published public private(set) var portForwardSessions: [PortForwardSession] = []
 
     @Published public var contextSearchQuery: String = ""
     @Published public var resourceSearchQuery: String = ""
+    @Published public var isHelmAllNamespaces: Bool = true
 
     @Published public var isCommandPalettePresented: Bool = false
     @Published public var isLoading: Bool = false
@@ -78,6 +93,17 @@ public final class RuneAppState: ObservableObject {
         if selectedContext == nil || !contexts.contains(selectedContext!) {
             selectedContext = contexts.first
         }
+    }
+
+    public func setNamespaces(_ namespaces: [String]) {
+        let normalized = Array(
+            Set(
+                namespaces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+
+        self.namespaces = normalized
     }
 
     public func setPods(_ pods: [PodSummary]) {
@@ -148,6 +174,30 @@ public final class RuneAppState: ObservableObject {
         selectedNode = resources.first
     }
 
+    public func setHelmReleases(_ releases: [HelmReleaseSummary]) {
+        helmReleases = releases
+        if let selectedHelmRelease, releases.contains(selectedHelmRelease) { return }
+        selectedHelmRelease = releases.first
+    }
+
+    public func setOverviewSnapshot(
+        pods: [PodSummary],
+        deploymentsCount: Int,
+        servicesCount: Int,
+        ingressesCount: Int,
+        configMapsCount: Int,
+        nodesCount: Int,
+        events: [EventSummary]
+    ) {
+        overviewPods = pods
+        overviewDeploymentsCount = deploymentsCount
+        overviewServicesCount = servicesCount
+        overviewIngressesCount = ingressesCount
+        overviewConfigMapsCount = configMapsCount
+        overviewNodesCount = nodesCount
+        overviewEvents = events
+    }
+
     public func setSelectedPod(_ pod: PodSummary?) {
         selectedPod = pod
     }
@@ -188,6 +238,10 @@ public final class RuneAppState: ObservableObject {
         selectedNode = resource
     }
 
+    public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
+        selectedHelmRelease = release
+    }
+
     public func setPodLogs(_ logs: String) {
         podLogs = logs
     }
@@ -204,6 +258,22 @@ public final class RuneAppState: ObservableObject {
 
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
+    }
+
+    public func setDeploymentRolloutHistory(_ history: String) {
+        deploymentRolloutHistory = history
+    }
+
+    public func setHelmValues(_ values: String) {
+        helmValues = values
+    }
+
+    public func setHelmManifest(_ manifest: String) {
+        helmManifest = manifest
+    }
+
+    public func setHelmHistory(_ history: [HelmReleaseRevision]) {
+        helmHistory = history
     }
 
     public func setLastExecResult(_ result: PodExecResult?) {
@@ -231,6 +301,10 @@ public final class RuneAppState: ObservableObject {
         unifiedServiceLogs = ""
         unifiedServiceLogPods = []
         resourceYAML = ""
+        deploymentRolloutHistory = ""
+        helmValues = ""
+        helmManifest = ""
+        helmHistory = []
     }
 
     public func setError(_ error: Error) {
@@ -239,5 +313,9 @@ public final class RuneAppState: ObservableObject {
 
     public func clearError() {
         lastError = nil
+    }
+
+    public func setErrorMessage(_ message: String?) {
+        lastError = message
     }
 }
