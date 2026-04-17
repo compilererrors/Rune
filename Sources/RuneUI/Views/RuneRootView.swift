@@ -2131,88 +2131,65 @@ public struct RuneRootView: View {
             }
 
             inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
                         Circle()
                             .fill(deploymentReplicaStatusColor(deployment))
                             .frame(width: 8, height: 8)
-                            .alignmentGuide(.firstTextBaseline) { d in d[.firstTextBaseline] }
                         Text(deploymentReplicaStatusText(deployment))
                             .font(.body.weight(.semibold))
-                        Spacer(minLength: 12)
                     }
-                    .padding(.bottom, 14)
 
-                    HStack(alignment: .center, spacing: 12) {
+                    HStack(alignment: .center, spacing: 8) {
                         Text("Replicas")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .fixedSize()
-
-                        Spacer(minLength: 8)
-
-                        HStack(spacing: 8) {
-                            Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                                Text("\(viewModel.scaleReplicaInput)")
-                                    .monospacedDigit()
-                                    .font(.body.weight(.medium))
-                                    .frame(minWidth: 28, alignment: .trailing)
-                            }
-                            .controlSize(.regular)
-
-                            Group {
-                                if deploymentScaleIsDirty(deployment), viewModel.writeActionsEnabled {
-                                    Button("Scale") {
-                                        viewModel.requestScaleSelectedDeployment()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                } else {
-                                    Button("Scale") {
-                                        viewModel.requestScaleSelectedDeployment()
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-                            }
-                            .disabled(!viewModel.writeActionsEnabled || !deploymentScaleIsDirty(deployment))
+                        Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
+                            Text("\(viewModel.scaleReplicaInput)")
+                                .monospacedDigit()
+                                .font(.body.weight(.medium))
+                                .frame(minWidth: 32, alignment: .trailing)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.primary.opacity(0.055))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
-                        )
+                        Group {
+                            if deploymentScaleIsDirty(deployment), viewModel.writeActionsEnabled {
+                                Button("Scale") {
+                                    viewModel.requestScaleSelectedDeployment()
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else {
+                                Button("Scale") {
+                                    viewModel.requestScaleSelectedDeployment()
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .disabled(!viewModel.writeActionsEnabled || !deploymentScaleIsDirty(deployment))
+
+                        Spacer(minLength: 0)
                     }
-                    .padding(.bottom, 16)
 
                     Divider()
                         .opacity(0.45)
-                        .padding(.bottom, 12)
 
-                    HStack(spacing: 10) {
+                    inspectorActionButtonRow {
                         Button("Restart Rollout") {
                             viewModel.requestRolloutRestartSelectedDeployment()
                         }
                         .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
                         .disabled(!viewModel.writeActionsEnabled)
 
                         Button("Apply YAML") {
                             viewModel.requestApplySelectedResourceYAML()
                         }
                         .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
                         .disabled(!viewModel.writeActionsEnabled)
+
+                        Spacer(minLength: 0)
                     }
-                    .padding(.bottom, 10)
 
                     Button("Delete", role: .destructive) {
                         viewModel.requestDeleteSelectedResource()
                     }
-                    .buttonStyle(.bordered)
                     .disabled(!viewModel.writeActionsEnabled)
                 }
             }
