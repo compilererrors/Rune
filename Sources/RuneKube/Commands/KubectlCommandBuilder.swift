@@ -31,6 +31,19 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "pods",
             "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "json"
+        ]
+    }
+
+    public func podStatusListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pods",
+            "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=20s",
             "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase",
             "--no-headers"
         ]
@@ -41,7 +54,52 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "pods",
             "-A",
-            "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase",
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "json"
+        ]
+    }
+
+    /// `kubectl top pods` — needs metrics-server; may fail harmlessly when unavailable.
+    public func podTopArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "top", "pods",
+            "-n", namespace,
+            "--no-headers"
+        ]
+    }
+
+    public func podTopAllNamespacesArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "top", "pods",
+            "-A",
+            "--no-headers"
+        ]
+    }
+
+    /// Text table fallback when JSON list fails (timeout/parse error). Includes restarts + creationTimestamp.
+    public func podListTextArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pods",
+            "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[*].restartCount,CREATED:.metadata.creationTimestamp",
+            "--no-headers"
+        ]
+    }
+
+    public func podListAllNamespacesTextArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pods",
+            "-A",
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[*].restartCount,CREATED:.metadata.creationTimestamp",
             "--no-headers"
         ]
     }
@@ -51,7 +109,21 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "deployments",
             "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=20s",
             "-o", "json"
+        ]
+    }
+
+    public func deploymentListTextArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "deployments",
+            "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,DESIRED:.spec.replicas",
+            "--no-headers"
         ]
     }
 
@@ -60,7 +132,21 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "deployments",
             "-A",
+            "--chunk-size=200",
+            "--request-timeout=20s",
             "-o", "json"
+        ]
+    }
+
+    public func deploymentListAllNamespacesTextArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "deployments",
+            "-A",
+            "--chunk-size=200",
+            "--request-timeout=20s",
+            "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.readyReplicas,DESIRED:.spec.replicas",
+            "--no-headers"
         ]
     }
 
@@ -182,6 +268,8 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", resource,
             "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=15s",
             "-o", "custom-columns=NAME:.metadata.name",
             "--no-headers"
         ]
@@ -194,7 +282,18 @@ public struct KubectlCommandBuilder {
         [
             "--context", context,
             "get", resource,
+            "--chunk-size=200",
+            "--request-timeout=15s",
             "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
+        ]
+    }
+
+    /// `kubectl top nodes` — cluster usage snapshot with built-in CPU% and MEM%.
+    public func nodeTopArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "top", "nodes",
             "--no-headers"
         ]
     }
@@ -220,10 +319,22 @@ public struct KubectlCommandBuilder {
             args += ["-c", container]
         }
 
-        if filter.usesSinceTime {
-            args += ["--since-time", filter.kubectlArgument]
-        } else {
-            args += ["--since", filter.kubectlArgument]
+        switch filter {
+        case .all:
+            // Plain `kubectl logs` feel: bounded tail (full stream is often huge / times out).
+            args.append("--tail=200")
+        case let .tailLines(lines):
+            args.append("--tail=\(max(1, lines))")
+        case .lastMinutes, .lastHours, .lastDays, .since:
+            if let since = filter.kubectlSinceArgument {
+                if filter.usesSinceTime {
+                    args += ["--since-time", since]
+                } else {
+                    args += ["--since", since]
+                }
+            }
+            // Cap bytes returned when using a time window (avoids multi-minute transfers).
+            args.append("--tail=5000")
         }
 
         if previous {
@@ -248,6 +359,20 @@ public struct KubectlCommandBuilder {
         }
 
         args += ["-o", "yaml"]
+        return args
+    }
+
+    /// Human-readable `kubectl describe` output (same as k9s/Lens “describe” views).
+    public func describeResourceArguments(context: String, namespace: String, kind: KubeResourceKind, name: String) -> [String] {
+        var args = [
+            "--context", context,
+            "describe", kind.kubectlName, name
+        ]
+
+        if kind.isNamespaced {
+            args += ["-n", namespace]
+        }
+
         return args
     }
 
@@ -292,6 +417,16 @@ public struct KubectlCommandBuilder {
     }
 
     public func podsByLabelSelectorArguments(context: String, namespace: String, selector: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pods",
+            "-n", namespace,
+            "-l", selector,
+            "-o", "json"
+        ]
+    }
+
+    public func podsByLabelSelectorTextArguments(context: String, namespace: String, selector: String) -> [String] {
         [
             "--context", context,
             "get", "pods",
@@ -379,6 +514,63 @@ public struct KubectlCommandBuilder {
             "apply",
             "-n", namespace,
             "-f", filePath
+        ]
+    }
+
+    public func roleListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "roles",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func roleBindingListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "rolebindings",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func clusterRoleListArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "clusterroles",
+            "--request-timeout=60s",
+            "-o", "json"
+        ]
+    }
+
+    public func clusterRoleBindingListArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "clusterrolebindings",
+            "--request-timeout=60s",
+            "-o", "json"
+        ]
+    }
+
+    /// Fallback when JSON list fails (timeout, partial output).
+    public func clusterRoleListTextArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "clusterroles",
+            "--request-timeout=60s",
+            "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
+        ]
+    }
+
+    public func clusterRoleBindingListTextArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "clusterrolebindings",
+            "--request-timeout=60s",
+            "-o", "custom-columns=NAME:.metadata.name",
+            "--no-headers"
         ]
     }
 }

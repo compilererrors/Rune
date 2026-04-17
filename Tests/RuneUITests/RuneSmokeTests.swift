@@ -136,7 +136,7 @@ final class RuneSmokeTests: XCTestCase {
             namespace: "default",
             podName: "api-0",
             container: nil,
-            filter: .lastMinutes(15),
+            filter: .tailLines(200),
             previous: true,
             follow: false
         ))] = CommandResult(
@@ -308,7 +308,19 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
         script[key(["kubectl"] + builder.podListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
-            stdout: "qa-api-0 Running\n",
+            stdout: """
+            {"items":[{"metadata":{"name":"qa-api-0","namespace":"qa","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "qa-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podTopArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "qa-api-0   2m   8Mi\n",
             stderr: "",
             exitCode: 0
         )
@@ -352,13 +364,45 @@ final class RuneSmokeTests: XCTestCase {
             stderr: "",
             exitCode: 0
         )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "qa-main", namespace: "qa", resource: "deployments"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "qa-main", namespace: "qa", resource: "services"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "qa-main", namespace: "qa", resource: "ingresses"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "qa-main", namespace: "qa", resource: "configmaps"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.clusterResourceCountArguments(context: "qa-main", resource: "nodes"))] = CommandResult(
+            stdout: "worker-qa-1\n",
+            stderr: "",
+            exitCode: 0
+        )
         script[key(["kubectl"] + builder.nodeListArguments(context: "qa-main"))] = CommandResult(
             stdout: "{\"items\":[]}",
             stderr: "",
             exitCode: 0
         )
         script[key(["kubectl"] + builder.podListAllNamespacesArguments(context: "qa-main"))] = CommandResult(
-            stdout: "qa qa-api-0 Running\n",
+            stdout: """
+            {"items":[{"metadata":{"name":"qa-api-0","namespace":"qa","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podTopAllNamespacesArguments(context: "qa-main"))] = CommandResult(
+            stdout: "qa   qa-api-0   2m   8Mi\n",
             stderr: "",
             exitCode: 0
         )
@@ -392,7 +436,7 @@ final class RuneSmokeTests: XCTestCase {
             namespace: "qa",
             podName: "qa-api-0",
             container: nil,
-            filter: .lastMinutes(15),
+            filter: .tailLines(200),
             previous: false,
             follow: false
         ))] = CommandResult(
@@ -402,6 +446,11 @@ final class RuneSmokeTests: XCTestCase {
         )
         script[key(["kubectl"] + builder.resourceYAMLArguments(context: "qa-main", namespace: "qa", kind: .pod, name: "qa-api-0"))] = CommandResult(
             stdout: "kind: Pod\nmetadata:\n  name: qa-api-0\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.describeResourceArguments(context: "qa-main", namespace: "qa", kind: .pod, name: "qa-api-0"))] = CommandResult(
+            stdout: "Name: qa-api-0\nNamespace: qa\n",
             stderr: "",
             exitCode: 0
         )
@@ -937,13 +986,49 @@ final class RuneSmokeTests: XCTestCase {
         )
 
         script[key(["kubectl"] + builder.podListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
-            stdout: "api-0 Running\napi-1 Running\n",
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}},
+            {"metadata":{"name":"api-1","namespace":"default","creationTimestamp":"2024-06-01T11:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":1}]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: """
+            api-0   Running
+            api-1   Running
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podTopArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: """
+            api-0   5m   10Mi
+            api-1   3m   8Mi
+            """,
             stderr: "",
             exitCode: 0
         )
 
         script[key(["kubectl"] + builder.podListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
-            stdout: "default api-0 Running\ndefault api-1 Running\nplatform jobs-0 Pending\n",
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}},
+            {"metadata":{"name":"api-1","namespace":"default","creationTimestamp":"2024-06-01T11:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}},
+            {"metadata":{"name":"jobs-0","namespace":"platform","creationTimestamp":"2024-06-01T10:00:00Z"},"status":{"phase":"Pending","containerStatuses":[]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podTopAllNamespacesArguments(context: "prod-main"))] = CommandResult(
+            stdout: """
+            default   api-0   5m   10Mi
+            default   api-1   3m   8Mi
+            platform   jobs-0   1m   4Mi
+            """,
             stderr: "",
             exitCode: 0
         )
@@ -1062,7 +1147,7 @@ final class RuneSmokeTests: XCTestCase {
             namespace: "default",
             podName: "api-0",
             container: nil,
-            filter: .lastMinutes(15),
+            filter: .tailLines(200),
             previous: false,
             follow: false
         ))] = CommandResult(
@@ -1076,7 +1161,7 @@ final class RuneSmokeTests: XCTestCase {
             namespace: "default",
             podName: "api-1",
             container: nil,
-            filter: .lastMinutes(15),
+            filter: .tailLines(200),
             previous: false,
             follow: false
         ))] = CommandResult(
@@ -1102,15 +1187,30 @@ final class RuneSmokeTests: XCTestCase {
             stderr: "",
             exitCode: 0
         )
+        script[key(["kubectl"] + builder.describeResourceArguments(context: "prod-main", namespace: "default", kind: .pod, name: "api-0"))] = CommandResult(
+            stdout: "Name: api-0\n",
+            stderr: "",
+            exitCode: 0
+        )
 
         script[key(["kubectl"] + builder.resourceYAMLArguments(context: "prod-main", namespace: "default", kind: .deployment, name: "api"))] = CommandResult(
             stdout: "kind: Deployment\nmetadata:\n  name: api\n",
             stderr: "",
             exitCode: 0
         )
+        script[key(["kubectl"] + builder.describeResourceArguments(context: "prod-main", namespace: "default", kind: .deployment, name: "api"))] = CommandResult(
+            stdout: "Name: api\n",
+            stderr: "",
+            exitCode: 0
+        )
 
         script[key(["kubectl"] + builder.resourceYAMLArguments(context: "prod-main", namespace: "default", kind: .service, name: "api-svc"))] = CommandResult(
             stdout: "kind: Service\nmetadata:\n  name: api-svc\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.describeResourceArguments(context: "prod-main", namespace: "default", kind: .service, name: "api-svc"))] = CommandResult(
+            stdout: "Name: api-svc\n",
             stderr: "",
             exitCode: 0
         )
@@ -1128,7 +1228,12 @@ final class RuneSmokeTests: XCTestCase {
         )
 
         script[key(["kubectl"] + builder.podsByLabelSelectorArguments(context: "prod-main", namespace: "default", selector: "app=api"))] = CommandResult(
-            stdout: "api-0 Running\napi-1 Running\n",
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}},
+            {"metadata":{"name":"api-1","namespace":"default","creationTimestamp":"2024-06-01T11:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            ]}
+            """,
             stderr: "",
             exitCode: 0
         )

@@ -11,6 +11,7 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let selectedResourceKind: String?
     public let selectedResourceName: String?
     public let resourceYAML: String
+    public let resourceDescribe: String
     public let podLogs: String
     public let unifiedLogs: String
     public let unifiedLogPods: [String]
@@ -33,6 +34,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         selectedResourceKind: String?,
         selectedResourceName: String?,
         resourceYAML: String,
+        resourceDescribe: String,
         podLogs: String,
         unifiedLogs: String,
         unifiedLogPods: [String],
@@ -54,6 +56,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.selectedResourceKind = selectedResourceKind
         self.selectedResourceName = selectedResourceName
         self.resourceYAML = resourceYAML
+        self.resourceDescribe = resourceDescribe
         self.podLogs = podLogs
         self.unifiedLogs = unifiedLogs
         self.unifiedLogPods = unifiedLogPods
@@ -79,5 +82,41 @@ public struct JSONSupportBundleBuilder: SupportBundleBuilding {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(request)
+    }
+}
+
+public extension SupportBundleRequest {
+    /// Builds a snapshot from current app state. **Add new persisted fields here** when `SupportBundleRequest` or `RuneAppState` grows, so call sites stay a single line.
+    @MainActor
+    static func snapshot(
+        state: RuneAppState,
+        generatedAt: String,
+        resourceCounts: [String: Int],
+        selectedResourceKind: String?,
+        selectedResourceName: String?
+    ) -> SupportBundleRequest {
+        SupportBundleRequest(
+            generatedAt: generatedAt,
+            contextName: state.selectedContext?.name,
+            namespace: state.selectedNamespace,
+            sectionTitle: state.selectedSection.title,
+            readOnlyMode: state.isReadOnlyMode,
+            resourceCounts: resourceCounts,
+            selectedResourceKind: selectedResourceKind,
+            selectedResourceName: selectedResourceName,
+            resourceYAML: state.resourceYAML,
+            resourceDescribe: state.resourceDescribe,
+            podLogs: state.podLogs,
+            unifiedLogs: state.unifiedServiceLogs,
+            unifiedLogPods: state.unifiedServiceLogPods,
+            deploymentRolloutHistory: state.deploymentRolloutHistory,
+            helmRelease: state.selectedHelmRelease,
+            helmValues: state.helmValues,
+            helmManifest: state.helmManifest,
+            helmHistory: state.helmHistory,
+            recentEvents: Array(state.events.prefix(25)),
+            portForwardSessions: state.portForwardSessions,
+            lastExecResult: state.lastExecResult
+        )
     }
 }
