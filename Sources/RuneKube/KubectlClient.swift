@@ -302,6 +302,148 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
     }
 
+    public func listJobs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.jobListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseJobs(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "jobs JSON kunde inte tolkas")
+        }
+    }
+
+    public func listCronJobs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.cronJobListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseCronJobs(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "cronjobs JSON kunde inte tolkas")
+        }
+    }
+
+    public func listReplicaSets(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.replicaSetListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseReplicaSets(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "replicasets JSON kunde inte tolkas")
+        }
+    }
+
+    public func listPersistentVolumeClaims(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.persistentVolumeClaimListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parsePersistentVolumeClaims(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "PVC JSON kunde inte tolkas")
+        }
+    }
+
+    public func listPersistentVolumes(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.persistentVolumeListArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parsePersistentVolumes(from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "PV JSON kunde inte tolkas")
+        }
+    }
+
+    public func listStorageClasses(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.storageClassListArguments(context: context.name),
+            environment: env
+        )
+
+        do {
+            return try parser.parseStorageClasses(from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "StorageClass JSON kunde inte tolkas")
+        }
+    }
+
+    public func listHorizontalPodAutoscalers(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.horizontalPodAutoscalerListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseHorizontalPodAutoscalers(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "HPA JSON kunde inte tolkas")
+        }
+    }
+
+    public func listNetworkPolicies(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.networkPolicyListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseNetworkPolicies(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "NetworkPolicy JSON kunde inte tolkas")
+        }
+    }
+
     public func listIngresses(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -1053,6 +1195,44 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
         _ = try await runKubectl(
             arguments: builder.applyFileArguments(context: context.name, namespace: namespace, filePath: tempURL.path),
+            environment: env
+        )
+    }
+
+    public func patchCronJobSuspend(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        suspend: Bool
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        _ = try await runKubectl(
+            arguments: builder.patchCronJobSuspendArguments(
+                context: context.name,
+                namespace: namespace,
+                name: name,
+                suspend: suspend
+            ),
+            environment: env
+        )
+    }
+
+    public func createJobFromCronJob(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        cronJobName: String,
+        jobName: String
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        _ = try await runKubectl(
+            arguments: builder.createJobFromCronJobArguments(
+                context: context.name,
+                namespace: namespace,
+                cronJobName: cronJobName,
+                jobName: jobName
+            ),
             environment: env
         )
     }

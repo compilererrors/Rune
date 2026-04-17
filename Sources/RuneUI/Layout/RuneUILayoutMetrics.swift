@@ -23,9 +23,9 @@ enum RuneUILayoutMetrics {
     /// Horizontal padding between split columns. Use 0 so the system divider sits flush against pane shells (no dark gap).
     static let splitColumnGutter: CGFloat = 0
     /// Minimum width for the resource list column (`HSplitView`); protects tables when the inspector is narrow.
-    static let splitContentColumnMinWidth: CGFloat = 580
-    /// Minimum inspector width. 428pt keeps rows readable at the split minimum without dominating 1280pt windows (220+580+428 ≈ window min).
-    static let splitDetailColumnMinWidth: CGFloat = 428
+    static let splitContentColumnMinWidth: CGFloat = 560
+    /// Minimum inspector width. Slightly wider default so YAML/describe toolbars and monospaced text stay usable at the split minimum (window min ~1280pt).
+    static let splitDetailColumnMinWidth: CGFloat = 460
     /// Extra space on the inspector’s leading edge so content doesn’t hug the split divider when the column is at its minimum.
     static let inspectorLeadingInset: CGFloat = 4
     static let headerChipHeight: CGFloat = 28

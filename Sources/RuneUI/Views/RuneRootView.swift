@@ -372,10 +372,10 @@ public struct RuneRootView: View {
                 .runeAppKitFrameReporter("detail")
                 .frame(
                     minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                    idealWidth: 440,
+                    idealWidth: 540,
                     maxWidth: .infinity
                 )
-                .layoutPriority(1)
+                .layoutPriority(2)
         }
     }
 
@@ -673,13 +673,13 @@ public struct RuneRootView: View {
     private var sectionSpecificControls: some View {
         switch viewModel.state.selectedSection {
         case .workloads:
-            resourceKindPicker(kinds: viewModel.workloadKinds, maxWidth: 420)
+            resourceKindPicker(kinds: viewModel.workloadKinds)
         case .networking:
-            resourceKindPicker(kinds: viewModel.networkingKinds, maxWidth: 320)
+            resourceKindPicker(kinds: viewModel.networkingKinds)
         case .config:
-            resourceKindPicker(kinds: viewModel.configKinds, maxWidth: 320)
+            resourceKindPicker(kinds: viewModel.configKinds)
         case .storage:
-            resourceKindPicker(kinds: viewModel.storageKinds, maxWidth: 200)
+            resourceKindPicker(kinds: viewModel.storageKinds)
         case .helm:
             Toggle("All namespaces", isOn: Binding(get: {
                 viewModel.state.isHelmAllNamespaces
@@ -688,24 +688,50 @@ public struct RuneRootView: View {
             }))
             .toggleStyle(.switch)
         case .rbac:
-            resourceKindPicker(kinds: viewModel.rbacKinds, maxWidth: 520)
+            resourceKindPicker(kinds: viewModel.rbacKinds)
         default:
             EmptyView()
         }
     }
 
-    private func resourceKindPicker(kinds: [KubeResourceKind], maxWidth: CGFloat) -> some View {
-        Picker("Kind", selection: Binding(get: {
-            viewModel.state.selectedWorkloadKind
-        }, set: { kind in
-            viewModel.setWorkloadKind(kind)
-        })) {
+    private func resourceKindPicker(kinds: [KubeResourceKind]) -> some View {
+        runeSegmentedControlInScroll(
+            title: "Kind",
+            selection: Binding(get: {
+                viewModel.state.selectedWorkloadKind
+            }, set: { kind in
+                viewModel.setWorkloadKind(kind)
+            })
+        ) {
             ForEach(kinds) { kind in
                 Text(kind.title).tag(kind)
             }
         }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: maxWidth)
+        .accessibilityLabel("Resource kind")
+    }
+
+    /// `NSSegmentedControl` uses intrinsic width; many segments otherwise extend past the `HSplitView` column and draw under the sidebar. Scroll instead of clipping.
+    private func runeSegmentedControlInScroll<SelectionValue: Hashable, Content: View>(
+        title: LocalizedStringKey,
+        selection: Binding<SelectionValue>,
+        labelsHidden: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Group {
+                if labelsHidden {
+                    Picker(title, selection: selection, content: content)
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize(horizontal: true, vertical: false)
+                } else {
+                    Picker(title, selection: selection, content: content)
+                        .pickerStyle(.segmented)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var overviewPane: some View {
@@ -917,7 +943,23 @@ public struct RuneRootView: View {
             case .daemonSet:
                 genericResourceList(viewModel.visibleDaemonSets, selection: viewModel.state.selectedDaemonSet, action: viewModel.selectDaemonSet)
 
-            case .service, .ingress, .configMap, .secret, .node, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .job:
+                genericResourceList(viewModel.visibleJobs, selection: viewModel.state.selectedJob, action: viewModel.selectJob)
+
+            case .cronJob:
+                genericResourceList(viewModel.visibleCronJobs, selection: viewModel.state.selectedCronJob, action: viewModel.selectCronJob)
+
+            case .replicaSet:
+                genericResourceList(viewModel.visibleReplicaSets, selection: viewModel.state.selectedReplicaSet, action: viewModel.selectReplicaSet)
+
+            case .horizontalPodAutoscaler:
+                genericResourceList(
+                    viewModel.visibleHorizontalPodAutoscalers,
+                    selection: viewModel.state.selectedHorizontalPodAutoscaler,
+                    action: viewModel.selectHorizontalPodAutoscaler
+                )
+
+            case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
 
             case .event:
@@ -967,6 +1009,13 @@ public struct RuneRootView: View {
             case .ingress:
                 genericResourceList(viewModel.visibleIngresses, selection: viewModel.state.selectedIngress, action: viewModel.selectIngress)
 
+            case .networkPolicy:
+                genericResourceList(
+                    viewModel.visibleNetworkPolicies,
+                    selection: viewModel.state.selectedNetworkPolicy,
+                    action: viewModel.selectNetworkPolicy
+                )
+
             default:
                 EmptyView()
             }
@@ -995,6 +1044,27 @@ public struct RuneRootView: View {
     private var storagePane: some View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolumeClaim:
+                genericResourceList(
+                    viewModel.visiblePersistentVolumeClaims,
+                    selection: viewModel.state.selectedPersistentVolumeClaim,
+                    action: viewModel.selectPersistentVolumeClaim
+                )
+
+            case .persistentVolume:
+                genericResourceList(
+                    viewModel.visiblePersistentVolumes,
+                    selection: viewModel.state.selectedPersistentVolume,
+                    action: viewModel.selectPersistentVolume
+                )
+
+            case .storageClass:
+                genericResourceList(
+                    viewModel.visibleStorageClasses,
+                    selection: viewModel.state.selectedStorageClass,
+                    action: viewModel.selectStorageClass
+                )
+
             case .node:
                 genericResourceList(viewModel.visibleNodes, selection: viewModel.state.selectedNode, action: viewModel.selectNode)
 
@@ -1217,11 +1287,44 @@ public struct RuneRootView: View {
                 genericResourceDetails(resource: viewModel.state.selectedStatefulSet)
             case .daemonSet:
                 genericResourceDetails(resource: viewModel.state.selectedDaemonSet)
-            case .service, .ingress, .configMap, .secret, .node, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .job:
+                genericResourceDetails(resource: viewModel.state.selectedJob)
+            case .cronJob:
+                cronJobInspectorContent
+            case .replicaSet:
+                genericResourceDetails(resource: viewModel.state.selectedReplicaSet)
+            case .horizontalPodAutoscaler:
+                genericResourceDetails(resource: viewModel.state.selectedHorizontalPodAutoscaler)
+            case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             case .event:
                 EmptyView()
             }
+        }
+    }
+
+    private var cronJobInspectorContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if viewModel.state.selectedCronJob != nil {
+                HStack(spacing: 10) {
+                    if viewModel.state.selectedCronJob?.secondaryText == "Suspended" {
+                        Button("Resume") {
+                            viewModel.setSelectedCronJobSuspended(false)
+                        }
+                        .disabled(!viewModel.writeActionsEnabled)
+                    } else {
+                        Button("Suspend") {
+                            viewModel.setSelectedCronJobSuspended(true)
+                        }
+                        .disabled(!viewModel.writeActionsEnabled)
+                    }
+                    Button("Create job now") {
+                        viewModel.createManualJobFromSelectedCronJob()
+                    }
+                    .disabled(!viewModel.writeActionsEnabled)
+                }
+            }
+            genericResourceDetails(resource: viewModel.state.selectedCronJob)
         }
     }
 
@@ -1232,7 +1335,9 @@ public struct RuneRootView: View {
                 serviceDetails
             case .ingress:
                 genericResourceDetails(resource: viewModel.state.selectedIngress)
-            case .pod, .deployment, .statefulSet, .daemonSet, .configMap, .secret, .node, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .networkPolicy:
+                genericResourceDetails(resource: viewModel.state.selectedNetworkPolicy)
+            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             }
         }
@@ -1245,7 +1350,7 @@ public struct RuneRootView: View {
                 genericResourceDetails(resource: viewModel.state.selectedConfigMap)
             case .secret:
                 genericResourceDetails(resource: viewModel.state.selectedSecret)
-            case .pod, .deployment, .statefulSet, .daemonSet, .service, .ingress, .node, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .service, .ingress, .networkPolicy, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             }
         }
@@ -1254,6 +1359,12 @@ public struct RuneRootView: View {
     private var storageDetails: some View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolumeClaim:
+                genericResourceDetails(resource: viewModel.state.selectedPersistentVolumeClaim)
+            case .persistentVolume:
+                genericResourceDetails(resource: viewModel.state.selectedPersistentVolume)
+            case .storageClass:
+                genericResourceDetails(resource: viewModel.state.selectedStorageClass)
             case .node:
                 genericResourceDetails(resource: viewModel.state.selectedNode)
             default:
@@ -1274,13 +1385,15 @@ public struct RuneRootView: View {
                         .font(.title2.weight(.bold))
                         .help(release.name)
 
-                    Picker("", selection: $helmInspectorTab) {
+                    runeSegmentedControlInScroll(
+                        title: "",
+                        selection: $helmInspectorTab,
+                        labelsHidden: true
+                    ) {
                         ForEach(HelmInspectorTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     .accessibilityLabel("Inspector")
 
                     switch helmInspectorTab {
@@ -1381,13 +1494,15 @@ public struct RuneRootView: View {
                     Text(pod.name)
                         .font(.title2.weight(.bold))
 
-                    Picker("", selection: $podInspectorTab) {
+                    runeSegmentedControlInScroll(
+                        title: "",
+                        selection: $podInspectorTab,
+                        labelsHidden: true
+                    ) {
                         ForEach(PodInspectorTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     .accessibilityLabel("Inspector")
 
                     Group {
@@ -1433,13 +1548,15 @@ public struct RuneRootView: View {
                     Text(deployment.name)
                         .font(.title2.weight(.bold))
 
-                    Picker("", selection: $deploymentInspectorTab) {
+                    runeSegmentedControlInScroll(
+                        title: "",
+                        selection: $deploymentInspectorTab,
+                        labelsHidden: true
+                    ) {
                         ForEach(DeploymentInspectorTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     .accessibilityLabel("Inspector")
 
                     Group {
@@ -1515,13 +1632,15 @@ public struct RuneRootView: View {
                     Text(service.name)
                         .font(.title2.weight(.bold))
 
-                    Picker("", selection: $serviceInspectorTab) {
+                    runeSegmentedControlInScroll(
+                        title: "",
+                        selection: $serviceInspectorTab,
+                        labelsHidden: true
+                    ) {
                         ForEach(ServiceInspectorTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     .accessibilityLabel("Inspector")
 
                     Group {
@@ -1683,12 +1802,11 @@ public struct RuneRootView: View {
                     }
                     .font(.subheadline)
 
-                    Picker("Manifest", selection: $genericResourceManifestTab) {
+                    runeSegmentedControlInScroll(title: "Manifest", selection: $genericResourceManifestTab) {
                         ForEach(GenericResourceManifestTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .pickerStyle(.segmented)
 
                     manifestInspectorPane(activeTab: genericResourceManifestTab)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1762,6 +1880,12 @@ public struct RuneRootView: View {
             return viewModel.state.selectedStatefulSet.map { "statefulset \($0.name)" } ?? "the selected statefulset"
         case .daemonSet:
             return viewModel.state.selectedDaemonSet.map { "daemonset \($0.name)" } ?? "the selected daemonset"
+        case .job:
+            return viewModel.state.selectedJob.map { "job \($0.name)" } ?? "the selected job"
+        case .cronJob:
+            return viewModel.state.selectedCronJob.map { "cronjob \($0.name)" } ?? "the selected cronjob"
+        case .replicaSet:
+            return viewModel.state.selectedReplicaSet.map { "replicaset \($0.name)" } ?? "the selected replicaset"
         case .ingress:
             return viewModel.state.selectedIngress.map { "ingress \($0.name)" } ?? "the selected ingress"
         case .configMap:
@@ -1770,6 +1894,16 @@ public struct RuneRootView: View {
             return viewModel.state.selectedSecret.map { "secret \($0.name)" } ?? "the selected secret"
         case .node:
             return viewModel.state.selectedNode.map { "node \($0.name)" } ?? "the selected node"
+        case .persistentVolumeClaim:
+            return viewModel.state.selectedPersistentVolumeClaim.map { "pvc \($0.name)" } ?? "the selected PVC"
+        case .persistentVolume:
+            return viewModel.state.selectedPersistentVolume.map { "pv \($0.name)" } ?? "the selected PV"
+        case .storageClass:
+            return viewModel.state.selectedStorageClass.map { "storageclass \($0.name)" } ?? "the selected StorageClass"
+        case .horizontalPodAutoscaler:
+            return viewModel.state.selectedHorizontalPodAutoscaler.map { "hpa \($0.name)" } ?? "the selected HPA"
+        case .networkPolicy:
+            return viewModel.state.selectedNetworkPolicy.map { "networkpolicy \($0.name)" } ?? "the selected NetworkPolicy"
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return viewModel.state.selectedRBACResource.map { "\($0.kind.kubectlName) \($0.name)" } ?? "the selected RBAC resource"
         case .event:
@@ -1792,7 +1926,15 @@ public struct RuneRootView: View {
             switch viewModel.state.selectedWorkloadKind {
             case .statefulSet: return viewModel.visibleStatefulSets.count
             case .daemonSet: return viewModel.visibleDaemonSets.count
+            case .job: return viewModel.visibleJobs.count
+            case .cronJob: return viewModel.visibleCronJobs.count
+            case .replicaSet: return viewModel.visibleReplicaSets.count
+            case .horizontalPodAutoscaler: return viewModel.visibleHorizontalPodAutoscalers.count
             case .ingress: return viewModel.visibleIngresses.count
+            case .networkPolicy: return viewModel.visibleNetworkPolicies.count
+            case .persistentVolumeClaim: return viewModel.visiblePersistentVolumeClaims.count
+            case .persistentVolume: return viewModel.visiblePersistentVolumes.count
+            case .storageClass: return viewModel.visibleStorageClasses.count
             case .configMap: return viewModel.visibleConfigMaps.count
             case .secret: return viewModel.visibleSecrets.count
             case .node: return viewModel.visibleNodes.count
@@ -1825,48 +1967,99 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                Button("Apply YAML") {
-                    viewModel.requestApplySelectedResourceYAML()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Button("Apply YAML") {
+                        viewModel.requestApplySelectedResourceYAML()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        !viewModel.writeActionsEnabled
+                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+
+                    Button(yamlManifestIsEditing ? "Done" : "Edit") {
+                        yamlManifestIsEditing.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
+
+                    Button("Revert") {
+                        viewModel.revertResourceYAMLDraft()
+                        yamlManifestIsEditing = false
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
+
+                    Divider()
+                        .frame(height: 16)
+
+                    Button("Import…") {
+                        viewModel.importResourceYAMLFromFile()
+                        if viewModel.writeActionsEnabled {
+                            yamlManifestIsEditing = true
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Replace the editor with the contents of a YAML file")
+
+                    Button("Export…") {
+                        viewModel.saveCurrentResourceYAML()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceYAML.isEmpty)
+
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    !viewModel.writeActionsEnabled
-                        || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
+                .fixedSize(horizontal: true, vertical: false)
 
-                Button(yamlManifestIsEditing ? "Done" : "Edit") {
-                    yamlManifestIsEditing.toggle()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button("Apply YAML") {
+                            viewModel.requestApplySelectedResourceYAML()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            !viewModel.writeActionsEnabled
+                                || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
 
-                Button("Revert") {
-                    viewModel.revertResourceYAMLDraft()
-                    yamlManifestIsEditing = false
-                }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
+                        Button(yamlManifestIsEditing ? "Done" : "Edit") {
+                            yamlManifestIsEditing.toggle()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
 
-                Divider()
-                    .frame(height: 16)
+                        Button("Revert") {
+                            viewModel.revertResourceYAMLDraft()
+                            yamlManifestIsEditing = false
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
 
-                Button("Import…") {
-                    viewModel.importResourceYAMLFromFile()
-                    if viewModel.writeActionsEnabled {
-                        yamlManifestIsEditing = true
+                        Divider()
+                            .frame(height: 16)
+
+                        Button("Import…") {
+                            viewModel.importResourceYAMLFromFile()
+                            if viewModel.writeActionsEnabled {
+                                yamlManifestIsEditing = true
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Replace the editor with the contents of a YAML file")
+                    }
+
+                    HStack(spacing: 8) {
+                        Button("Export…") {
+                            viewModel.saveCurrentResourceYAML()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.state.resourceYAML.isEmpty)
+
+                        Spacer(minLength: 0)
                     }
                 }
-                .buttonStyle(.bordered)
-                .help("Replace the editor with the contents of a YAML file")
-
-                Button("Export…") {
-                    viewModel.saveCurrentResourceYAML()
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.resourceYAML.isEmpty)
-
-                Spacer(minLength: 0)
             }
 
             Group {
@@ -1878,12 +2071,12 @@ public struct RuneRootView: View {
                         .padding(10)
                         .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 } else {
-                    ScrollView {
+                    ScrollView([.horizontal, .vertical]) {
                         Text(yamlDisplayText)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(10)
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .textSelection(.enabled)
+                            .padding(10)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
@@ -1932,28 +2125,57 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                Button(describePaneIsEditing ? "Done" : "Edit") {
-                    describePaneIsEditing.toggle()
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
-                .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Button(describePaneIsEditing ? "Done" : "Edit") {
+                        describePaneIsEditing.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
+                    .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
 
-                Button("Revert") {
-                    viewModel.revertResourceDescribeDraft()
-                    describePaneIsEditing = false
-                }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
+                    Button("Revert") {
+                        viewModel.revertResourceDescribeDraft()
+                        describePaneIsEditing = false
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
 
-                Button("Save…") {
-                    viewModel.saveCurrentResourceDescribe()
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.resourceDescribe.isEmpty)
+                    Button("Save…") {
+                        viewModel.saveCurrentResourceDescribe()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceDescribe.isEmpty)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button(describePaneIsEditing ? "Done" : "Edit") {
+                            describePaneIsEditing.toggle()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
+                        .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
+
+                        Button("Revert") {
+                            viewModel.revertResourceDescribeDraft()
+                            describePaneIsEditing = false
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
+                    }
+                    HStack(spacing: 8) {
+                        Button("Save…") {
+                            viewModel.saveCurrentResourceDescribe()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.state.resourceDescribe.isEmpty)
+                        Spacer(minLength: 0)
+                    }
+                }
             }
 
             Group {
@@ -1965,15 +2187,15 @@ public struct RuneRootView: View {
                         .padding(10)
                         .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 } else {
-                    ScrollView {
+                    ScrollView([.horizontal, .vertical]) {
                         Text(describeDisplayText)
                             .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .textSelection(.enabled)
                             .padding(10)
                     }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 }
             }
             .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
