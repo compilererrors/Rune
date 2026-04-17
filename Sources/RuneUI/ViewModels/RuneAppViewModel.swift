@@ -1,6 +1,8 @@
+import AppKit
 import Combine
 import Foundation
 import RuneCore
+import UniformTypeIdentifiers
 import RuneDiagnostics
 import RuneExport
 import RuneHelm
@@ -748,7 +750,8 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         if triggerReload, section != .helm {
-            refreshCurrentView()
+            let forceNamespaceRefresh = state.selectedContext.map { store.namespaces(context: $0).isEmpty } ?? false
+            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: forceNamespaceRefresh, debounced: false)
         }
 
         if section == .rbac {
@@ -771,7 +774,7 @@ public final class RuneAppViewModel: ObservableObject {
             state.reconcileRBACSelection()
         }
         if triggerReload, shouldReloadForWorkloadKind(kind) {
-            refreshCurrentView()
+            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
         }
         loadResourceDetailsForCurrentSelection()
         if trackHistory {
@@ -879,6 +882,7 @@ public final class RuneAppViewModel: ObservableObject {
         let cachedNamespaces = store.namespaces(context: context)
         if !cachedNamespaces.isEmpty {
             state.selectedNamespace = resolvedNamespace(
+                contextName: context.name,
                 preferred: candidatePreferredNamespace,
                 availableNamespaces: cachedNamespaces,
                 contextDefaultNamespace: nil
@@ -1337,6 +1341,30 @@ public final class RuneAppViewModel: ObservableObject {
                 suggestedName: "\(kind.kubectlName)-\(name)-\(timestamp).yaml",
                 allowedFileTypes: ["yaml", "yml"]
             )
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    /// Discards edits in the YAML editor and restores the last manifest loaded from the cluster.
+    public func revertResourceYAMLDraft() {
+        state.revertResourceYAMLToClusterSnapshot()
+    }
+
+    /// Replaces the editor contents with a YAML file from disk (UTF-8).
+    public func importResourceYAMLFromFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = ["yaml", "yml"].compactMap { UTType(filenameExtension: $0) }
+        panel.prompt = "Import"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            state.updateResourceYAMLDraft(text)
         } catch {
             state.setError(error)
         }
@@ -1985,6 +2013,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let effectiveNamespace = resolvedNamespace(
+            contextName: context.name,
             preferred: preferredForResolution,
             availableNamespaces: loadedNamespaces,
             contextDefaultNamespace: contextDefaultNamespace
@@ -3294,6 +3323,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func resolvedNamespace(
+        contextName: String,
         preferred: String,
         availableNamespaces: [String],
         contextDefaultNamespace: String?
@@ -3319,6 +3349,10 @@ public final class RuneAppViewModel: ObservableObject {
             return trimmedContextDefault
         }
 
+        if let suffixMatch = namespaceLongestSuffixOfContext(contextName, availableNamespaces: availableNamespaces) {
+            return suffixMatch
+        }
+
         if let firstUserNamespace = availableNamespaces.first(where: { namespace in
             let lowered = namespace.lowercased()
             return lowered != "default"
@@ -3334,6 +3368,19 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         return availableNamespaces[0]
+    }
+
+    /// Namespaces whose names are a case-insensitive suffix of `contextName` (e.g. `aks-example-service` → `example-service`).
+    /// Picks the longest match so `example-service` wins over `service` when both exist. Skips known cluster/system namespaces.
+    private func namespaceLongestSuffixOfContext(_ contextName: String, availableNamespaces: [String]) -> String? {
+        let contextLower = contextName.lowercased()
+        let system = Set(["default", "kube-system", "kube-public", "kube-node-lease"])
+        let candidates = availableNamespaces.filter { ns in
+            let n = ns.lowercased()
+            guard !system.contains(n), n.count >= 3 else { return false }
+            return contextLower.hasSuffix(n)
+        }
+        return candidates.max(by: { $0.count < $1.count })
     }
 
     private func preferredNamespaceForContext(_ context: KubeContext, fallback: String) -> String {

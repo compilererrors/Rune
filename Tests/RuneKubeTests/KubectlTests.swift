@@ -32,7 +32,7 @@ final class KubectlTests: XCTestCase {
                 namespace: "default",
                 resource: "deployments"
             ),
-            ["--context", "prod", "get", "deployments", "-n", "default", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+            ["--context", "prod", "get", "deployments", "-n", "default", "--chunk-size=200", "--request-timeout=15s", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
         )
     }
 
@@ -40,7 +40,7 @@ final class KubectlTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         XCTAssertEqual(
             builder.clusterResourceCountArguments(context: "prod", resource: "nodes"),
-            ["--context", "prod", "get", "nodes", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+            ["--context", "prod", "get", "nodes", "--chunk-size=200", "--request-timeout=15s", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
         )
     }
 
@@ -48,7 +48,48 @@ final class KubectlTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         let args = builder.podListAllNamespacesArguments(context: "prod")
 
-        XCTAssertEqual(args, ["--context", "prod", "get", "pods", "-A", "-o", "custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase", "--no-headers"])
+        XCTAssertEqual(args, ["--context", "prod", "get", "pods", "-A", "--chunk-size=200", "--request-timeout=20s", "-o", "json"])
+    }
+
+    func testPodListArgumentsUsesJSON() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podListArguments(context: "prod", namespace: "default")
+
+        XCTAssertEqual(args, ["--context", "prod", "get", "pods", "-n", "default", "--chunk-size=200", "--request-timeout=20s", "-o", "json"])
+    }
+
+    func testPodStatusListArgumentsUsesCustomColumns() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podStatusListArguments(context: "prod", namespace: "default")
+
+        XCTAssertEqual(
+            args,
+            ["--context", "prod", "get", "pods", "-n", "default", "--chunk-size=200", "--request-timeout=20s", "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase", "--no-headers"]
+        )
+    }
+
+    func testPodListTextArgumentsIncludeRestartsAndCreated() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podListTextArguments(context: "prod", namespace: "default")
+
+        XCTAssertEqual(
+            args,
+            ["--context", "prod", "get", "pods", "-n", "default", "--chunk-size=200", "--request-timeout=20s", "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[*].restartCount,CREATED:.metadata.creationTimestamp", "--no-headers"]
+        )
+    }
+
+    func testPodTopArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podTopArguments(context: "prod", namespace: "qa")
+
+        XCTAssertEqual(args, ["--context", "prod", "top", "pods", "-n", "qa", "--no-headers"])
+    }
+
+    func testNodeTopArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.nodeTopArguments(context: "prod")
+
+        XCTAssertEqual(args, ["--context", "prod", "top", "nodes", "--no-headers"])
     }
 
     func testLogsArgumentsWithRelativeFilter() {
@@ -68,9 +109,26 @@ final class KubectlTests: XCTestCase {
         XCTAssertFalse(args.contains("--since-time"))
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("--timestamps"))
+        XCTAssertTrue(args.contains("--tail=5000"))
     }
 
-    func testPodParsing() {
+    func testLogsArgumentsRecentLinesUsesTailOnly() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podLogsArguments(
+            context: "dev",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            filter: .tailLines(200),
+            previous: false,
+            follow: false
+        )
+
+        XCTAssertTrue(args.contains("--tail=200"))
+        XCTAssertFalse(args.contains("--since"))
+    }
+
+    func testPodParsingLegacyText() {
         let parser = KubectlOutputParser()
         let raw = "api-6f99fdcc7f-7sm5x Running\nworker-86fdd44558-cv95w Pending\n"
 
@@ -79,6 +137,67 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(pods.count, 2)
         XCTAssertEqual(pods.first?.name, "api-6f99fdcc7f-7sm5x")
         XCTAssertEqual(pods.first?.status, "Running")
+    }
+
+    func testPodListJSONParsing() throws {
+        let parser = KubectlOutputParser()
+        let raw = """
+        {"items":[
+          {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":2},{"restartCount":1}]}},
+          {"metadata":{"name":"worker","namespace":"default","creationTimestamp":"2024-06-01T11:00:00Z"},"status":{"phase":"Pending","containerStatuses":[]}}
+        ]}
+        """
+
+        let pods = try parser.parsePodsListJSON(namespace: "default", from: raw)
+
+        XCTAssertEqual(pods.count, 2)
+        XCTAssertEqual(pods[0].name, "api-0")
+        XCTAssertEqual(pods[0].status, "Running")
+        XCTAssertEqual(pods[0].totalRestarts, 3)
+        XCTAssertEqual(pods[1].status, "Pending")
+    }
+
+    func testParsePodTopByName() {
+        let parser = KubectlOutputParser()
+        let raw = """
+        api-0   5m   120Mi
+        api-1   10m   64Mi
+        """
+
+        let map = parser.parsePodTopByName(from: raw)
+
+        XCTAssertEqual(map["api-0"]?.cpu, "5m")
+        XCTAssertEqual(map["api-0"]?.memory, "120Mi")
+        XCTAssertEqual(map["api-1"]?.cpu, "10m")
+    }
+
+    func testParsePodsTableFallback() {
+        let parser = KubectlOutputParser()
+        let raw = """
+        api-0 Running 0,1 2024-06-01T12:00:00Z
+        api-1 Pending <none> 2024-06-01T11:00:00Z
+        """
+
+        let pods = parser.parsePodsTable(namespace: "default", from: raw)
+
+        XCTAssertEqual(pods.count, 2)
+        XCTAssertEqual(pods[0].name, "api-0")
+        XCTAssertEqual(pods[0].totalRestarts, 1)
+        XCTAssertEqual(pods[1].totalRestarts, 0)
+        XCTAssertNotEqual(pods[0].ageDescription, "—")
+    }
+
+    func testParseNodeTopUsagePercent() {
+        let parser = KubectlOutputParser()
+        let raw = """
+        aks-node-1   232m   6%   1550Mi   48%
+        aks-node-2   164m   4%   1682Mi   52%
+        """
+
+        let usage = parser.parseNodeTopUsagePercent(from: raw)
+
+        XCTAssertEqual(usage.cpuPercent, 5)
+        XCTAssertEqual(usage.memoryPercent, 50)
     }
 
     func testNamespaceParsing() {
@@ -112,6 +231,25 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(args, ["--context", "dev", "get", "pod", "api-1", "-n", "default", "-o", "yaml"])
     }
 
+    func testPodDescribeArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.describeResourceArguments(context: "dev", namespace: "default", kind: .pod, name: "api-1")
+
+        XCTAssertEqual(args, ["--context", "dev", "describe", "pod", "api-1", "-n", "default"])
+    }
+
+    func testClusterRoleDescribeOmitsNamespace() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.describeResourceArguments(
+            context: "dev",
+            namespace: "ignored",
+            kind: .clusterRole,
+            name: "view"
+        )
+
+        XCTAssertEqual(args, ["--context", "dev", "describe", "clusterrole", "view"])
+    }
+
     func testPodExecArguments() {
         let builder = KubectlCommandBuilder()
         let args = builder.podExecArguments(
@@ -139,6 +277,21 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(deployments.count, 2)
         XCTAssertEqual(deployments.first?.name, "api")
         XCTAssertEqual(deployments.first?.replicaText, "2/3")
+    }
+
+    func testParseDeploymentsTableFallback() {
+        let parser = KubectlOutputParser()
+        let raw = """
+        api 2 3
+        worker <none> 1
+        """
+
+        let deployments = parser.parseDeploymentsTable(namespace: "default", from: raw)
+
+        XCTAssertEqual(deployments.count, 2)
+        XCTAssertEqual(deployments[0].name, "api")
+        XCTAssertEqual(deployments[0].replicaText, "2/3")
+        XCTAssertEqual(deployments[1].replicaText, "0/1")
     }
 
     func testParseServiceSelector() throws {

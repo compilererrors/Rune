@@ -121,6 +121,14 @@ public protocol ManifestService: Sendable {
         kind: KubeResourceKind,
         name: String
     ) async throws -> String
+
+    func resourceDescribe(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws -> String
 }
 
 public protocol ResourceWriteService: Sendable {

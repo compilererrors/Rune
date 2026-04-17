@@ -18,7 +18,7 @@ struct CommandPaletteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Command Palette")
                     .font(.title3.weight(.semibold))
-                Text("GUI-driven snabbnavigering med sök eller k9s-stil-kommandon som `:po`, `:svc`, `:ctx`, `:ns`, `:helm`.")
+                Text("Sök eller k9s-stil: `:po`, `:deploy`, `:sts`, `:svc`, `:ing`, `:cm`, `:sec`, `:ctx`, `:ns`, `:rbac`, `:cr`, `:helm` …")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -26,7 +26,7 @@ struct CommandPaletteView: View {
             HStack(spacing: 10) {
                 Image(systemName: query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(":") ? "terminal" : "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Sök eller skriv t.ex. :po api, :svc billing, :ctx prod", text: $query)
+                TextField("Sök eller skriv t.ex. :po api, :svc billing, :ns kube-system, :rbac", text: $query)
                     .textFieldStyle(.plain)
                     .focused($focusedTarget, equals: .input)
                     .onSubmit {
@@ -41,9 +41,13 @@ struct CommandPaletteView: View {
                 HStack(spacing: 8) {
                     paletteHint(":po")
                     paletteHint(":deploy")
+                    paletteHint(":sts")
                     paletteHint(":svc")
+                    paletteHint(":ing")
+                    paletteHint(":cm")
                     paletteHint(":ctx")
                     paletteHint(":ns")
+                    paletteHint(":rbac")
                     paletteHint(":helm")
                     paletteHint(":reload")
                     keyboardHint()
