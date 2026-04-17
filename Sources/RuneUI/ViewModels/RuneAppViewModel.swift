@@ -310,6 +310,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var hasBootstrapped = false
     private var latestSnapshotRequestID = UUID()
+    private var latestResourceDetailsRequestID = UUID()
     private var navigationHistory: [NavigationCheckpoint] = []
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
@@ -2302,6 +2303,16 @@ public final class RuneAppViewModel: ObservableObject {
 
         state.setNamespaces(loadedNamespaces)
         state.setPods(loadedPods)
+        if plan.pods, !loadedPods.isEmpty {
+            Task { [weak self] in
+                await self?.applyPodsJSONEnrichmentIfCurrent(
+                    requestID: requestID,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    basePods: loadedPods
+                )
+            }
+        }
         state.setDeployments(loadedDeployments)
         state.setStatefulSets(loadedStatefulSets)
         state.setDaemonSets(loadedDaemonSets)
@@ -2373,7 +2384,10 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         if shouldLoadResourceDetailsForCurrentSection {
-            await loadResourceDetailsForCurrentSelectionAsync()
+            let requestID = UUID()
+            latestResourceDetailsRequestID = requestID
+            state.beginResourceDetailLoad()
+            await loadResourceDetailsForCurrentSelectionAsync(requestID: requestID)
         } else {
             diagnostics.log("loadResourceSnapshot skipped heavy resource details for section=\(state.selectedSection.rawValue)")
         }
@@ -2384,6 +2398,69 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
+    }
+
+    /// Second pass: full JSON list fills IP/node/QoS/ready while keeping fast table + `kubectl top` metrics from the first pass.
+    private func applyPodsJSONEnrichmentIfCurrent(
+        requestID: UUID,
+        context: KubeContext,
+        namespace: String,
+        basePods: [PodSummary]
+    ) async {
+        guard snapshotRequestIsCurrent(requestID, context: context) else { return }
+        guard state.selectedNamespace == namespace else { return }
+        do {
+            let merged = try await kubeClient.enrichPodsWithJSONList(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: namespace,
+                merging: basePods
+            )
+            guard snapshotRequestIsCurrent(requestID, context: context) else { return }
+            guard state.selectedNamespace == namespace else { return }
+            state.setPods(merged)
+            let snap = store.snapshot(context: context, namespace: namespace)
+            store.cacheSnapshot(
+                context: context,
+                namespace: namespace,
+                pods: merged,
+                deployments: snap.deployments,
+                statefulSets: snap.statefulSets,
+                daemonSets: snap.daemonSets,
+                services: snap.services,
+                ingresses: snap.ingresses,
+                configMaps: snap.configMaps,
+                secrets: snap.secrets,
+                events: snap.events
+            )
+            state.setOverviewSnapshot(
+                pods: merged,
+                deploymentsCount: state.overviewDeploymentsCount,
+                servicesCount: state.overviewServicesCount,
+                ingressesCount: state.overviewIngressesCount,
+                configMapsCount: state.overviewConfigMapsCount,
+                nodesCount: state.overviewNodesCount,
+                clusterCPUPercent: state.overviewClusterCPUPercent,
+                clusterMemoryPercent: state.overviewClusterMemoryPercent,
+                events: state.overviewEvents
+            )
+            updateOverviewCache(
+                contextName: context.name,
+                namespace: namespace,
+                pods: merged,
+                deploymentsCount: state.overviewDeploymentsCount,
+                servicesCount: state.overviewServicesCount,
+                ingressesCount: state.overviewIngressesCount,
+                configMapsCount: state.overviewConfigMapsCount,
+                nodesCount: state.overviewNodesCount,
+                clusterCPUPercent: state.overviewClusterCPUPercent,
+                clusterMemoryPercent: state.overviewClusterMemoryPercent,
+                events: state.overviewEvents
+            )
+            diagnostics.log("pod list JSON enrichment applied context=\(context.name) namespace=\(namespace)")
+        } catch {
+            diagnostics.log("pod list JSON enrichment failed: \(error.localizedDescription)")
+        }
     }
 
     private func loadOverviewSnapshot(
@@ -2497,301 +2574,463 @@ public final class RuneAppViewModel: ObservableObject {
         return merged.values.sorted { $0.path < $1.path }
     }
 
-    private func loadResourceDetailsForCurrentSelection() {
-        Task {
-            await loadResourceDetailsForCurrentSelectionAsync()
-        }
-    }
-
     private func fetchYAMLAndDescribe(
         context: KubeContext,
         namespace: String,
         kind: KubeResourceKind,
         name: String
-    ) async throws -> (yaml: String, describe: String) {
-        async let yaml = kubeClient.resourceYAML(
-            from: state.kubeConfigSources,
-            context: context,
-            namespace: namespace,
-            kind: kind,
-            name: name
-        )
-        async let describe = kubeClient.resourceDescribe(
-            from: state.kubeConfigSources,
-            context: context,
-            namespace: namespace,
-            kind: kind,
-            name: name
-        )
-        return (try await yaml, try await describe)
+    ) async -> (yaml: Result<String, Error>, describe: Result<String, Error>) {
+        async let yaml = captureResult {
+            try await self.kubeClient.resourceYAML(
+                from: self.state.kubeConfigSources,
+                context: context,
+                namespace: namespace,
+                kind: kind,
+                name: name
+            )
+        }
+        async let describe = captureResult {
+            try await self.kubeClient.resourceDescribe(
+                from: self.state.kubeConfigSources,
+                context: context,
+                namespace: namespace,
+                kind: kind,
+                name: name
+            )
+        }
+        return (await yaml, await describe)
     }
 
-    private func loadResourceDetailsForCurrentSelectionAsync() async {
+    private func loadResourceDetailsForCurrentSelection() {
+        let requestID = UUID()
+        latestResourceDetailsRequestID = requestID
+        state.beginResourceDetailLoad()
+        diagnostics.log("resourceDetails start request=\(requestID.uuidString) section=\(state.selectedSection.rawValue) kind=\(state.selectedWorkloadKind.rawValue) namespace=\(state.selectedNamespace)")
+
+        Task {
+            await loadResourceDetailsForCurrentSelectionAsync(requestID: requestID)
+        }
+    }
+
+    private func captureResult<T>(
+        _ operation: @escaping () async throws -> T
+    ) async -> Result<T, Error> {
         do {
-            guard let context = state.selectedContext else { return }
+            return .success(try await operation())
+        } catch {
+            return .failure(error)
+        }
+    }
 
-            switch state.selectedWorkloadKind {
-            case .pod:
+    private func normalizeLoadedResourceText(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : text
+    }
+
+    private func resourceDetailsFailureMessage(
+        action: String,
+        kind: KubeResourceKind,
+        name: String,
+        error: Error
+    ) -> String {
+        "Unable to \(action) \(kind.singularTypeName) \(name).\n\n\(error.localizedDescription)"
+    }
+
+    private func isCurrentResourceDetailsRequest(_ requestID: UUID) -> Bool {
+        latestResourceDetailsRequestID == requestID
+    }
+
+    private func applyResourceManifestResults(
+        _ pair: (yaml: Result<String, Error>, describe: Result<String, Error>),
+        kind: KubeResourceKind,
+        name: String,
+        requestID: UUID
+    ) {
+        guard isCurrentResourceDetailsRequest(requestID) else { return }
+
+        switch pair.yaml {
+        case let .success(yaml):
+            state.setResourceYAML(normalizeLoadedResourceText(yaml))
+        case let .failure(error):
+            state.setResourceYAMLError(
+                resourceDetailsFailureMessage(action: "load YAML for", kind: kind, name: name, error: error)
+            )
+        }
+
+        switch pair.describe {
+        case let .success(describe):
+            state.setResourceDescribe(normalizeLoadedResourceText(describe))
+        case let .failure(error):
+            state.setResourceDescribeError(
+                resourceDetailsFailureMessage(action: "load describe for", kind: kind, name: name, error: error)
+            )
+        }
+
+        let yamlSummary: String = {
+            switch pair.yaml {
+            case let .success(yaml):
+                return "ok chars=\(yaml.count)"
+            case let .failure(error):
+                return "error=\(error.localizedDescription)"
+            }
+        }()
+
+        let describeSummary: String = {
+            switch pair.describe {
+            case let .success(describe):
+                return "ok chars=\(describe.count)"
+            case let .failure(error):
+                return "error=\(error.localizedDescription)"
+            }
+        }()
+
+        diagnostics.log(
+            "resourceDetails manifest request=\(requestID.uuidString) kind=\(kind.rawValue) name=\(name) yaml=\(yamlSummary) describe=\(describeSummary)"
+        )
+    }
+
+    private func loadResourceDetailsForCurrentSelectionAsync(requestID: UUID) async {
+        defer {
+            if isCurrentResourceDetailsRequest(requestID) {
+                state.finishResourceDetailLoad()
+            }
+        }
+
+        guard let context = state.selectedContext else {
+            if isCurrentResourceDetailsRequest(requestID) {
+                state.clearResourceDetails()
+            }
+            return
+        }
+
+        switch state.selectedWorkloadKind {
+        case .pod:
                 guard let pod = state.selectedPod else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
                 state.setPodLogs("")
                 state.isLoadingLogs = true
-                defer { state.isLoadingLogs = false }
+                defer {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.isLoadingLogs = false
+                    }
+                }
 
-                async let logs = kubeClient.podLogs(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    podName: pod.name,
-                    filter: selectedLogPreset.filter,
-                    previous: includePreviousLogs
-                )
-
-                async let yaml = kubeClient.resourceYAML(
-                    from: state.kubeConfigSources,
+                async let inspectorPod = captureResult {
+                    try await self.kubeClient.fetchPodSummaryForInspector(
+                        from: self.state.kubeConfigSources,
+                        context: context,
+                        namespace: self.state.selectedNamespace,
+                        podName: pod.name
+                    )
+                }
+                async let logsResult = captureResult {
+                    try await self.kubeClient.podLogs(
+                        from: self.state.kubeConfigSources,
+                        context: context,
+                        namespace: self.state.selectedNamespace,
+                        podName: pod.name,
+                        filter: self.selectedLogPreset.filter,
+                        previous: self.includePreviousLogs
+                    )
+                }
+                async let manifests = fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .pod,
                     name: pod.name
                 )
-                async let describe = kubeClient.resourceDescribe(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    kind: .pod,
-                    name: pod.name
-                )
 
-                state.setPodLogs(try await logs)
-                state.setResourceYAML(try await yaml)
-                state.setResourceDescribe(try await describe)
+                switch await inspectorPod {
+                case let .success(jsonPod):
+                    if isCurrentResourceDetailsRequest(requestID), state.selectedPod?.id == pod.id {
+                        state.setSelectedPod(pod.mergingInspectorDetail(jsonPod))
+                    }
+                case .failure:
+                    break
+                }
+
+                applyResourceManifestResults(await manifests, kind: .pod, name: pod.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+
+                switch await logsResult {
+                case let .success(logs):
+                    state.setPodLogs(logs)
+                    state.setLastLogFetchError(nil)
+                case let .failure(error):
+                    if Self.isLikelyLogFetchFailure(error) {
+                        state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+                    } else {
+                        state.setLastLogFetchError(error.localizedDescription)
+                    }
+                }
                 state.clearUnifiedServiceLogs()
 
-            case .service:
+        case .service:
                 guard let service = state.selectedService else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
                 state.clearUnifiedServiceLogs()
                 state.isLoadingLogs = true
-                defer { state.isLoadingLogs = false }
+                defer {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.isLoadingLogs = false
+                    }
+                }
 
-                async let unified = kubeClient.unifiedLogsForService(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    service: service,
-                    filter: selectedLogPreset.filter,
-                    previous: includePreviousLogs
-                )
-
-                async let yaml = kubeClient.resourceYAML(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    kind: .service,
-                    name: service.name
-                )
-                async let describe = kubeClient.resourceDescribe(
-                    from: state.kubeConfigSources,
+                async let unifiedResult = captureResult {
+                    try await self.kubeClient.unifiedLogsForService(
+                        from: self.state.kubeConfigSources,
+                        context: context,
+                        namespace: self.state.selectedNamespace,
+                        service: service,
+                        filter: self.selectedLogPreset.filter,
+                        previous: self.includePreviousLogs
+                    )
+                }
+                async let manifests = fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .service,
                     name: service.name
                 )
 
-                let unifiedResult = try await unified
-                state.setUnifiedServiceLogs(unifiedResult.mergedText, pods: unifiedResult.podNames)
-                state.setResourceYAML(try await yaml)
-                state.setResourceDescribe(try await describe)
+                applyResourceManifestResults(await manifests, kind: .service, name: service.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+
+                switch await unifiedResult {
+                case let .success(unified):
+                    state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    state.setLastLogFetchError(nil)
+                case let .failure(error):
+                    if Self.isLikelyLogFetchFailure(error) {
+                        state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+                    } else {
+                        state.setLastLogFetchError(error.localizedDescription)
+                    }
+                    state.clearUnifiedServiceLogs()
+                }
                 state.setPodLogs("")
 
-            case .deployment:
+        case .deployment:
                 guard let deployment = state.selectedDeployment else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
                 state.clearUnifiedServiceLogs()
                 state.isLoadingLogs = true
-                defer { state.isLoadingLogs = false }
+                defer {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.isLoadingLogs = false
+                    }
+                }
 
-                async let unified = kubeClient.unifiedLogsForDeployment(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    deployment: deployment,
-                    filter: selectedLogPreset.filter,
-                    previous: includePreviousLogs
-                )
-
-                async let yaml = kubeClient.resourceYAML(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    kind: .deployment,
-                    name: deployment.name
-                )
-                async let describe = kubeClient.resourceDescribe(
-                    from: state.kubeConfigSources,
+                async let unifiedResult = captureResult {
+                    try await self.kubeClient.unifiedLogsForDeployment(
+                        from: self.state.kubeConfigSources,
+                        context: context,
+                        namespace: self.state.selectedNamespace,
+                        deployment: deployment,
+                        filter: self.selectedLogPreset.filter,
+                        previous: self.includePreviousLogs
+                    )
+                }
+                async let manifests = fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .deployment,
                     name: deployment.name
                 )
+                async let historyResult = captureResult {
+                    try await self.kubeClient.deploymentRolloutHistory(
+                        from: self.state.kubeConfigSources,
+                        context: context,
+                        namespace: self.state.selectedNamespace,
+                        deploymentName: deployment.name
+                    )
+                }
 
-                async let history = kubeClient.deploymentRolloutHistory(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    deploymentName: deployment.name
-                )
+                applyResourceManifestResults(await manifests, kind: .deployment, name: deployment.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
 
-                let unifiedResult = try await unified
-                state.setUnifiedServiceLogs(unifiedResult.mergedText, pods: unifiedResult.podNames)
-                state.setResourceYAML(try await yaml)
-                state.setResourceDescribe(try await describe)
-                state.setDeploymentRolloutHistory(try await history)
+                switch await unifiedResult {
+                case let .success(unified):
+                    state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    state.setLastLogFetchError(nil)
+                case let .failure(error):
+                    if Self.isLikelyLogFetchFailure(error) {
+                        state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+                    } else {
+                        state.setLastLogFetchError(error.localizedDescription)
+                    }
+                    state.clearUnifiedServiceLogs()
+                }
+
+                switch await historyResult {
+                case let .success(history):
+                    state.setDeploymentRolloutHistory(history)
+                case let .failure(error):
+                    state.setDeploymentRolloutHistory(
+                        resourceDetailsFailureMessage(action: "load rollout history for", kind: .deployment, name: deployment.name, error: error)
+                    )
+                }
                 state.setPodLogs("")
 
-            case .statefulSet:
+        case .statefulSet:
                 guard let resource = state.selectedStatefulSet else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .statefulSet,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .statefulSet, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .daemonSet:
+        case .daemonSet:
                 guard let resource = state.selectedDaemonSet else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .daemonSet,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .daemonSet, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .ingress:
+        case .ingress:
                 guard let resource = state.selectedIngress else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .ingress,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .ingress, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .configMap:
+        case .configMap:
                 guard let resource = state.selectedConfigMap else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .configMap,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .configMap, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .secret:
+        case .secret:
                 guard let resource = state.selectedSecret else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .secret,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .secret, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .node:
+        case .node:
                 guard let resource = state.selectedNode else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: .node,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: .node, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 guard let resource = state.selectedRBACResource else {
-                    state.clearResourceDetails()
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
                     return
                 }
 
-                let pair = try await fetchYAMLAndDescribe(
+                let pair = await fetchYAMLAndDescribe(
                     context: context,
                     namespace: state.selectedNamespace,
                     kind: resource.kind,
                     name: resource.name
                 )
 
-                state.setResourceYAML(pair.yaml)
-                state.setResourceDescribe(pair.describe)
+                applyResourceManifestResults(pair, kind: resource.kind, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-            case .event:
-                state.clearResourceDetails()
-            }
-        } catch {
-            if Self.isLikelyLogFetchFailure(error) {
-                state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
-            }
-            state.setError(error)
+        case .event:
+                if isCurrentResourceDetailsRequest(requestID) {
+                    state.clearResourceDetails()
+                }
         }
     }
 
@@ -3776,7 +4015,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:pod:\(pod.id)",
                         title: pod.name,
-                        subtitle: "Pods • k9s-style `:po`",
+                        subtitle: "Pods • `:po`",
                         symbolName: "cube.box",
                         action: .pod(pod)
                     )
@@ -3789,7 +4028,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:deployment:\(deployment.id)",
                         title: deployment.name,
-                        subtitle: "Deployments • k9s-style `:deploy`",
+                        subtitle: "Deployments • `:deploy`",
                         symbolName: "shippingbox",
                         action: .deployment(deployment)
                     )
@@ -3802,7 +4041,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:service:\(service.id)",
                         title: service.name,
-                        subtitle: "Services • k9s-style `:svc`",
+                        subtitle: "Services • `:svc`",
                         symbolName: "point.3.connected.trianglepath.dotted",
                         action: .service(service)
                     )
@@ -3814,7 +4053,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:context:\(context.id)",
                         title: context.name,
-                        subtitle: "Contexts • k9s-style `:ctx`",
+                        subtitle: "Contexts • `:ctx`",
                         symbolName: state.isFavorite(context) ? "star.fill" : "network",
                         action: .context(context)
                     )
@@ -3826,7 +4065,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:namespace:\(namespace)",
                         title: namespace,
-                        subtitle: "Namespaces • k9s-style `:ns`",
+                        subtitle: "Namespaces • `:ns`",
                         symbolName: "square.3.layers.3d",
                         action: .namespace(namespace)
                     )
@@ -3895,7 +4134,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:sts:\(resource.id)",
                         title: resource.name,
-                        subtitle: "StatefulSets • k9s-style `:sts`",
+                        subtitle: "StatefulSets • `:sts`",
                         symbolName: "shippingbox",
                         action: .clusterResource(resource)
                     )
@@ -3908,7 +4147,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:ds:\(resource.id)",
                         title: resource.name,
-                        subtitle: "DaemonSets • k9s-style `:ds`",
+                        subtitle: "DaemonSets • `:ds`",
                         symbolName: "shippingbox",
                         action: .clusterResource(resource)
                     )
@@ -3921,7 +4160,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:ing:\(resource.id)",
                         title: resource.name,
-                        subtitle: "Ingresses • k9s-style `:ing`",
+                        subtitle: "Ingresses • `:ing`",
                         symbolName: "network",
                         action: .clusterResource(resource)
                     )
@@ -3934,7 +4173,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:cm:\(resource.id)",
                         title: resource.name,
-                        subtitle: "ConfigMaps • k9s-style `:cm`",
+                        subtitle: "ConfigMaps • `:cm`",
                         symbolName: "doc.text",
                         action: .clusterResource(resource)
                     )
@@ -3947,7 +4186,7 @@ public final class RuneAppViewModel: ObservableObject {
                     CommandPaletteItem(
                         id: "cmd:sec:\(resource.id)",
                         title: resource.name,
-                        subtitle: "Secrets • k9s-style `:sec`",
+                        subtitle: "Secrets • `:sec`",
                         symbolName: "key",
                         action: .clusterResource(resource)
                     )

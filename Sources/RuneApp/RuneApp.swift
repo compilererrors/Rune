@@ -1,9 +1,46 @@
+import AppKit
 import RuneCore
 import RuneUI
 import SwiftUI
 
+private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
+    private var didScheduleActivation = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        scheduleForegroundActivation(reason: "didFinishLaunching")
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        scheduleForegroundActivation(reason: "didBecomeActive")
+    }
+
+    private func scheduleForegroundActivation(reason: String) {
+        guard !didScheduleActivation else { return }
+        didScheduleActivation = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NSApp.activate(ignoringOtherApps: true)
+
+            if let window = NSApp.windows.first {
+                window.makeKeyAndOrderFront(nil)
+            }
+
+            if ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT"] == "1" {
+                NSLog(
+                    "[Rune][App] activated reason=%@ windows=%ld keyWindow=%@",
+                    reason,
+                    NSApp.windows.count,
+                    NSApp.keyWindow?.title ?? "nil"
+                )
+            }
+        }
+    }
+}
+
 @main
 struct RuneApplication: App {
+    @NSApplicationDelegateAdaptor(RuneAppDelegate.self) private var appDelegate
     @StateObject private var viewModel = RuneAppViewModel()
 
     var body: some Scene {

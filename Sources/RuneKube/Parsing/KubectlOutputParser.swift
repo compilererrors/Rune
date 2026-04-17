@@ -126,6 +126,13 @@ public struct KubectlOutputParser {
             }
     }
 
+    /// Single `kubectl get pod <name> -o json` document (same shape as a list item).
+    public func parseSinglePodJSON(namespace: String, from raw: String) throws -> PodSummary {
+        let item = try JSONDecoder().decode(KubePodItem.self, from: Data(raw.utf8))
+        let ns = item.metadata.namespace ?? namespace
+        return podSummaryFromJSONItem(item, namespace: ns)
+    }
+
     public func parsePodsListJSON(namespace: String, from raw: String) throws -> [PodSummary] {
         let decoded = try JSONDecoder().decode(KubePodList.self, from: Data(raw.utf8))
         return decoded.items

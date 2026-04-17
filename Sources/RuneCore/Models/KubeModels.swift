@@ -170,10 +170,29 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
 
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
+
+    /// Inspector `kubectl get pod -o json` row merged into list row: keeps list CPU/mem/age/restarts, fills IP/node/QoS/ready from JSON.
+    public func mergingInspectorDetail(_ detail: PodSummary) -> PodSummary {
+        PodSummary(
+            name: detail.name,
+            namespace: detail.namespace,
+            status: status,
+            totalRestarts: totalRestarts,
+            ageDescription: ageDescription,
+            cpuUsage: cpuUsage ?? detail.cpuUsage,
+            memoryUsage: memoryUsage ?? detail.memoryUsage,
+            podIP: detail.podIP ?? podIP,
+            hostIP: detail.hostIP ?? hostIP,
+            nodeName: detail.nodeName ?? nodeName,
+            qosClass: detail.qosClass ?? qosClass,
+            containersReady: detail.containersReady ?? containersReady,
+            containerNamesLine: detail.containerNamesLine ?? containerNamesLine
+        )
+    }
 }
 
 public enum KubernetesAgeFormatting: Sendable {
-    /// Compact age string aligned with `kubectl` / k9s style (`30s`, `5m`, `2h`, `4d`, `1y`).
+    /// Compact age string (`30s`, `5m`, `2h`, `4d`, `1y`), matching common Kubernetes CLI conventions.
     public static func describe(creationISO8601: String?, reference: Date = Date()) -> String {
         guard let raw = creationISO8601?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return "—"

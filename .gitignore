@@ -1,6 +1,7 @@
 .DS_Store
 .build/
 .swiftpm/
+.cache/
 
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/

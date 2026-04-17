@@ -62,6 +62,8 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var resourceDescribe: String = ""
     /// Last `kubectl describe` output; local edits compare against this (same idea as `resourceYAMLBaseline`).
     @Published public private(set) var resourceDescribeBaseline: String = ""
+    @Published public private(set) var lastResourceYAMLError: String?
+    @Published public private(set) var lastResourceDescribeError: String?
     @Published public private(set) var deploymentRolloutHistory: String = ""
     @Published public private(set) var helmValues: String = ""
     @Published public private(set) var helmManifest: String = ""
@@ -76,6 +78,7 @@ public final class RuneAppState: ObservableObject {
     @Published public var isCommandPalettePresented: Bool = false
     @Published public var isLoading: Bool = false
     @Published public var isLoadingLogs: Bool = false
+    @Published public var isLoadingResourceDetails: Bool = false
     @Published public var isReadOnlyMode: Bool = false
     @Published public var isExecutingCommand: Bool = false
     @Published public var isStartingPortForward: Bool = false
@@ -330,6 +333,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
         resourceYAMLBaseline = yaml
+        lastResourceYAMLError = nil
     }
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
@@ -349,6 +353,34 @@ public final class RuneAppState: ObservableObject {
     public func setResourceDescribe(_ text: String) {
         resourceDescribe = text
         resourceDescribeBaseline = text
+        lastResourceDescribeError = nil
+    }
+
+    public func beginResourceDetailLoad() {
+        resourceYAML = ""
+        resourceYAMLBaseline = ""
+        resourceDescribe = ""
+        resourceDescribeBaseline = ""
+        lastResourceYAMLError = nil
+        lastResourceDescribeError = nil
+        deploymentRolloutHistory = ""
+        isLoadingResourceDetails = true
+    }
+
+    public func finishResourceDetailLoad() {
+        isLoadingResourceDetails = false
+    }
+
+    public func setResourceYAMLError(_ message: String?) {
+        resourceYAML = ""
+        resourceYAMLBaseline = ""
+        lastResourceYAMLError = message
+    }
+
+    public func setResourceDescribeError(_ message: String?) {
+        resourceDescribe = ""
+        resourceDescribeBaseline = ""
+        lastResourceDescribeError = message
     }
 
     public func updateResourceDescribeDraft(_ text: String) {
@@ -407,11 +439,14 @@ public final class RuneAppState: ObservableObject {
         resourceYAMLBaseline = ""
         resourceDescribe = ""
         resourceDescribeBaseline = ""
+        lastResourceYAMLError = nil
+        lastResourceDescribeError = nil
         deploymentRolloutHistory = ""
         helmValues = ""
         helmManifest = ""
         helmHistory = []
         isLoadingLogs = false
+        isLoadingResourceDetails = false
         lastLogFetchError = nil
     }
 

@@ -182,6 +182,36 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(p.containerNamesLine, "nginx, sidecar")
     }
 
+    func testParseSinglePodJSON() throws {
+        let parser = KubectlOutputParser()
+        let raw = """
+        {"metadata":{"name":"web-1","namespace":"prod","creationTimestamp":"2024-06-01T12:00:00Z"},
+         "spec":{"nodeName":"node-a","containers":[{"name":"nginx"}]},
+         "status":{"phase":"Running","podIP":"10.1.2.3","hostIP":"192.168.0.5","qosClass":"Guaranteed",
+          "containerStatuses":[{"name":"nginx","ready":true,"restartCount":0}]}}
+        """
+
+        let p = try parser.parseSinglePodJSON(namespace: "prod", from: raw)
+
+        XCTAssertEqual(p.name, "web-1")
+        XCTAssertEqual(p.namespace, "prod")
+        XCTAssertEqual(p.podIP, "10.1.2.3")
+        XCTAssertEqual(p.hostIP, "192.168.0.5")
+        XCTAssertEqual(p.nodeName, "node-a")
+        XCTAssertEqual(p.qosClass, "Guaranteed")
+        XCTAssertEqual(p.containersReady, "1/1")
+    }
+
+    func testResourceJSONArgumentsPod() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.resourceJSONArguments(context: "ctx", namespace: "ns", kind: .pod, name: "p1")
+
+        XCTAssertEqual(
+            args,
+            ["--context", "ctx", "get", "pod", "p1", "-n", "ns", "-o", "json"]
+        )
+    }
+
     func testParsePodTopByName() {
         let parser = KubectlOutputParser()
         let raw = """

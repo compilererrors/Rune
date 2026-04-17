@@ -364,7 +364,22 @@ public struct KubectlCommandBuilder {
         return args
     }
 
-    /// Human-readable `kubectl describe` output (same as k9s/Lens “describe” views).
+    /// Full object JSON for inspector/detail merges (small payload vs listing all resources).
+    public func resourceJSONArguments(context: String, namespace: String, kind: KubeResourceKind, name: String) -> [String] {
+        var args = [
+            "--context", context,
+            "get", kind.kubectlName, name
+        ]
+
+        if kind.isNamespaced {
+            args += ["-n", namespace]
+        }
+
+        args += ["-o", "json"]
+        return args
+    }
+
+    /// Human-readable `kubectl describe` output for the describe inspector.
     public func describeResourceArguments(context: String, namespace: String, kind: KubeResourceKind, name: String) -> [String] {
         var args = [
             "--context", context,
