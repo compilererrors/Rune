@@ -63,6 +63,26 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         }
     }
 
+    /// Singular label for confirmations and copy (e.g. "Pod", "StatefulSet").
+    public var singularTypeName: String {
+        switch self {
+        case .pod: return "Pod"
+        case .deployment: return "Deployment"
+        case .statefulSet: return "StatefulSet"
+        case .daemonSet: return "DaemonSet"
+        case .service: return "Service"
+        case .ingress: return "Ingress"
+        case .configMap: return "ConfigMap"
+        case .secret: return "Secret"
+        case .node: return "Node"
+        case .event: return "Event"
+        case .role: return "Role"
+        case .roleBinding: return "RoleBinding"
+        case .clusterRole: return "ClusterRole"
+        case .clusterRoleBinding: return "ClusterRoleBinding"
+        }
+    }
+
     public var kubectlName: String {
         switch self {
         case .pod: return "pod"
@@ -103,6 +123,18 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     /// From `kubectl top pods` / Metrics API when available.
     public let cpuUsage: String?
     public let memoryUsage: String?
+    /// `status.podIP` when present (JSON list).
+    public let podIP: String?
+    /// `status.hostIP` (node IP) when present.
+    public let hostIP: String?
+    /// `spec.nodeName` when scheduled.
+    public let nodeName: String?
+    /// `status.qosClass` (e.g. Burstable, Guaranteed).
+    public let qosClass: String?
+    /// Ready count vs total main containers, e.g. `2/2` (from `containerStatuses`).
+    public let containersReady: String?
+    /// Comma-separated `spec.containers[].name` for quick reference.
+    public let containerNamesLine: String?
 
     public init(
         name: String,
@@ -111,7 +143,13 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         totalRestarts: Int = 0,
         ageDescription: String = "—",
         cpuUsage: String? = nil,
-        memoryUsage: String? = nil
+        memoryUsage: String? = nil,
+        podIP: String? = nil,
+        hostIP: String? = nil,
+        nodeName: String? = nil,
+        qosClass: String? = nil,
+        containersReady: String? = nil,
+        containerNamesLine: String? = nil
     ) {
         self.name = name
         self.namespace = namespace
@@ -120,6 +158,12 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         self.ageDescription = ageDescription
         self.cpuUsage = cpuUsage
         self.memoryUsage = memoryUsage
+        self.podIP = podIP
+        self.hostIP = hostIP
+        self.nodeName = nodeName
+        self.qosClass = qosClass
+        self.containersReady = containersReady
+        self.containerNamesLine = containerNamesLine
     }
 
     public var id: String { "\(namespace)/\(name)" }

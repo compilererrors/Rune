@@ -66,8 +66,8 @@ public enum PendingWriteAction: Sendable {
 
     var title: String {
         switch self {
-        case let .delete(kind, name):
-            return "Delete \(kind.kubectlName) \(name)?"
+        case let .delete(kind, _):
+            return "Do you want to delete this \(kind.singularTypeName)?"
         case let .apply(kind, name, _):
             return "Apply YAML for \(kind.kubectlName) \(name)?"
         case let .scale(deploymentName, replicas):
@@ -88,8 +88,8 @@ public enum PendingWriteAction: Sendable {
 
     var message: String {
         switch self {
-        case .delete:
-            return "This operation mutates cluster state and may be irreversible."
+        case let .delete(_, name):
+            return "“\(name)” will be removed from the cluster. This cannot be undone."
         case .apply:
             return "This applies the current YAML to the active namespace/context."
         case .scale:
@@ -854,29 +854,7 @@ public final class RuneAppViewModel: ObservableObject {
         let candidatePreferredNamespace = !requestedPreferredNamespace.isEmpty
             ? requestedPreferredNamespace
             : savedPreferredNamespace
-        state.selectedNamespace = ""
         state.resourceSearchQuery = ""
-        state.setNamespaces([])
-        state.setPods([])
-        state.setDeployments([])
-        state.setStatefulSets([])
-        state.setDaemonSets([])
-        state.setServices([])
-        state.setIngresses([])
-        state.setConfigMaps([])
-        state.setSecrets([])
-        state.setNodes([])
-        state.setEvents([])
-        state.setHelmReleases([])
-        state.setOverviewSnapshot(
-            pods: [],
-            deploymentsCount: 0,
-            servicesCount: 0,
-            ingressesCount: 0,
-            configMapsCount: 0,
-            nodesCount: 0,
-            events: []
-        )
         state.clearResourceDetails()
 
         let cachedNamespaces = store.namespaces(context: context)
@@ -890,8 +868,12 @@ public final class RuneAppViewModel: ObservableObject {
         } else if !requestedPreferredNamespace.isEmpty {
             // Navigation checkpoint supplies a namespace string before `listNamespaces` has run for this context.
             state.selectedNamespace = requestedPreferredNamespace
+        } else {
+            state.selectedNamespace = ""
         }
+        // Apply store-backed lists directly so we avoid flashing an empty table before cached rows appear.
         applyCachedSnapshot(context: context, namespace: state.selectedNamespace)
+        state.setHelmReleases([])
 
         if triggerReload {
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: true, debounced: false)
@@ -1355,6 +1337,11 @@ public final class RuneAppViewModel: ObservableObject {
     /// Discards edits in the YAML editor and restores the last manifest loaded from the cluster.
     public func revertResourceYAMLDraft() {
         state.revertResourceYAMLToClusterSnapshot()
+    }
+
+    /// Discards local edits to the describe buffer and restores the last `kubectl describe` output.
+    public func revertResourceDescribeDraft() {
+        state.revertResourceDescribeToBaseline()
     }
 
     /// Replaces the editor contents with a YAML file from disk (UTF-8).
@@ -3424,16 +3411,34 @@ public final class RuneAppViewModel: ObservableObject {
     private func applyCachedSnapshot(context: KubeContext, namespace: String) {
         let normalizedNamespace = namespace.trimmingCharacters(in: .whitespacesAndNewlines)
         let cachedNamespaces = store.namespaces(context: context)
-        if !cachedNamespaces.isEmpty {
-            state.setNamespaces(cachedNamespaces)
-        }
+        state.setNamespaces(cachedNamespaces)
 
         let cachedNodes = store.nodes(context: context)
-        if !cachedNodes.isEmpty {
-            state.setNodes(cachedNodes)
-        }
+        state.setNodes(cachedNodes)
 
-        guard !normalizedNamespace.isEmpty else { return }
+        guard !normalizedNamespace.isEmpty else {
+            state.setPods([])
+            state.setDeployments([])
+            state.setStatefulSets([])
+            state.setDaemonSets([])
+            state.setServices([])
+            state.setIngresses([])
+            state.setConfigMaps([])
+            state.setSecrets([])
+            state.setEvents([])
+            state.setOverviewSnapshot(
+                pods: [],
+                deploymentsCount: 0,
+                servicesCount: 0,
+                ingressesCount: 0,
+                configMapsCount: 0,
+                nodesCount: 0,
+                clusterCPUPercent: nil,
+                clusterMemoryPercent: nil,
+                events: []
+            )
+            return
+        }
         let cached = store.snapshot(context: context, namespace: normalizedNamespace)
 
         state.setPods(cached.pods)

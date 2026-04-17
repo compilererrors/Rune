@@ -158,6 +158,30 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(pods[1].status, "Pending")
     }
 
+    func testPodListJSONParsingExtendedFields() throws {
+        let parser = KubectlOutputParser()
+        let raw = """
+        {"items":[
+          {"metadata":{"name":"web-1","namespace":"prod","creationTimestamp":"2024-06-01T12:00:00Z"},
+           "spec":{"nodeName":"node-a","containers":[{"name":"nginx"},{"name":"sidecar"}]},
+           "status":{"phase":"Running","podIP":"10.1.2.3","hostIP":"192.168.0.5","qosClass":"Burstable",
+            "containerStatuses":[{"name":"nginx","ready":true,"restartCount":0},{"name":"sidecar","ready":true,"restartCount":1}]}}
+        ]}
+        """
+
+        let pods = try parser.parsePodsListJSON(namespace: "prod", from: raw)
+
+        XCTAssertEqual(pods.count, 1)
+        let p = try XCTUnwrap(pods.first)
+        XCTAssertEqual(p.podIP, "10.1.2.3")
+        XCTAssertEqual(p.hostIP, "192.168.0.5")
+        XCTAssertEqual(p.nodeName, "node-a")
+        XCTAssertEqual(p.qosClass, "Burstable")
+        XCTAssertEqual(p.containersReady, "2/2")
+        XCTAssertEqual(p.totalRestarts, 1)
+        XCTAssertEqual(p.containerNamesLine, "nginx, sidecar")
+    }
+
     func testParsePodTopByName() {
         let parser = KubectlOutputParser()
         let raw = """
