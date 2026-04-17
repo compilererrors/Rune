@@ -103,6 +103,12 @@ public struct RuneRootView: View {
         static let horizontalPadding: CGFloat = 10
     }
 
+    /// Inspector detail card hugs content height; bounded scroll areas replace the old full-column stretch for logs/describe.
+    private enum InspectorPanelStyle {
+        static let scrollMinHeight: CGFloat = 200
+        static let scrollMaxHeight: CGFloat = 520
+    }
+
     @ObservedObject private var viewModel: RuneAppViewModel
 
     @State private var podInspectorTab: PodInspectorTab = .overview
@@ -945,7 +951,7 @@ public struct RuneRootView: View {
                     terminalDetails
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(12)
             .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
@@ -1155,6 +1161,10 @@ public struct RuneRootView: View {
                                         }
                                     }
                                 }
+                                .frame(
+                                    minHeight: InspectorPanelStyle.scrollMinHeight,
+                                    maxHeight: InspectorPanelStyle.scrollMaxHeight
+                                )
                             }
                         }
                     }
@@ -1246,6 +1256,10 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
+                            .frame(
+                                minHeight: InspectorPanelStyle.scrollMinHeight,
+                                maxHeight: InspectorPanelStyle.scrollMaxHeight
+                            )
                         }
 
                     case .exec:
@@ -1327,6 +1341,10 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
+                            .frame(
+                                minHeight: InspectorPanelStyle.scrollMinHeight,
+                                maxHeight: InspectorPanelStyle.scrollMaxHeight
+                            )
                         }
 
                     case .rollout:
@@ -1356,6 +1374,10 @@ public struct RuneRootView: View {
                                     .padding(10)
                                     .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
+                            .frame(
+                                minHeight: InspectorPanelStyle.scrollMinHeight,
+                                maxHeight: InspectorPanelStyle.scrollMaxHeight
+                            )
                         }
 
                     case .describe:
@@ -1461,6 +1483,10 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
+                            .frame(
+                                minHeight: InspectorPanelStyle.scrollMinHeight,
+                                maxHeight: InspectorPanelStyle.scrollMaxHeight
+                            )
                         }
 
                     case .portForward:
@@ -1503,6 +1529,10 @@ public struct RuneRootView: View {
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
+                    .frame(
+                        minHeight: InspectorPanelStyle.scrollMinHeight,
+                        maxHeight: InspectorPanelStyle.scrollMaxHeight
+                    )
                 }
             } else {
                 inspectorEmptyState("Select an event", symbol: "bolt.badge.clock")
@@ -1637,6 +1667,10 @@ public struct RuneRootView: View {
                     .padding(10)
                     .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
+            .frame(
+                minHeight: InspectorPanelStyle.scrollMinHeight,
+                maxHeight: InspectorPanelStyle.scrollMaxHeight
+            )
         }
     }
 
@@ -1702,6 +1736,10 @@ public struct RuneRootView: View {
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
+                    .frame(
+                        minHeight: InspectorPanelStyle.scrollMinHeight,
+                        maxHeight: InspectorPanelStyle.scrollMaxHeight
+                    )
                 }
             } else {
                 Text("Run a command to see stdout/stderr here.")
