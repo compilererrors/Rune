@@ -187,6 +187,7 @@ public struct RuneRootView: View {
                     .keyboardShortcut("r", modifiers: .command)
                 }
             }
+            .toolbarBackground(.hidden, for: .windowToolbar)
             .sheet(isPresented: commandPalettePresentedBinding) {
                 CommandPaletteView(viewModel: viewModel)
             }
@@ -377,7 +378,6 @@ public struct RuneRootView: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var contentHeader: some View {
@@ -737,7 +737,7 @@ public struct RuneRootView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var networkingPane: some View {
@@ -776,7 +776,7 @@ public struct RuneRootView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var configPane: some View {
@@ -792,7 +792,7 @@ public struct RuneRootView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var storagePane: some View {
@@ -805,7 +805,7 @@ public struct RuneRootView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var rbacPane: some View {
@@ -821,7 +821,7 @@ public struct RuneRootView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var helmPane: some View {
@@ -862,7 +862,7 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var eventsPane: some View {
@@ -906,7 +906,7 @@ public struct RuneRootView: View {
             .buttonStyle(.plain)
             .help(eventHint(for: event))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollContentBackground(.hidden)
     }
 
     private var sectionPlaceholder: some View {
@@ -1183,8 +1183,38 @@ public struct RuneRootView: View {
 
                     switch podInspectorTab {
                     case .overview:
-                        podOverviewSection(pod: pod) {
-                            podInspectorTab = .yaml
+                        VStack(alignment: .leading, spacing: 12) {
+                            if shouldShowResourceNamespaceLabel(pod.namespace) {
+                                inspectorInsetCard {
+                                    Label("Namespace: \(pod.namespace)", systemImage: "square.stack.3d.up")
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            podInspectorOverviewMetricsCard(pod: pod)
+                            inspectorInsetCard {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Manifest")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text("Use the YAML tab to edit, import, and apply. Export saves a copy of the loaded manifest.")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    inspectorActionButtonRow {
+                                        Button("Export manifest…") {
+                                            viewModel.saveCurrentResourceYAML()
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(viewModel.state.resourceYAML.isEmpty)
+                                        Spacer(minLength: 0)
+                                    }
+                                    Button("Delete", role: .destructive) {
+                                        viewModel.requestDeleteSelectedResource()
+                                    }
+                                    .disabled(!viewModel.writeActionsEnabled)
+                                }
+                            }
                         }
 
                     case .logs:
@@ -1573,32 +1603,13 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            if !viewModel.writeActionsEnabled {
-                Label("Read-only mode: you can still edit the text below locally; Apply to the cluster is disabled.", systemImage: "lock.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Edit manifest")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.35)
-
-                Text("Edit as plain YAML in the panel, then Apply YAML or Revert. Import replaces the whole buffer.")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                TextEditor(text: yamlDraftBinding)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 280)
-                    .padding(10)
-                    .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
+            TextEditor(text: yamlDraftBinding)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 280)
+                .padding(10)
+                .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .disabled(!viewModel.writeActionsEnabled)
 
             if viewModel.state.resourceYAML.isEmpty {
                 Text("Load a resource or wait for the manifest to finish loading. You can also use Import… to paste YAML from a file.")
@@ -2088,92 +2099,47 @@ public struct RuneRootView: View {
             )
     }
 
+    private func podInspectorMetricRow(label: String, value: String, symbol: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .frame(width: 16, alignment: .center)
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func podInspectorOverviewMetricsCard(pod: PodSummary) -> some View {
+        inspectorInsetCard {
+            VStack(alignment: .leading, spacing: 8) {
+                podInspectorMetricRow(label: "Status", value: pod.status, symbol: "waveform.path.ecg")
+                podInspectorMetricRow(label: "Age", value: pod.ageDescription, symbol: "clock")
+                podInspectorMetricRow(label: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
+                podInspectorMetricRow(label: "CPU", value: pod.cpuDisplay, symbol: "cpu")
+                podInspectorMetricRow(label: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
+                if pod.cpuUsage == nil, pod.memoryUsage == nil {
+                    Text("CPU and memory need metrics-server (same source as kubectl top).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func inspectorActionButtonRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .center, spacing: 8) {
             content()
         }
         .controlSize(.regular)
-    }
-
-    private func podInfoRow(label: String, value: String, valueColor: Color = .primary) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 96, alignment: .leading)
-            Text(value)
-                .font(.body.weight(.medium))
-                .foregroundStyle(valueColor)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func podOverviewSection(pod: PodSummary, openYAMLTab: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if shouldShowResourceNamespaceLabel(pod.namespace) {
-                inspectorInsetCard {
-                    Label("Namespace: \(pod.namespace)", systemImage: "square.stack.3d.up")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Pod")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(0.35)
-
-                    podInfoRow(
-                        label: "Status",
-                        value: pod.status,
-                        valueColor: statusColor(for: pod.status)
-                    )
-                    podInfoRow(label: "Age", value: pod.ageDescription)
-                    podInfoRow(label: "Restarts", value: "\(pod.totalRestarts)")
-                    podInfoRow(label: "CPU (usage)", value: pod.cpuDisplay)
-                    podInfoRow(label: "Memory (usage)", value: pod.memoryDisplay)
-
-                    Text("CPU and memory reflect live usage when metrics-server is installed and `kubectl top` can reach this pod.")
-                        .font(.footnote)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Manifest")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(0.35)
-
-                    Text("Apply, import, or export YAML from the YAML tab.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HStack(spacing: 8) {
-                        Button("Open YAML…") {
-                            openYAMLTab()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Spacer(minLength: 0)
-                    }
-
-                    Button("Delete pod", role: .destructive) {
-                        viewModel.requestDeleteSelectedResource()
-                    }
-                    .disabled(!viewModel.writeActionsEnabled)
-                }
-            }
-        }
     }
 
     private func deploymentReplicaStatusColor(_ deployment: DeploymentSummary) -> Color {
