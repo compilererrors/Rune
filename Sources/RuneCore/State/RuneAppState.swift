@@ -36,18 +36,28 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var secrets: [ClusterResourceSummary] = []
     @Published public private(set) var nodes: [ClusterResourceSummary] = []
     @Published public private(set) var helmReleases: [HelmReleaseSummary] = []
+    @Published public private(set) var rbacRoles: [ClusterResourceSummary] = []
+    @Published public private(set) var rbacRoleBindings: [ClusterResourceSummary] = []
+    @Published public private(set) var rbacClusterRoles: [ClusterResourceSummary] = []
+    @Published public private(set) var rbacClusterRoleBindings: [ClusterResourceSummary] = []
+    @Published public private(set) var selectedRBACResource: ClusterResourceSummary?
     @Published public private(set) var overviewPods: [PodSummary] = []
     @Published public private(set) var overviewDeploymentsCount: Int = 0
     @Published public private(set) var overviewServicesCount: Int = 0
     @Published public private(set) var overviewIngressesCount: Int = 0
     @Published public private(set) var overviewConfigMapsCount: Int = 0
     @Published public private(set) var overviewNodesCount: Int = 0
+    @Published public private(set) var overviewClusterCPUPercent: Int?
+    @Published public private(set) var overviewClusterMemoryPercent: Int?
     @Published public private(set) var overviewEvents: [EventSummary] = []
 
     @Published public private(set) var podLogs: String = ""
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
     @Published public private(set) var resourceYAML: String = ""
+    /// Last YAML fetched from the cluster (`kubectl get -o yaml`). Used to detect local edits and for Revert.
+    @Published public private(set) var resourceYAMLBaseline: String = ""
+    @Published public private(set) var resourceDescribe: String = ""
     @Published public private(set) var deploymentRolloutHistory: String = ""
     @Published public private(set) var helmValues: String = ""
     @Published public private(set) var helmManifest: String = ""
@@ -61,6 +71,7 @@ public final class RuneAppState: ObservableObject {
 
     @Published public var isCommandPalettePresented: Bool = false
     @Published public var isLoading: Bool = false
+    @Published public var isLoadingLogs: Bool = false
     @Published public var isReadOnlyMode: Bool = false
     @Published public var isExecutingCommand: Bool = false
     @Published public var isStartingPortForward: Bool = false
@@ -108,7 +119,9 @@ public final class RuneAppState: ObservableObject {
 
     public func setPods(_ pods: [PodSummary]) {
         self.pods = pods
-        if let selectedPod, pods.contains(selectedPod) {
+        if let current = selectedPod,
+           let match = pods.first(where: { $0.id == current.id }) {
+            selectedPod = match
             return
         }
         selectedPod = pods.first
@@ -180,6 +193,49 @@ public final class RuneAppState: ObservableObject {
         selectedHelmRelease = releases.first
     }
 
+    public func setRBACData(
+        roles: [ClusterResourceSummary],
+        roleBindings: [ClusterResourceSummary],
+        clusterRoles: [ClusterResourceSummary],
+        clusterRoleBindings: [ClusterResourceSummary]
+    ) {
+        rbacRoles = roles
+        rbacRoleBindings = roleBindings
+        rbacClusterRoles = clusterRoles
+        rbacClusterRoleBindings = clusterRoleBindings
+        reconcileRBACSelection()
+    }
+
+    public func setSelectedRBACResource(_ resource: ClusterResourceSummary?) {
+        selectedRBACResource = resource
+    }
+
+    public func reconcileRBACSelection() {
+        let listForKind: [ClusterResourceSummary] = {
+            switch selectedWorkloadKind {
+            case .role: return rbacRoles
+            case .roleBinding: return rbacRoleBindings
+            case .clusterRole: return rbacClusterRoles
+            case .clusterRoleBinding: return rbacClusterRoleBindings
+            default: return []
+            }
+        }()
+
+        guard !listForKind.isEmpty else {
+            selectedRBACResource = nil
+            return
+        }
+
+        if let current = selectedRBACResource,
+           current.kind == selectedWorkloadKind,
+           let match = listForKind.first(where: { $0.id == current.id }) {
+            selectedRBACResource = match
+            return
+        }
+
+        selectedRBACResource = listForKind.first
+    }
+
     public func setOverviewSnapshot(
         pods: [PodSummary],
         deploymentsCount: Int,
@@ -187,6 +243,8 @@ public final class RuneAppState: ObservableObject {
         ingressesCount: Int,
         configMapsCount: Int,
         nodesCount: Int,
+        clusterCPUPercent: Int? = nil,
+        clusterMemoryPercent: Int? = nil,
         events: [EventSummary]
     ) {
         overviewPods = pods
@@ -195,6 +253,8 @@ public final class RuneAppState: ObservableObject {
         overviewIngressesCount = ingressesCount
         overviewConfigMapsCount = configMapsCount
         overviewNodesCount = nodesCount
+        overviewClusterCPUPercent = clusterCPUPercent
+        overviewClusterMemoryPercent = clusterMemoryPercent
         overviewEvents = events
     }
 
@@ -258,6 +318,25 @@ public final class RuneAppState: ObservableObject {
 
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
+        resourceYAMLBaseline = yaml
+    }
+
+    /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
+    public func updateResourceYAMLDraft(_ yaml: String) {
+        resourceYAML = yaml
+    }
+
+    /// Discards local edits and restores the last loaded cluster YAML.
+    public func revertResourceYAMLToClusterSnapshot() {
+        resourceYAML = resourceYAMLBaseline
+    }
+
+    public var resourceYAMLHasUnsavedEdits: Bool {
+        resourceYAML != resourceYAMLBaseline
+    }
+
+    public func setResourceDescribe(_ text: String) {
+        resourceDescribe = text
     }
 
     public func setDeploymentRolloutHistory(_ history: String) {
@@ -301,10 +380,13 @@ public final class RuneAppState: ObservableObject {
         unifiedServiceLogs = ""
         unifiedServiceLogPods = []
         resourceYAML = ""
+        resourceYAMLBaseline = ""
+        resourceDescribe = ""
         deploymentRolloutHistory = ""
         helmValues = ""
         helmManifest = ""
         helmHistory = []
+        isLoadingLogs = false
     }
 
     public func setError(_ error: Error) {

@@ -12,6 +12,11 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
 
+    /// First attempt when using default process timeout; a second attempt uses `retryTimeoutAfterQuickFailure`.
+    private let quickKubectlAttemptTimeout: TimeInterval = 12
+    /// Second attempt after a timeout on the quick attempt (only when `timeout` parameter is nil).
+    private let retryTimeoutAfterQuickFailure: TimeInterval = 45
+
     public init(
         runner: CommandRunning = ProcessCommandRunner(),
         longRunningRunner: LongRunningCommandRunning = ProcessLongRunningCommandRunner(),
@@ -68,11 +73,47 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        let pods: [PodSummary]
+        do {
+            // Fast path: lightweight tabular output is significantly cheaper than full JSON in busy namespaces.
+            let list = try await runKubectl(
+                arguments: builder.podListTextArguments(context: context.name, namespace: namespace),
+                environment: env
+            )
+            pods = parser.parsePodsTable(namespace: namespace, from: list.stdout)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.podListArguments(context: context.name, namespace: namespace),
+                environment: env
+            )
+            let trimmed = fallback.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            pods = try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+        }
+
+        var merged = pods
+        if let top = await runKubectlAllowFailure(
+            arguments: builder.podTopArguments(context: context.name, namespace: namespace),
+            environment: env,
+            timeout: 6
+        ),
+            top.exitCode == 0 {
+            let metrics = parser.parsePodTopByName(from: top.stdout)
+            merged = mergePodNameMetrics(merged, metrics)
+        }
+
+        return merged
+    }
+
+    public func listPodStatuses(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [PodSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
         let result = try await runKubectl(
-            arguments: builder.podListArguments(context: context.name, namespace: namespace),
+            arguments: builder.podStatusListArguments(context: context.name, namespace: namespace),
             environment: env
         )
-
         return parser.parsePods(namespace: namespace, from: result.stdout)
     }
 
@@ -81,12 +122,34 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.podListAllNamespacesArguments(context: context.name),
-            environment: env
-        )
+        let pods: [PodSummary]
+        do {
+            let list = try await runKubectl(
+                arguments: builder.podListAllNamespacesTextArguments(context: context.name),
+                environment: env
+            )
+            pods = parser.parsePodsAllNamespacesTable(from: list.stdout)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.podListAllNamespacesArguments(context: context.name),
+                environment: env
+            )
+            let trimmed = fallback.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            pods = try parser.parsePodsListJSONAllNamespaces(from: trimmed)
+        }
 
-        return parser.parsePodsAllNamespaces(from: result.stdout)
+        var merged = pods
+        if let top = await runKubectlAllowFailure(
+            arguments: builder.podTopAllNamespacesArguments(context: context.name),
+            environment: env,
+            timeout: 6
+        ),
+            top.exitCode == 0 {
+            let metrics = parser.parsePodTopByNamespaceAndName(from: top.stdout)
+            merged = mergePodNamespacedMetrics(merged, metrics)
+        }
+
+        return merged
     }
 
     public func listDeployments(
@@ -95,15 +158,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [DeploymentSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.deploymentListArguments(context: context.name, namespace: namespace),
-            environment: env
-        )
-
         do {
-            return try parser.parseDeployments(namespace: namespace, from: result.stdout)
+            let result = try await runKubectl(
+                arguments: builder.deploymentListTextArguments(context: context.name, namespace: namespace),
+                environment: env
+            )
+            return parser.parseDeploymentsTable(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "deployments JSON kunde inte tolkas")
+            let fallback = try await runKubectl(
+                arguments: builder.deploymentListArguments(context: context.name, namespace: namespace),
+                environment: env
+            )
+            return try parser.parseDeployments(namespace: namespace, from: fallback.stdout)
         }
     }
 
@@ -112,15 +178,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [DeploymentSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.deploymentListAllNamespacesArguments(context: context.name),
-            environment: env
-        )
-
         do {
-            return try parser.parseDeployments(namespace: "", from: result.stdout)
+            let result = try await runKubectl(
+                arguments: builder.deploymentListAllNamespacesTextArguments(context: context.name),
+                environment: env
+            )
+            return parser.parseDeploymentsAllNamespacesTable(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "deployments JSON kunde inte tolkas")
+            let fallback = try await runKubectl(
+                arguments: builder.deploymentListAllNamespacesArguments(context: context.name),
+                environment: env
+            )
+            return try parser.parseDeployments(namespace: "", from: fallback.stdout)
         }
     }
 
@@ -335,6 +404,88 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
     }
 
+    public func listRoles(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.roleListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseRoles(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "roles JSON kunde inte tolkas")
+        }
+    }
+
+    public func listRoleBindings(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.roleBindingListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+
+        do {
+            return try parser.parseRoleBindings(namespace: namespace, from: result.stdout)
+        } catch {
+            throw RuneError.parseError(message: "rolebindings JSON kunde inte tolkas")
+        }
+    }
+
+    public func listClusterRoles(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.clusterRoleListArguments(context: context.name),
+            environment: env,
+            timeout: 90
+        )
+
+        do {
+            return try parser.parseClusterRoles(from: result.stdout)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.clusterRoleListTextArguments(context: context.name),
+                environment: env,
+                timeout: 75
+            )
+            return parser.parseClusterRoleNames(from: fallback.stdout)
+        }
+    }
+
+    public func listClusterRoleBindings(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.clusterRoleBindingListArguments(context: context.name),
+            environment: env,
+            timeout: 90
+        )
+
+        do {
+            return try parser.parseClusterRoleBindings(from: result.stdout)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.clusterRoleBindingListTextArguments(context: context.name),
+                environment: env,
+                timeout: 75
+            )
+            return parser.parseClusterRoleBindingNames(from: fallback.stdout)
+        }
+    }
+
     public func countNamespacedResources(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -369,6 +520,25 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return Self.parseLineCount(from: result.stdout)
     }
 
+    public func clusterUsagePercent(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async -> (cpuPercent: Int?, memoryPercent: Int?) {
+        guard let env = try? kubeconfigEnvironment(from: sources) else {
+            return (nil, nil)
+        }
+
+        guard let result = await runKubectlAllowFailure(
+            arguments: builder.nodeTopArguments(context: context.name),
+            environment: env,
+            timeout: 6
+        ), result.exitCode == 0 else {
+            return (nil, nil)
+        }
+
+        return parser.parseNodeTopUsagePercent(from: result.stdout)
+    }
+
     public func podLogs(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -390,7 +560,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
         let result: CommandResult
         do {
-            result = try await runKubectl(arguments: arguments, environment: env)
+            result = try await runKubectl(arguments: arguments, environment: env, timeout: logFetchTimeout(for: filter))
         } catch {
             if previous, isMissingPreviousLogsError(error) {
                 return "No previous logs available for \(podName)."
@@ -437,7 +607,17 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             environment: env
         )
 
-        let pods = parser.parsePods(namespace: namespace, from: podResult.stdout)
+        let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pods: [PodSummary]
+        do {
+            pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                environment: env
+            )
+            pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+        }
         guard !pods.isEmpty else {
             return UnifiedServiceLogs(service: service, podNames: [], mergedText: "No pods found for service selector: \(selector)")
         }
@@ -515,7 +695,17 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             environment: env
         )
 
-        let pods = parser.parsePods(namespace: namespace, from: podResult.stdout)
+        let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pods: [PodSummary]
+        do {
+            pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+        } catch {
+            let fallback = try await runKubectl(
+                arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                environment: env
+            )
+            pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+        }
         guard !pods.isEmpty else {
             return UnifiedDeploymentLogs(deployment: deployment, podNames: [], mergedText: "No pods found for deployment selector: \(selector)")
         }
@@ -567,6 +757,27 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         let result = try await runKubectl(
             arguments: builder.resourceYAMLArguments(context: context.name, namespace: namespace, kind: kind, name: name),
+            environment: env
+        )
+
+        return result.stdout
+    }
+
+    public func resourceDescribe(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws -> String {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.describeResourceArguments(
+                context: context.name,
+                namespace: namespace,
+                kind: kind,
+                name: name
+            ),
             environment: env
         )
 
@@ -800,12 +1011,49 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         )
     }
 
-    private func runKubectl(arguments: [String], environment: [String: String]) async throws -> CommandResult {
+    /// Runs kubectl; when `timeout` is omitted, uses a short process timeout first, then one longer attempt if the process hit a timeout (slow API / first connection). Explicit `timeout` skips that (e.g. logs, short metrics).
+    private func runKubectl(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval? = nil
+    ) async throws -> CommandResult {
+        let effectiveTimeout = timeout ?? commandTimeout
+        let useQuickThenRetry = timeout == nil && effectiveTimeout > quickKubectlAttemptTimeout
+
+        if useQuickThenRetry {
+            do {
+                return try await runKubectlOnce(
+                    arguments: arguments,
+                    environment: environment,
+                    timeout: quickKubectlAttemptTimeout
+                )
+            } catch {
+                guard isProcessTimeoutError(error) else { throw error }
+                return try await runKubectlOnce(
+                    arguments: arguments,
+                    environment: environment,
+                    timeout: max(effectiveTimeout, retryTimeoutAfterQuickFailure)
+                )
+            }
+        }
+
+        return try await runKubectlOnce(
+            arguments: arguments,
+            environment: environment,
+            timeout: effectiveTimeout
+        )
+    }
+
+    private func runKubectlOnce(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> CommandResult {
         let result = try await runner.run(
             executable: kubectlPath,
             arguments: ["kubectl"] + arguments,
             environment: environment,
-            timeout: commandTimeout
+            timeout: timeout
         )
 
         guard result.exitCode == 0 else {
@@ -813,6 +1061,11 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
 
         return result
+    }
+
+    private func isProcessTimeoutError(_ error: Error) -> Bool {
+        guard case let RuneError.commandFailed(_, message) = error else { return false }
+        return message.localizedCaseInsensitiveContains("timed out")
     }
 
     private func ensureSources(_ sources: [KubeConfigSource]) throws {
@@ -904,6 +1157,66 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return text.contains("previous terminated container")
             || text.contains("no previous terminated container")
             || text.contains("previous container not found")
+    }
+
+    private func logFetchTimeout(for filter: LogTimeFilter) -> TimeInterval {
+        switch filter {
+        case .all:
+            return 60
+        case let .tailLines(lines) where lines >= 10_000:
+            return 90
+        case .lastDays(let days) where days >= 7:
+            return 90
+        case .lastHours, .lastDays:
+            return 60
+        default:
+            return 45
+        }
+    }
+
+    private func runKubectlAllowFailure(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval? = nil
+    ) async -> CommandResult? {
+        try? await runKubectl(arguments: arguments, environment: environment, timeout: timeout)
+    }
+
+    private func mergePodNameMetrics(
+        _ pods: [PodSummary],
+        _ metrics: [String: (cpu: String, memory: String)]
+    ) -> [PodSummary] {
+        pods.map { pod in
+            guard let m = metrics[pod.name] else { return pod }
+            return PodSummary(
+                name: pod.name,
+                namespace: pod.namespace,
+                status: pod.status,
+                totalRestarts: pod.totalRestarts,
+                ageDescription: pod.ageDescription,
+                cpuUsage: m.cpu,
+                memoryUsage: m.memory
+            )
+        }
+    }
+
+    private func mergePodNamespacedMetrics(
+        _ pods: [PodSummary],
+        _ metrics: [String: (cpu: String, memory: String)]
+    ) -> [PodSummary] {
+        pods.map { pod in
+            let key = "\(pod.namespace)/\(pod.name)"
+            guard let m = metrics[key] else { return pod }
+            return PodSummary(
+                name: pod.name,
+                namespace: pod.namespace,
+                status: pod.status,
+                totalRestarts: pod.totalRestarts,
+                ageDescription: pod.ageDescription,
+                cpuUsage: m.cpu,
+                memoryUsage: m.memory
+            )
+        }
     }
 }
 
