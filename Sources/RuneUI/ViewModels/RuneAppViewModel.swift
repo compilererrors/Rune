@@ -3995,6 +3995,15 @@ public final class RuneAppViewModel: ObservableObject {
         "\(resource.name) \(resource.namespace ?? "") \(resource.primaryText) \(resource.secondaryText)"
     }
 
+    /// When a resource query yields no rows (empty cluster list or no name match), still offer navigation to the right screen (similar to k9s resource jumps).
+    private func commandPaletteResourceRowsOrNavigate(rows: [CommandPaletteItem], navigate: CommandPaletteItem) -> [CommandPaletteItem] {
+        if rows.isEmpty {
+            [navigate]
+        } else {
+            rows
+        }
+    }
+
     private func commandPaletteCommandItems(query: String) -> [CommandPaletteItem]? {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard normalized.hasPrefix(":") else { return nil }
@@ -4008,46 +4017,76 @@ public final class RuneAppViewModel: ObservableObject {
 
         switch command {
         case "po", "pod", "pods":
-            return visiblePods
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { pod in
-                    CommandPaletteItem(
-                        id: "cmd:pod:\(pod.id)",
-                        title: pod.name,
-                        subtitle: "Pods • `:po`",
-                        symbolName: "cube.box",
-                        action: .pod(pod)
-                    )
-                }
+            let rows = Array(
+                visiblePods
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { pod in
+                        CommandPaletteItem(
+                            id: "cmd:pod:\(pod.id)",
+                            title: pod.name,
+                            subtitle: "Pods • `:po`",
+                            symbolName: "cube.box",
+                            action: .pod(pod)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:pod",
+                title: "Pods",
+                subtitle: "Open Workloads → Pods",
+                symbolName: "cube.box",
+                action: .resourceKind(section: .workloads, kind: .pod)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "dp", "deploy", "deployment", "deployments":
-            return visibleDeployments
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { deployment in
-                    CommandPaletteItem(
-                        id: "cmd:deployment:\(deployment.id)",
-                        title: deployment.name,
-                        subtitle: "Deployments • `:deploy`",
-                        symbolName: "shippingbox",
-                        action: .deployment(deployment)
-                    )
-                }
+            let rows = Array(
+                visibleDeployments
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { deployment in
+                        CommandPaletteItem(
+                            id: "cmd:deployment:\(deployment.id)",
+                            title: deployment.name,
+                            subtitle: "Deployments • `:deploy`",
+                            symbolName: "shippingbox",
+                            action: .deployment(deployment)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:deploy",
+                title: "Deployments",
+                subtitle: "Open Workloads → Deployments",
+                symbolName: "shippingbox",
+                action: .resourceKind(section: .workloads, kind: .deployment)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "svc", "service", "services":
-            return visibleServices
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { service in
-                    CommandPaletteItem(
-                        id: "cmd:service:\(service.id)",
-                        title: service.name,
-                        subtitle: "Services • `:svc`",
-                        symbolName: "point.3.connected.trianglepath.dotted",
-                        action: .service(service)
-                    )
-                }
+            let rows = Array(
+                visibleServices
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { service in
+                        CommandPaletteItem(
+                            id: "cmd:service:\(service.id)",
+                            title: service.name,
+                            subtitle: "Services • `:svc`",
+                            symbolName: "point.3.connected.trianglepath.dotted",
+                            action: .service(service)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:svc",
+                title: "Services",
+                subtitle: "Open Networking → Services",
+                symbolName: "point.3.connected.trianglepath.dotted",
+                action: .resourceKind(section: .networking, kind: .service)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ctx", "context", "contexts":
-            return visibleContexts
+            let rows = visibleContexts
                 .filter { remainder.isEmpty || matches($0.name, query: remainder) }
                 .map { context in
                     CommandPaletteItem(
@@ -4058,8 +4097,16 @@ public final class RuneAppViewModel: ObservableObject {
                         action: .context(context)
                     )
                 }
+            let navigate = CommandPaletteItem(
+                id: "nav:ctx",
+                title: "Contexts",
+                subtitle: "Open Overview",
+                symbolName: "network",
+                action: .section(.overview)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ns", "namespace", "namespaces":
-            return namespaceOptions
+            let rows = namespaceOptions
                 .filter { remainder.isEmpty || matches($0, query: remainder) }
                 .map { namespace in
                     CommandPaletteItem(
@@ -4070,32 +4117,60 @@ public final class RuneAppViewModel: ObservableObject {
                         action: .namespace(namespace)
                     )
                 }
+            let navigate = CommandPaletteItem(
+                id: "nav:ns",
+                title: "Namespaces",
+                subtitle: "Open Overview",
+                symbolName: "square.3.layers.3d",
+                action: .section(.overview)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ev", "event", "events":
-            return visibleEvents
-                .filter { remainder.isEmpty || matches("\($0.reason) \($0.objectName) \($0.message)", query: remainder) }
-                .prefix(40)
-                .map { event in
-                    CommandPaletteItem(
-                        id: "cmd:event:\(event.id)",
-                        title: "\(event.reason) (\(event.type))",
-                        subtitle: "Events • \(event.objectName)",
-                        symbolName: "bolt.badge.clock",
-                        action: .event(event)
-                    )
-                }
+            let rows = Array(
+                visibleEvents
+                    .filter { remainder.isEmpty || matches("\($0.reason) \($0.objectName) \($0.message)", query: remainder) }
+                    .prefix(40)
+                    .map { event in
+                        CommandPaletteItem(
+                            id: "cmd:event:\(event.id)",
+                            title: "\(event.reason) (\(event.type))",
+                            subtitle: "Events • \(event.objectName)",
+                            symbolName: "bolt.badge.clock",
+                            action: .event(event)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:events",
+                title: "Events",
+                subtitle: "Open Events",
+                symbolName: "bolt.badge.clock",
+                action: .section(.events)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "helm", "hr":
-            return visibleHelmReleases
-                .filter { remainder.isEmpty || matches("\($0.name) \($0.namespace) \($0.chart)", query: remainder) }
-                .prefix(40)
-                .map { release in
-                    CommandPaletteItem(
-                        id: "cmd:helm:\(release.id)",
-                        title: release.name,
-                        subtitle: "Helm • \(release.namespace)",
-                        symbolName: "ferry",
-                        action: .helmRelease(release)
-                    )
-                }
+            let rows = Array(
+                visibleHelmReleases
+                    .filter { remainder.isEmpty || matches("\($0.name) \($0.namespace) \($0.chart)", query: remainder) }
+                    .prefix(40)
+                    .map { release in
+                        CommandPaletteItem(
+                            id: "cmd:helm:\(release.id)",
+                            title: release.name,
+                            subtitle: "Helm • \(release.namespace)",
+                            symbolName: "ferry",
+                            action: .helmRelease(release)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:helm",
+                title: "Helm releases",
+                subtitle: "Open Helm",
+                symbolName: "ferry",
+                action: .section(.helm)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "workloads", "wl":
             return workloadKinds.map { kind in
                 CommandPaletteItem(
@@ -4127,70 +4202,120 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             }
         case "sts", "statefulset", "statefulsets":
-            return visibleStatefulSets
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:sts:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "StatefulSets • `:sts`",
-                        symbolName: "shippingbox",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                visibleStatefulSets
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:sts:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "StatefulSets • `:sts`",
+                            symbolName: "shippingbox",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:sts",
+                title: "StatefulSets",
+                subtitle: "Open Workloads → StatefulSets",
+                symbolName: "shippingbox",
+                action: .resourceKind(section: .workloads, kind: .statefulSet)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ds", "daemonset", "daemonsets":
-            return visibleDaemonSets
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:ds:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "DaemonSets • `:ds`",
-                        symbolName: "shippingbox",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                visibleDaemonSets
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:ds:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "DaemonSets • `:ds`",
+                            symbolName: "shippingbox",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:ds",
+                title: "DaemonSets",
+                subtitle: "Open Workloads → DaemonSets",
+                symbolName: "shippingbox",
+                action: .resourceKind(section: .workloads, kind: .daemonSet)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ing", "ingress", "ingresses":
-            return visibleIngresses
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:ing:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "Ingresses • `:ing`",
-                        symbolName: "network",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                visibleIngresses
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:ing:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Ingresses • `:ing`",
+                            symbolName: "network",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:ing",
+                title: "Ingresses",
+                subtitle: "Open Networking → Ingresses",
+                symbolName: "network",
+                action: .resourceKind(section: .networking, kind: .ingress)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cm", "configmap", "configmaps":
-            return visibleConfigMaps
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:cm:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "ConfigMaps • `:cm`",
-                        symbolName: "doc.text",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                visibleConfigMaps
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:cm:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "ConfigMaps • `:cm`",
+                            symbolName: "doc.text",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:cm",
+                title: "ConfigMaps",
+                subtitle: "Open Config → ConfigMaps",
+                symbolName: "doc.text",
+                action: .resourceKind(section: .config, kind: .configMap)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "sec", "secret", "secrets":
-            return visibleSecrets
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:sec:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "Secrets • `:sec`",
-                        symbolName: "key",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                visibleSecrets
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:sec:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Secrets • `:sec`",
+                            symbolName: "key",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:sec",
+                title: "Secrets",
+                subtitle: "Open Config → Secrets",
+                symbolName: "key",
+                action: .resourceKind(section: .config, kind: .secret)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "rbac":
             return rbacKinds.map { kind in
                 CommandPaletteItem(
@@ -4202,57 +4327,200 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             }
         case "role", "roles":
-            return state.rbacRoles
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:role:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "Roles • namespace \(state.selectedNamespace)",
-                        symbolName: "gearshape",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                state.rbacRoles
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:role:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Roles • namespace \(state.selectedNamespace)",
+                            symbolName: "gearshape",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:role",
+                title: "Roles",
+                subtitle: "Open RBAC → Roles",
+                symbolName: "gearshape",
+                action: .resourceKind(section: .rbac, kind: .role)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "rb", "rolebinding", "rolebindings":
-            return state.rbacRoleBindings
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:rb:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "RoleBindings • namespace \(state.selectedNamespace)",
-                        symbolName: "link",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                state.rbacRoleBindings
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:rb:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "RoleBindings • namespace \(state.selectedNamespace)",
+                            symbolName: "link",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:rb",
+                title: "RoleBindings",
+                subtitle: "Open RBAC → RoleBindings",
+                symbolName: "link",
+                action: .resourceKind(section: .rbac, kind: .roleBinding)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cr", "clusterrole", "clusterroles":
-            return state.rbacClusterRoles
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:cr:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "ClusterRoles • `:cr`",
-                        symbolName: "gearshape.2",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                state.rbacClusterRoles
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:cr:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "ClusterRoles • `:cr`",
+                            symbolName: "gearshape.2",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:cr",
+                title: "ClusterRoles",
+                subtitle: "Open RBAC → ClusterRoles",
+                symbolName: "gearshape.2",
+                action: .resourceKind(section: .rbac, kind: .clusterRole)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "crb", "clusterrolebinding", "clusterrolebindings":
-            return state.rbacClusterRoleBindings
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
-                .prefix(40)
-                .map { resource in
-                    CommandPaletteItem(
-                        id: "cmd:crb:\(resource.id)",
-                        title: resource.name,
-                        subtitle: "ClusterRoleBindings • `:crb`",
-                        symbolName: "person.2.badge.gearshape",
-                        action: .clusterResource(resource)
-                    )
-                }
+            let rows = Array(
+                state.rbacClusterRoleBindings
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:crb:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "ClusterRoleBindings • `:crb`",
+                            symbolName: "person.2.badge.gearshape",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:crb",
+                title: "ClusterRoleBindings",
+                subtitle: "Open RBAC → ClusterRoleBindings",
+                symbolName: "person.2.badge.gearshape",
+                action: .resourceKind(section: .rbac, kind: .clusterRoleBinding)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "no", "node", "nodes":
+            let rows = Array(
+                visibleNodes
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:node:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Nodes • `:no`",
+                            symbolName: "server.rack",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:node",
+                title: "Nodes",
+                subtitle: "Open Storage → Nodes",
+                symbolName: "server.rack",
+                action: .resourceKind(section: .storage, kind: .node)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "cronjob", "cronjobs", "cj":
+            return [
+                CommandPaletteItem(
+                    id: "stub:cronjob",
+                    title: "CronJobs",
+                    subtitle: "Not in Rune yet — opened Workloads (Pods)",
+                    symbolName: "calendar.badge.clock",
+                    action: .resourceKind(section: .workloads, kind: .pod)
+                )
+            ]
+        case "job", "jobs", "jo":
+            return [
+                CommandPaletteItem(
+                    id: "stub:job",
+                    title: "Jobs",
+                    subtitle: "Not in Rune yet — opened Workloads (Pods)",
+                    symbolName: "briefcase",
+                    action: .resourceKind(section: .workloads, kind: .pod)
+                )
+            ]
+        case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
+            return [
+                CommandPaletteItem(
+                    id: "stub:pvc",
+                    title: "PersistentVolumeClaims",
+                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
+                    symbolName: "externaldrive",
+                    action: .resourceKind(section: .storage, kind: .node)
+                )
+            ]
+        case "pv", "pvs", "persistentvolume", "persistentvolumes":
+            return [
+                CommandPaletteItem(
+                    id: "stub:pv",
+                    title: "PersistentVolumes",
+                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
+                    symbolName: "externaldrive.fill",
+                    action: .resourceKind(section: .storage, kind: .node)
+                )
+            ]
+        case "sa", "serviceaccount", "serviceaccounts":
+            return [
+                CommandPaletteItem(
+                    id: "stub:sa",
+                    title: "ServiceAccounts",
+                    subtitle: "Not in Rune yet — opened RBAC",
+                    symbolName: "person.crop.circle",
+                    action: .resourceKind(section: .rbac, kind: .role)
+                )
+            ]
+        case "ep", "endpoint", "endpoints":
+            return [
+                CommandPaletteItem(
+                    id: "stub:ep",
+                    title: "Endpoints",
+                    subtitle: "Not in Rune yet — opened Networking (Services)",
+                    symbolName: "link",
+                    action: .resourceKind(section: .networking, kind: .service)
+                )
+            ]
+        case "sc", "storageclass", "storageclasses":
+            return [
+                CommandPaletteItem(
+                    id: "stub:sc",
+                    title: "StorageClasses",
+                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
+                    symbolName: "internaldrive",
+                    action: .resourceKind(section: .storage, kind: .node)
+                )
+            ]
+        case "np", "netpol", "networkpolicy", "networkpolicies":
+            return [
+                CommandPaletteItem(
+                    id: "stub:np",
+                    title: "NetworkPolicies",
+                    subtitle: "Not in Rune yet — opened Networking (Ingresses)",
+                    symbolName: "shield.lefthalf.filled",
+                    action: .resourceKind(section: .networking, kind: .ingress)
+                )
+            ]
         case "reload":
             return [
                 CommandPaletteItem(
@@ -4301,14 +4569,17 @@ public final class RuneAppViewModel: ObservableObject {
             CommandPaletteItem(id: "help:deploy", title: ":deploy <name>", subtitle: "Deployments", symbolName: "shippingbox", action: .resourceKind(section: .workloads, kind: .deployment)),
             CommandPaletteItem(id: "help:sts", title: ":sts <name>", subtitle: "StatefulSets", symbolName: "shippingbox", action: .resourceKind(section: .workloads, kind: .statefulSet)),
             CommandPaletteItem(id: "help:ds", title: ":ds <name>", subtitle: "DaemonSets", symbolName: "shippingbox", action: .resourceKind(section: .workloads, kind: .daemonSet)),
-            CommandPaletteItem(id: "help:svc", title: ":svc <name>", subtitle: "Services (Networking → Services)", symbolName: "point.3.connected.trianglepath.dotted", action: .resourceKind(section: .networking, kind: .service)),
+            CommandPaletteItem(id: "help:svc", title: ":svc / :service <name>", subtitle: "Services", symbolName: "point.3.connected.trianglepath.dotted", action: .resourceKind(section: .networking, kind: .service)),
             CommandPaletteItem(id: "help:ing", title: ":ing <name>", subtitle: "Ingresses", symbolName: "network", action: .resourceKind(section: .networking, kind: .ingress)),
             CommandPaletteItem(id: "help:cm", title: ":cm <name>", subtitle: "ConfigMaps", symbolName: "doc.text", action: .resourceKind(section: .config, kind: .configMap)),
             CommandPaletteItem(id: "help:sec", title: ":sec <name>", subtitle: "Secrets", symbolName: "key", action: .resourceKind(section: .config, kind: .secret)),
-            CommandPaletteItem(id: "help:ns", title: ":ns <namespace>", subtitle: "Byt namespace (välj i listan)", symbolName: "square.3.layers.3d", action: .resourceKind(section: .workloads, kind: .pod)),
-            CommandPaletteItem(id: "help:ctx", title: ":ctx <context>", subtitle: "Byt kubecontext", symbolName: "network", action: .section(.overview)),
-            CommandPaletteItem(id: "help:rbac", title: ":rbac", subtitle: "Roles, bindings, cluster roles", symbolName: "person.2.badge.gearshape", action: .resourceKind(section: .rbac, kind: .role)),
-            CommandPaletteItem(id: "help:helm", title: ":helm <release>", subtitle: "Helm releases", symbolName: "ferry", action: .section(.helm))
+            CommandPaletteItem(id: "help:no", title: ":no <name>", subtitle: "Nodes (Storage)", symbolName: "server.rack", action: .resourceKind(section: .storage, kind: .node)),
+            CommandPaletteItem(id: "help:ns", title: ":ns <namespace>", subtitle: "Switch namespace", symbolName: "square.3.layers.3d", action: .section(.overview)),
+            CommandPaletteItem(id: "help:ctx", title: ":ctx <context>", subtitle: "Switch context", symbolName: "network", action: .section(.overview)),
+            CommandPaletteItem(id: "help:rbac", title: ":rbac", subtitle: "RBAC kinds", symbolName: "person.2.badge.gearshape", action: .resourceKind(section: .rbac, kind: .role)),
+            CommandPaletteItem(id: "help:helm", title: ":helm <release>", subtitle: "Helm releases", symbolName: "ferry", action: .section(.helm)),
+            CommandPaletteItem(id: "help:cj", title: ":cj / :job", subtitle: "CronJobs & Jobs — stub (use kubectl)", symbolName: "calendar.badge.clock", action: .resourceKind(section: .workloads, kind: .pod)),
+            CommandPaletteItem(id: "help:pvc", title: ":pvc / :pv / :sc", subtitle: "Storage kinds — stub (use kubectl)", symbolName: "externaldrive", action: .resourceKind(section: .storage, kind: .node))
         ]
     }
 
