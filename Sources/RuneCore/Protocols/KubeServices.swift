@@ -56,6 +56,52 @@ public protocol GenericResourceListingService: Sendable {
         namespace: String
     ) async throws -> [ClusterResourceSummary]
 
+    func listJobs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listCronJobs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listReplicaSets(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listPersistentVolumeClaims(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listPersistentVolumes(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary]
+
+    func listStorageClasses(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> [ClusterResourceSummary]
+
+    func listHorizontalPodAutoscalers(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
+    func listNetworkPolicies(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary]
+
     func listIngresses(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -160,6 +206,22 @@ public protocol ResourceWriteService: Sendable {
         context: KubeContext,
         namespace: String,
         yaml: String
+    ) async throws
+
+    func patchCronJobSuspend(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        suspend: Bool
+    ) async throws
+
+    func createJobFromCronJob(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        cronJobName: String,
+        jobName: String
     ) async throws
 }
 
