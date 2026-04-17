@@ -6,3 +6,6 @@
 
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
+
+# Genereras lokalt av fake-k3s (innehåller cert) — ska inte finnas på main.
+assets/readme/kubeconfig.fake-cluster.yaml
