@@ -1937,7 +1937,8 @@ public struct RuneRootView: View {
                     describePaneIsEditing.toggle()
                 }
                 .buttonStyle(.bordered)
-                .disabled(viewModel.state.resourceDescribe.isEmpty)
+                .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
+                .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
 
                 Button("Revert") {
                     viewModel.revertResourceDescribeDraft()
@@ -1986,6 +1987,11 @@ public struct RuneRootView: View {
         }
         .onChange(of: viewModel.state.resourceDescribeBaseline) { _, _ in
             describePaneIsEditing = false
+        }
+        .onChange(of: viewModel.state.isReadOnlyMode) { _, isReadOnly in
+            if isReadOnly {
+                describePaneIsEditing = false
+            }
         }
     }
 
