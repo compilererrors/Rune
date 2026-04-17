@@ -15,7 +15,9 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     /// First attempt when using default process timeout; a second attempt uses `retryTimeoutAfterQuickFailure`.
     private let quickKubectlAttemptTimeout: TimeInterval = 12
     /// Second attempt after a timeout on the quick attempt (only when `timeout` parameter is nil).
-    private let retryTimeoutAfterQuickFailure: TimeInterval = 45
+    private let retryTimeoutAfterQuickFailure: TimeInterval = 90
+    /// Explicit ceiling for slow namespaced `kubectl get … -o json` on large / high-latency clusters (skips quick+retry when passed to `runKubectl`).
+    private let slowNamespacedJSONListTimeout: TimeInterval = 120
 
     public init(
         runner: CommandRunning = ProcessCommandRunner(),
@@ -308,15 +310,25 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.jobListArguments(context: context.name, namespace: namespace),
-            environment: env
-        )
-
+        // Layered like `listPods`: small custom-columns table first; JSON fallback for edge cases / older kubectl quirks.
         do {
-            return try parser.parseJobs(namespace: namespace, from: result.stdout)
+            let table = try await runKubectl(
+                arguments: builder.jobListTextArguments(context: context.name, namespace: namespace),
+                environment: env,
+                timeout: slowNamespacedJSONListTimeout
+            )
+            return parser.parseJobsTable(namespace: namespace, from: table.stdout)
         } catch {
-            throw RuneError.parseError(message: "jobs JSON kunde inte tolkas")
+            let fallback = try await runKubectl(
+                arguments: builder.jobListArguments(context: context.name, namespace: namespace),
+                environment: env,
+                timeout: slowNamespacedJSONListTimeout
+            )
+            do {
+                return try parser.parseJobs(namespace: namespace, from: fallback.stdout)
+            } catch {
+                throw RuneError.parseError(message: "jobs kunde inte tolkas")
+            }
         }
     }
 
@@ -326,15 +338,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let result = try await runKubectl(
-            arguments: builder.cronJobListArguments(context: context.name, namespace: namespace),
-            environment: env
-        )
-
         do {
-            return try parser.parseCronJobs(namespace: namespace, from: result.stdout)
+            let table = try await runKubectl(
+                arguments: builder.cronJobListTextArguments(context: context.name, namespace: namespace),
+                environment: env,
+                timeout: slowNamespacedJSONListTimeout
+            )
+            return parser.parseCronJobsTable(namespace: namespace, from: table.stdout)
         } catch {
-            throw RuneError.parseError(message: "cronjobs JSON kunde inte tolkas")
+            let fallback = try await runKubectl(
+                arguments: builder.cronJobListArguments(context: context.name, namespace: namespace),
+                environment: env,
+                timeout: slowNamespacedJSONListTimeout
+            )
+            do {
+                return try parser.parseCronJobs(namespace: namespace, from: fallback.stdout)
+            } catch {
+                throw RuneError.parseError(message: "cronjobs kunde inte tolkas")
+            }
         }
     }
 
@@ -673,13 +694,29 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        if let apiPath = builder.namespacedResourceListMetadataAPIPath(namespace: namespace, resource: resource) {
+            do {
+                let result = try await runKubectl(
+                    arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+                    environment: env,
+                    timeout: 45
+                )
+                if let total = KubectlListJSON.collectionListTotal(from: result.stdout) {
+                    return total
+                }
+            } catch {
+                // Fall back to line-by-line listing (older apiservers without `remainingItemCount`, etc.).
+            }
+        }
+
         let result = try await runKubectl(
             arguments: builder.namespacedResourceCountArguments(
                 context: context.name,
                 namespace: namespace,
                 resource: resource
             ),
-            environment: env
+            environment: env,
+            timeout: 90
         )
         return Self.parseLineCount(from: result.stdout)
     }
@@ -690,12 +727,28 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource) {
+            do {
+                let result = try await runKubectl(
+                    arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+                    environment: env,
+                    timeout: 45
+                )
+                if let total = KubectlListJSON.collectionListTotal(from: result.stdout) {
+                    return total
+                }
+            } catch {
+                // Legacy path below.
+            }
+        }
+
         let result = try await runKubectl(
             arguments: builder.clusterResourceCountArguments(
                 context: context.name,
                 resource: resource
             ),
-            environment: env
+            environment: env,
+            timeout: 90
         )
         return Self.parseLineCount(from: result.stdout)
     }

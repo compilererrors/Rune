@@ -373,9 +373,87 @@ public struct KubectlOutputParser {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Parses `kubectl get jobs ... -o custom-columns=NAME,SUCCEEDED,ACTIVE,FAILED` (tab-separated columns).
+    public func parseJobsTable(namespace: String, from raw: String) -> [ClusterResourceSummary] {
+        raw
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> ClusterResourceSummary? in
+                let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                let cols = trimmed.split(separator: "\t", omittingEmptySubsequences: false).map {
+                    String($0).trimmingCharacters(in: .whitespaces)
+                }
+                guard cols.count >= 4 else { return nil }
+                let name = cols[0]
+                guard !name.isEmpty else { return nil }
+                let succeeded = Self.parseTableInt(cols[1])
+                let active = Self.parseTableInt(cols[2])
+                let failed = Self.parseTableInt(cols[3])
+                let label = Self.jobStatusLabelFromCounts(succeeded: succeeded, active: active, failed: failed)
+                return ClusterResourceSummary(
+                    kind: .job,
+                    name: name,
+                    namespace: namespace,
+                    primaryText: label,
+                    secondaryText: "Job"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Parses `kubectl get cronjobs ... -o custom-columns=NAME,SCHEDULE,SUSPEND` (tab-separated; schedule may contain spaces).
+    public func parseCronJobsTable(namespace: String, from raw: String) -> [ClusterResourceSummary] {
+        raw
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> ClusterResourceSummary? in
+                let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                let cols = trimmed.split(separator: "\t", omittingEmptySubsequences: false).map {
+                    String($0).trimmingCharacters(in: .whitespaces)
+                }
+                guard cols.count >= 3 else { return nil }
+                let name = cols[0]
+                guard !name.isEmpty else { return nil }
+                let schedule = cols[1].isEmpty ? "—" : cols[1]
+                let suspended = cols[2].lowercased() == "true"
+                return ClusterResourceSummary(
+                    kind: .cronJob,
+                    name: name,
+                    namespace: namespace,
+                    primaryText: schedule,
+                    secondaryText: suspended ? "Suspended" : "Active"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func parseTableInt(_ raw: String) -> Int {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty || t == "<none>" { return 0 }
+        return Int(t) ?? 0
+    }
+
+    private static func jobStatusLabelFromCounts(succeeded: Int, active: Int, failed: Int) -> String {
+        if failed > 0 {
+            return "Failed (\(failed))"
+        }
+        if succeeded > 0 {
+            return "Complete (\(succeeded))"
+        }
+        if active > 0 {
+            return "Running (\(active))"
+        }
+        return "Pending"
+    }
+
     public func parseJobs(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
-        let decoded = try JSONDecoder().decode(KubeList<KubeJobItem>.self, from: Data(raw.utf8))
-        return decoded.items
+        let items = try KubectlListJSON.decodeLenientListItems(
+            KubeJobItem.self,
+            from: raw,
+            invalidJSONMessage: "jobs JSON kunde inte tolkas",
+            invalidStructureMessage: "jobs: förväntade JSON-objekt med items"
+        )
+        return items
             .map { item in
                 let statusLabel = Self.jobStatusLabel(status: item.status)
                 return ClusterResourceSummary(
@@ -404,46 +482,25 @@ public struct KubectlOutputParser {
     }
 
     public func parseCronJobs(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        let data = Data(trimmed.utf8)
-        // Lenient: decode each List item separately so one non-conforming object (or API drift) cannot empty the whole table.
-        let rootObject: Any
-        do {
-            rootObject = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw RuneError.parseError(message: "cronjobs JSON kunde inte tolkas")
-        }
-        guard let root = rootObject as? [String: Any] else {
-            throw RuneError.parseError(message: "cronjobs: förväntade JSON-objekt med items")
-        }
-        let rawItems = root["items"] as? [Any] ?? []
-        var summaries: [ClusterResourceSummary] = []
-        summaries.reserveCapacity(rawItems.count)
-
-        let decoder = JSONDecoder()
-        for item in rawItems {
-            guard let dict = item as? [String: Any],
-                  let itemData = try? JSONSerialization.data(withJSONObject: dict),
-                  let cron = try? decoder.decode(KubeCronJobItem.self, from: itemData)
-            else {
-                continue
-            }
-            let schedule = cron.spec?.schedule ?? "—"
-            let suspended = cron.spec?.suspend == true
-            summaries.append(
-                ClusterResourceSummary(
+        let items = try KubectlListJSON.decodeLenientListItems(
+            KubeCronJobItem.self,
+            from: raw,
+            invalidJSONMessage: "cronjobs JSON kunde inte tolkas",
+            invalidStructureMessage: "cronjobs: förväntade JSON-objekt med items"
+        )
+        return items
+            .map { cron in
+                let schedule = cron.spec?.schedule ?? "—"
+                let suspended = cron.spec?.suspend == true
+                return ClusterResourceSummary(
                     kind: .cronJob,
                     name: cron.metadata.name,
                     namespace: cron.metadata.namespace ?? namespace,
                     primaryText: schedule,
                     secondaryText: suspended ? "Suspended" : "Active"
                 )
-            )
-        }
-
-        return summaries.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     public func parseReplicaSets(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {

@@ -12,8 +12,77 @@ final class KubectlTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         XCTAssertEqual(
             builder.namespaceListArguments(context: "prod"),
-            ["--context", "prod", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+            ["--context", "prod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
         )
+    }
+
+    func testRawListMetadataPathForDeployments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.namespacedResourceListMetadataAPIPath(namespace: "default", resource: "deployments"),
+            "/apis/apps/v1/namespaces/default/deployments?limit=1"
+        )
+        XCTAssertEqual(
+            builder.rawGetArguments(context: "prod", apiPath: "/apis/apps/v1/namespaces/default/deployments?limit=1"),
+            ["--context", "prod", "get", "--raw", "/apis/apps/v1/namespaces/default/deployments?limit=1"]
+        )
+    }
+
+    func testCollectionListTotalUsesRemainingItemCount() {
+        let json = """
+        {"metadata":{"remainingItemCount":99,"resourceVersion":"1"},"items":[{"metadata":{"name":"a"}}]}
+        """
+        XCTAssertEqual(KubectlListJSON.collectionListTotal(from: json), 100)
+    }
+
+    func testCollectionListTotalCompleteList() {
+        let json = """
+        {"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}}]}
+        """
+        XCTAssertEqual(KubectlListJSON.collectionListTotal(from: json), 2)
+    }
+
+    func testCollectionListTotalReturnsNilWhenContinueWithoutRemaining() {
+        let json = """
+        {"metadata":{"continue":"opaque","resourceVersion":"1"},"items":[{"metadata":{"name":"a"}}]}
+        """
+        XCTAssertNil(KubectlListJSON.collectionListTotal(from: json))
+    }
+
+    func testCronJobListTextArgumentsUsesTabsFriendlyColumns() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.cronJobListTextArguments(context: "qa", namespace: "example-namespace")
+        XCTAssertEqual(
+            args,
+            [
+                "--context", "qa",
+                "get", "cronjobs",
+                "-n", "example-namespace",
+                "--chunk-size=200",
+                "--request-timeout=90s",
+                "-o", "custom-columns=NAME:.metadata.name,SCHEDULE:.spec.schedule,SUSPEND:.spec.suspend",
+                "--no-headers"
+            ]
+        )
+    }
+
+    func testParseCronJobsTableTabSeparatedSchedule() {
+        let parser = KubectlOutputParser()
+        let stdout = "articleexport-idnet-cronjob\t0 6 * * *\tfalse\n"
+        let rows = parser.parseCronJobsTable(namespace: "example-namespace", from: stdout)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].name, "articleexport-idnet-cronjob")
+        XCTAssertEqual(rows[0].primaryText, "0 6 * * *")
+        XCTAssertEqual(rows[0].secondaryText, "Active")
+    }
+
+    func testParseJobsTable() {
+        let parser = KubectlOutputParser()
+        let stdout = "my-job\t1\t0\t0\n"
+        let rows = parser.parseJobsTable(namespace: "default", from: stdout)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].name, "my-job")
+        XCTAssertTrue(rows[0].primaryText.contains("Complete"))
     }
 
     func testContextNamespaceArguments() {
@@ -64,7 +133,7 @@ final class KubectlTests: XCTestCase {
 
         XCTAssertEqual(
             args,
-            ["--context", "prod", "get", "pods", "-n", "default", "--chunk-size=200", "--request-timeout=20s", "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase", "--no-headers"]
+            ["--context", "prod", "get", "pods", "-n", "default", "--chunk-size=200", "--request-timeout=90s", "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase", "--no-headers"]
         )
     }
 

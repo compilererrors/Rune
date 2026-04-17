@@ -695,8 +695,8 @@ public struct RuneRootView: View {
     }
 
     private func resourceKindPicker(kinds: [KubeResourceKind]) -> some View {
-        runeSegmentedControlInScroll(
-            title: "Kind",
+        RuneSegmentedPickerInScroll(
+            "Kind",
             selection: Binding(get: {
                 viewModel.state.selectedWorkloadKind
             }, set: { kind in
@@ -708,30 +708,6 @@ public struct RuneRootView: View {
             }
         }
         .accessibilityLabel("Resource kind")
-    }
-
-    /// `NSSegmentedControl` uses intrinsic width; many segments otherwise extend past the `HSplitView` column and draw under the sidebar. Scroll instead of clipping.
-    private func runeSegmentedControlInScroll<SelectionValue: Hashable, Content: View>(
-        title: LocalizedStringKey,
-        selection: Binding<SelectionValue>,
-        labelsHidden: Bool = false,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Group {
-                if labelsHidden {
-                    Picker(title, selection: selection, content: content)
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .fixedSize(horizontal: true, vertical: false)
-                } else {
-                    Picker(title, selection: selection, content: content)
-                        .pickerStyle(.segmented)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var overviewPane: some View {
@@ -1385,8 +1361,8 @@ public struct RuneRootView: View {
                         .font(.title2.weight(.bold))
                         .help(release.name)
 
-                    runeSegmentedControlInScroll(
-                        title: "",
+                    RuneSegmentedPickerInScroll(
+                        "",
                         selection: $helmInspectorTab,
                         labelsHidden: true
                     ) {
@@ -1494,8 +1470,8 @@ public struct RuneRootView: View {
                     Text(pod.name)
                         .font(.title2.weight(.bold))
 
-                    runeSegmentedControlInScroll(
-                        title: "",
+                    RuneSegmentedPickerInScroll(
+                        "",
                         selection: $podInspectorTab,
                         labelsHidden: true
                     ) {
@@ -1548,8 +1524,8 @@ public struct RuneRootView: View {
                     Text(deployment.name)
                         .font(.title2.weight(.bold))
 
-                    runeSegmentedControlInScroll(
-                        title: "",
+                    RuneSegmentedPickerInScroll(
+                        "",
                         selection: $deploymentInspectorTab,
                         labelsHidden: true
                     ) {
@@ -1632,8 +1608,8 @@ public struct RuneRootView: View {
                     Text(service.name)
                         .font(.title2.weight(.bold))
 
-                    runeSegmentedControlInScroll(
-                        title: "",
+                    RuneSegmentedPickerInScroll(
+                        "",
                         selection: $serviceInspectorTab,
                         labelsHidden: true
                     ) {
@@ -1802,7 +1778,7 @@ public struct RuneRootView: View {
                     }
                     .font(.subheadline)
 
-                    runeSegmentedControlInScroll(title: "Manifest", selection: $genericResourceManifestTab) {
+                    RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
                         ForEach(GenericResourceManifestTab.allCases) { tab in
                             Text(tab.title).tag(tab)
                         }
