@@ -7,6 +7,8 @@ PRODUCT_NAME="RuneApp"
 CONFIGURATION="${CONFIGURATION:-release}"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
+ICON_SOURCE="${ICON_SOURCE:-${ROOT_DIR}/assets/rune_wheel.icns}"
+ICON_NAME="AppIcon.icns"
 
 cd "${ROOT_DIR}"
 
@@ -26,6 +28,12 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}"
 
+if [[ -f "${ICON_SOURCE}" ]]; then
+  cp "${ICON_SOURCE}" "${APP_BUNDLE}/Contents/Resources/${ICON_NAME}"
+else
+  echo "Varning: hittade ingen app-ikon på ${ICON_SOURCE}, fortsätter utan ikon." >&2
+fi
+
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,6 +47,8 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 	<string>RuneApp</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.rune.desktop</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

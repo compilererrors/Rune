@@ -97,14 +97,9 @@ private enum HelmInspectorTab: String, CaseIterable, Identifiable {
 }
 
 public struct RuneRootView: View {
-    /// Shared metrics for context / namespace / usage chips in the content header so labels and badges align.
-    private enum HeaderToolbarStyle {
-        static let chipHeight: CGFloat = 28
-        static let horizontalPadding: CGFloat = 10
-    }
-
     @ObservedObject private var viewModel: RuneAppViewModel
 
+    @State private var measuredWindowContentTopInset: CGFloat?
     @State private var podInspectorTab: PodInspectorTab = .overview
     @State private var serviceInspectorTab: ServiceInspectorTab = .overview
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
@@ -112,6 +107,7 @@ public struct RuneRootView: View {
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
     /// When false, YAML is read-only in the inspector; Edit enables the text editor (requires write access).
     @State private var yamlManifestIsEditing = false
+    @State private var describePaneIsEditing = false
 
     public init(viewModel: RuneAppViewModel = RuneAppViewModel()) {
         self.viewModel = viewModel
@@ -120,6 +116,8 @@ public struct RuneRootView: View {
     public var body: some View {
         ZStack {
             background
+            WindowChromeConfigurator(measuredTopInset: $measuredWindowContentTopInset)
+                .frame(width: 0, height: 0)
 
             NavigationSplitView {
                 sidebar
@@ -140,6 +138,7 @@ public struct RuneRootView: View {
                     .navigationSplitViewColumnWidth(min: 340, ideal: 440, max: 820)
             }
             .navigationSplitViewStyle(.balanced)
+            .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
                     Button {
@@ -189,7 +188,7 @@ public struct RuneRootView: View {
                     .keyboardShortcut("r", modifiers: .command)
                 }
             }
-            .toolbarBackground(.hidden, for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
             .sheet(isPresented: commandPalettePresentedBinding) {
                 CommandPaletteView(viewModel: viewModel)
             }
@@ -286,7 +285,7 @@ public struct RuneRootView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(RuneUILayoutMetrics.sidebarPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.thinMaterial)
     }
@@ -379,7 +378,7 @@ public struct RuneRootView: View {
                 rbacPane
             }
         }
-        .padding(16)
+        .padding(RuneUILayoutMetrics.paneOuterPadding)
     }
 
     private var contentHeader: some View {
@@ -396,8 +395,8 @@ public struct RuneRootView: View {
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
                         .lineLimit(1)
-                        .padding(.horizontal, HeaderToolbarStyle.horizontalPadding)
-                        .frame(height: HeaderToolbarStyle.chipHeight)
+                        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
+                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
                         .background(.thinMaterial, in: Capsule())
                         .help(context.name)
                 }
@@ -410,8 +409,8 @@ public struct RuneRootView: View {
                         .font(.caption.weight(.semibold))
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
-                        .padding(.horizontal, HeaderToolbarStyle.horizontalPadding)
-                        .frame(height: HeaderToolbarStyle.chipHeight)
+                        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
+                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
                         .background(Color.orange.opacity(0.16), in: Capsule())
                 }
 
@@ -462,8 +461,8 @@ public struct RuneRootView: View {
                 .labelStyle(.titleAndIcon)
                 .imageScale(.small)
                 .lineLimit(1)
-                .padding(.horizontal, HeaderToolbarStyle.horizontalPadding)
-                .frame(height: HeaderToolbarStyle.chipHeight)
+                .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
+                .frame(height: RuneUILayoutMetrics.headerChipHeight)
                 .background(.thinMaterial, in: Capsule())
                 .help("Byt namespace via dropdown i topbaren eller Command Palette (:ns)")
 
@@ -480,7 +479,7 @@ public struct RuneRootView: View {
             if viewModel.state.isLoading {
                 ProgressView()
                     .scaleEffect(0.8)
-                    .frame(height: HeaderToolbarStyle.chipHeight)
+                    .frame(height: RuneUILayoutMetrics.headerChipHeight)
             }
         }
     }
@@ -948,7 +947,7 @@ public struct RuneRootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(12)
+            .padding(RuneUILayoutMetrics.paneInnerPadding)
             .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             if let error = viewModel.state.lastError {
@@ -959,7 +958,7 @@ public struct RuneRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(16)
+        .padding(RuneUILayoutMetrics.paneOuterPadding)
         .background(.regularMaterial)
     }
 
@@ -1185,34 +1184,7 @@ public struct RuneRootView: View {
 
                     switch podInspectorTab {
                     case .overview:
-                        VStack(alignment: .leading, spacing: 12) {
-                            if shouldShowResourceNamespaceLabel(pod.namespace) {
-                                inspectorInsetCard {
-                                    Label("Namespace: \(pod.namespace)", systemImage: "square.stack.3d.up")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            inspectorInsetCard {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Label("Status: \(pod.status)", systemImage: "waveform.path.ecg")
-                                        .font(.body.weight(.medium))
-                                    Divider().opacity(0.45)
-                                    inspectorActionButtonRow {
-                                        Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
-                                            .buttonStyle(.bordered)
-                                            .disabled(!viewModel.writeActionsEnabled)
-                                        Button("Export…") { viewModel.saveCurrentResourceYAML() }
-                                            .buttonStyle(.bordered)
-                                        Spacer(minLength: 0)
-                                    }
-                                    Button("Delete", role: .destructive) {
-                                        viewModel.requestDeleteSelectedResource()
-                                    }
-                                    .disabled(!viewModel.writeActionsEnabled)
-                                }
-                            }
-                        }
+                        podOverviewSection(pod: pod)
 
                     case .logs:
                         VStack(alignment: .leading, spacing: 10) {
@@ -1227,11 +1199,7 @@ public struct RuneRootView: View {
                         portForwardPane(targetKind: .pod, targetName: pod.name)
 
                     case .describe:
-                        exportableTextPane(
-                            text: viewModel.state.resourceDescribe,
-                            emptyText: "No describe loaded",
-                            saveAction: { viewModel.saveCurrentResourceDescribe() }
-                        )
+                        describeBlock
 
                     case .yaml:
                         yamlBlock
@@ -1306,11 +1274,7 @@ public struct RuneRootView: View {
                         }
 
                     case .describe:
-                        exportableTextPane(
-                            text: viewModel.state.resourceDescribe,
-                            emptyText: "No describe loaded",
-                            saveAction: { viewModel.saveCurrentResourceDescribe() }
-                        )
+                        describeBlock
 
                     case .yaml:
                         yamlBlock
@@ -1389,11 +1353,7 @@ public struct RuneRootView: View {
                         portForwardPane(targetKind: .service, targetName: service.name)
 
                     case .describe:
-                        exportableTextPane(
-                            text: viewModel.state.resourceDescribe,
-                            emptyText: "No describe loaded",
-                            saveAction: { viewModel.saveCurrentResourceDescribe() }
-                        )
+                        describeBlock
 
                     case .yaml:
                         yamlBlock
@@ -1458,11 +1418,7 @@ public struct RuneRootView: View {
 
                     switch genericResourceManifestTab {
                     case .describe:
-                        exportableTextPane(
-                            text: viewModel.state.resourceDescribe,
-                            emptyText: "No describe loaded",
-                            saveAction: { viewModel.saveCurrentResourceDescribe() }
-                        )
+                        describeBlock
                     case .yaml:
                         yamlBlock
                     }
@@ -1477,6 +1433,13 @@ public struct RuneRootView: View {
         Binding(
             get: { viewModel.state.resourceYAML },
             set: { viewModel.state.updateResourceYAMLDraft($0) }
+        )
+    }
+
+    private var describeDraftBinding: Binding<String> {
+        Binding(
+            get: { viewModel.state.resourceDescribe },
+            set: { viewModel.state.updateResourceDescribeDraft($0) }
         )
     }
 
@@ -1569,6 +1532,78 @@ public struct RuneRootView: View {
         }
         .onChange(of: viewModel.state.resourceYAMLBaseline) { _, _ in
             yamlManifestIsEditing = false
+        }
+    }
+
+    /// `kubectl describe` output with optional local edits (Save…). In k9s, `e` runs `kubectl edit` (YAML); use the YAML tab to change the cluster.
+    private var describeBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if viewModel.state.resourceDescribeHasUnsavedEdits {
+                    Text("Unsaved edits")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Button(describePaneIsEditing ? "Done" : "Edit") {
+                    describePaneIsEditing.toggle()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.state.resourceDescribe.isEmpty)
+
+                Button("Revert") {
+                    viewModel.revertResourceDescribeDraft()
+                    describePaneIsEditing = false
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
+
+                Button("Save…") {
+                    viewModel.saveCurrentResourceDescribe()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.state.resourceDescribe.isEmpty)
+
+                Spacer(minLength: 0)
+            }
+
+            Group {
+                if describePaneIsEditing {
+                    TextEditor(text: describeDraftBinding)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 280)
+                        .padding(10)
+                        .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    ScrollView {
+                        Text(
+                            viewModel.state.resourceDescribe.isEmpty
+                                ? "No describe loaded"
+                                : viewModel.state.resourceDescribe
+                        )
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(10)
+                    }
+                    .frame(minHeight: 280)
+                    .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+
+            Text(
+                "In k9s, “e” runs kubectl edit (opens your editor on the resource YAML). This tab shows kubectl describe; edits here are local. Use the YAML tab to apply changes to the cluster."
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: viewModel.state.resourceDescribeBaseline) { _, _ in
+            describePaneIsEditing = false
         }
     }
 
@@ -2048,8 +2083,8 @@ public struct RuneRootView: View {
             Text(value)
                 .font(.caption.weight(.bold))
         }
-        .padding(.horizontal, HeaderToolbarStyle.horizontalPadding)
-        .frame(height: HeaderToolbarStyle.chipHeight)
+        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
+        .frame(height: RuneUILayoutMetrics.headerChipHeight)
         .background(Color.secondary.opacity(0.14), in: Capsule())
     }
 
@@ -2180,6 +2215,80 @@ public struct RuneRootView: View {
 
     private func deploymentScaleIsDirty(_ deployment: DeploymentSummary) -> Bool {
         viewModel.scaleReplicaInput != deployment.desiredReplicas
+    }
+
+    private func podOverviewSection(pod: PodSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if shouldShowResourceNamespaceLabel(pod.namespace) {
+                inspectorInsetCard {
+                    Label("Namespace: \(pod.namespace)", systemImage: "square.stack.3d.up")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            inspectorInsetCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    podOverviewRow(title: "Status", value: pod.status, symbol: "waveform.path.ecg")
+                    Divider()
+                        .opacity(0.45)
+                    podOverviewRow(title: "Ready", value: pod.containersReady ?? "—", symbol: "checkmark.circle")
+                    podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
+                    podOverviewRow(title: "Age", value: pod.ageDescription, symbol: "clock")
+                    podOverviewRow(title: "CPU", value: pod.cpuDisplay, symbol: "cpu")
+                    podOverviewRow(title: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
+                    Divider()
+                        .opacity(0.45)
+                    podOverviewRow(title: "Node", value: pod.nodeName ?? "—", symbol: "server.rack")
+                    podOverviewRow(title: "Pod IP", value: pod.podIP ?? "—", symbol: "network")
+                    podOverviewRow(title: "Host IP", value: pod.hostIP ?? "—", symbol: "cable.connector")
+                    podOverviewRow(title: "QoS class", value: pod.qosClass ?? "—", symbol: "slider.horizontal.3")
+                    if let containers = pod.containerNamesLine, !containers.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "square.stack.3d.forward.dottedline")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 14, alignment: .center)
+                                Text("Containers")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(containers)
+                                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    Divider()
+                        .opacity(0.45)
+
+                    Button("Delete", role: .destructive) {
+                        viewModel.requestDeleteSelectedResource()
+                    }
+                    .disabled(!viewModel.writeActionsEnabled)
+                }
+            }
+        }
+    }
+
+    private func podOverviewRow(title: String, value: String, symbol: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, alignment: .center)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 118, alignment: .leading)
+
+            Text(value)
+                .font(.body.weight(.medium))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func deploymentOverviewSection(deployment: DeploymentSummary) -> some View {

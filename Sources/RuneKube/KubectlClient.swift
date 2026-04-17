@@ -1204,7 +1204,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 totalRestarts: pod.totalRestarts,
                 ageDescription: pod.ageDescription,
                 cpuUsage: m.cpu,
-                memoryUsage: m.memory
+                memoryUsage: m.memory,
+                podIP: pod.podIP,
+                hostIP: pod.hostIP,
+                nodeName: pod.nodeName,
+                qosClass: pod.qosClass,
+                containersReady: pod.containersReady,
+                containerNamesLine: pod.containerNamesLine
             )
         }
     }
@@ -1223,7 +1229,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 totalRestarts: pod.totalRestarts,
                 ageDescription: pod.ageDescription,
                 cpuUsage: m.cpu,
-                memoryUsage: m.memory
+                memoryUsage: m.memory,
+                podIP: pod.podIP,
+                hostIP: pod.hostIP,
+                nodeName: pod.nodeName,
+                qosClass: pod.qosClass,
+                containersReady: pod.containersReady,
+                containerNamesLine: pod.containerNamesLine
             )
         }
     }
