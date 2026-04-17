@@ -75,7 +75,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         let pods: [PodSummary]
         do {
-            // Fast path: lightweight tabular output is significantly cheaper than full JSON in busy namespaces.
+            // Fast path: lightweight table; IP/node/QoS/ready come from `enrichPodsWithJSONList` (background).
             let list = try await runKubectl(
                 arguments: builder.podListTextArguments(context: context.name, namespace: namespace),
                 environment: env
@@ -102,6 +102,44 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
 
         return merged
+    }
+
+    /// Full JSON list merged into `base` by pod id — keeps status/restarts/age/CPU/mem from `base`, fills IP/node/QoS/ready from JSON.
+    public func enrichPodsWithJSONList(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        merging base: [PodSummary]
+    ) async throws -> [PodSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let list = try await runKubectl(
+            arguments: builder.podListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+        let trimmed = list.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detailed = try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+        return Self.mergePodSummariesPreservingMetrics(base: base, detail: detailed)
+    }
+
+    /// Single-pod JSON for the inspector overview (IP, node, QoS, ready) — lighter than listing all pods.
+    public func fetchPodSummaryForInspector(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String
+    ) async throws -> PodSummary {
+        let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.resourceJSONArguments(
+                context: context.name,
+                namespace: namespace,
+                kind: .pod,
+                name: podName
+            ),
+            environment: env
+        )
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try parser.parseSinglePodJSON(namespace: namespace, from: trimmed)
     }
 
     public func listPodStatuses(
@@ -1189,6 +1227,32 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         timeout: TimeInterval? = nil
     ) async -> CommandResult? {
         try? await runKubectl(arguments: arguments, environment: environment, timeout: timeout)
+    }
+
+    private static func mergePodSummariesPreservingMetrics(base: [PodSummary], detail: [PodSummary]) -> [PodSummary] {
+        let detailById = Dictionary(uniqueKeysWithValues: detail.map { ($0.id, $0) })
+        return base.map { pod in
+            guard let d = detailById[pod.id] else { return pod }
+            return mergePodSummaryPreservingMetrics(base: pod, detail: d)
+        }
+    }
+
+    private static func mergePodSummaryPreservingMetrics(base: PodSummary, detail: PodSummary) -> PodSummary {
+        PodSummary(
+            name: base.name,
+            namespace: base.namespace,
+            status: base.status,
+            totalRestarts: base.totalRestarts,
+            ageDescription: base.ageDescription,
+            cpuUsage: base.cpuUsage,
+            memoryUsage: base.memoryUsage,
+            podIP: detail.podIP ?? base.podIP,
+            hostIP: detail.hostIP ?? base.hostIP,
+            nodeName: detail.nodeName ?? base.nodeName,
+            qosClass: detail.qosClass ?? base.qosClass,
+            containersReady: detail.containersReady ?? base.containersReady,
+            containerNamesLine: detail.containerNamesLine ?? base.containerNamesLine
+        )
     }
 
     private func mergePodNameMetrics(
