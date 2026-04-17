@@ -558,14 +558,22 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             follow: false
         )
 
+        // Fail fast: short first attempt surfaces wedged API servers quickly; second attempt uses the full budget.
+        let budget = logFetchTimeout(for: filter)
+        let phase1 = min(20, max(12, budget / 3))
+        let phase2 = min(60, max(phase1 + 5, budget))
+
         let result: CommandResult
         do {
-            result = try await runKubectl(arguments: arguments, environment: env, timeout: logFetchTimeout(for: filter))
+            result = try await runKubectlOnce(arguments: arguments, environment: env, timeout: phase1)
         } catch {
             if previous, isMissingPreviousLogsError(error) {
                 return "No previous logs available for \(podName)."
             }
-            throw error
+            guard isProcessTimeoutError(error) else {
+                throw error
+            }
+            result = try await runKubectlOnce(arguments: arguments, environment: env, timeout: phase2)
         }
 
         return result.stdout
@@ -1159,18 +1167,19 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             || text.contains("previous container not found")
     }
 
+    /// Process-side ceiling for `kubectl logs` (second phase). Kept modest so the UI is not blocked for minutes.
     private func logFetchTimeout(for filter: LogTimeFilter) -> TimeInterval {
         switch filter {
         case .all:
-            return 60
-        case let .tailLines(lines) where lines >= 10_000:
-            return 90
-        case .lastDays(let days) where days >= 7:
-            return 90
-        case .lastHours, .lastDays:
-            return 60
-        default:
             return 45
+        case let .tailLines(lines) where lines >= 10_000:
+            return 60
+        case .lastDays(let days) where days >= 7:
+            return 60
+        case .lastHours, .lastDays:
+            return 50
+        default:
+            return 40
         }
     }
 
