@@ -18,7 +18,7 @@ struct CommandPaletteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Command Palette")
                     .font(.title3.weight(.semibold))
-                Text("Sök eller k9s-stil: `:po`, `:deploy`, `:sts`, `:svc`, `:ing`, `:cm`, `:sec`, `:ctx`, `:ns`, `:rbac`, `:cr`, `:helm` …")
+                Text("Search or use a prefix: `:po`, `:deploy`, `:sts`, `:svc`, `:ing`, `:cm`, `:sec`, `:ctx`, `:ns`, `:rbac`, `:cr`, `:helm` …")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -26,7 +26,7 @@ struct CommandPaletteView: View {
             HStack(spacing: 10) {
                 Image(systemName: query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(":") ? "terminal" : "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Sök eller skriv t.ex. :po api, :svc billing, :ns kube-system, :rbac", text: $query)
+                TextField("Search or type e.g. :po api, :svc billing, :ns kube-system, :rbac", text: $query)
                     .textFieldStyle(.plain)
                     .focused($focusedTarget, equals: .input)
                     .onSubmit {
