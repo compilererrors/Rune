@@ -110,6 +110,7 @@ final class KubectlTests: XCTestCase {
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("--timestamps"))
         XCTAssertTrue(args.contains("--tail=5000"))
+        XCTAssertTrue(args.contains("--request-timeout"))
     }
 
     func testLogsArgumentsRecentLinesUsesTailOnly() {

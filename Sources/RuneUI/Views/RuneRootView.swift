@@ -110,6 +110,8 @@ public struct RuneRootView: View {
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
+    /// When false, YAML is read-only in the inspector; Edit enables the text editor (requires write access).
+    @State private var yamlManifestIsEditing = false
 
     public init(viewModel: RuneAppViewModel = RuneAppViewModel()) {
         self.viewModel = viewModel
@@ -1215,32 +1217,7 @@ public struct RuneRootView: View {
                     case .logs:
                         VStack(alignment: .leading, spacing: 10) {
                             logsToolbar
-                            ScrollView {
-                                Group {
-                                    if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
-                                        HStack(spacing: 10) {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                            Text("Laddar loggar…")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(10)
-                                    } else if viewModel.state.podLogs.isEmpty {
-                                        Text("Inga loggar ännu")
-                                            .foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(10)
-                                    } else {
-                                        Text(viewModel.state.podLogs)
-                                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .textSelection(.enabled)
-                                            .padding(10)
-                                    }
-                                }
-                                .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            }
+                            podLogsOutputScroll()
                         }
 
                     case .exec:
@@ -1296,32 +1273,7 @@ public struct RuneRootView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            ScrollView {
-                                Group {
-                                    if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
-                                        HStack(spacing: 10) {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                            Text("Laddar enhetliga loggar…")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(10)
-                                    } else if viewModel.state.unifiedServiceLogs.isEmpty {
-                                        Text("Inga enhetliga loggar ännu")
-                                            .foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(10)
-                                    } else {
-                                        Text(viewModel.state.unifiedServiceLogs)
-                                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .textSelection(.enabled)
-                                            .padding(10)
-                                    }
-                                }
-                                .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            }
+                            unifiedLogsOutputScroll()
                         }
 
                     case .rollout:
@@ -1430,32 +1382,7 @@ public struct RuneRootView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            ScrollView {
-                                Group {
-                                    if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
-                                        HStack(spacing: 10) {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                            Text("Laddar enhetliga loggar…")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(10)
-                                    } else if viewModel.state.unifiedServiceLogs.isEmpty {
-                                        Text("Inga enhetliga loggar ännu")
-                                            .foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(10)
-                                    } else {
-                                        Text(viewModel.state.unifiedServiceLogs)
-                                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .textSelection(.enabled)
-                                            .padding(10)
-                                    }
-                                }
-                                .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            }
+                            unifiedLogsOutputScroll()
                         }
 
                     case .portForward:
@@ -1574,8 +1501,15 @@ public struct RuneRootView: View {
                         || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
 
+                Button(yamlManifestIsEditing ? "Done" : "Edit") {
+                    yamlManifestIsEditing.toggle()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
+
                 Button("Revert") {
                     viewModel.revertResourceYAMLDraft()
+                    yamlManifestIsEditing = false
                 }
                 .buttonStyle(.bordered)
                 .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
@@ -1585,6 +1519,9 @@ public struct RuneRootView: View {
 
                 Button("Import…") {
                     viewModel.importResourceYAMLFromFile()
+                    if viewModel.writeActionsEnabled {
+                        yamlManifestIsEditing = true
+                    }
                 }
                 .buttonStyle(.bordered)
                 .help("Replace the editor with the contents of a YAML file")
@@ -1598,13 +1535,30 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            TextEditor(text: yamlDraftBinding)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 280)
-                .padding(10)
-                .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .disabled(!viewModel.writeActionsEnabled)
+            Group {
+                if yamlManifestIsEditing, viewModel.writeActionsEnabled {
+                    TextEditor(text: yamlDraftBinding)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 280)
+                        .padding(10)
+                        .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    ScrollView {
+                        Text(
+                            viewModel.state.resourceYAML.isEmpty
+                                ? "No YAML loaded"
+                                : viewModel.state.resourceYAML
+                        )
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(10)
+                    }
+                    .frame(minHeight: 280)
+                    .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
 
             if viewModel.state.resourceYAML.isEmpty {
                 Text("Load a resource or wait for the manifest to finish loading. You can also use Import… to paste YAML from a file.")
@@ -1612,6 +1566,9 @@ public struct RuneRootView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .onChange(of: viewModel.state.resourceYAMLBaseline) { _, _ in
+            yamlManifestIsEditing = false
         }
     }
 
@@ -1656,6 +1613,111 @@ public struct RuneRootView: View {
                 viewModel.saveCurrentLogs()
             }
         }
+    }
+
+    // MARK: - Log panes (pod + unified workloads)
+
+    /// Shown while kubectl log fetch is in flight (`isLoadingLogs` or global `isLoading`).
+    private func logLoadingPlaceholder() -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading logs…")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+
+    /// Shown when log fetch failed (timeout or kubectl error). Message is English from the client layer.
+    private func logFetchErrorView(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Could not load logs")
+                .font(.body.weight(.semibold))
+            Text(message)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Retry") {
+                viewModel.reloadLogsForSelection()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+
+    private func logTextScrollContent(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .padding(10)
+    }
+
+    /// Single-pod Logs tab: loading spinner, error, empty state, or lines.
+    private func podLogsOutputScroll() -> some View {
+        ScrollView {
+            Group {
+                if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
+                    logLoadingPlaceholder()
+                } else if let err = viewModel.state.lastLogFetchError {
+                    logFetchErrorView(message: err)
+                } else if viewModel.state.podLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    podLogsEmptyPlaceholder()
+                } else {
+                    logTextScrollContent(viewModel.state.podLogs)
+                }
+            }
+            .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func podLogsEmptyPlaceholder() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No log output")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text("The pod may be idle, or the current filter returned no lines.")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+
+    /// Deployment / Service unified logs: loading, error, empty, or merged lines.
+    private func unifiedLogsOutputScroll() -> some View {
+        ScrollView {
+            Group {
+                if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
+                    logLoadingPlaceholder()
+                } else if let err = viewModel.state.lastLogFetchError {
+                    logFetchErrorView(message: err)
+                } else if viewModel.state.unifiedServiceLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    unifiedLogsEmptyPlaceholder()
+                } else {
+                    logTextScrollContent(viewModel.state.unifiedServiceLogs)
+                }
+            }
+            .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func unifiedLogsEmptyPlaceholder() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No log output")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text("No lines were returned for the selected pods and the current filter. Pods may be idle or produce no output for this time window.")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
     }
 
     private func execPane(for pod: PodSummary) -> some View {
