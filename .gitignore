@@ -2,8 +2,5 @@
 .build/
 .swiftpm/
 
-# Local branding / sprites; add intentionally when ready.
-assets/
-
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
