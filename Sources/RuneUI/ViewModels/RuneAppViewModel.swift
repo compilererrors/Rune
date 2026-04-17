@@ -179,6 +179,14 @@ private struct NavigationCheckpoint: Equatable, Sendable {
     let selectedEventID: String?
     let selectedStatefulSetName: String?
     let selectedDaemonSetName: String?
+    let selectedJobName: String?
+    let selectedCronJobName: String?
+    let selectedReplicaSetName: String?
+    let selectedPersistentVolumeClaimName: String?
+    let selectedPersistentVolumeName: String?
+    let selectedStorageClassName: String?
+    let selectedHorizontalPodAutoscalerName: String?
+    let selectedNetworkPolicyName: String?
     let selectedIngressName: String?
     let selectedConfigMapName: String?
     let selectedSecretName: String?
@@ -195,6 +203,14 @@ private struct SnapshotLoadPlan: Sendable {
     var deploymentCount = false
     var statefulSets = false
     var daemonSets = false
+    var jobs = false
+    var cronJobs = false
+    var replicaSets = false
+    var persistentVolumeClaims = false
+    var persistentVolumes = false
+    var storageClasses = false
+    var horizontalPodAutoscalers = false
+    var networkPolicies = false
     var services = false
     var servicesCount = false
     var ingresses = false
@@ -231,6 +247,14 @@ private struct SnapshotLoadPlan: Sendable {
                 plan.statefulSets = true
             case .daemonSet:
                 plan.daemonSets = true
+            case .job:
+                plan.jobs = true
+            case .cronJob:
+                plan.cronJobs = true
+            case .replicaSet:
+                plan.replicaSets = true
+            case .horizontalPodAutoscaler:
+                plan.horizontalPodAutoscalers = true
             default:
                 plan.pods = true
             }
@@ -238,6 +262,8 @@ private struct SnapshotLoadPlan: Sendable {
             switch kind {
             case .ingress:
                 plan.ingresses = true
+            case .networkPolicy:
+                plan.networkPolicies = true
             default:
                 plan.services = true
             }
@@ -249,7 +275,18 @@ private struct SnapshotLoadPlan: Sendable {
                 plan.configMaps = true
             }
         case .storage:
-            plan.nodes = true
+            switch kind {
+            case .persistentVolumeClaim:
+                plan.persistentVolumeClaims = true
+            case .persistentVolume:
+                plan.persistentVolumes = true
+            case .storageClass:
+                plan.storageClasses = true
+            case .node:
+                plan.nodes = true
+            default:
+                plan.persistentVolumeClaims = true
+            }
         case .events:
             plan.events = true
         case .rbac:
@@ -325,7 +362,8 @@ public final class RuneAppViewModel: ObservableObject {
     private var recentNamespacesByContext: [String: [String]] = [:]
 
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
-    private let namespaceMetadataTTL: TimeInterval = 30
+    /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.
+    private let namespaceMetadataTTL: TimeInterval = 120
     /// Maximum age of `overviewSnapshotCache` entries before refresh is preferred over warm paths.
     private let overviewSnapshotFreshnessTTL: TimeInterval = 60
     /// Maximum age for treating `overviewSnapshotPersistence` loads as warm data when hydrating memory.
@@ -388,11 +426,11 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var workloadKinds: [KubeResourceKind] {
-        [.pod, .deployment, .statefulSet, .daemonSet]
+        [.pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler]
     }
 
     public var networkingKinds: [KubeResourceKind] {
-        [.service, .ingress]
+        [.service, .ingress, .networkPolicy]
     }
 
     public var configKinds: [KubeResourceKind] {
@@ -400,7 +438,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var storageKinds: [KubeResourceKind] {
-        [.node]
+        [.persistentVolumeClaim, .persistentVolume, .storageClass, .node]
     }
 
     public var rbacKinds: [KubeResourceKind] {
@@ -477,6 +515,38 @@ public final class RuneAppViewModel: ObservableObject {
 
     public var visibleDaemonSets: [ClusterResourceSummary] {
         filtered(state.daemonSets) { summaryText(for: $0) }
+    }
+
+    public var visibleJobs: [ClusterResourceSummary] {
+        filtered(state.jobs) { summaryText(for: $0) }
+    }
+
+    public var visibleCronJobs: [ClusterResourceSummary] {
+        filtered(state.cronJobs) { summaryText(for: $0) }
+    }
+
+    public var visibleReplicaSets: [ClusterResourceSummary] {
+        filtered(state.replicaSets) { summaryText(for: $0) }
+    }
+
+    public var visiblePersistentVolumeClaims: [ClusterResourceSummary] {
+        filtered(state.persistentVolumeClaims) { summaryText(for: $0) }
+    }
+
+    public var visiblePersistentVolumes: [ClusterResourceSummary] {
+        filtered(state.persistentVolumes) { summaryText(for: $0) }
+    }
+
+    public var visibleStorageClasses: [ClusterResourceSummary] {
+        filtered(state.storageClasses) { summaryText(for: $0) }
+    }
+
+    public var visibleHorizontalPodAutoscalers: [ClusterResourceSummary] {
+        filtered(state.horizontalPodAutoscalers) { summaryText(for: $0) }
+    }
+
+    public var visibleNetworkPolicies: [ClusterResourceSummary] {
+        filtered(state.networkPolicies) { summaryText(for: $0) }
     }
 
     public var visibleIngresses: [ClusterResourceSummary] {
@@ -569,6 +639,14 @@ public final class RuneAppViewModel: ObservableObject {
                     state.setDeployments([])
                     state.setStatefulSets([])
                     state.setDaemonSets([])
+                    state.setJobs([])
+                    state.setCronJobs([])
+                    state.setReplicaSets([])
+                    state.setPersistentVolumeClaims([])
+                    state.setPersistentVolumes([])
+                    state.setStorageClasses([])
+                    state.setHorizontalPodAutoscalers([])
+                    state.setNetworkPolicies([])
                     state.setServices([])
                     state.setIngresses([])
                     state.setConfigMaps([])
@@ -734,7 +812,7 @@ public final class RuneAppViewModel: ObservableObject {
         case .config where !configKinds.contains(state.selectedWorkloadKind):
             state.selectedWorkloadKind = .configMap
         case .storage where !storageKinds.contains(state.selectedWorkloadKind):
-            state.selectedWorkloadKind = .node
+            state.selectedWorkloadKind = .persistentVolumeClaim
         case .rbac where !rbacKinds.contains(state.selectedWorkloadKind):
             state.selectedWorkloadKind = .role
         case .helm:
@@ -991,6 +1069,30 @@ public final class RuneAppViewModel: ObservableObject {
             } else {
                 showEventDetail()
             }
+        case "job":
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.job, trackHistory: false, triggerReload: false)
+            if let resource = state.jobs.first(where: { $0.name == name }) {
+                selectJob(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "cronjob":
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
+            if let resource = state.cronJobs.first(where: { $0.name == name }) {
+                selectCronJob(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "replicaset":
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
+            if let resource = state.replicaSets.first(where: { $0.name == name }) {
+                selectReplicaSet(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
         case "service":
             setSection(.networking, trackHistory: false, triggerReload: false)
             setWorkloadKind(.service, trackHistory: false, triggerReload: false)
@@ -1028,6 +1130,46 @@ public final class RuneAppViewModel: ObservableObject {
             setWorkloadKind(.node, trackHistory: false, triggerReload: false)
             if let resource = state.nodes.first(where: { $0.name == name }) {
                 selectNode(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "persistentvolumeclaim":
+            setSection(.storage, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
+            if let resource = state.persistentVolumeClaims.first(where: { $0.name == name }) {
+                selectPersistentVolumeClaim(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "persistentvolume":
+            setSection(.storage, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
+            if let resource = state.persistentVolumes.first(where: { $0.name == name }) {
+                selectPersistentVolume(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "storageclass":
+            setSection(.storage, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
+            if let resource = state.storageClasses.first(where: { $0.name == name }) {
+                selectStorageClass(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "horizontalpodautoscaler":
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
+            if let resource = state.horizontalPodAutoscalers.first(where: { $0.name == name }) {
+                selectHorizontalPodAutoscaler(resource, trackHistory: true)
+            } else {
+                showEventDetail()
+            }
+        case "networkpolicy":
+            setSection(.networking, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
+            if let resource = state.networkPolicies.first(where: { $0.name == name }) {
+                selectNetworkPolicy(resource, trackHistory: true)
             } else {
                 showEventDetail()
             }
@@ -1125,6 +1267,152 @@ public final class RuneAppViewModel: ObservableObject {
         loadResourceDetailsForCurrentSelection()
         if trackHistory {
             recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectJob(_ resource: ClusterResourceSummary?) {
+        selectJob(resource, trackHistory: true)
+    }
+
+    private func selectJob(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedJob(resource)
+        state.selectedWorkloadKind = .job
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectCronJob(_ resource: ClusterResourceSummary?) {
+        selectCronJob(resource, trackHistory: true)
+    }
+
+    private func selectCronJob(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedCronJob(resource)
+        state.selectedWorkloadKind = .cronJob
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectReplicaSet(_ resource: ClusterResourceSummary?) {
+        selectReplicaSet(resource, trackHistory: true)
+    }
+
+    private func selectReplicaSet(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedReplicaSet(resource)
+        state.selectedWorkloadKind = .replicaSet
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectPersistentVolumeClaim(_ resource: ClusterResourceSummary?) {
+        selectPersistentVolumeClaim(resource, trackHistory: true)
+    }
+
+    private func selectPersistentVolumeClaim(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedPersistentVolumeClaim(resource)
+        state.selectedWorkloadKind = .persistentVolumeClaim
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectPersistentVolume(_ resource: ClusterResourceSummary?) {
+        selectPersistentVolume(resource, trackHistory: true)
+    }
+
+    private func selectPersistentVolume(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedPersistentVolume(resource)
+        state.selectedWorkloadKind = .persistentVolume
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectStorageClass(_ resource: ClusterResourceSummary?) {
+        selectStorageClass(resource, trackHistory: true)
+    }
+
+    private func selectStorageClass(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedStorageClass(resource)
+        state.selectedWorkloadKind = .storageClass
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectHorizontalPodAutoscaler(_ resource: ClusterResourceSummary?) {
+        selectHorizontalPodAutoscaler(resource, trackHistory: true)
+    }
+
+    private func selectHorizontalPodAutoscaler(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedHorizontalPodAutoscaler(resource)
+        state.selectedWorkloadKind = .horizontalPodAutoscaler
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectNetworkPolicy(_ resource: ClusterResourceSummary?) {
+        selectNetworkPolicy(resource, trackHistory: true)
+    }
+
+    private func selectNetworkPolicy(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        state.setSelectedNetworkPolicy(resource)
+        state.selectedWorkloadKind = .networkPolicy
+        loadResourceDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func setSelectedCronJobSuspended(_ suspend: Bool) {
+        guard writeActionsEnabled,
+              let context = state.selectedContext,
+              let cronJob = state.selectedCronJob else { return }
+        Task {
+            do {
+                try await kubeClient.patchCronJobSuspend(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    name: cronJob.name,
+                    suspend: suspend
+                )
+                refreshCurrentView()
+            } catch {
+                state.setError(error)
+            }
+        }
+    }
+
+    public func createManualJobFromSelectedCronJob() {
+        guard writeActionsEnabled,
+              let context = state.selectedContext,
+              let cronJob = state.selectedCronJob else { return }
+        let jobName = "\(cronJob.name)-manual-\(Int(Date().timeIntervalSince1970))"
+        Task {
+            do {
+                try await kubeClient.createJobFromCronJob(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    cronJobName: cronJob.name,
+                    jobName: jobName
+                )
+                setWorkloadKind(.job, trackHistory: false, triggerReload: true)
+                refreshCurrentView()
+            } catch {
+                state.setError(error)
+            }
         }
     }
 
@@ -1254,7 +1542,7 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: includePreviousLogs
                     )
                     state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
-                case .statefulSet, .daemonSet, .ingress, .configMap, .secret, .node, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+                case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     return
                 }
             } catch {
@@ -1292,7 +1580,7 @@ public final class RuneAppViewModel: ObservableObject {
                     suggestedName: "deployment-\(deployment.name)-unified-logs-\(timestamp).log",
                     allowedFileTypes: ["log", "txt"]
                 )
-            case .statefulSet, .daemonSet, .ingress, .configMap, .secret, .node, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 return
             }
         } catch {
@@ -1565,7 +1853,7 @@ public final class RuneAppViewModel: ObservableObject {
                 case .service:
                     guard let service = state.selectedService else { return }
                     target = (.service, service.name)
-                case .deployment, .statefulSet, .daemonSet, .ingress, .configMap, .secret, .node, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+                case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     throw RuneError.invalidInput(message: "Port-forward stöds just nu för pod eller service.")
                 }
 
@@ -1891,6 +2179,18 @@ public final class RuneAppViewModel: ObservableObject {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.daemonSet, trackHistory: false, triggerReload: false)
                 selectDaemonSet(resource, trackHistory: false)
+            case .job:
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.job, trackHistory: false, triggerReload: false)
+                selectJob(resource, trackHistory: false)
+            case .cronJob:
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
+                selectCronJob(resource, trackHistory: false)
+            case .replicaSet:
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
+                selectReplicaSet(resource, trackHistory: false)
             case .ingress:
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
@@ -1903,6 +2203,30 @@ public final class RuneAppViewModel: ObservableObject {
                 setSection(.config, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.secret, trackHistory: false, triggerReload: false)
                 selectSecret(resource, trackHistory: false)
+            case .node:
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.node, trackHistory: false, triggerReload: false)
+                selectNode(resource, trackHistory: false)
+            case .persistentVolumeClaim:
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
+                selectPersistentVolumeClaim(resource, trackHistory: false)
+            case .persistentVolume:
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
+                selectPersistentVolume(resource, trackHistory: false)
+            case .storageClass:
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
+                selectStorageClass(resource, trackHistory: false)
+            case .horizontalPodAutoscaler:
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
+                selectHorizontalPodAutoscaler(resource, trackHistory: false)
+            case .networkPolicy:
+                setSection(.networking, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
+                selectNetworkPolicy(resource, trackHistory: false)
             case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 setSection(.rbac, trackHistory: false, triggerReload: false)
                 setWorkloadKind(resource.kind, trackHistory: false, triggerReload: false)
@@ -1940,6 +2264,8 @@ public final class RuneAppViewModel: ObservableObject {
 
         let cachedNamespaces = store.namespaces(context: context)
         let cachedNodes = store.nodes(context: context)
+        let cachedPersistentVolumes = store.persistentVolumes(context: context)
+        let cachedStorageClasses = store.storageClasses(context: context)
         let now = Date()
         let lastNamespaceRefresh = namespaceMetadataRefreshedAt[context.name]
         let namespaceMetadataIsStale = lastNamespaceRefresh.map { now.timeIntervalSince($0) > namespaceMetadataTTL } ?? true
@@ -2021,6 +2347,10 @@ public final class RuneAppViewModel: ObservableObject {
         }
         contextPreferences.savePreferredNamespace(effectiveNamespace, for: context.name)
         rememberRecentNamespace(effectiveNamespace, for: context.name)
+
+        // Namespace list is cheap compared to workload snapshots; publish it immediately so the toolbar menu is usable while pods/counts load.
+        store.cacheNamespaces(loadedNamespaces, context: context)
+        state.setNamespaces(loadedNamespaces)
 
         let cachedSnapshot = store.snapshot(context: context, namespace: effectiveNamespace)
         var computedPlan = SnapshotLoadPlan.forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind)
@@ -2111,6 +2441,50 @@ public final class RuneAppViewModel: ObservableObject {
         async let daemonSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.daemonSets else { return cachedSnapshot.daemonSets }
             return try await kubeClient.listDaemonSets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+        }
+        async let jobResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.jobs else { return cachedSnapshot.jobs }
+            return try await kubeClient.listJobs(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+        }
+        async let cronJobResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.cronJobs else { return cachedSnapshot.cronJobs }
+            return try await kubeClient.listCronJobs(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+        }
+        async let replicaSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.replicaSets else { return cachedSnapshot.replicaSets }
+            return try await kubeClient.listReplicaSets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+        }
+        async let pvcResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.persistentVolumeClaims else { return cachedSnapshot.persistentVolumeClaims }
+            return try await kubeClient.listPersistentVolumeClaims(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: effectiveNamespace
+            )
+        }
+        async let pvResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.persistentVolumes else { return cachedPersistentVolumes }
+            return try await kubeClient.listPersistentVolumes(from: state.kubeConfigSources, context: context)
+        }
+        async let storageClassResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.storageClasses else { return cachedStorageClasses }
+            return try await kubeClient.listStorageClasses(from: state.kubeConfigSources, context: context)
+        }
+        async let hpaResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.horizontalPodAutoscalers else { return cachedSnapshot.horizontalPodAutoscalers }
+            return try await kubeClient.listHorizontalPodAutoscalers(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: effectiveNamespace
+            )
+        }
+        async let networkPolicyResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+            guard plan.networkPolicies else { return cachedSnapshot.networkPolicies }
+            return try await kubeClient.listNetworkPolicies(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: effectiveNamespace
+            )
         }
         async let serviceResult: Result<[ServiceSummary], Error> = Self.capture {
             guard plan.services else { return cachedSnapshot.services }
@@ -2230,6 +2604,19 @@ public final class RuneAppViewModel: ObservableObject {
         let loadedDeployments = unwrap(await deploymentResult, label: "deployments", fallback: cachedSnapshot.deployments, warnings: &warnings)
         let loadedStatefulSets = unwrap(await statefulSetResult, label: "statefulsets", fallback: cachedSnapshot.statefulSets, warnings: &warnings)
         let loadedDaemonSets = unwrap(await daemonSetResult, label: "daemonsets", fallback: cachedSnapshot.daemonSets, warnings: &warnings)
+        let loadedJobs = unwrap(await jobResult, label: "jobs", fallback: cachedSnapshot.jobs, warnings: &warnings)
+        let loadedCronJobs = unwrap(await cronJobResult, label: "cronjobs", fallback: cachedSnapshot.cronJobs, warnings: &warnings)
+        let loadedReplicaSets = unwrap(await replicaSetResult, label: "replicasets", fallback: cachedSnapshot.replicaSets, warnings: &warnings)
+        let loadedPVCs = unwrap(await pvcResult, label: "pvcs", fallback: cachedSnapshot.persistentVolumeClaims, warnings: &warnings)
+        let loadedPVs = unwrap(await pvResult, label: "pvs", fallback: cachedPersistentVolumes, warnings: &warnings)
+        let loadedStorageClasses = unwrap(await storageClassResult, label: "storageclasses", fallback: cachedStorageClasses, warnings: &warnings)
+        let loadedHPAs = unwrap(await hpaResult, label: "hpas", fallback: cachedSnapshot.horizontalPodAutoscalers, warnings: &warnings)
+        let loadedNetworkPolicies = unwrap(
+            await networkPolicyResult,
+            label: "networkpolicies",
+            fallback: cachedSnapshot.networkPolicies,
+            warnings: &warnings
+        )
         let loadedServices = unwrap(await serviceResult, label: "services", fallback: cachedSnapshot.services, warnings: &warnings)
         let loadedIngresses = unwrap(await ingressResult, label: "ingresses", fallback: cachedSnapshot.ingresses, warnings: &warnings)
         let loadedConfigMaps = unwrap(await configMapResult, label: "configmaps", fallback: cachedSnapshot.configMaps, warnings: &warnings)
@@ -2285,8 +2672,9 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
 
-        store.cacheNamespaces(loadedNamespaces, context: context)
         store.cacheNodes(loadedNodes, context: context)
+        store.cachePersistentVolumes(loadedPVs, context: context)
+        store.cacheStorageClasses(loadedStorageClasses, context: context)
         store.cacheSnapshot(
             context: context,
             namespace: effectiveNamespace,
@@ -2294,6 +2682,12 @@ public final class RuneAppViewModel: ObservableObject {
             deployments: loadedDeployments,
             statefulSets: loadedStatefulSets,
             daemonSets: loadedDaemonSets,
+            jobs: loadedJobs,
+            cronJobs: loadedCronJobs,
+            replicaSets: loadedReplicaSets,
+            persistentVolumeClaims: loadedPVCs,
+            horizontalPodAutoscalers: loadedHPAs,
+            networkPolicies: loadedNetworkPolicies,
             services: loadedServices,
             ingresses: loadedIngresses,
             configMaps: loadedConfigMaps,
@@ -2301,7 +2695,6 @@ public final class RuneAppViewModel: ObservableObject {
             events: loadedEvents
         )
 
-        state.setNamespaces(loadedNamespaces)
         state.setPods(loadedPods)
         if plan.pods, !loadedPods.isEmpty {
             Task { [weak self] in
@@ -2316,6 +2709,14 @@ public final class RuneAppViewModel: ObservableObject {
         state.setDeployments(loadedDeployments)
         state.setStatefulSets(loadedStatefulSets)
         state.setDaemonSets(loadedDaemonSets)
+        state.setJobs(loadedJobs)
+        state.setCronJobs(loadedCronJobs)
+        state.setReplicaSets(loadedReplicaSets)
+        state.setPersistentVolumeClaims(loadedPVCs)
+        state.setPersistentVolumes(loadedPVs)
+        state.setStorageClasses(loadedStorageClasses)
+        state.setHorizontalPodAutoscalers(loadedHPAs)
+        state.setNetworkPolicies(loadedNetworkPolicies)
         state.setServices(loadedServices)
         state.setIngresses(loadedIngresses)
         state.setConfigMaps(loadedConfigMaps)
@@ -2427,6 +2828,12 @@ public final class RuneAppViewModel: ObservableObject {
                 deployments: snap.deployments,
                 statefulSets: snap.statefulSets,
                 daemonSets: snap.daemonSets,
+                jobs: snap.jobs,
+                cronJobs: snap.cronJobs,
+                replicaSets: snap.replicaSets,
+                persistentVolumeClaims: snap.persistentVolumeClaims,
+                horizontalPodAutoscalers: snap.horizontalPodAutoscalers,
+                networkPolicies: snap.networkPolicies,
                 services: snap.services,
                 ingresses: snap.ingresses,
                 configMaps: snap.configMaps,
@@ -2927,6 +3334,66 @@ public final class RuneAppViewModel: ObservableObject {
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
+        case .job:
+                guard let resource = state.selectedJob else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .job,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .job, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .cronJob:
+                guard let resource = state.selectedCronJob else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .cronJob,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .cronJob, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .replicaSet:
+                guard let resource = state.selectedReplicaSet else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .replicaSet,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .replicaSet, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
         case .ingress:
                 guard let resource = state.selectedIngress else {
                     if isCurrentResourceDetailsRequest(requestID) {
@@ -3007,6 +3474,106 @@ public final class RuneAppViewModel: ObservableObject {
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
+        case .persistentVolumeClaim:
+                guard let resource = state.selectedPersistentVolumeClaim else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .persistentVolumeClaim,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .persistentVolumeClaim, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .persistentVolume:
+                guard let resource = state.selectedPersistentVolume else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .persistentVolume,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .persistentVolume, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .storageClass:
+                guard let resource = state.selectedStorageClass else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .storageClass,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .storageClass, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .horizontalPodAutoscaler:
+                guard let resource = state.selectedHorizontalPodAutoscaler else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .horizontalPodAutoscaler,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .horizontalPodAutoscaler, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .networkPolicy:
+                guard let resource = state.selectedNetworkPolicy else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .networkPolicy,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .networkPolicy, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 guard let resource = state.selectedRBACResource else {
                     if isCurrentResourceDetailsRequest(requestID) {
@@ -3062,6 +3629,15 @@ public final class RuneAppViewModel: ObservableObject {
         case .daemonSet:
             guard let resource = state.selectedDaemonSet else { return nil }
             return (.daemonSet, resource.name)
+        case .job:
+            guard let resource = state.selectedJob else { return nil }
+            return (.job, resource.name)
+        case .cronJob:
+            guard let resource = state.selectedCronJob else { return nil }
+            return (.cronJob, resource.name)
+        case .replicaSet:
+            guard let resource = state.selectedReplicaSet else { return nil }
+            return (.replicaSet, resource.name)
         case .service:
             guard let service = state.selectedService else { return nil }
             return (.service, service.name)
@@ -3077,6 +3653,21 @@ public final class RuneAppViewModel: ObservableObject {
         case .node:
             guard let resource = state.selectedNode else { return nil }
             return (.node, resource.name)
+        case .persistentVolumeClaim:
+            guard let resource = state.selectedPersistentVolumeClaim else { return nil }
+            return (.persistentVolumeClaim, resource.name)
+        case .persistentVolume:
+            guard let resource = state.selectedPersistentVolume else { return nil }
+            return (.persistentVolume, resource.name)
+        case .storageClass:
+            guard let resource = state.selectedStorageClass else { return nil }
+            return (.storageClass, resource.name)
+        case .horizontalPodAutoscaler:
+            guard let resource = state.selectedHorizontalPodAutoscaler else { return nil }
+            return (.horizontalPodAutoscaler, resource.name)
+        case .networkPolicy:
+            guard let resource = state.selectedNetworkPolicy else { return nil }
+            return (.networkPolicy, resource.name)
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             guard let resource = state.selectedRBACResource else { return nil }
             return (resource.kind, resource.name)
@@ -3099,6 +3690,12 @@ public final class RuneAppViewModel: ObservableObject {
             return state.statefulSets.isEmpty
         case (.workloads, .daemonSet):
             return state.daemonSets.isEmpty
+        case (.workloads, .job):
+            return state.jobs.isEmpty
+        case (.workloads, .cronJob):
+            return state.cronJobs.isEmpty
+        case (.workloads, .replicaSet):
+            return state.replicaSets.isEmpty
         case (.networking, .service):
             return state.services.isEmpty
         case (.networking, .ingress):
@@ -3107,8 +3704,18 @@ public final class RuneAppViewModel: ObservableObject {
             return state.configMaps.isEmpty
         case (.config, .secret):
             return state.secrets.isEmpty
+        case (.storage, .persistentVolumeClaim):
+            return state.persistentVolumeClaims.isEmpty
+        case (.storage, .persistentVolume):
+            return state.persistentVolumes.isEmpty
+        case (.storage, .storageClass):
+            return state.storageClasses.isEmpty
         case (.storage, .node):
             return state.nodes.isEmpty
+        case (.workloads, .horizontalPodAutoscaler):
+            return state.horizontalPodAutoscalers.isEmpty
+        case (.networking, .networkPolicy):
+            return state.networkPolicies.isEmpty
         case (.rbac, .role):
             return state.rbacRoles.isEmpty
         case (.rbac, .roleBinding):
@@ -3134,6 +3741,14 @@ public final class RuneAppViewModel: ObservableObject {
             selectedEventID: state.selectedEvent?.id,
             selectedStatefulSetName: state.selectedStatefulSet?.name,
             selectedDaemonSetName: state.selectedDaemonSet?.name,
+            selectedJobName: state.selectedJob?.name,
+            selectedCronJobName: state.selectedCronJob?.name,
+            selectedReplicaSetName: state.selectedReplicaSet?.name,
+            selectedPersistentVolumeClaimName: state.selectedPersistentVolumeClaim?.name,
+            selectedPersistentVolumeName: state.selectedPersistentVolume?.name,
+            selectedStorageClassName: state.selectedStorageClass?.name,
+            selectedHorizontalPodAutoscalerName: state.selectedHorizontalPodAutoscaler?.name,
+            selectedNetworkPolicyName: state.selectedNetworkPolicy?.name,
             selectedIngressName: state.selectedIngress?.name,
             selectedConfigMapName: state.selectedConfigMap?.name,
             selectedSecretName: state.selectedSecret?.name,
@@ -3199,6 +3814,12 @@ public final class RuneAppViewModel: ObservableObject {
             selectStatefulSet(state.statefulSets.first(where: { $0.name == checkpoint.selectedStatefulSetName }), trackHistory: false)
         case .daemonSet:
             selectDaemonSet(state.daemonSets.first(where: { $0.name == checkpoint.selectedDaemonSetName }), trackHistory: false)
+        case .job:
+            selectJob(state.jobs.first(where: { $0.name == checkpoint.selectedJobName }), trackHistory: false)
+        case .cronJob:
+            selectCronJob(state.cronJobs.first(where: { $0.name == checkpoint.selectedCronJobName }), trackHistory: false)
+        case .replicaSet:
+            selectReplicaSet(state.replicaSets.first(where: { $0.name == checkpoint.selectedReplicaSetName }), trackHistory: false)
         case .ingress:
             selectIngress(state.ingresses.first(where: { $0.name == checkpoint.selectedIngressName }), trackHistory: false)
         case .configMap:
@@ -3207,6 +3828,31 @@ public final class RuneAppViewModel: ObservableObject {
             selectSecret(state.secrets.first(where: { $0.name == checkpoint.selectedSecretName }), trackHistory: false)
         case .node:
             selectNode(state.nodes.first(where: { $0.name == checkpoint.selectedNodeName }), trackHistory: false)
+        case .persistentVolumeClaim:
+            selectPersistentVolumeClaim(
+                state.persistentVolumeClaims.first(where: { $0.name == checkpoint.selectedPersistentVolumeClaimName }),
+                trackHistory: false
+            )
+        case .persistentVolume:
+            selectPersistentVolume(
+                state.persistentVolumes.first(where: { $0.name == checkpoint.selectedPersistentVolumeName }),
+                trackHistory: false
+            )
+        case .storageClass:
+            selectStorageClass(
+                state.storageClasses.first(where: { $0.name == checkpoint.selectedStorageClassName }),
+                trackHistory: false
+            )
+        case .horizontalPodAutoscaler:
+            selectHorizontalPodAutoscaler(
+                state.horizontalPodAutoscalers.first(where: { $0.name == checkpoint.selectedHorizontalPodAutoscalerName }),
+                trackHistory: false
+            )
+        case .networkPolicy:
+            selectNetworkPolicy(
+                state.networkPolicies.first(where: { $0.name == checkpoint.selectedNetworkPolicyName }),
+                trackHistory: false
+            )
         case .event:
             selectEvent(state.events.first(where: { $0.id == checkpoint.selectedEventID }), trackHistory: false)
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
@@ -3593,12 +4239,14 @@ public final class RuneAppViewModel: ObservableObject {
             return "default"
         }
 
-        if !trimmedPreferred.isEmpty, availableNamespaces.contains(trimmedPreferred) {
-            return trimmedPreferred
+        if !trimmedPreferred.isEmpty,
+           let match = availableNamespaces.first(where: { $0.caseInsensitiveCompare(trimmedPreferred) == .orderedSame }) {
+            return match
         }
 
-        if !trimmedContextDefault.isEmpty, availableNamespaces.contains(trimmedContextDefault) {
-            return trimmedContextDefault
+        if !trimmedContextDefault.isEmpty,
+           let match = availableNamespaces.first(where: { $0.caseInsensitiveCompare(trimmedContextDefault) == .orderedSame }) {
+            return match
         }
 
         if let suffixMatch = namespaceLongestSuffixOfContext(contextName, availableNamespaces: availableNamespaces) {
@@ -3654,12 +4302,22 @@ public final class RuneAppViewModel: ObservableObject {
 
         let cachedNodes = store.nodes(context: context)
         state.setNodes(cachedNodes)
+        state.setPersistentVolumes(store.persistentVolumes(context: context))
+        state.setStorageClasses(store.storageClasses(context: context))
 
         guard !normalizedNamespace.isEmpty else {
             state.setPods([])
             state.setDeployments([])
             state.setStatefulSets([])
             state.setDaemonSets([])
+            state.setJobs([])
+            state.setCronJobs([])
+            state.setReplicaSets([])
+            state.setPersistentVolumeClaims([])
+            state.setPersistentVolumes([])
+            state.setStorageClasses([])
+            state.setHorizontalPodAutoscalers([])
+            state.setNetworkPolicies([])
             state.setServices([])
             state.setIngresses([])
             state.setConfigMaps([])
@@ -3684,6 +4342,14 @@ public final class RuneAppViewModel: ObservableObject {
         state.setDeployments(cached.deployments)
         state.setStatefulSets(cached.statefulSets)
         state.setDaemonSets(cached.daemonSets)
+        state.setJobs(cached.jobs)
+        state.setCronJobs(cached.cronJobs)
+        state.setReplicaSets(cached.replicaSets)
+        state.setPersistentVolumeClaims(cached.persistentVolumeClaims)
+        state.setHorizontalPodAutoscalers(cached.horizontalPodAutoscalers)
+        state.setNetworkPolicies(cached.networkPolicies)
+        state.setPersistentVolumes(store.persistentVolumes(context: context))
+        state.setStorageClasses(store.storageClasses(context: context))
         state.setServices(cached.services)
         state.setIngresses(cached.ingresses)
         state.setConfigMaps(cached.configMaps)
@@ -4201,6 +4867,16 @@ public final class RuneAppViewModel: ObservableObject {
                     action: .resourceKind(section: .config, kind: kind)
                 )
             }
+        case "storage", "sto":
+            return storageKinds.map { kind in
+                CommandPaletteItem(
+                    id: "cmd:storage:\(kind.rawValue)",
+                    title: kind.title,
+                    subtitle: "Switch storage kind",
+                    symbolName: "internaldrive",
+                    action: .resourceKind(section: .storage, kind: kind)
+                )
+            }
         case "sts", "statefulset", "statefulsets":
             let rows = Array(
                 visibleStatefulSets
@@ -4247,6 +4923,29 @@ public final class RuneAppViewModel: ObservableObject {
                 action: .resourceKind(section: .workloads, kind: .daemonSet)
             )
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "rs", "replicaset", "replicasets":
+            let rows = Array(
+                visibleReplicaSets
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:rs:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "ReplicaSets • `:rs`",
+                            symbolName: "square.stack.3d.up",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:rs",
+                title: "ReplicaSets",
+                subtitle: "Open Workloads → ReplicaSets",
+                symbolName: "square.stack.3d.up",
+                action: .resourceKind(section: .workloads, kind: .replicaSet)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ing", "ingress", "ingresses":
             let rows = Array(
                 visibleIngresses
@@ -4268,6 +4967,121 @@ public final class RuneAppViewModel: ObservableObject {
                 subtitle: "Open Networking → Ingresses",
                 symbolName: "network",
                 action: .resourceKind(section: .networking, kind: .ingress)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
+            let rows = Array(
+                visiblePersistentVolumeClaims
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:pvc:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "PVCs • `:pvc`",
+                            symbolName: "externaldrive",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:pvc",
+                title: "PVCs",
+                subtitle: "Open Storage → PVCs",
+                symbolName: "externaldrive",
+                action: .resourceKind(section: .storage, kind: .persistentVolumeClaim)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "pv", "pvs", "persistentvolume", "persistentvolumes":
+            let rows = Array(
+                visiblePersistentVolumes
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:pv:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "PVs • `:pv`",
+                            symbolName: "externaldrive.fill",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:pv",
+                title: "PersistentVolumes",
+                subtitle: "Open Storage → PVs",
+                symbolName: "externaldrive.fill",
+                action: .resourceKind(section: .storage, kind: .persistentVolume)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "sc", "storageclass", "storageclasses":
+            let rows = Array(
+                visibleStorageClasses
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:sc:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "StorageClasses • `:sc`",
+                            symbolName: "internaldrive",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:sc",
+                title: "StorageClasses",
+                subtitle: "Open Storage → StorageClasses",
+                symbolName: "internaldrive",
+                action: .resourceKind(section: .storage, kind: .storageClass)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "hpa", "horizontalpodautoscaler", "horizontalpodautoscalers":
+            let rows = Array(
+                visibleHorizontalPodAutoscalers
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:hpa:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "HPAs • `:hpa`",
+                            symbolName: "gauge.with.dots.needle.67percent",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:hpa",
+                title: "HPAs",
+                subtitle: "Open Workloads → HPAs",
+                symbolName: "gauge.with.dots.needle.67percent",
+                action: .resourceKind(section: .workloads, kind: .horizontalPodAutoscaler)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "np", "netpol", "networkpolicy", "networkpolicies":
+            let rows = Array(
+                visibleNetworkPolicies
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:np:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "NetworkPolicies • `:np`",
+                            symbolName: "shield.lefthalf.filled",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:np",
+                title: "NetworkPolicies",
+                subtitle: "Open Networking → NetworkPolicies",
+                symbolName: "shield.lefthalf.filled",
+                action: .resourceKind(section: .networking, kind: .networkPolicy)
             )
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cm", "configmap", "configmaps":
@@ -4442,45 +5256,51 @@ public final class RuneAppViewModel: ObservableObject {
             )
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cronjob", "cronjobs", "cj":
-            return [
-                CommandPaletteItem(
-                    id: "stub:cronjob",
-                    title: "CronJobs",
-                    subtitle: "Not in Rune yet — opened Workloads (Pods)",
-                    symbolName: "calendar.badge.clock",
-                    action: .resourceKind(section: .workloads, kind: .pod)
-                )
-            ]
+            let rows = Array(
+                visibleCronJobs
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:cronjob:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "CronJobs • `:cj`",
+                            symbolName: "calendar.badge.clock",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:cronjob",
+                title: "CronJobs",
+                subtitle: "Open Workloads → CronJobs",
+                symbolName: "calendar.badge.clock",
+                action: .resourceKind(section: .workloads, kind: .cronJob)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "job", "jobs", "jo":
-            return [
-                CommandPaletteItem(
-                    id: "stub:job",
-                    title: "Jobs",
-                    subtitle: "Not in Rune yet — opened Workloads (Pods)",
-                    symbolName: "briefcase",
-                    action: .resourceKind(section: .workloads, kind: .pod)
-                )
-            ]
-        case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
-            return [
-                CommandPaletteItem(
-                    id: "stub:pvc",
-                    title: "PersistentVolumeClaims",
-                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
-                    symbolName: "externaldrive",
-                    action: .resourceKind(section: .storage, kind: .node)
-                )
-            ]
-        case "pv", "pvs", "persistentvolume", "persistentvolumes":
-            return [
-                CommandPaletteItem(
-                    id: "stub:pv",
-                    title: "PersistentVolumes",
-                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
-                    symbolName: "externaldrive.fill",
-                    action: .resourceKind(section: .storage, kind: .node)
-                )
-            ]
+            let rows = Array(
+                visibleJobs
+                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:job:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Jobs • `:job`",
+                            symbolName: "briefcase",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:job",
+                title: "Jobs",
+                subtitle: "Open Workloads → Jobs",
+                symbolName: "briefcase",
+                action: .resourceKind(section: .workloads, kind: .job)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "sa", "serviceaccount", "serviceaccounts":
             return [
                 CommandPaletteItem(
@@ -4499,26 +5319,6 @@ public final class RuneAppViewModel: ObservableObject {
                     subtitle: "Not in Rune yet — opened Networking (Services)",
                     symbolName: "link",
                     action: .resourceKind(section: .networking, kind: .service)
-                )
-            ]
-        case "sc", "storageclass", "storageclasses":
-            return [
-                CommandPaletteItem(
-                    id: "stub:sc",
-                    title: "StorageClasses",
-                    subtitle: "Not in Rune yet — opened Storage (Nodes)",
-                    symbolName: "internaldrive",
-                    action: .resourceKind(section: .storage, kind: .node)
-                )
-            ]
-        case "np", "netpol", "networkpolicy", "networkpolicies":
-            return [
-                CommandPaletteItem(
-                    id: "stub:np",
-                    title: "NetworkPolicies",
-                    subtitle: "Not in Rune yet — opened Networking (Ingresses)",
-                    symbolName: "shield.lefthalf.filled",
-                    action: .resourceKind(section: .networking, kind: .ingress)
                 )
             ]
         case "reload":
@@ -4578,8 +5378,10 @@ public final class RuneAppViewModel: ObservableObject {
             CommandPaletteItem(id: "help:ctx", title: ":ctx <context>", subtitle: "Switch context", symbolName: "network", action: .section(.overview)),
             CommandPaletteItem(id: "help:rbac", title: ":rbac", subtitle: "RBAC kinds", symbolName: "person.2.badge.gearshape", action: .resourceKind(section: .rbac, kind: .role)),
             CommandPaletteItem(id: "help:helm", title: ":helm <release>", subtitle: "Helm releases", symbolName: "ferry", action: .section(.helm)),
-            CommandPaletteItem(id: "help:cj", title: ":cj / :job", subtitle: "CronJobs & Jobs — stub (use kubectl)", symbolName: "calendar.badge.clock", action: .resourceKind(section: .workloads, kind: .pod)),
-            CommandPaletteItem(id: "help:pvc", title: ":pvc / :pv / :sc", subtitle: "Storage kinds — stub (use kubectl)", symbolName: "externaldrive", action: .resourceKind(section: .storage, kind: .node))
+            CommandPaletteItem(id: "help:cj", title: ":cj <name>", subtitle: "CronJobs", symbolName: "calendar.badge.clock", action: .resourceKind(section: .workloads, kind: .cronJob)),
+            CommandPaletteItem(id: "help:job", title: ":job <name>", subtitle: "Jobs", symbolName: "briefcase", action: .resourceKind(section: .workloads, kind: .job)),
+            CommandPaletteItem(id: "help:rs", title: ":rs <name>", subtitle: "ReplicaSets", symbolName: "square.stack.3d.up", action: .resourceKind(section: .workloads, kind: .replicaSet)),
+            CommandPaletteItem(id: "help:storage", title: ":pvc :pv :sc :hpa :np", subtitle: "Storage & HPA jumps", symbolName: "externaldrive", action: .resourceKind(section: .storage, kind: .persistentVolumeClaim))
         ]
     }
 
@@ -4589,6 +5391,9 @@ public final class RuneAppViewModel: ObservableObject {
             "deployments": state.deployments.count,
             "statefulsets": state.statefulSets.count,
             "daemonsets": state.daemonSets.count,
+            "jobs": state.jobs.count,
+            "cronjobs": state.cronJobs.count,
+            "replicasets": state.replicaSets.count,
             "services": state.services.count,
             "ingresses": state.ingresses.count,
             "configmaps": state.configMaps.count,
@@ -4599,7 +5404,12 @@ public final class RuneAppViewModel: ObservableObject {
             "roles": state.rbacRoles.count,
             "roleBindings": state.rbacRoleBindings.count,
             "clusterRoles": state.rbacClusterRoles.count,
-            "clusterRoleBindings": state.rbacClusterRoleBindings.count
+            "clusterRoleBindings": state.rbacClusterRoleBindings.count,
+            "persistentVolumeClaims": state.persistentVolumeClaims.count,
+            "persistentVolumes": state.persistentVolumes.count,
+            "storageClasses": state.storageClasses.count,
+            "horizontalPodAutoscalers": state.horizontalPodAutoscalers.count,
+            "networkPolicies": state.networkPolicies.count
         ]
     }
 

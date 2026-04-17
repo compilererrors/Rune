@@ -31,6 +31,9 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
     case deployment
     case statefulSet
     case daemonSet
+    case job
+    case cronJob
+    case replicaSet
     case service
     case ingress
     case configMap
@@ -41,6 +44,11 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
     case roleBinding
     case clusterRole
     case clusterRoleBinding
+    case persistentVolumeClaim
+    case persistentVolume
+    case storageClass
+    case horizontalPodAutoscaler
+    case networkPolicy
 
     public var id: String { rawValue }
 
@@ -50,6 +58,9 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .deployment: return "Deployments"
         case .statefulSet: return "StatefulSets"
         case .daemonSet: return "DaemonSets"
+        case .job: return "Jobs"
+        case .cronJob: return "CronJobs"
+        case .replicaSet: return "ReplicaSets"
         case .service: return "Services"
         case .ingress: return "Ingresses"
         case .configMap: return "ConfigMaps"
@@ -60,6 +71,11 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .roleBinding: return "RoleBindings"
         case .clusterRole: return "ClusterRoles"
         case .clusterRoleBinding: return "ClusterRoleBindings"
+        case .persistentVolumeClaim: return "PVCs"
+        case .persistentVolume: return "PersistentVolumes"
+        case .storageClass: return "StorageClasses"
+        case .horizontalPodAutoscaler: return "HPAs"
+        case .networkPolicy: return "NetworkPolicies"
         }
     }
 
@@ -70,6 +86,9 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .deployment: return "Deployment"
         case .statefulSet: return "StatefulSet"
         case .daemonSet: return "DaemonSet"
+        case .job: return "Job"
+        case .cronJob: return "CronJob"
+        case .replicaSet: return "ReplicaSet"
         case .service: return "Service"
         case .ingress: return "Ingress"
         case .configMap: return "ConfigMap"
@@ -80,6 +99,11 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .roleBinding: return "RoleBinding"
         case .clusterRole: return "ClusterRole"
         case .clusterRoleBinding: return "ClusterRoleBinding"
+        case .persistentVolumeClaim: return "PersistentVolumeClaim"
+        case .persistentVolume: return "PersistentVolume"
+        case .storageClass: return "StorageClass"
+        case .horizontalPodAutoscaler: return "HorizontalPodAutoscaler"
+        case .networkPolicy: return "NetworkPolicy"
         }
     }
 
@@ -89,6 +113,9 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .deployment: return "deployment"
         case .statefulSet: return "statefulset"
         case .daemonSet: return "daemonset"
+        case .job: return "job"
+        case .cronJob: return "cronjob"
+        case .replicaSet: return "replicaset"
         case .service: return "service"
         case .ingress: return "ingress"
         case .configMap: return "configmap"
@@ -99,12 +126,17 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .roleBinding: return "rolebinding"
         case .clusterRole: return "clusterrole"
         case .clusterRoleBinding: return "clusterrolebinding"
+        case .persistentVolumeClaim: return "pvc"
+        case .persistentVolume: return "pv"
+        case .storageClass: return "storageclass"
+        case .horizontalPodAutoscaler: return "hpa"
+        case .networkPolicy: return "networkpolicy"
         }
     }
 
     public var isNamespaced: Bool {
         switch self {
-        case .node, .clusterRole, .clusterRoleBinding:
+        case .node, .clusterRole, .clusterRoleBinding, .persistentVolume, .storageClass:
             return false
         default:
             return true

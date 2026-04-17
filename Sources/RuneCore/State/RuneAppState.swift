@@ -19,6 +19,14 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedEvent: EventSummary?
     @Published public var selectedStatefulSet: ClusterResourceSummary?
     @Published public var selectedDaemonSet: ClusterResourceSummary?
+    @Published public var selectedJob: ClusterResourceSummary?
+    @Published public var selectedCronJob: ClusterResourceSummary?
+    @Published public var selectedReplicaSet: ClusterResourceSummary?
+    @Published public var selectedPersistentVolumeClaim: ClusterResourceSummary?
+    @Published public var selectedPersistentVolume: ClusterResourceSummary?
+    @Published public var selectedStorageClass: ClusterResourceSummary?
+    @Published public var selectedHorizontalPodAutoscaler: ClusterResourceSummary?
+    @Published public var selectedNetworkPolicy: ClusterResourceSummary?
     @Published public var selectedIngress: ClusterResourceSummary?
     @Published public var selectedConfigMap: ClusterResourceSummary?
     @Published public var selectedSecret: ClusterResourceSummary?
@@ -31,6 +39,14 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var events: [EventSummary] = []
     @Published public private(set) var statefulSets: [ClusterResourceSummary] = []
     @Published public private(set) var daemonSets: [ClusterResourceSummary] = []
+    @Published public private(set) var jobs: [ClusterResourceSummary] = []
+    @Published public private(set) var cronJobs: [ClusterResourceSummary] = []
+    @Published public private(set) var replicaSets: [ClusterResourceSummary] = []
+    @Published public private(set) var persistentVolumeClaims: [ClusterResourceSummary] = []
+    @Published public private(set) var persistentVolumes: [ClusterResourceSummary] = []
+    @Published public private(set) var storageClasses: [ClusterResourceSummary] = []
+    @Published public private(set) var horizontalPodAutoscalers: [ClusterResourceSummary] = []
+    @Published public private(set) var networkPolicies: [ClusterResourceSummary] = []
     @Published public private(set) var ingresses: [ClusterResourceSummary] = []
     @Published public private(set) var configMaps: [ClusterResourceSummary] = []
     @Published public private(set) var secrets: [ClusterResourceSummary] = []
@@ -170,6 +186,54 @@ public final class RuneAppState: ObservableObject {
         selectedDaemonSet = resources.first
     }
 
+    public func setJobs(_ resources: [ClusterResourceSummary]) {
+        jobs = resources
+        if let selectedJob, resources.contains(selectedJob) { return }
+        selectedJob = resources.first
+    }
+
+    public func setCronJobs(_ resources: [ClusterResourceSummary]) {
+        cronJobs = resources
+        if let selectedCronJob, resources.contains(selectedCronJob) { return }
+        selectedCronJob = resources.first
+    }
+
+    public func setReplicaSets(_ resources: [ClusterResourceSummary]) {
+        replicaSets = resources
+        if let selectedReplicaSet, resources.contains(selectedReplicaSet) { return }
+        selectedReplicaSet = resources.first
+    }
+
+    public func setPersistentVolumeClaims(_ resources: [ClusterResourceSummary]) {
+        persistentVolumeClaims = resources
+        if let selectedPersistentVolumeClaim, resources.contains(selectedPersistentVolumeClaim) { return }
+        selectedPersistentVolumeClaim = resources.first
+    }
+
+    public func setPersistentVolumes(_ resources: [ClusterResourceSummary]) {
+        persistentVolumes = resources
+        if let selectedPersistentVolume, resources.contains(selectedPersistentVolume) { return }
+        selectedPersistentVolume = resources.first
+    }
+
+    public func setStorageClasses(_ resources: [ClusterResourceSummary]) {
+        storageClasses = resources
+        if let selectedStorageClass, resources.contains(selectedStorageClass) { return }
+        selectedStorageClass = resources.first
+    }
+
+    public func setHorizontalPodAutoscalers(_ resources: [ClusterResourceSummary]) {
+        horizontalPodAutoscalers = resources
+        if let selectedHorizontalPodAutoscaler, resources.contains(selectedHorizontalPodAutoscaler) { return }
+        selectedHorizontalPodAutoscaler = resources.first
+    }
+
+    public func setNetworkPolicies(_ resources: [ClusterResourceSummary]) {
+        networkPolicies = resources
+        if let selectedNetworkPolicy, resources.contains(selectedNetworkPolicy) { return }
+        selectedNetworkPolicy = resources.first
+    }
+
     public func setIngresses(_ resources: [ClusterResourceSummary]) {
         ingresses = resources
         if let selectedIngress, resources.contains(selectedIngress) { return }
@@ -287,6 +351,38 @@ public final class RuneAppState: ObservableObject {
 
     public func setSelectedDaemonSet(_ resource: ClusterResourceSummary?) {
         selectedDaemonSet = resource
+    }
+
+    public func setSelectedJob(_ resource: ClusterResourceSummary?) {
+        selectedJob = resource
+    }
+
+    public func setSelectedCronJob(_ resource: ClusterResourceSummary?) {
+        selectedCronJob = resource
+    }
+
+    public func setSelectedReplicaSet(_ resource: ClusterResourceSummary?) {
+        selectedReplicaSet = resource
+    }
+
+    public func setSelectedPersistentVolumeClaim(_ resource: ClusterResourceSummary?) {
+        selectedPersistentVolumeClaim = resource
+    }
+
+    public func setSelectedPersistentVolume(_ resource: ClusterResourceSummary?) {
+        selectedPersistentVolume = resource
+    }
+
+    public func setSelectedStorageClass(_ resource: ClusterResourceSummary?) {
+        selectedStorageClass = resource
+    }
+
+    public func setSelectedHorizontalPodAutoscaler(_ resource: ClusterResourceSummary?) {
+        selectedHorizontalPodAutoscaler = resource
+    }
+
+    public func setSelectedNetworkPolicy(_ resource: ClusterResourceSummary?) {
+        selectedNetworkPolicy = resource
     }
 
     public func setSelectedIngress(_ resource: ClusterResourceSummary?) {

@@ -168,6 +168,96 @@ public struct KubectlCommandBuilder {
         ]
     }
 
+    public func jobListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "jobs",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func cronJobListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "cronjobs",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func replicaSetListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "replicasets",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func persistentVolumeClaimListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pvc",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func persistentVolumeListArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "pv",
+            "-o", "json"
+        ]
+    }
+
+    public func storageClassListArguments(context: String) -> [String] {
+        [
+            "--context", context,
+            "get", "storageclass",
+            "-o", "json"
+        ]
+    }
+
+    public func horizontalPodAutoscalerListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "hpa",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func networkPolicyListArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "networkpolicy",
+            "-n", namespace,
+            "-o", "json"
+        ]
+    }
+
+    public func patchCronJobSuspendArguments(context: String, namespace: String, name: String, suspend: Bool) -> [String] {
+        let patch = #"{"spec":{"suspend":\#(suspend ? "true" : "false")}}"#
+        return [
+            "--context", context,
+            "patch", "cronjob", name,
+            "-n", namespace,
+            "--type", "merge",
+            "-p", patch
+        ]
+    }
+
+    public func createJobFromCronJobArguments(context: String, namespace: String, cronJobName: String, jobName: String) -> [String] {
+        [
+            "--context", context,
+            "create", "job", jobName,
+            "-n", namespace,
+            "--from=cronjob/\(cronJobName)"
+        ]
+    }
+
     public func serviceListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,

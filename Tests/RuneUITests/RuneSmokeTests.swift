@@ -201,6 +201,7 @@ final class RuneSmokeTests: XCTestCase {
         }
 
         viewModel.setSection(.storage)
+        viewModel.setWorkloadKind(.node)
         try await waitUntil {
             viewModel.state.nodes.first?.name == "worker-1"
         }
@@ -355,6 +356,31 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
         script[key(["kubectl"] + builder.secretListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.persistentVolumeClaimListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.persistentVolumeListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.storageClassListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.horizontalPodAutoscalerListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
+            stdout: "{\"items\":[]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.networkPolicyListArguments(context: "qa-main", namespace: "qa"))] = CommandResult(
             stdout: "{\"items\":[]}",
             stderr: "",
             exitCode: 0
@@ -1126,6 +1152,32 @@ final class RuneSmokeTests: XCTestCase {
 
         script[key(["kubectl"] + builder.nodeListArguments(context: "prod-main"))] = CommandResult(
             stdout: "{\"items\":[{\"metadata\":{\"name\":\"worker-1\"},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"nodeInfo\":{\"kubeletVersion\":\"v1.31.0\"}}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+
+        script[key(["kubectl"] + builder.persistentVolumeClaimListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"data-pvc\",\"namespace\":\"default\"},\"spec\":{\"resources\":{\"requests\":{\"storage\":\"1Gi\"}}},\"status\":{\"phase\":\"Bound\",\"capacity\":{\"storage\":\"1Gi\"}}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.persistentVolumeListArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"pv-1\"},\"spec\":{\"capacity\":{\"storage\":\"10Gi\"}},\"status\":{\"phase\":\"Available\"}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.storageClassListArguments(context: "prod-main"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"standard\",\"annotations\":{\"storageclass.kubernetes.io/is-default-class\":\"true\"}},\"provisioner\":\"kubernetes.io/aws-ebs\"}]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.horizontalPodAutoscalerListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api-hpa\",\"namespace\":\"default\"},\"spec\":{\"minReplicas\":1,\"maxReplicas\":5,\"scaleTargetRef\":{\"kind\":\"Deployment\",\"name\":\"api\"}},\"status\":{\"currentReplicas\":2}}]}",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.networkPolicyListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"deny-all\",\"namespace\":\"default\"},\"spec\":{\"policyTypes\":[\"Ingress\",\"Egress\"]}}]}",
             stderr: "",
             exitCode: 0
         )

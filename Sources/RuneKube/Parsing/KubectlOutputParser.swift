@@ -373,6 +373,183 @@ public struct KubectlOutputParser {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    public func parseJobs(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeJobItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let statusLabel = Self.jobStatusLabel(status: item.status)
+                return ClusterResourceSummary(
+                    kind: .job,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: statusLabel,
+                    secondaryText: "Job"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func jobStatusLabel(status: KubeJobStatus?) -> String {
+        guard let status else { return "Unknown" }
+        if let failed = status.failed, failed > 0 {
+            return "Failed (\(failed))"
+        }
+        if let succeeded = status.succeeded, succeeded > 0 {
+            return "Complete (\(succeeded))"
+        }
+        if let active = status.active, active > 0 {
+            return "Running (\(active))"
+        }
+        return "Pending"
+    }
+
+    public func parseCronJobs(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let data = Data(trimmed.utf8)
+        // Lenient: decode each List item separately so one non-conforming object (or API drift) cannot empty the whole table.
+        let rootObject: Any
+        do {
+            rootObject = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw RuneError.parseError(message: "cronjobs JSON kunde inte tolkas")
+        }
+        guard let root = rootObject as? [String: Any] else {
+            throw RuneError.parseError(message: "cronjobs: förväntade JSON-objekt med items")
+        }
+        let rawItems = root["items"] as? [Any] ?? []
+        var summaries: [ClusterResourceSummary] = []
+        summaries.reserveCapacity(rawItems.count)
+
+        let decoder = JSONDecoder()
+        for item in rawItems {
+            guard let dict = item as? [String: Any],
+                  let itemData = try? JSONSerialization.data(withJSONObject: dict),
+                  let cron = try? decoder.decode(KubeCronJobItem.self, from: itemData)
+            else {
+                continue
+            }
+            let schedule = cron.spec?.schedule ?? "—"
+            let suspended = cron.spec?.suspend == true
+            summaries.append(
+                ClusterResourceSummary(
+                    kind: .cronJob,
+                    name: cron.metadata.name,
+                    namespace: cron.metadata.namespace ?? namespace,
+                    primaryText: schedule,
+                    secondaryText: suspended ? "Suspended" : "Active"
+                )
+            )
+        }
+
+        return summaries.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parseReplicaSets(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeReplicaSetItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let ready = item.status?.readyReplicas ?? 0
+                let total = item.status?.replicas ?? item.spec?.replicas ?? 0
+                return ClusterResourceSummary(
+                    kind: .replicaSet,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: "\(ready)/\(total) ready",
+                    secondaryText: "ReplicaSet"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parsePersistentVolumeClaims(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubePVCItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let phase = item.status?.phase ?? "Unknown"
+                let size = item.spec?.resources?.requests?.storage ?? item.status?.capacity?.storage ?? "—"
+                return ClusterResourceSummary(
+                    kind: .persistentVolumeClaim,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: phase,
+                    secondaryText: size
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parsePersistentVolumes(from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubePVItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let phase = item.status?.phase ?? "Unknown"
+                let cap = item.spec?.capacity?.storage ?? "—"
+                return ClusterResourceSummary(
+                    kind: .persistentVolume,
+                    name: item.metadata.name,
+                    namespace: nil,
+                    primaryText: phase,
+                    secondaryText: cap
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parseStorageClasses(from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeStorageClassItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let isDefault = item.metadata.annotations?["storageclass.kubernetes.io/is-default-class"] == "true"
+                let provisioner = item.provisioner ?? "—"
+                return ClusterResourceSummary(
+                    kind: .storageClass,
+                    name: item.metadata.name,
+                    namespace: nil,
+                    primaryText: provisioner,
+                    secondaryText: isDefault ? "Default" : "StorageClass"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parseHorizontalPodAutoscalers(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeHPAItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let min = item.spec?.minReplicas.map(String.init) ?? "—"
+                let max = item.spec?.maxReplicas.map(String.init) ?? "—"
+                let targetKind = item.spec?.scaleTargetRef?.kind ?? "?"
+                let targetName = item.spec?.scaleTargetRef?.name ?? "?"
+                let current = item.status?.currentReplicas.map(String.init) ?? "—"
+                return ClusterResourceSummary(
+                    kind: .horizontalPodAutoscaler,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: "\(min)–\(max) replicas (current \(current))",
+                    secondaryText: "\(targetKind)/\(targetName)"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parseNetworkPolicies(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeNetworkPolicyItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let types = item.spec?.policyTypes?.joined(separator: ", ") ?? "—"
+                return ClusterResourceSummary(
+                    kind: .networkPolicy,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: types,
+                    secondaryText: "NetworkPolicy"
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     public func parseServices(namespace: String, from raw: String) throws -> [ServiceSummary] {
         let decoded = try JSONDecoder().decode(KubeList<KubeServiceItem>.self, from: Data(raw.utf8))
         return decoded.items
@@ -661,6 +838,122 @@ public struct KubectlOutputParser {
     private struct KubeDaemonSetItem: Decodable {
         let metadata: KubeMetadata
         let status: KubeDaemonSetStatus
+    }
+
+    private struct KubeJobItem: Decodable {
+        let metadata: KubeMetadata
+        let status: KubeJobStatus?
+    }
+
+    private struct KubeJobStatus: Decodable {
+        let active: Int?
+        let succeeded: Int?
+        let failed: Int?
+    }
+
+    private struct KubeCronJobItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubeCronJobSpec?
+    }
+
+    private struct KubeCronJobSpec: Decodable {
+        let schedule: String?
+        let suspend: Bool?
+    }
+
+    private struct KubeReplicaSetItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubeReplicaSetSpec?
+        let status: KubeReplicaSetStatus?
+    }
+
+    private struct KubeReplicaSetSpec: Decodable {
+        let replicas: Int?
+    }
+
+    private struct KubeReplicaSetStatus: Decodable {
+        let replicas: Int?
+        let readyReplicas: Int?
+        let availableReplicas: Int?
+    }
+
+    private struct KubeStorageQuantity: Decodable {
+        let storage: String?
+    }
+
+    private struct KubePVCResources: Decodable {
+        let requests: KubeStorageQuantity?
+    }
+
+    private struct KubePVCSpec: Decodable {
+        let resources: KubePVCResources?
+        let volumeName: String?
+        let storageClassName: String?
+    }
+
+    private struct KubePVCStatus: Decodable {
+        let phase: String?
+        let capacity: KubeStorageQuantity?
+    }
+
+    private struct KubePVCItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubePVCSpec?
+        let status: KubePVCStatus?
+    }
+
+    private struct KubePVSpec: Decodable {
+        let capacity: KubeStorageQuantity?
+    }
+
+    private struct KubePVStatus: Decodable {
+        let phase: String?
+    }
+
+    private struct KubePVItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubePVSpec?
+        let status: KubePVStatus?
+    }
+
+    private struct KubeStorageClassMetadata: Decodable {
+        let name: String
+        let annotations: [String: String]?
+    }
+
+    private struct KubeStorageClassItem: Decodable {
+        let metadata: KubeStorageClassMetadata
+        let provisioner: String?
+    }
+
+    private struct KubeScaleTargetRef: Decodable {
+        let kind: String?
+        let name: String?
+    }
+
+    private struct KubeHPASpec: Decodable {
+        let minReplicas: Int?
+        let maxReplicas: Int?
+        let scaleTargetRef: KubeScaleTargetRef?
+    }
+
+    private struct KubeHPAStatus: Decodable {
+        let currentReplicas: Int?
+    }
+
+    private struct KubeHPAItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubeHPASpec?
+        let status: KubeHPAStatus?
+    }
+
+    private struct KubeNetworkPolicySpec: Decodable {
+        let policyTypes: [String]?
+    }
+
+    private struct KubeNetworkPolicyItem: Decodable {
+        let metadata: KubeMetadata
+        let spec: KubeNetworkPolicySpec?
     }
 
     private struct KubeDeploymentSelectorItem: Decodable {
