@@ -60,6 +60,8 @@ public final class RuneAppState: ObservableObject {
     /// Last YAML fetched from the cluster (`kubectl get -o yaml`). Used to detect local edits and for Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
     @Published public private(set) var resourceDescribe: String = ""
+    /// Last `kubectl describe` output; local edits compare against this (same idea as `resourceYAMLBaseline`).
+    @Published public private(set) var resourceDescribeBaseline: String = ""
     @Published public private(set) var deploymentRolloutHistory: String = ""
     @Published public private(set) var helmValues: String = ""
     @Published public private(set) var helmManifest: String = ""
@@ -346,6 +348,19 @@ public final class RuneAppState: ObservableObject {
 
     public func setResourceDescribe(_ text: String) {
         resourceDescribe = text
+        resourceDescribeBaseline = text
+    }
+
+    public func updateResourceDescribeDraft(_ text: String) {
+        resourceDescribe = text
+    }
+
+    public func revertResourceDescribeToBaseline() {
+        resourceDescribe = resourceDescribeBaseline
+    }
+
+    public var resourceDescribeHasUnsavedEdits: Bool {
+        resourceDescribe != resourceDescribeBaseline
     }
 
     public func setDeploymentRolloutHistory(_ history: String) {
@@ -391,6 +406,7 @@ public final class RuneAppState: ObservableObject {
         resourceYAML = ""
         resourceYAMLBaseline = ""
         resourceDescribe = ""
+        resourceDescribeBaseline = ""
         deploymentRolloutHistory = ""
         helmValues = ""
         helmManifest = ""

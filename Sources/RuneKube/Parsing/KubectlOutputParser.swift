@@ -230,6 +230,15 @@ public struct KubectlOutputParser {
         let phase = (item.status?.phase ?? "Unknown").trimmingCharacters(in: .whitespacesAndNewlines)
         let restarts = restartSum(from: item.status)
         let age = KubernetesAgeFormatting.describe(creationISO8601: item.metadata.creationTimestamp)
+        let spec = item.spec
+        let st = item.status
+        let containersReady = containersReadySummary(spec: spec, status: st)
+        let names = spec?.containers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let containerNamesLine = names.map { $0.joined(separator: ", ") }
+        func nonEmpty(_ s: String?) -> String? {
+            let t = s?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return t.isEmpty ? nil : t
+        }
         return PodSummary(
             name: item.metadata.name,
             namespace: namespace,
@@ -237,8 +246,20 @@ public struct KubectlOutputParser {
             totalRestarts: restarts,
             ageDescription: age,
             cpuUsage: nil,
-            memoryUsage: nil
+            memoryUsage: nil,
+            podIP: nonEmpty(st?.podIP),
+            hostIP: nonEmpty(st?.hostIP),
+            nodeName: nonEmpty(spec?.nodeName),
+            qosClass: nonEmpty(st?.qosClass),
+            containersReady: containersReady,
+            containerNamesLine: nonEmpty(containerNamesLine)
         )
+    }
+
+    private func containersReadySummary(spec: KubePodSpec?, status: KubePodRowStatus?) -> String? {
+        guard let total = spec?.containers?.count, total > 0 else { return nil }
+        let ready = status?.containerStatuses?.filter { $0.ready == true }.count ?? 0
+        return "\(ready)/\(total)"
     }
 
     private func restartSum(from status: KubePodRowStatus?) -> Int {
@@ -571,7 +592,17 @@ public struct KubectlOutputParser {
 
     private struct KubePodItem: Decodable {
         let metadata: KubePodRowMetadata
+        let spec: KubePodSpec?
         let status: KubePodRowStatus?
+    }
+
+    private struct KubePodSpec: Decodable {
+        let nodeName: String?
+        let containers: [KubePodSpecContainer]?
+    }
+
+    private struct KubePodSpecContainer: Decodable {
+        let name: String
     }
 
     private struct KubePodRowMetadata: Decodable {
@@ -582,11 +613,16 @@ public struct KubectlOutputParser {
 
     private struct KubePodRowStatus: Decodable {
         let phase: String?
+        let podIP: String?
+        let hostIP: String?
+        let qosClass: String?
         let containerStatuses: [KubePodContainerStatus]?
         let initContainerStatuses: [KubePodContainerStatus]?
     }
 
     private struct KubePodContainerStatus: Decodable {
+        let name: String?
+        let ready: Bool?
         let restartCount: Int?
     }
 

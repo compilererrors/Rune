@@ -10,6 +10,8 @@
 	<string>RuneApp</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.rune.desktop</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
