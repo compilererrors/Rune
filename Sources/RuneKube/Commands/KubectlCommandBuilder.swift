@@ -307,8 +307,10 @@ public struct KubectlCommandBuilder {
         previous: Bool,
         follow: Bool
     ) -> [String] {
+        // Client-side ceiling so the apiserver does not hang indefinitely (process runner also enforces a timeout).
         var args: [String] = [
             "--context", context,
+            "--request-timeout", "55s",
             "logs",
             podName,
             "-n", namespace,

@@ -54,6 +54,8 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var podLogs: String = ""
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
+    /// Set when the latest log fetch failed (timeout, kubectl error). Cleared on successful load or new fetch.
+    @Published public private(set) var lastLogFetchError: String?
     @Published public private(set) var resourceYAML: String = ""
     /// Last YAML fetched from the cluster (`kubectl get -o yaml`). Used to detect local edits and for Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
@@ -304,16 +306,23 @@ public final class RuneAppState: ObservableObject {
 
     public func setPodLogs(_ logs: String) {
         podLogs = logs
+        lastLogFetchError = nil
     }
 
     public func setUnifiedServiceLogs(_ logs: String, pods: [String]) {
         unifiedServiceLogs = logs
         unifiedServiceLogPods = pods
+        lastLogFetchError = nil
     }
 
     public func clearUnifiedServiceLogs() {
         unifiedServiceLogs = ""
         unifiedServiceLogPods = []
+        lastLogFetchError = nil
+    }
+
+    public func setLastLogFetchError(_ message: String?) {
+        lastLogFetchError = message
     }
 
     public func setResourceYAML(_ yaml: String) {
@@ -387,6 +396,7 @@ public final class RuneAppState: ObservableObject {
         helmManifest = ""
         helmHistory = []
         isLoadingLogs = false
+        lastLogFetchError = nil
     }
 
     public func setError(_ error: Error) {

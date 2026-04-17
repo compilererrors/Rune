@@ -1231,6 +1231,7 @@ public final class RuneAppViewModel: ObservableObject {
                 switch state.selectedWorkloadKind {
                 case .pod:
                     guard let pod = state.selectedPod else { return }
+                    state.setPodLogs("")
                     state.isLoadingLogs = true
                     defer { state.isLoadingLogs = false }
                     let logs = try await kubeClient.podLogs(
@@ -1244,6 +1245,7 @@ public final class RuneAppViewModel: ObservableObject {
                     state.setPodLogs(logs)
                 case .service:
                     guard let service = state.selectedService else { return }
+                    state.clearUnifiedServiceLogs()
                     state.isLoadingLogs = true
                     defer { state.isLoadingLogs = false }
                     let unified = try await kubeClient.unifiedLogsForService(
@@ -1257,6 +1259,7 @@ public final class RuneAppViewModel: ObservableObject {
                     state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
                 case .deployment:
                     guard let deployment = state.selectedDeployment else { return }
+                    state.clearUnifiedServiceLogs()
                     state.isLoadingLogs = true
                     defer { state.isLoadingLogs = false }
                     let unified = try await kubeClient.unifiedLogsForDeployment(
@@ -1272,6 +1275,9 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
             } catch {
+                if Self.isLikelyLogFetchFailure(error) {
+                    state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+                }
                 state.setError(error)
             }
         }
@@ -2544,6 +2550,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
+                state.setPodLogs("")
                 state.isLoadingLogs = true
                 defer { state.isLoadingLogs = false }
 
@@ -2582,6 +2589,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
+                state.clearUnifiedServiceLogs()
                 state.isLoadingLogs = true
                 defer { state.isLoadingLogs = false }
 
@@ -2621,6 +2629,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
+                state.clearUnifiedServiceLogs()
                 state.isLoadingLogs = true
                 defer { state.isLoadingLogs = false }
 
@@ -2792,8 +2801,25 @@ public final class RuneAppViewModel: ObservableObject {
                 state.clearResourceDetails()
             }
         } catch {
+            if Self.isLikelyLogFetchFailure(error) {
+                state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+            }
             state.setError(error)
         }
+    }
+
+    /// Short English detail for the log pane (timeout / stderr from kubectl logs).
+    private static func logFetchFailureMessage(for error: Error) -> String {
+        if case let RuneError.commandFailed(_, message) = error {
+            return message
+        }
+        return error.localizedDescription
+    }
+
+    /// True when the failure came from a `kubectl … logs …` run (including process timeout), not e.g. YAML fetch.
+    private static func isLikelyLogFetchFailure(_ error: Error) -> Bool {
+        guard case let RuneError.commandFailed(command, _) = error else { return false }
+        return command.split(separator: " ").contains(Substring("logs"))
     }
 
     private func currentWritableResource() -> (KubeResourceKind, String)? {
