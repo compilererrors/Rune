@@ -11,10 +11,46 @@ public struct KubectlCommandBuilder {
     public func namespaceListArguments(context: String) -> [String] {
         [
             "--context", context,
+            "--request-timeout=90s",
             "get", "namespaces",
             "-o", "custom-columns=NAME:.metadata.name",
             "--no-headers"
         ]
+    }
+
+    /// `kubectl get --raw` path for a **namespaced** collection List with `limit=1` so the payload stays tiny; total size comes from `metadata.remainingItemCount` (see `KubectlListJSON.collectionListTotal`).
+    public func namespacedResourceListMetadataAPIPath(namespace: String, resource: String) -> String? {
+        let ns = namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
+        switch resource {
+        case "pods":
+            return "/api/v1/namespaces/\(ns)/pods?limit=1"
+        case "deployments":
+            return "/apis/apps/v1/namespaces/\(ns)/deployments?limit=1"
+        case "services":
+            return "/api/v1/namespaces/\(ns)/services?limit=1"
+        case "ingresses":
+            return "/apis/networking.k8s.io/v1/namespaces/\(ns)/ingresses?limit=1"
+        case "configmaps":
+            return "/api/v1/namespaces/\(ns)/configmaps?limit=1"
+        case "secrets":
+            return "/api/v1/namespaces/\(ns)/secrets?limit=1"
+        default:
+            return nil
+        }
+    }
+
+    /// Cluster-scoped List (e.g. nodes) with `limit=1` for cheap total via `remainingItemCount`.
+    public func clusterResourceListMetadataAPIPath(resource: String) -> String? {
+        switch resource {
+        case "nodes":
+            return "/api/v1/nodes?limit=1"
+        default:
+            return nil
+        }
+    }
+
+    public func rawGetArguments(context: String, apiPath: String) -> [String] {
+        ["--context", context, "get", "--raw", apiPath]
     }
 
     public func contextNamespaceArguments(context: String) -> [String] {
@@ -43,7 +79,7 @@ public struct KubectlCommandBuilder {
             "get", "pods",
             "-n", namespace,
             "--chunk-size=200",
-            "--request-timeout=20s",
+            "--request-timeout=90s",
             "-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase",
             "--no-headers"
         ]
@@ -173,7 +209,22 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "jobs",
             "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=90s",
             "-o", "json"
+        ]
+    }
+
+    /// Lightweight list for the workloads table (same layering idea as `podListTextArguments`).
+    public func jobListTextArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "jobs",
+            "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=90s",
+            "-o", "custom-columns=NAME:.metadata.name,SUCCEEDED:.status.succeeded,ACTIVE:.status.active,FAILED:.status.failed",
+            "--no-headers"
         ]
     }
 
@@ -182,7 +233,22 @@ public struct KubectlCommandBuilder {
             "--context", context,
             "get", "cronjobs",
             "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=90s",
             "-o", "json"
+        ]
+    }
+
+    /// Schedules can contain spaces; output is tab-separated between columns.
+    public func cronJobListTextArguments(context: String, namespace: String) -> [String] {
+        [
+            "--context", context,
+            "get", "cronjobs",
+            "-n", namespace,
+            "--chunk-size=200",
+            "--request-timeout=90s",
+            "-o", "custom-columns=NAME:.metadata.name,SCHEDULE:.spec.schedule,SUSPEND:.spec.suspend",
+            "--no-headers"
         ]
     }
 
