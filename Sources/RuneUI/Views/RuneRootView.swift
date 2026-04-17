@@ -103,12 +103,6 @@ public struct RuneRootView: View {
         static let horizontalPadding: CGFloat = 10
     }
 
-    /// Inspector detail card hugs content height; bounded scroll areas replace the old full-column stretch for logs/describe.
-    private enum InspectorPanelStyle {
-        static let scrollMinHeight: CGFloat = 200
-        static let scrollMaxHeight: CGFloat = 520
-    }
-
     @ObservedObject private var viewModel: RuneAppViewModel
 
     @State private var podInspectorTab: PodInspectorTab = .overview
@@ -951,7 +945,7 @@ public struct RuneRootView: View {
                     terminalDetails
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(12)
             .background(panelFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
@@ -1161,10 +1155,6 @@ public struct RuneRootView: View {
                                         }
                                     }
                                 }
-                                .frame(
-                                    minHeight: InspectorPanelStyle.scrollMinHeight,
-                                    maxHeight: InspectorPanelStyle.scrollMaxHeight
-                                )
                             }
                         }
                     }
@@ -1201,22 +1191,17 @@ public struct RuneRootView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            podInspectorOverviewMetricsCard(pod: pod)
                             inspectorInsetCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("Manifest")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                    Text("Use the YAML tab to edit, import, and apply. Export saves a copy of the loaded manifest.")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Label("Status: \(pod.status)", systemImage: "waveform.path.ecg")
+                                        .font(.body.weight(.medium))
+                                    Divider().opacity(0.45)
                                     inspectorActionButtonRow {
-                                        Button("Export manifest…") {
-                                            viewModel.saveCurrentResourceYAML()
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .disabled(viewModel.state.resourceYAML.isEmpty)
+                                        Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
+                                            .buttonStyle(.bordered)
+                                            .disabled(!viewModel.writeActionsEnabled)
+                                        Button("Export…") { viewModel.saveCurrentResourceYAML() }
+                                            .buttonStyle(.bordered)
                                         Spacer(minLength: 0)
                                     }
                                     Button("Delete", role: .destructive) {
@@ -1256,10 +1241,6 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
-                            .frame(
-                                minHeight: InspectorPanelStyle.scrollMinHeight,
-                                maxHeight: InspectorPanelStyle.scrollMaxHeight
-                            )
                         }
 
                     case .exec:
@@ -1341,10 +1322,6 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
-                            .frame(
-                                minHeight: InspectorPanelStyle.scrollMinHeight,
-                                maxHeight: InspectorPanelStyle.scrollMaxHeight
-                            )
                         }
 
                     case .rollout:
@@ -1374,10 +1351,6 @@ public struct RuneRootView: View {
                                     .padding(10)
                                     .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
-                            .frame(
-                                minHeight: InspectorPanelStyle.scrollMinHeight,
-                                maxHeight: InspectorPanelStyle.scrollMaxHeight
-                            )
                         }
 
                     case .describe:
@@ -1483,10 +1456,6 @@ public struct RuneRootView: View {
                                 }
                                 .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
-                            .frame(
-                                minHeight: InspectorPanelStyle.scrollMinHeight,
-                                maxHeight: InspectorPanelStyle.scrollMaxHeight
-                            )
                         }
 
                     case .portForward:
@@ -1529,10 +1498,6 @@ public struct RuneRootView: View {
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
-                    .frame(
-                        minHeight: InspectorPanelStyle.scrollMinHeight,
-                        maxHeight: InspectorPanelStyle.scrollMaxHeight
-                    )
                 }
             } else {
                 inspectorEmptyState("Select an event", symbol: "bolt.badge.clock")
@@ -1667,10 +1632,6 @@ public struct RuneRootView: View {
                     .padding(10)
                     .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .frame(
-                minHeight: InspectorPanelStyle.scrollMinHeight,
-                maxHeight: InspectorPanelStyle.scrollMaxHeight
-            )
         }
     }
 
@@ -1736,10 +1697,6 @@ public struct RuneRootView: View {
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
-                    .frame(
-                        minHeight: InspectorPanelStyle.scrollMinHeight,
-                        maxHeight: InspectorPanelStyle.scrollMaxHeight
-                    )
                 }
             } else {
                 Text("Run a command to see stdout/stderr here.")
@@ -2137,41 +2094,6 @@ public struct RuneRootView: View {
             )
     }
 
-    private func podInspectorMetricRow(label: String, value: String, symbol: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: symbol)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .frame(width: 16, alignment: .center)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.subheadline.weight(.medium))
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
-        }
-    }
-
-    private func podInspectorOverviewMetricsCard(pod: PodSummary) -> some View {
-        inspectorInsetCard {
-            VStack(alignment: .leading, spacing: 8) {
-                podInspectorMetricRow(label: "Status", value: pod.status, symbol: "waveform.path.ecg")
-                podInspectorMetricRow(label: "Age", value: pod.ageDescription, symbol: "clock")
-                podInspectorMetricRow(label: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
-                podInspectorMetricRow(label: "CPU", value: pod.cpuDisplay, symbol: "cpu")
-                podInspectorMetricRow(label: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
-                if pod.cpuUsage == nil, pod.memoryUsage == nil {
-                    Text("CPU and memory need metrics-server (same source as kubectl top).")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 2)
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private func inspectorActionButtonRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .center, spacing: 8) {
@@ -2209,65 +2131,88 @@ public struct RuneRootView: View {
             }
 
             inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Circle()
                             .fill(deploymentReplicaStatusColor(deployment))
                             .frame(width: 8, height: 8)
+                            .alignmentGuide(.firstTextBaseline) { d in d[.firstTextBaseline] }
                         Text(deploymentReplicaStatusText(deployment))
                             .font(.body.weight(.semibold))
+                        Spacer(minLength: 12)
                     }
+                    .padding(.bottom, 14)
 
-                    HStack(alignment: .center, spacing: 8) {
+                    HStack(alignment: .center, spacing: 12) {
                         Text("Replicas")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
-                        Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                            Text("\(viewModel.scaleReplicaInput)")
-                                .monospacedDigit()
-                                .font(.body.weight(.medium))
-                                .frame(minWidth: 32, alignment: .trailing)
-                        }
-                        Group {
-                            if deploymentScaleIsDirty(deployment), viewModel.writeActionsEnabled {
-                                Button("Scale") {
-                                    viewModel.requestScaleSelectedDeployment()
-                                }
-                                .buttonStyle(.borderedProminent)
-                            } else {
-                                Button("Scale") {
-                                    viewModel.requestScaleSelectedDeployment()
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
-                        .disabled(!viewModel.writeActionsEnabled || !deploymentScaleIsDirty(deployment))
+                            .fixedSize()
 
-                        Spacer(minLength: 0)
+                        Spacer(minLength: 8)
+
+                        HStack(spacing: 8) {
+                            Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
+                                Text("\(viewModel.scaleReplicaInput)")
+                                    .monospacedDigit()
+                                    .font(.body.weight(.medium))
+                                    .frame(minWidth: 28, alignment: .trailing)
+                            }
+                            .controlSize(.regular)
+
+                            Group {
+                                if deploymentScaleIsDirty(deployment), viewModel.writeActionsEnabled {
+                                    Button("Scale") {
+                                        viewModel.requestScaleSelectedDeployment()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                } else {
+                                    Button("Scale") {
+                                        viewModel.requestScaleSelectedDeployment()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .disabled(!viewModel.writeActionsEnabled || !deploymentScaleIsDirty(deployment))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.primary.opacity(0.055))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                        )
                     }
+                    .padding(.bottom, 16)
 
                     Divider()
                         .opacity(0.45)
+                        .padding(.bottom, 12)
 
-                    inspectorActionButtonRow {
+                    HStack(spacing: 10) {
                         Button("Restart Rollout") {
                             viewModel.requestRolloutRestartSelectedDeployment()
                         }
                         .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                         .disabled(!viewModel.writeActionsEnabled)
 
                         Button("Apply YAML") {
                             viewModel.requestApplySelectedResourceYAML()
                         }
                         .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                         .disabled(!viewModel.writeActionsEnabled)
-
-                        Spacer(minLength: 0)
                     }
+                    .padding(.bottom, 10)
 
                     Button("Delete", role: .destructive) {
                         viewModel.requestDeleteSelectedResource()
                     }
+                    .buttonStyle(.bordered)
                     .disabled(!viewModel.writeActionsEnabled)
                 }
             }
