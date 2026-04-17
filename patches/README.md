@@ -1,8 +1,10 @@
 # Sparade UI-diffar (YAML + högerpanel)
 
+**Commit som innehåller allt:** `06f5c23` (använd `git show 06f5c23` eller `git format-patch -1 06f5c23` för hela ändringen).
+
 ## `yaml-and-right-panel-ui.patch`
 
-Innehåller **ocommittad** diff mot `HEAD` för:
+Innehåller diff (från commit ovan) endast för:
 
 - `Sources/RuneCore/State/RuneAppState.swift` — YAML-baseline, `updateResourceYAMLDraft`, revert, dirty-flag
 - `Sources/RuneUI/ViewModels/RuneAppViewModel.swift` — bl.a. `importResourceYAMLFromFile`, `revertResourceYAMLDraft`
@@ -14,4 +16,4 @@ Innehåller **ocommittad** diff mot `HEAD` för:
 git apply --reject --whitespace=fix patches/yaml-and-right-panel-ui.patch
 ```
 
-Efter commit finns samma innehåll i git-historiken; patchen motsvarar vad som committades om inget annat ändrades i dessa filer före commit.
+Hela projektändringen (kubectl, tester, m.m.) ligger i samma commit; denna patch är en **urklippning** av tre filer för enklare återinförande av YAML/högerpanel efter rollback.
