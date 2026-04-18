@@ -12,6 +12,14 @@ ICON_NAME="AppIcon.icns"
 
 cd "${ROOT_DIR}"
 
+if command -v go >/dev/null 2>&1; then
+  echo "Bygger rune-k8s-agent (Go + client-go)…"
+  # -ldflags=-s -w strips symbol/DWARF (smaller bundle; client-go is ~40MB+ otherwise).
+  (cd "${ROOT_DIR}/go/rune-k8s-agent" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o rune-k8s-agent .)
+else
+  echo "Varning: go saknas i PATH — hoppar över rune-k8s-agent (sätt RUNE_K8S_AGENT eller installera Go)." >&2
+fi
+
 swift build -c "${CONFIGURATION}" --product "${PRODUCT_NAME}"
 
 BIN_DIR="$(swift build -c "${CONFIGURATION}" --show-bin-path)"
@@ -27,6 +35,10 @@ mkdir -p "${APP_BUNDLE}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}"
+
+if [[ -x "${ROOT_DIR}/go/rune-k8s-agent/rune-k8s-agent" ]]; then
+  cp "${ROOT_DIR}/go/rune-k8s-agent/rune-k8s-agent" "${APP_BUNDLE}/Contents/MacOS/rune-k8s-agent"
+fi
 
 if [[ -f "${ICON_SOURCE}" ]]; then
   cp "${ICON_SOURCE}" "${APP_BUNDLE}/Contents/Resources/${ICON_NAME}"

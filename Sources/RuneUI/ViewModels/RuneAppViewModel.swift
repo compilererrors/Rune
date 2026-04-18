@@ -12,7 +12,8 @@ import RuneStore
 
 // Cluster data caching: `ResourceStore` holds full lists per (context, namespace) in RAM; `overviewSnapshotCache`
 // holds lightweight overview rows with TTL; `overviewSnapshotPersistence` writes the same shape to disk
-// (Application Support) for cold start and background prefetch. Keys always pair context name with namespace.
+// (Application Support) for cold start and background prefetch. `namespaceListPersistence` stores the last
+// namespace menu per context under `…/Rune/namespace-lists/` and hydrates before `listNamespaces` when RAM is empty.
 
 public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
     /// Default: `--tail` only (no `--since`); bounded transfer, similar to unrestricted `kubectl logs` on a quiet pod.
@@ -342,6 +343,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let supportBundleBuilder: any SupportBundleBuilding
     private let contextPreferences: ContextPreferencesStoring
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
+    private let namespaceListPersistence: NamespaceListPersisting
     private let diagnostics: DiagnosticsRecorder
 
     private var cancellables: Set<AnyCancellable> = []
@@ -387,6 +389,7 @@ public final class RuneAppViewModel: ObservableObject {
         supportBundleBuilder: any SupportBundleBuilding = JSONSupportBundleBuilder(),
         contextPreferences: ContextPreferencesStoring = UserDefaultsContextPreferencesStore(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
+        namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
         diagnostics: DiagnosticsRecorder = DiagnosticsRecorder()
     ) {
         self.state = state
@@ -400,6 +403,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.supportBundleBuilder = supportBundleBuilder
         self.contextPreferences = contextPreferences
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
+        self.namespaceListPersistence = namespaceListPersistence
         self.diagnostics = diagnostics
 
         self.state.setFavoriteContextNames(contextPreferences.loadFavoriteContextNames())
@@ -462,8 +466,18 @@ public final class RuneAppViewModel: ObservableObject {
         !state.isReadOnlyMode
     }
 
+    /// Cluster mutations (apply, delete, scale, exec, rollout) — blocked while a snapshot or resource manifest is still loading so users do not act on stale YAML/lists.
+    public var canApplyClusterMutations: Bool {
+        guard writeActionsEnabled else { return false }
+        if state.isLoading { return false }
+        if state.isLoadingResourceDetails { return false }
+        return true
+    }
+
     public var namespaceOptions: [String] {
-        var options = state.namespaces
+        guard let context = state.selectedContext else { return [] }
+        // Use the store list for this context only (same source as `listNamespaces` cache), not a stale `state` copy.
+        var options = store.namespaces(context: context)
         if options.isEmpty, !state.selectedNamespace.isEmpty, !options.contains(state.selectedNamespace) {
             options.append(state.selectedNamespace)
         }
@@ -926,6 +940,8 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.log("setContext -> \(context.name)")
         overviewPrefetchTask?.cancel()
         state.selectedContext = context
+        // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
+        state.setNamespaces([])
         let requestedPreferredNamespace = preferredNamespace?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let savedPreferredNamespace = contextPreferences.loadPreferredNamespace(for: context.name)?
@@ -2262,7 +2278,18 @@ public final class RuneAppViewModel: ObservableObject {
 
         diagnostics.log("loadResourceSnapshot start context=\(context.name) namespace=\(namespace)")
 
+        let storeWasEmpty = store.namespaces(context: context).isEmpty
+        if UserDefaults.standard.runePersistNamespaceListCache,
+           storeWasEmpty,
+           let disk = namespaceListPersistence.load(contextName: context.name), !disk.isEmpty {
+            store.cacheNamespaces(disk, context: context)
+            state.setNamespaces(disk)
+            diagnostics.log("namespace list hydrated from disk context=\(context.name) count=\(disk.count)")
+        }
+
         let cachedNamespaces = store.namespaces(context: context)
+        /// Order before this snapshot’s API merge (memory or disk); used to preserve ordering when the cluster list updates.
+        let orderBeforeFetch = cachedNamespaces
         let cachedNodes = store.nodes(context: context)
         let cachedPersistentVolumes = store.persistentVolumes(context: context)
         let cachedStorageClasses = store.storageClasses(context: context)
@@ -2271,9 +2298,10 @@ public final class RuneAppViewModel: ObservableObject {
         let namespaceMetadataIsStale = lastNamespaceRefresh.map { now.timeIntervalSince($0) > namespaceMetadataTTL } ?? true
         let namespaceInputIsEmpty = namespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let shouldRefreshNamespaceMetadata = forceNamespaceMetadataRefresh
-            || cachedNamespaces.isEmpty
             || namespaceMetadataIsStale
             || namespaceInputIsEmpty
+            || storeWasEmpty
+            || cachedNamespaces.isEmpty
 
         var warnings: [String] = []
         let contextDefaultNamespace: String?
@@ -2296,7 +2324,10 @@ public final class RuneAppViewModel: ObservableObject {
 
             switch await namespaceResult {
             case let .success(value):
-                loadedNamespaces = value
+                loadedNamespaces = NamespaceListOrdering.merge(previousOrder: orderBeforeFetch, apiNames: value)
+                if UserDefaults.standard.runePersistNamespaceListCache {
+                    namespaceListPersistence.save(names: loadedNamespaces, contextName: context.name)
+                }
                 namespaceMetadataRefreshedAt[context.name] = now
             case let .failure(error):
                 diagnostics.log("snapshot namespaces failed: \(error.localizedDescription)")

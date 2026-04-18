@@ -204,6 +204,7 @@ public struct RuneRootView: View {
     @State private var yamlManifestIsEditing = false
     /// Toggles describe inspector between read-only `ScrollView` and `TextEditor`.
     @State private var describePaneIsEditing = false
+    @State private var isPreferencesPresented = false
 
     public init(
         viewModel: RuneAppViewModel = RuneAppViewModel(),
@@ -285,6 +286,13 @@ public struct RuneRootView: View {
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        isPreferencesPresented = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Settings")
+
                     Button("Palette") {
                         viewModel.presentCommandPalette()
                     }
@@ -299,6 +307,9 @@ public struct RuneRootView: View {
             .toolbarBackground(.visible, for: .windowToolbar)
             .sheet(isPresented: commandPalettePresentedBinding) {
                 CommandPaletteView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $isPreferencesPresented) {
+                RunePreferencesView()
             }
             .confirmationDialog(
                 viewModel.pendingWriteActionTitle,
@@ -1287,17 +1298,17 @@ public struct RuneRootView: View {
                         Button("Resume") {
                             viewModel.setSelectedCronJobSuspended(false)
                         }
-                        .disabled(!viewModel.writeActionsEnabled)
+                        .disabled(!viewModel.canApplyClusterMutations)
                     } else {
                         Button("Suspend") {
                             viewModel.setSelectedCronJobSuspended(true)
                         }
-                        .disabled(!viewModel.writeActionsEnabled)
+                        .disabled(!viewModel.canApplyClusterMutations)
                     }
                     Button("Create job now") {
                         viewModel.createManualJobFromSelectedCronJob()
                     }
-                    .disabled(!viewModel.writeActionsEnabled)
+                    .disabled(!viewModel.canApplyClusterMutations)
                 }
             }
             genericResourceDetails(resource: viewModel.state.selectedCronJob)
@@ -1394,7 +1405,7 @@ public struct RuneRootView: View {
                                 Button("Rollback") {
                                     viewModel.requestRollbackSelectedHelmRelease()
                                 }
-                                .disabled(!viewModel.writeActionsEnabled)
+                                .disabled(!viewModel.canApplyClusterMutations)
                             }
                         }
 
@@ -1563,7 +1574,7 @@ public struct RuneRootView: View {
                                     Button("Rollback") {
                                         viewModel.requestRolloutUndoSelectedDeployment()
                                     }
-                                    .disabled(!viewModel.writeActionsEnabled)
+                                    .disabled(!viewModel.canApplyClusterMutations)
 
                                     Button("Save History") {
                                         viewModel.saveCurrentRolloutHistory()
@@ -1641,7 +1652,7 @@ public struct RuneRootView: View {
                                         inspectorActionButtonRow {
                                             Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
                                                 .buttonStyle(.bordered)
-                                                .disabled(!viewModel.writeActionsEnabled)
+                                                .disabled(!viewModel.canApplyClusterMutations)
                                             Button("Export…") { viewModel.saveCurrentResourceYAML() }
                                                 .buttonStyle(.bordered)
                                             Spacer(minLength: 0)
@@ -1649,7 +1660,7 @@ public struct RuneRootView: View {
                                         Button("Delete", role: .destructive) {
                                             viewModel.requestDeleteSelectedResource()
                                         }
-                                        .disabled(!viewModel.writeActionsEnabled)
+                                        .disabled(!viewModel.canApplyClusterMutations)
                                     }
                                 }
                             }
@@ -1950,7 +1961,7 @@ public struct RuneRootView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(
-                        !viewModel.writeActionsEnabled
+                        !viewModel.canApplyClusterMutations
                             || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
 
@@ -1996,7 +2007,7 @@ public struct RuneRootView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            !viewModel.writeActionsEnabled
+                            !viewModel.canApplyClusterMutations
                                 || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         )
 
@@ -2350,7 +2361,7 @@ public struct RuneRootView: View {
                 Button("Run in Pod") {
                     viewModel.requestExecInSelectedPod()
                 }
-                .disabled(viewModel.state.isExecutingCommand || !viewModel.writeActionsEnabled)
+                .disabled(viewModel.state.isExecutingCommand || !viewModel.canApplyClusterMutations)
 
                 if viewModel.state.isExecutingCommand {
                     ProgressView()
@@ -2875,7 +2886,7 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func deploymentScaleButton(deployment: DeploymentSummary) -> some View {
         Group {
-            if deploymentScaleIsDirty(deployment), viewModel.writeActionsEnabled {
+            if deploymentScaleIsDirty(deployment), viewModel.canApplyClusterMutations {
                 Button("Scale") {
                     viewModel.requestScaleSelectedDeployment()
                 }
@@ -2887,7 +2898,7 @@ public struct RuneRootView: View {
                 .buttonStyle(.bordered)
             }
         }
-        .disabled(!viewModel.writeActionsEnabled || !deploymentScaleIsDirty(deployment))
+        .disabled(!viewModel.canApplyClusterMutations || !deploymentScaleIsDirty(deployment))
     }
 
     private func podOverviewSection(pod: PodSummary) -> some View {
@@ -2939,7 +2950,7 @@ public struct RuneRootView: View {
                     Button("Delete", role: .destructive) {
                         viewModel.requestDeleteSelectedResource()
                     }
-                    .disabled(!viewModel.writeActionsEnabled)
+                    .disabled(!viewModel.canApplyClusterMutations)
                 }
             }
         }
@@ -3038,13 +3049,13 @@ public struct RuneRootView: View {
                             viewModel.requestRolloutRestartSelectedDeployment()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(!viewModel.writeActionsEnabled)
+                        .disabled(!viewModel.canApplyClusterMutations)
 
                         Button("Apply YAML") {
                             viewModel.requestApplySelectedResourceYAML()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(!viewModel.writeActionsEnabled)
+                        .disabled(!viewModel.canApplyClusterMutations)
 
                         Spacer(minLength: 0)
                     }
@@ -3052,7 +3063,7 @@ public struct RuneRootView: View {
                     Button("Delete", role: .destructive) {
                         viewModel.requestDeleteSelectedResource()
                     }
-                    .disabled(!viewModel.writeActionsEnabled)
+                    .disabled(!viewModel.canApplyClusterMutations)
                 }
             }
         }

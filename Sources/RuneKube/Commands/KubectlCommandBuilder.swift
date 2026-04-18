@@ -19,38 +19,23 @@ public struct KubectlCommandBuilder {
     }
 
     /// `kubectl get --raw` path for a **namespaced** collection List with `limit=1` so the payload stays tiny; total size comes from `metadata.remainingItemCount` (see `KubectlListJSON.collectionListTotal`).
+    /// Paths are built with ``KubernetesRESTPath`` (same REST layout as client-go / Swiftkube-style clients).
     public func namespacedResourceListMetadataAPIPath(namespace: String, resource: String) -> String? {
-        let ns = namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
-        switch resource {
-        case "pods":
-            return "/api/v1/namespaces/\(ns)/pods?limit=1"
-        case "deployments":
-            return "/apis/apps/v1/namespaces/\(ns)/deployments?limit=1"
-        case "services":
-            return "/api/v1/namespaces/\(ns)/services?limit=1"
-        case "ingresses":
-            return "/apis/networking.k8s.io/v1/namespaces/\(ns)/ingresses?limit=1"
-        case "configmaps":
-            return "/api/v1/namespaces/\(ns)/configmaps?limit=1"
-        case "secrets":
-            return "/api/v1/namespaces/\(ns)/secrets?limit=1"
-        default:
-            return nil
-        }
+        KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: namespace, resource: resource)
     }
 
     /// Cluster-scoped List (e.g. nodes) with `limit=1` for cheap total via `remainingItemCount`.
     public func clusterResourceListMetadataAPIPath(resource: String) -> String? {
-        switch resource {
-        case "nodes":
-            return "/api/v1/nodes?limit=1"
-        default:
-            return nil
-        }
+        KubernetesRESTPath.clusterCollectionMetadataProbe(resource: resource)
     }
 
     public func rawGetArguments(context: String, apiPath: String) -> [String] {
         ["--context", context, "get", "--raw", apiPath]
+    }
+
+    /// Same as ``rawGetArguments(context:apiPath:)`` but typed; swap transport later without changing call sites.
+    public func rawGetArguments(context: String, request: KubernetesRESTRequest) -> [String] {
+        rawGetArguments(context: context, apiPath: request.apiPath)
     }
 
     public func contextNamespaceArguments(context: String) -> [String] {

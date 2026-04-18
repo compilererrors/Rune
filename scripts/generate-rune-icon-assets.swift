@@ -24,11 +24,11 @@ struct IconAssetGenerator {
     /// After alpha-tighten, fit the mark into this inset inside 1024² (0 = max size before master pass).
     private let logoPadding: CGFloat = 0
     /// Distance from canvas edge to the white plate (low = near full-bleed “FileZilla-style” fill).
-    private let iconPlateInset: CGFloat = 1
-    /// 1.0 = logo uses the full *inner* fit rect (below).
-    private let iconLogoScale: CGFloat = 1.0
+    private let iconPlateInset: CGFloat = 0
+    /// 1.0 = logo uses the full *inner* fit rect (below). >1.0 grows past the plate rect (still clipped to rounded plate).
+    private let iconLogoScale: CGFloat = 1.10
     /// Inset vs plate corner radius before aspect-fit; tune between ~0.035 (bolder) and ~0.07 (safer from clip).
-    private let iconLogoFitCornerFraction: CGFloat = 0.024
+    private let iconLogoFitCornerFraction: CGFloat = 0.017
 
     func run() throws {
         let logoURL = root.appendingPathComponent(logoPath)
