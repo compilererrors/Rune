@@ -67,11 +67,11 @@ final class KubectlTests: XCTestCase {
 
     func testCronJobListTextArgumentsUsesTabsFriendlyColumns() {
         let builder = KubectlCommandBuilder()
-        let args = builder.cronJobListTextArguments(context: "qa", namespace: "example-namespace")
+        let args = builder.cronJobListTextArguments(context: "example-context", namespace: "example-namespace")
         XCTAssertEqual(
             args,
             [
-                "--context", "qa",
+                "--context", "example-context",
                 "get", "cronjobs",
                 "-n", "example-namespace",
                 "--chunk-size=200",
@@ -84,10 +84,10 @@ final class KubectlTests: XCTestCase {
 
     func testParseCronJobsTableTabSeparatedSchedule() {
         let parser = KubectlOutputParser()
-        let stdout = "articleexport-idnet-cronjob\t0 6 * * *\tfalse\n"
+        let stdout = "sample-cronjob\t0 6 * * *\tfalse\n"
         let rows = parser.parseCronJobsTable(namespace: "example-namespace", from: stdout)
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows[0].name, "articleexport-idnet-cronjob")
+        XCTAssertEqual(rows[0].name, "sample-cronjob")
         XCTAssertEqual(rows[0].primaryText, "0 6 * * *")
         XCTAssertEqual(rows[0].secondaryText, "Active")
     }

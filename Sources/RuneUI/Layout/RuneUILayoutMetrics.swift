@@ -20,8 +20,14 @@ enum RuneUILayoutMetrics {
     static let sidebarPadding: CGFloat = 14
     /// Minimum width for the resource list column (`NavigationSplitView` content).
     static let splitContentColumnMinWidth: CGFloat = 560
-    /// Minimum inspector width. Slightly wider default so YAML/describe toolbars and monospaced text stay usable at the split minimum (window min ~1280pt).
-    static let splitDetailColumnMinWidth: CGFloat = 460
+    /// Matches first-ship column cap (`49c6517` First draft).
+    static let splitContentColumnMaxWidth: CGFloat = 1200
+    /// Minimum / ideal / max inspector column (`49c6517` First draft).
+    static let splitDetailColumnMinWidth: CGFloat = 340
+    static let splitDetailColumnIdealWidth: CGFloat = 440
+    static let splitDetailColumnMaxWidth: CGFloat = 820
+    /// Sidebar max width (`49c6517`).
+    static let splitSidebarMaxWidth: CGFloat = 460
     static let headerChipHeight: CGFloat = 28
     static let headerChipHorizontalPadding: CGFloat = 10
 

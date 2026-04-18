@@ -45,9 +45,13 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             if context.coordinator.configuredWindowNumber != windowNumber {
                 context.coordinator.configuredWindowNumber = windowNumber
 
-                // Keep root content consistently below titlebar/toolbar.
+                // Keep root content consistently below titlebar/toolbar while using the
+                // modern unified toolbar style instead of full-size-content overlays.
                 window.titlebarAppearsTransparent = false
                 window.styleMask.remove(.fullSizeContentView)
+                window.titleVisibility = .hidden
+                window.toolbarStyle = .unified
+                window.toolbar?.showsBaselineSeparator = false
             }
 
             let inset = trackingView.safeAreaInsets.top
