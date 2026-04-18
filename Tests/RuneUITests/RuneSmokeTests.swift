@@ -411,6 +411,11 @@ final class RuneSmokeTests: XCTestCase {
             stderr: "",
             exitCode: 0
         )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "qa-main", namespace: "qa", resource: "cronjobs"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
         script[key(["kubectl"] + builder.clusterResourceCountArguments(context: "qa-main", resource: "nodes"))] = CommandResult(
             stdout: "worker-qa-1\n",
             stderr: "",
@@ -1122,6 +1127,11 @@ final class RuneSmokeTests: XCTestCase {
         )
         script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "configmaps"))] = CommandResult(
             stdout: "app-config\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespacedResourceCountArguments(context: "prod-main", namespace: "default", resource: "cronjobs"))] = CommandResult(
+            stdout: "",
             stderr: "",
             exitCode: 0
         )

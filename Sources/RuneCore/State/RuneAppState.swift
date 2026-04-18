@@ -62,6 +62,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var overviewServicesCount: Int = 0
     @Published public private(set) var overviewIngressesCount: Int = 0
     @Published public private(set) var overviewConfigMapsCount: Int = 0
+    @Published public private(set) var overviewCronJobsCount: Int = 0
     @Published public private(set) var overviewNodesCount: Int = 0
     @Published public private(set) var overviewClusterCPUPercent: Int?
     @Published public private(set) var overviewClusterMemoryPercent: Int?
@@ -313,6 +314,7 @@ public final class RuneAppState: ObservableObject {
         servicesCount: Int,
         ingressesCount: Int,
         configMapsCount: Int,
+        cronJobsCount: Int,
         nodesCount: Int,
         clusterCPUPercent: Int? = nil,
         clusterMemoryPercent: Int? = nil,
@@ -323,6 +325,7 @@ public final class RuneAppState: ObservableObject {
         overviewServicesCount = servicesCount
         overviewIngressesCount = ingressesCount
         overviewConfigMapsCount = configMapsCount
+        overviewCronJobsCount = cronJobsCount
         overviewNodesCount = nodesCount
         overviewClusterCPUPercent = clusterCPUPercent
         overviewClusterMemoryPercent = clusterMemoryPercent
