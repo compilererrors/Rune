@@ -217,9 +217,9 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
 
 private enum PodTableLayout {
     static let metricsSpacing: CGFloat = 10
-    static let rowHorizontalPadding: CGFloat = 12
-    static let rowVerticalPadding: CGFloat = 8
-    static let listRowEdgeInset: CGFloat = 6
+    static let rowHorizontalPadding: CGFloat = 10
+    static let rowVerticalPadding: CGFloat = 5
+    static let listRowEdgeInset: CGFloat = 4
     static let cpuWidth: CGFloat = 44
     static let memoryWidth: CGFloat = 56
     static let restartsWidth: CGFloat = 56
@@ -228,6 +228,8 @@ private enum PodTableLayout {
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
     static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+    /// Space between column headers and first row — enough to avoid a cramped look without excess air.
+    static let headerBottomSpacing: CGFloat = 10
 }
 
 private enum ManifestDocumentKind: String, CaseIterable, Identifiable {
@@ -1121,6 +1123,9 @@ public struct RuneRootView: View {
                     overviewStatCard(title: "ConfigMaps", value: "\(viewModel.state.overviewConfigMapsCount)", symbol: "doc.text.fill", tint: .teal) {
                         viewModel.openOverviewModule(.configMaps)
                     }
+                    overviewStatCard(title: "CronJobs", value: "\(viewModel.state.overviewCronJobsCount)", symbol: "calendar.badge.clock", tint: .mint) {
+                        viewModel.openOverviewModule(.cronJobs)
+                    }
                     overviewStatCard(title: "Nodes", value: "\(viewModel.state.overviewNodesCount)", symbol: "server.rack", tint: .gray) {
                         viewModel.openOverviewModule(.nodes)
                     }
@@ -1249,9 +1254,9 @@ public struct RuneRootView: View {
                             }
                             .buttonStyle(.plain)
                             .listRowInsets(EdgeInsets(
-                                top: 4,
+                                top: 2,
                                 leading: PodTableLayout.listRowEdgeInset,
-                                bottom: 4,
+                                bottom: 2,
                                 trailing: PodTableLayout.listRowEdgeInset
                             ))
                             .listRowBackground(Color.clear)
@@ -1278,7 +1283,7 @@ public struct RuneRootView: View {
                                 .background(Color.blue.opacity(0.22), in: Capsule())
                                 .foregroundStyle(.blue)
                         }
-                        .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 8)
+                        .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
                     }
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
@@ -1341,7 +1346,7 @@ public struct RuneRootView: View {
                                         .background(Color.purple.opacity(0.22), in: Capsule())
                                         .foregroundStyle(.purple)
                                 }
-                                .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 8)
+                                .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
                             }
                             .buttonStyle(.plain)
                         }
@@ -2095,6 +2100,7 @@ public struct RuneRootView: View {
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
@@ -2351,7 +2357,7 @@ public struct RuneRootView: View {
         case .yaml:
             return viewModel.state.resourceYAML.isEmpty ? yamlFooterText : nil
         case .describe:
-            return "Describe shows the resource’s current state from the cluster. Editing here does not apply changes. Use the YAML tab to modify resources."
+            return "Describe text is for export or notes only. To change the cluster, edit the manifest YAML and use Apply on the YAML or Describe tab."
         }
     }
 
@@ -2414,6 +2420,7 @@ public struct RuneRootView: View {
                         !viewModel.canApplyClusterMutations
                             || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+                    .help("Sends the manifest to the cluster. Closing this sheet does not.")
                 }
 
                 Button("Revert") {
@@ -2452,6 +2459,15 @@ public struct RuneRootView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func manifestSheetDismissFootnote(for documentKind: ManifestDocumentKind) -> String {
+        switch documentKind {
+        case .yaml:
+            return "Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab."
+        case .describe:
+            return "Close dismisses this sheet only. Describe text is never sent to the cluster."
+        }
+    }
+
     private func manifestEditorSheet(_ documentKind: ManifestDocumentKind) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -2463,10 +2479,9 @@ public struct RuneRootView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") {
+                Button("Close") {
                     manifestSheetEditor = nil
                 }
-                .keyboardShortcut(.defaultAction)
             }
 
             manifestSheetActionBar(documentKind)
@@ -2483,6 +2498,11 @@ public struct RuneRootView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Text(manifestSheetDismissFootnote(for: documentKind))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
         .frame(minWidth: 760, minHeight: 560)
@@ -2510,6 +2530,7 @@ public struct RuneRootView: View {
                         !viewModel.canApplyClusterMutations
                             || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+                    .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
 
                     if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
                         Button(yamlManifestIsEditing ? "Done" : "Quick Edit") {
@@ -2576,12 +2597,12 @@ public struct RuneRootView: View {
         }
     }
 
-    /// `kubectl describe` output in memory; Save exports. No cluster write from this pane.
+    /// Read-only `kubectl describe` below. Edit manifest edits the same YAML buffer as the YAML tab; Apply is the only control that sends that YAML to the cluster (closing the sheet does not).
     private var describeBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 if viewModel.state.resourceDescribeHasUnsavedEdits {
-                    Text("Unsaved edits")
+                    Text("Unsaved edits (describe)")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
@@ -2590,6 +2611,26 @@ public struct RuneRootView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    Button("Apply") {
+                        viewModel.requestApplySelectedResourceYAML()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        !viewModel.canApplyClusterMutations
+                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                    .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
+
+                    Button("Edit manifest…") {
+                        openManifestSheet(.yaml)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Edit the resource manifest (same flow as k9s e after describe). Close the sheet when finished; use Apply when you want to update the cluster.")
+
+                    Divider()
+                        .frame(height: 16)
+
                     if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
                         Button(describePaneIsEditing ? "Done" : "Quick Edit") {
                             describePaneIsEditing.toggle()
@@ -2598,12 +2639,12 @@ public struct RuneRootView: View {
                         .disabled(manifestTextIsEmpty(.describe))
                     }
 
-                    Button("Edit…") {
+                    Button("Edit describe…") {
                         openManifestSheet(.describe)
                     }
                     .buttonStyle(.bordered)
                     .disabled(manifestTextIsEmpty(.describe))
-                    .help("Open a dedicated editor sheet for exportable describe text.")
+                    .help("Edit describe output in a sheet (export only; does not change the cluster).")
 
                     Button("Revert") {
                         viewModel.revertResourceDescribeDraft()
@@ -2624,7 +2665,7 @@ public struct RuneRootView: View {
             manifestEditorSurface(for: .describe, inlineEditing: describePaneIsEditing)
 
             Text(
-                "Describe shows the resource’s current state from the cluster. Editing here does not apply changes. Use the YAML tab to modify resources."
+                "Below: kubectl describe (reference only). In k9s, e opens the resource editor and saving updates the cluster. Here you get an extra step: edit the manifest, Close the sheet, then tap Apply when you are ready to push changes."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -3172,6 +3213,8 @@ public struct RuneRootView: View {
             podSortHeaderButton(title: "Status", column: .status, width: PodTableLayout.statusTotalWidth, alignment: .center)
         }
         .padding(.horizontal, PodTableLayout.headerHorizontalInset)
+        .padding(.top, 4)
+        .padding(.bottom, PodTableLayout.headerBottomSpacing)
         .textCase(nil)
     }
 

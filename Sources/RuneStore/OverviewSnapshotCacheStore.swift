@@ -16,6 +16,8 @@ public struct PersistedOverviewSnapshot: Codable, Sendable {
     public let servicesCount: Int
     public let ingressesCount: Int
     public let configMapsCount: Int
+    /// Present in snapshots written by newer builds; `nil` for legacy JSON rows.
+    public let cronJobsCount: Int?
     public let nodesCount: Int
     public let clusterCPUPercent: Int?
     public let clusterMemoryPercent: Int?
@@ -31,6 +33,7 @@ public struct PersistedOverviewSnapshot: Codable, Sendable {
         servicesCount: Int,
         ingressesCount: Int,
         configMapsCount: Int,
+        cronJobsCount: Int? = nil,
         nodesCount: Int,
         clusterCPUPercent: Int? = nil,
         clusterMemoryPercent: Int? = nil,
@@ -45,6 +48,7 @@ public struct PersistedOverviewSnapshot: Codable, Sendable {
         self.servicesCount = servicesCount
         self.ingressesCount = ingressesCount
         self.configMapsCount = configMapsCount
+        self.cronJobsCount = cronJobsCount
         self.nodesCount = nodesCount
         self.clusterCPUPercent = clusterCPUPercent
         self.clusterMemoryPercent = clusterMemoryPercent
@@ -129,6 +133,7 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
             servicesCount: snapshot.servicesCount,
             ingressesCount: snapshot.ingressesCount,
             configMapsCount: snapshot.configMapsCount,
+            cronJobsCount: snapshot.cronJobsCount,
             nodesCount: snapshot.nodesCount,
             clusterCPUPercent: snapshot.clusterCPUPercent,
             clusterMemoryPercent: snapshot.clusterMemoryPercent,

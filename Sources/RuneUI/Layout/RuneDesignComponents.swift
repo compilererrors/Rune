@@ -10,8 +10,10 @@ enum RuneSurfaceKind {
 
     var cornerRadius: CGFloat {
         switch self {
-        case .panel, .inset, .listRow:
+        case .panel, .inset:
             return RuneUILayoutMetrics.groupedContentCornerRadius
+        case .listRow:
+            return RuneUILayoutMetrics.compactGlyphCornerRadius
         case .editor, .sidebarSelection:
             return RuneUILayoutMetrics.interactiveRowCornerRadius
         }
@@ -27,8 +29,8 @@ enum RuneSurfaceKind {
             return Color(nsColor: .textBackgroundColor).opacity(0.92)
         case let .listRow(isSelected):
             return isSelected
-                ? Color.accentColor.opacity(0.16)
-                : Color(nsColor: .controlBackgroundColor).opacity(0.72)
+                ? Color.accentColor.opacity(0.11)
+                : Color(nsColor: .controlBackgroundColor).opacity(0.42)
         case let .sidebarSelection(isSelected):
             return isSelected ? Color.accentColor.opacity(0.16) : Color.clear
         }
@@ -43,9 +45,8 @@ enum RuneSurfaceKind {
         case .editor:
             return Color(nsColor: .separatorColor).opacity(0.24)
         case let .listRow(isSelected):
-            return isSelected
-                ? Color.accentColor.opacity(0.28)
-                : Color(nsColor: .separatorColor).opacity(0.32)
+            if isSelected { return nil }
+            return Color(nsColor: .separatorColor).opacity(0.2)
         case .sidebarSelection:
             return nil
         }
@@ -123,8 +124,8 @@ extension View {
 
     func runeListRowCard(
         isSelected: Bool,
-        horizontalPadding: CGFloat = 12,
-        verticalPadding: CGFloat = 10,
+        horizontalPadding: CGFloat = 10,
+        verticalPadding: CGFloat = 6,
         alignment: Alignment = .leading
     ) -> some View {
         self
