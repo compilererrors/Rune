@@ -8,6 +8,72 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(builder.contextListArguments(), ["config", "get-contexts", "-o", "name"])
     }
 
+    func testConfigViewJSONArguments() {
+        let builder = KubectlCommandBuilder()
+        XCTAssertEqual(
+            builder.configViewJSONArguments(context: "prod"),
+            ["config", "view", "--context", "prod", "-o", "json"]
+        )
+    }
+
+    func testKubeConfigViewJSONDecodesForDirectREST() async throws {
+        let json = """
+        {
+          "clusters": [
+            {
+              "name": "c1",
+              "cluster": {
+                "server": "https://127.0.0.1:6443",
+                "certificate-authority-data": "QUJD"
+              }
+            }
+          ],
+          "users": [
+            {
+              "name": "u1",
+              "user": { "token": "secret" }
+            }
+          ],
+          "contexts": [
+            {
+              "name": "ctx1",
+              "context": { "cluster": "c1", "user": "u1" }
+            }
+          ]
+        }
+        """
+        let view = try JSONDecoder().decode(KubeConfigViewJSON.self, from: Data(json.utf8))
+        let base = URL(fileURLWithPath: "/tmp")
+        let creds = await KubeRESTCredentialResolver.resolve(
+            view: view,
+            contextName: "ctx1",
+            kubeconfigDirectoryForRelativePaths: base,
+            baseEnvironment: [:],
+            runner: ProcessCommandRunner(),
+            execTimeout: 30
+        )
+        XCTAssertNotNil(creds)
+        XCTAssertEqual(creds?.serverURL.absoluteString, "https://127.0.0.1:6443")
+        XCTAssertEqual(creds?.bearerToken, "secret")
+        XCTAssertEqual(creds?.anchorCertificateDER, Data(base64Encoded: "QUJD"))
+    }
+
+    func testExecCredentialJSONDecodes() throws {
+        let json = """
+        {
+          "apiVersion": "client.authentication.k8s.io/v1",
+          "kind": "ExecCredential",
+          "status": {
+            "token": "tok",
+            "expirationTimestamp": "2030-01-01T00:00:00Z"
+          }
+        }
+        """
+        let decoded = try JSONDecoder().decode(ExecCredentialResponseJSON.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.status?.token, "tok")
+        XCTAssertEqual(decoded.status?.expirationTimestamp, "2030-01-01T00:00:00Z")
+    }
+
     func testNamespaceArguments() {
         let builder = KubectlCommandBuilder()
         XCTAssertEqual(

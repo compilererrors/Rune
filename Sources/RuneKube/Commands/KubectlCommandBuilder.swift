@@ -8,6 +8,11 @@ public struct KubectlCommandBuilder {
         ["config", "get-contexts", "-o", "name"]
     }
 
+    /// Full merged kubeconfig as JSON (for resolving API server + credentials for direct HTTPS).
+    public func configViewJSONArguments(context: String) -> [String] {
+        ["config", "view", "--context", context, "-o", "json"]
+    }
+
     public func namespaceListArguments(context: String) -> [String] {
         [
             "--context", context,

@@ -8,11 +8,11 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let parser: KubectlOutputParser
     private let builder: KubectlCommandBuilder
     private let kubectlPath: String
-    /// Optional path to `rune-k8s-agent` (Go + client-go). When nil, ``RuneK8sAgentLocator`` is used.
-    private let k8sAgentPath: String?
     private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
+
+    private let directRESTTransportCache = DirectRESTTransportCache()
 
     /// First attempt when using default process timeout; a second attempt uses `retryTimeoutAfterQuickFailure`.
     private let quickKubectlAttemptTimeout: TimeInterval = 12
@@ -27,7 +27,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         parser: KubectlOutputParser = KubectlOutputParser(),
         builder: KubectlCommandBuilder = KubectlCommandBuilder(),
         kubectlPath: String = "/usr/bin/env",
-        k8sAgentPath: String? = nil,
         commandTimeout: TimeInterval = 30,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
@@ -36,7 +35,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         self.parser = parser
         self.builder = builder
         self.kubectlPath = kubectlPath
-        self.k8sAgentPath = k8sAgentPath
         self.commandTimeout = commandTimeout
         self.access = access
     }
@@ -202,23 +200,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [DeploymentSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listDeployments(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-        }
         do {
             let result = try await runKubectl(
                 arguments: builder.deploymentListTextArguments(context: context.name, namespace: namespace),
@@ -295,23 +276,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listStatefulSets(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-        }
         let result = try await runKubectl(
             arguments: builder.statefulSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -330,23 +294,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listDaemonSets(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-        }
         let result = try await runKubectl(
             arguments: builder.daemonSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -365,24 +312,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listJobs(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
-        }
         // Layered like `listPods`: small custom-columns table first; JSON fallback for edge cases / older kubectl quirks.
         do {
             let table = try await runKubectl(
@@ -411,24 +340,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listCronJobs(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
-        }
         do {
             let table = try await runKubectl(
                 arguments: builder.cronJobListTextArguments(context: context.name, namespace: namespace),
@@ -456,23 +367,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                let rows = try await RuneK8sAgentWorkloadClient.listReplicaSets(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
-                    namespace: namespace,
-                    timeout: slowNamespacedJSONListTimeout
-                )
-                if !rows.isEmpty {
-                    return rows
-                }
-            } catch {
-                // Go agent (client-go) failed; continue with kubectl.
-            }
-        }
         let result = try await runKubectl(
             arguments: builder.replicaSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -802,11 +696,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        let kubeconfigBase = kubeconfigBaseURL(from: sources)
         if let apiPath = builder.namespacedResourceListMetadataAPIPath(namespace: namespace, resource: resource),
            let total = await collectionListTotalFromMetadataProbe(
                 context: context,
                 environment: env,
-                apiPath: apiPath
+                apiPath: apiPath,
+                kubeconfigBaseURL: kubeconfigBase
            ) {
             return total
         }
@@ -829,11 +725,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        let kubeconfigBase = kubeconfigBaseURL(from: sources)
         if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource),
            let total = await collectionListTotalFromMetadataProbe(
                 context: context,
                 environment: env,
-                apiPath: apiPath
+                apiPath: apiPath,
+                kubeconfigBaseURL: kubeconfigBase
            ) {
             return total
         }
@@ -849,22 +747,72 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return Self.parseLineCount(from: result.stdout)
     }
 
-    /// Cheap total via `kubectl get --raw` + `limit=1` list (`metadata.remainingItemCount` + 1). Returns `nil` on failure or when the server omits a derivable total.
+    /// Cheap total via direct HTTPS (when credentials allow) or `kubectl get --raw` + `limit=1` list (`metadata.remainingItemCount` + 1). Returns `nil` on failure or when the server omits a derivable total.
     private func collectionListTotalFromMetadataProbe(
         context: KubeContext,
         environment: [String: String],
-        apiPath: String
+        apiPath: String,
+        kubeconfigBaseURL: URL?
     ) async -> Int? {
         do {
-            let result = try await runKubectl(
-                arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+            let body = try await rawGetRESTBody(
+                context: context,
                 environment: environment,
-                timeout: 45
+                apiPath: apiPath,
+                timeout: 45,
+                kubeconfigBaseURL: kubeconfigBaseURL
             )
-            return KubectlListJSON.collectionListTotal(from: result.stdout)
+            return KubectlListJSON.collectionListTotal(from: body)
         } catch {
             return nil
         }
+    }
+
+    private func kubeconfigBaseURL(from sources: [KubeConfigSource]) -> URL? {
+        sources.first?.url.deletingLastPathComponent()
+    }
+
+    private func directRESTCacheKey(context: KubeContext, environment: [String: String]) -> String {
+        (environment["KUBECONFIG"] ?? "") + "|" + context.name
+    }
+
+    private func cachedDirectRESTTransport(
+        context: KubeContext,
+        environment: [String: String],
+        kubeconfigBaseURL: URL?
+    ) async -> KubernetesAPISessionTransport? {
+        let key = directRESTCacheKey(context: context, environment: environment)
+        if let existing = await directRESTTransportCache.transport(for: key) {
+            return existing
+        }
+
+        guard let view = try? await KubeRESTConfigViewLoader.loadJSON(
+            contextName: context.name,
+            environment: environment,
+            runner: runner,
+            kubectlExecutable: kubectlPath,
+            timeout: min(25, commandTimeout)
+        ) else {
+            return nil
+        }
+        guard let creds = await KubeRESTCredentialResolver.resolve(
+            view: view,
+            contextName: context.name,
+            kubeconfigDirectoryForRelativePaths: kubeconfigBaseURL,
+            baseEnvironment: environment,
+            runner: runner,
+            execTimeout: min(60, commandTimeout)
+        ) else {
+            return nil
+        }
+        let transport = KubernetesAPISessionTransport(
+            credentials: creds,
+            execRunner: runner,
+            baseEnvironment: environment,
+            execTimeout: min(60, commandTimeout)
+        )
+        await directRESTTransportCache.storeIfAbsent(transport, for: key, validUntil: creds.cacheValidUntil)
+        return await directRESTTransportCache.transport(for: key) ?? transport
     }
 
     public func clusterUsagePercent(
@@ -1483,11 +1431,29 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         ]
     }
 
-    private func resolvedK8sAgentPath() -> String? {
-        if let k8sAgentPath, !k8sAgentPath.isEmpty {
-            return FileManager.default.isExecutableFile(atPath: k8sAgentPath) ? k8sAgentPath : nil
+    /// Kubernetes REST `GET`: tries direct HTTPS (bearer token + CA from kubeconfig) when `kubectl config view` allows it; otherwise `kubectl get --raw`.
+    private func rawGetRESTBody(
+        context: KubeContext,
+        environment: [String: String],
+        apiPath: String,
+        timeout: TimeInterval,
+        kubeconfigBaseURL: URL?
+    ) async throws -> String {
+        if let transport = await cachedDirectRESTTransport(
+            context: context,
+            environment: environment,
+            kubeconfigBaseURL: kubeconfigBaseURL
+        ) {
+            if let body = try? await transport.getString(pathAndQuery: apiPath), !body.isEmpty {
+                return body
+            }
         }
-        return RuneK8sAgentLocator.resolvedExecutablePath()
+        let result = try await runKubectl(
+            arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+            environment: environment,
+            timeout: timeout
+        )
+        return result.stdout
     }
 
     private func taggedLines(from logs: String, podName: String) -> [TaggedLogLine] {
@@ -1655,6 +1621,30 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 containersReady: pod.containersReady,
                 containerNamesLine: pod.containerNamesLine
             )
+        }
+    }
+}
+
+private actor DirectRESTTransportCache {
+    private struct Entry {
+        let transport: KubernetesAPISessionTransport
+        let validUntil: Date?
+    }
+
+    private var map: [String: Entry] = [:]
+
+    func transport(for key: String) -> KubernetesAPISessionTransport? {
+        guard let entry = map[key] else { return nil }
+        if let until = entry.validUntil, until < Date() {
+            map.removeValue(forKey: key)
+            return nil
+        }
+        return entry.transport
+    }
+
+    func storeIfAbsent(_ transport: KubernetesAPISessionTransport, for key: String, validUntil: Date?) {
+        if map[key] == nil {
+            map[key] = Entry(transport: transport, validUntil: validUntil)
         }
     }
 }

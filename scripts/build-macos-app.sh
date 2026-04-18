@@ -12,12 +12,12 @@ ICON_NAME="AppIcon.icns"
 
 cd "${ROOT_DIR}"
 
-if command -v go >/dev/null 2>&1; then
-  echo "Bygger rune-k8s-agent (Go + client-go)…"
-  # -ldflags=-s -w strips symbol/DWARF (smaller bundle; client-go is ~40MB+ otherwise).
+# Rune använder inte längre rune-k8s-agent i appen. Bygg den bara om du vill (t.ex. experiment): RUNE_BUILD_K8S_AGENT=1
+if [[ "${RUNE_BUILD_K8S_AGENT:-}" == "1" ]] && command -v go >/dev/null 2>&1; then
+  echo "Bygger rune-k8s-agent (Go + client-go, valfritt)…"
   (cd "${ROOT_DIR}/go/rune-k8s-agent" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o rune-k8s-agent ./cmd/rune-k8s-agent)
-else
-  echo "Varning: go saknas i PATH — hoppar över rune-k8s-agent (sätt RUNE_K8S_AGENT eller installera Go)." >&2
+elif [[ "${RUNE_BUILD_K8S_AGENT:-}" == "1" ]]; then
+  echo "Varning: RUNE_BUILD_K8S_AGENT=1 men go saknas i PATH." >&2
 fi
 
 swift build -c "${CONFIGURATION}" --product "${PRODUCT_NAME}"
@@ -36,7 +36,7 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}"
 
-if [[ -x "${ROOT_DIR}/go/rune-k8s-agent/rune-k8s-agent" ]]; then
+if [[ "${RUNE_BUILD_K8S_AGENT:-}" == "1" ]] && [[ -x "${ROOT_DIR}/go/rune-k8s-agent/rune-k8s-agent" ]]; then
   cp "${ROOT_DIR}/go/rune-k8s-agent/rune-k8s-agent" "${APP_BUNDLE}/Contents/MacOS/rune-k8s-agent"
 fi
 
