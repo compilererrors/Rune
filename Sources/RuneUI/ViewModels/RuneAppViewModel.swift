@@ -156,6 +156,7 @@ public enum OverviewModule: Sendable {
     case services
     case ingresses
     case configMaps
+    case cronJobs
     case nodes
     case events
 }
@@ -218,6 +219,7 @@ private struct SnapshotLoadPlan: Sendable {
     var ingressesCount = false
     var configMaps = false
     var configMapsCount = false
+    var cronJobsCount = false
     var secrets = false
     var nodes = false
     var nodesCount = false
@@ -236,6 +238,7 @@ private struct SnapshotLoadPlan: Sendable {
             plan.servicesCount = true
             plan.ingressesCount = true
             plan.configMapsCount = true
+            plan.cronJobsCount = true
             plan.nodesCount = true
             plan.events = true
         case .workloads:
@@ -309,6 +312,7 @@ private struct OverviewSnapshotCacheEntry: Sendable {
     let servicesCount: Int
     let ingressesCount: Int
     let configMapsCount: Int
+    let cronJobsCount: Int
     let nodesCount: Int
     let clusterCPUPercent: Int?
     let clusterMemoryPercent: Int?
@@ -354,6 +358,8 @@ public final class RuneAppViewModel: ObservableObject {
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
     private var pendingOpenEventSource: EventSummary?
+    /// Retries for `navigateToEventSource` when lists were not loaded for the Events-only snapshot (e.g. pods empty until workloads refresh).
+    private var navigateFromEventFetchAttempts = 0
     private var scheduledRefreshTask: Task<Void, Never>?
     private var pendingForcedNamespaceRefresh = false
     private var namespaceMetadataRefreshedAt: [String: Date] = [:]
@@ -687,6 +693,7 @@ public final class RuneAppViewModel: ObservableObject {
                         servicesCount: 0,
                         ingressesCount: 0,
                         configMapsCount: 0,
+                        cronJobsCount: 0,
                         nodesCount: 0,
                         events: []
                     )
@@ -738,6 +745,10 @@ public final class RuneAppViewModel: ObservableObject {
             if state.selectedNamespace != requestedNamespace {
                 state.selectedNamespace = requestedNamespace
             }
+
+            // Same warm path as `setContext`: hydrate lists from `ResourceStore` / disk immediately, then fetch fresh cluster data.
+            // Without this, startup only matched the awaited snapshot path and could feel “cache-only” compared to switching contexts.
+            applyCachedSnapshot(context: selected, namespace: state.selectedNamespace)
 
             let requestID = beginSnapshotRequest(
                 context: selected,
@@ -1035,6 +1046,9 @@ public final class RuneAppViewModel: ObservableObject {
         case .configMaps:
             setSection(.config, trackHistory: false, triggerReload: false)
             setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
+        case .cronJobs:
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
         case .nodes:
             setSection(.storage, trackHistory: false, triggerReload: false)
             setWorkloadKind(.node, trackHistory: false, triggerReload: false)
@@ -1047,6 +1061,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     /// Sets section, namespace, and selection from an event `involvedObject` (workload or namespaced resource).
     public func openEventSource(_ event: EventSummary) {
+        navigateFromEventFetchAttempts = 0
         let targetNs = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !targetNs.isEmpty && targetNs != state.selectedNamespace {
             pendingOpenEventSource = event
@@ -1054,6 +1069,17 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
         navigateToEventSource(event)
+    }
+
+    private func deferFetchOrShowEventDetail(event: EventSummary, showEventDetail: () -> Void) {
+        if navigateFromEventFetchAttempts < 2 {
+            navigateFromEventFetchAttempts += 1
+            pendingOpenEventSource = event
+            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
+        } else {
+            navigateFromEventFetchAttempts = 0
+            showEventDetail()
+        }
     }
 
     private func navigateToEventSource(_ event: EventSummary) {
@@ -1070,147 +1096,166 @@ public final class RuneAppViewModel: ObservableObject {
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
             if let pod = state.pods.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectPod(pod, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "deployment":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.deployment, trackHistory: false, triggerReload: false)
             if let deployment = state.deployments.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectDeployment(deployment, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "statefulset":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.statefulSet, trackHistory: false, triggerReload: false)
             if let resource = state.statefulSets.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectStatefulSet(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "daemonset":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.daemonSet, trackHistory: false, triggerReload: false)
             if let resource = state.daemonSets.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectDaemonSet(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "job":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.job, trackHistory: false, triggerReload: false)
             if let resource = state.jobs.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectJob(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "cronjob":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
             if let resource = state.cronJobs.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectCronJob(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "replicaset":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
             if let resource = state.replicaSets.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectReplicaSet(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "service":
             setSection(.networking, trackHistory: false, triggerReload: false)
             setWorkloadKind(.service, trackHistory: false, triggerReload: false)
             if let service = state.services.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectService(service, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "ingress":
             setSection(.networking, trackHistory: false, triggerReload: false)
             setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
             if let resource = state.ingresses.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectIngress(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "configmap":
             setSection(.config, trackHistory: false, triggerReload: false)
             setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
             if let resource = state.configMaps.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectConfigMap(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "secret":
             setSection(.config, trackHistory: false, triggerReload: false)
             setWorkloadKind(.secret, trackHistory: false, triggerReload: false)
             if let resource = state.secrets.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectSecret(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "node":
             setSection(.storage, trackHistory: false, triggerReload: false)
             setWorkloadKind(.node, trackHistory: false, triggerReload: false)
             if let resource = state.nodes.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectNode(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolumeclaim":
             setSection(.storage, trackHistory: false, triggerReload: false)
             setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
             if let resource = state.persistentVolumeClaims.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectPersistentVolumeClaim(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolume":
             setSection(.storage, trackHistory: false, triggerReload: false)
             setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
             if let resource = state.persistentVolumes.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectPersistentVolume(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "storageclass":
             setSection(.storage, trackHistory: false, triggerReload: false)
             setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
             if let resource = state.storageClasses.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectStorageClass(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "horizontalpodautoscaler":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
             if let resource = state.horizontalPodAutoscalers.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectHorizontalPodAutoscaler(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "networkpolicy":
             setSection(.networking, trackHistory: false, triggerReload: false)
             setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
             if let resource = state.networkPolicies.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectNetworkPolicy(resource, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "":
             setSection(.workloads, trackHistory: false, triggerReload: false)
             setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
             if let pod = state.pods.first(where: { $0.name == name }) {
+                navigateFromEventFetchAttempts = 0
                 selectPod(pod, trackHistory: true)
             } else {
-                showEventDetail()
+                deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         default:
+            navigateFromEventFetchAttempts = 0
             showEventDetail()
         }
     }
@@ -2587,6 +2632,21 @@ public final class RuneAppViewModel: ObservableObject {
                 resource: "configmaps"
             )
         }
+        async let cronJobsCountResult: Result<Int, Error> = Self.capture {
+            guard plan.cronJobsCount else { return cachedSnapshot.cronJobs.count }
+            if !cachedSnapshot.cronJobs.isEmpty {
+                return cachedSnapshot.cronJobs.count
+            }
+            if let warmOverview {
+                return warmOverview.cronJobsCount
+            }
+            return try await kubeClient.countNamespacedResources(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: effectiveNamespace,
+                resource: "cronjobs"
+            )
+        }
         async let secretResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.secrets else { return cachedSnapshot.secrets }
             return try await kubeClient.listSecrets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
@@ -2679,6 +2739,9 @@ public final class RuneAppViewModel: ObservableObject {
         let loadedConfigMapCount = plan.configMapsCount
             ? unwrap(await configMapCountResult, label: "configmaps-count", fallback: loadedConfigMaps.count, warnings: &warnings)
             : loadedConfigMaps.count
+        let loadedCronJobsCount = plan.cronJobsCount
+            ? unwrap(await cronJobsCountResult, label: "cronjobs-count", fallback: loadedCronJobs.count, warnings: &warnings)
+            : loadedCronJobs.count
         let loadedNodeCount = plan.nodesCount
             ? unwrap(await nodeCountResult, label: "nodes-count", fallback: loadedNodes.count, warnings: &warnings)
             : loadedNodes.count
@@ -2797,6 +2860,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: loadedServiceCount,
             ingressesCount: loadedIngressCount,
             configMapsCount: loadedConfigMapCount,
+            cronJobsCount: loadedCronJobsCount,
             nodesCount: loadedNodeCount,
             clusterCPUPercent: loadedClusterCPUPercent,
             clusterMemoryPercent: loadedClusterMemoryPercent,
@@ -2810,6 +2874,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: loadedServiceCount,
             ingressesCount: loadedIngressCount,
             configMapsCount: loadedConfigMapCount,
+            cronJobsCount: loadedCronJobsCount,
             nodesCount: loadedNodeCount,
             clusterCPUPercent: loadedClusterCPUPercent,
             clusterMemoryPercent: loadedClusterMemoryPercent,
@@ -2890,6 +2955,7 @@ public final class RuneAppViewModel: ObservableObject {
                 servicesCount: state.overviewServicesCount,
                 ingressesCount: state.overviewIngressesCount,
                 configMapsCount: state.overviewConfigMapsCount,
+                cronJobsCount: state.overviewCronJobsCount,
                 nodesCount: state.overviewNodesCount,
                 clusterCPUPercent: state.overviewClusterCPUPercent,
                 clusterMemoryPercent: state.overviewClusterMemoryPercent,
@@ -2903,6 +2969,7 @@ public final class RuneAppViewModel: ObservableObject {
                 servicesCount: state.overviewServicesCount,
                 ingressesCount: state.overviewIngressesCount,
                 configMapsCount: state.overviewConfigMapsCount,
+                cronJobsCount: state.overviewCronJobsCount,
                 nodesCount: state.overviewNodesCount,
                 clusterCPUPercent: state.overviewClusterCPUPercent,
                 clusterMemoryPercent: state.overviewClusterMemoryPercent,
@@ -2923,6 +2990,7 @@ public final class RuneAppViewModel: ObservableObject {
         servicesCount: Int,
         ingressesCount: Int,
         configMapsCount: Int,
+        cronJobsCount: Int,
         nodesCount: Int,
         clusterCPUPercent: Int?,
         clusterMemoryPercent: Int?,
@@ -2940,13 +3008,14 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: servicesCount,
             ingressesCount: ingressesCount,
             configMapsCount: configMapsCount,
+            cronJobsCount: cronJobsCount,
             nodesCount: nodesCount,
             clusterCPUPercent: clusterCPUPercent,
             clusterMemoryPercent: clusterMemoryPercent,
             events: events
         )
         diagnostics.log(
-            "loadOverviewSnapshot done context=\(context.name) pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount)"
+            "loadOverviewSnapshot done context=\(context.name) pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount) cronjobs=\(cronJobsCount)"
         )
     }
 
@@ -3964,6 +4033,7 @@ public final class RuneAppViewModel: ObservableObject {
         servicesCount: Int,
         ingressesCount: Int,
         configMapsCount: Int,
+        cronJobsCount: Int,
         nodesCount: Int,
         clusterCPUPercent: Int?,
         clusterMemoryPercent: Int?,
@@ -3978,6 +4048,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: servicesCount,
             ingressesCount: ingressesCount,
             configMapsCount: configMapsCount,
+            cronJobsCount: cronJobsCount,
             nodesCount: nodesCount,
             clusterCPUPercent: clusterCPUPercent,
             clusterMemoryPercent: clusterMemoryPercent,
@@ -3996,6 +4067,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: servicesCount,
             ingressesCount: ingressesCount,
             configMapsCount: configMapsCount,
+            cronJobsCount: cronJobsCount,
             nodesCount: nodesCount,
             clusterCPUPercent: clusterCPUPercent,
             clusterMemoryPercent: clusterMemoryPercent,
@@ -4037,6 +4109,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: persisted.servicesCount,
             ingressesCount: persisted.ingressesCount,
             configMapsCount: persisted.configMapsCount,
+            cronJobsCount: persisted.cronJobsCount ?? 0,
             nodesCount: persisted.nodesCount,
             clusterCPUPercent: persisted.clusterCPUPercent,
             clusterMemoryPercent: persisted.clusterMemoryPercent,
@@ -4178,10 +4251,9 @@ public final class RuneAppViewModel: ObservableObject {
                     namespace: namespace,
                     maxAge: self.overviewSnapshotFreshnessTTL
                 ) {
-                    _ = await MainActor.run { [weak self] in
-                        self?.cachePersistedOverviewSnapshot(persisted)
+                    await MainActor.run { [weak self] in
+                        _ = self?.cachePersistedOverviewSnapshot(persisted)
                     }
-                    continue
                 }
 
                 do {
@@ -4214,12 +4286,19 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: namespace,
                         resource: "configmaps"
                     )
+                    async let cronJobsCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: context,
+                        namespace: namespace,
+                        resource: "cronjobs"
+                    )
 
                     let prefetchedPods = try await pods
                     let prefetchedDeploymentsCount = try await deploymentsCount
                     let prefetchedServicesCount = try await servicesCount
                     let prefetchedIngressesCount = try await ingressesCount
                     let prefetchedConfigMapsCount = try await configMapsCount
+                    let prefetchedCronJobsCount = try await cronJobsCount
 
                     await MainActor.run { [weak self] in
                         guard let self else { return }
@@ -4232,6 +4311,7 @@ public final class RuneAppViewModel: ObservableObject {
                             servicesCount: prefetchedServicesCount,
                             ingressesCount: prefetchedIngressesCount,
                             configMapsCount: prefetchedConfigMapsCount,
+                            cronJobsCount: prefetchedCronJobsCount,
                             nodesCount: nodeCountFallback,
                             clusterCPUPercent: self.state.overviewClusterCPUPercent,
                             clusterMemoryPercent: self.state.overviewClusterMemoryPercent,
@@ -4373,6 +4453,7 @@ public final class RuneAppViewModel: ObservableObject {
                 servicesCount: 0,
                 ingressesCount: 0,
                 configMapsCount: 0,
+                cronJobsCount: 0,
                 nodesCount: 0,
                 clusterCPUPercent: nil,
                 clusterMemoryPercent: nil,
@@ -4409,6 +4490,7 @@ public final class RuneAppViewModel: ObservableObject {
             let mergedServicesCount = cached.services.isEmpty ? cachedOverview.servicesCount : cached.services.count
             let mergedIngressesCount = cached.ingresses.isEmpty ? cachedOverview.ingressesCount : cached.ingresses.count
             let mergedConfigMapsCount = cached.configMaps.isEmpty ? cachedOverview.configMapsCount : cached.configMaps.count
+            let mergedCronJobsCount = cached.cronJobs.isEmpty ? cachedOverview.cronJobsCount : cached.cronJobs.count
             let mergedNodesCount = cachedNodes.isEmpty ? cachedOverview.nodesCount : cachedNodes.count
             let mergedEvents = cached.events.isEmpty ? cachedOverview.events : cached.events
             state.setOverviewSnapshot(
@@ -4417,6 +4499,7 @@ public final class RuneAppViewModel: ObservableObject {
                 servicesCount: mergedServicesCount,
                 ingressesCount: mergedIngressesCount,
                 configMapsCount: mergedConfigMapsCount,
+                cronJobsCount: mergedCronJobsCount,
                 nodesCount: mergedNodesCount,
                 clusterCPUPercent: cachedOverview.clusterCPUPercent,
                 clusterMemoryPercent: cachedOverview.clusterMemoryPercent,
@@ -4431,6 +4514,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: cached.services.count,
             ingressesCount: cached.ingresses.count,
             configMapsCount: cached.configMaps.count,
+            cronJobsCount: cached.cronJobs.count,
             nodesCount: cachedNodes.count,
             clusterCPUPercent: nil,
             clusterMemoryPercent: nil,
@@ -4462,6 +4546,14 @@ public final class RuneAppViewModel: ObservableObject {
         guard state.selectedContext?.name == contextName else { return }
         guard state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines) == namespace else { return }
 
+        let key = Self.overviewCacheKey(contextName: contextName, namespace: namespace)
+        if let newer = overviewSnapshotCache[key], persisted.fetchedAt < newer.fetchedAt {
+            diagnostics.log(
+                "applyPersistedOverviewSnapshotIfCurrent skipped older disk snapshot context=\(contextName) namespace=\(namespace)"
+            )
+            return
+        }
+
         let now = Date()
         let entry = cachePersistedOverviewSnapshot(persisted, reference: now)
         guard Self.isOverviewCacheFresh(entry, ttl: overviewDiskSnapshotFreshnessTTL, reference: now) else { return }
@@ -4471,6 +4563,7 @@ public final class RuneAppViewModel: ObservableObject {
             servicesCount: entry.servicesCount,
             ingressesCount: entry.ingressesCount,
             configMapsCount: entry.configMapsCount,
+            cronJobsCount: entry.cronJobsCount,
             nodesCount: entry.nodesCount,
             clusterCPUPercent: entry.clusterCPUPercent,
             clusterMemoryPercent: entry.clusterMemoryPercent,
