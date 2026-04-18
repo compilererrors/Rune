@@ -1,7 +1,7 @@
 import Foundation
 import RuneCore
 
-/// Shared helpers for `kubectl … -o json` **List** responses: tolerate missing `items`, skip malformed elements.
+/// Shared helpers for JSON **List** responses from the cluster: tolerate missing `items`, skip malformed elements.
 enum KubectlListJSON {
     static func utf8DataTrimmed(_ raw: String) -> Data {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -43,7 +43,7 @@ enum KubectlListJSON {
         return decoded
     }
 
-    /// Total collection size from a single List response (e.g. `kubectl get --raw '/api/.../pods?limit=1'`).
+    /// Total collection size from a single List response (e.g. raw GET with `limit=1` on a collection path).
     /// Uses `metadata.remainingItemCount` + `items.count` when present; returns `nil` when pagination needs legacy counting.
     static func collectionListTotal(from raw: String) -> Int? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

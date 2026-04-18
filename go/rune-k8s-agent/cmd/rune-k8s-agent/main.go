@@ -1,5 +1,5 @@
 // rune-k8s-agent is the Rune Kubernetes helper: client-go for operations we prefer not to route through kubectl.
-// JSON on stdout matches RuneCore ClusterResourceSummary (see internal/output).
+// JSON on stdout matches RuneCore ClusterResourceSummary or DeploymentSummary (see internal/output).
 //
 // REST paths align with Kubernetes API layout and Rune’s Swift-side KubernetesRESTPath / Swiftkube-style paths.
 package main
@@ -34,12 +34,12 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: rune-k8s-agent list <jobs|cronjobs|daemonsets|statefulsets> --context NAME --namespace NS")
+	fmt.Fprintln(os.Stderr, "usage: rune-k8s-agent list <jobs|cronjobs|daemonsets|statefulsets|deployments|replicasets> --context NAME --namespace NS")
 }
 
 func runList(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("list requires a resource: jobs, cronjobs, daemonsets, or statefulsets")
+		return fmt.Errorf("list requires a resource (see --help)")
 	}
 	resource := args[0]
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
@@ -70,8 +70,12 @@ func runList(args []string) error {
 		rows, err = list.DaemonSets(ctx, contextName, namespace)
 	case "statefulsets":
 		rows, err = list.StatefulSets(ctx, contextName, namespace)
+	case "deployments":
+		rows, err = list.Deployments(ctx, contextName, namespace)
+	case "replicasets":
+		rows, err = list.ReplicaSets(ctx, contextName, namespace)
 	default:
-		return fmt.Errorf("unknown resource %q (use jobs, cronjobs, daemonsets, or statefulsets)", resource)
+		return fmt.Errorf("unknown resource %q (use jobs, cronjobs, daemonsets, statefulsets, deployments, replicasets)", resource)
 	}
 	if err != nil {
 		return err

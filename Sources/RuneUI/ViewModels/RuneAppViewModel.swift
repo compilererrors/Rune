@@ -16,7 +16,7 @@ import RuneStore
 // namespace menu per context under `…/Rune/namespace-lists/` and hydrates before `listNamespaces` when RAM is empty.
 
 public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
-    /// Default: `--tail` only (no `--since`); bounded transfer, similar to unrestricted `kubectl logs` on a quiet pod.
+    /// Default log preset in Rune: tail only (no time window), keeping responses small and avoiding huge transfers on busy pods.
     case recentLines
     case last5Minutes
     case last15Minutes
@@ -197,7 +197,7 @@ private struct NavigationCheckpoint: Equatable, Sendable {
     let selectedRBACResourceID: String?
 }
 
-/// kubectl fetch subset for the current `RuneSection` and `KubeResourceKind`. Drives parallel snapshot tasks in `loadResourceSnapshot`.
+/// Which cluster lists Rune loads for the current section and resource kind. Drives parallel work in `loadResourceSnapshot`.
 private struct SnapshotLoadPlan: Sendable {
     var podStatuses = false
     var pods = false
@@ -1702,11 +1702,6 @@ public final class RuneAppViewModel: ObservableObject {
         state.revertResourceYAMLToClusterSnapshot()
     }
 
-    /// Discards local edits to the describe buffer and restores the last `kubectl describe` output.
-    public func revertResourceDescribeDraft() {
-        state.revertResourceDescribeToBaseline()
-    }
-
     /// Replaces the editor contents with a YAML file from disk (UTF-8).
     public func importResourceYAMLFromFile() {
         let panel = NSOpenPanel()
@@ -1721,21 +1716,6 @@ public final class RuneAppViewModel: ObservableObject {
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             state.updateResourceYAMLDraft(text)
-        } catch {
-            state.setError(error)
-        }
-    }
-
-    public func saveCurrentResourceDescribe() {
-        do {
-            guard let (kind, name) = currentWritableResource(), !state.resourceDescribe.isEmpty else { return }
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
-            _ = try exporter.save(
-                data: Data(state.resourceDescribe.utf8),
-                suggestedName: "\(kind.kubectlName)-\(name)-describe-\(timestamp).txt",
-                allowedFileTypes: ["txt", "log"]
-            )
         } catch {
             state.setError(error)
         }
@@ -2910,7 +2890,7 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
     }
 
-    /// Second pass: full JSON list fills IP/node/QoS/ready while keeping fast table + `kubectl top` metrics from the first pass.
+    /// Second snapshot pass: merge full pod JSON so the inspector shows IP, node, QoS, and readiness while keeping CPU/mem from the first pass.
     private func applyPodsJSONEnrichmentIfCurrent(
         requestID: UUID,
         context: KubeContext,
@@ -3714,7 +3694,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    /// Short English detail for the log pane (timeout / stderr from kubectl logs).
+    /// Short English message for the log pane when streaming logs failed (timeout or error output from the log fetch).
     private static func logFetchFailureMessage(for error: Error) -> String {
         if case let RuneError.commandFailed(_, message) = error {
             return message
@@ -3722,7 +3702,7 @@ public final class RuneAppViewModel: ObservableObject {
         return error.localizedDescription
     }
 
-    /// True when the failure came from a `kubectl … logs …` run (including process timeout), not e.g. YAML fetch.
+    /// True when the failed command was a pod log fetch (including timeout), as opposed to YAML or describe loads.
     private static func isLikelyLogFetchFailure(_ error: Error) -> Bool {
         guard case let RuneError.commandFailed(command, _) = error else { return false }
         return command.split(separator: " ").contains(Substring("logs"))
@@ -4798,7 +4778,7 @@ public final class RuneAppViewModel: ObservableObject {
         "\(resource.name) \(resource.namespace ?? "") \(resource.primaryText) \(resource.secondaryText)"
     }
 
-    /// When a resource query yields no rows (empty cluster list or no name match), still offer navigation to the right screen (similar to k9s resource jumps).
+    /// When a resource search returns no rows, still show a navigation row so the user can open the target section from the command palette.
     private func commandPaletteResourceRowsOrNavigate(rows: [CommandPaletteItem], navigate: CommandPaletteItem) -> [CommandPaletteItem] {
         if rows.isEmpty {
             [navigate]

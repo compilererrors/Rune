@@ -44,6 +44,21 @@ final class KubectlTests: XCTestCase {
         )
     }
 
+    func testKubernetesRESTPathMetadataProbeForPVCNetworkPolicyHPA() {
+        XCTAssertEqual(
+            KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: "ns-a", resource: "persistentvolumeclaims"),
+            "/api/v1/namespaces/ns-a/persistentvolumeclaims?limit=1"
+        )
+        XCTAssertEqual(
+            KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: "ns-a", resource: "networkpolicies"),
+            "/apis/networking.k8s.io/v1/namespaces/ns-a/networkpolicies?limit=1"
+        )
+        XCTAssertEqual(
+            KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: "ns-a", resource: "horizontalpodautoscalers"),
+            "/apis/autoscaling/v2/namespaces/ns-a/horizontalpodautoscalers?limit=1"
+        )
+    }
+
     func testCollectionListTotalUsesRemainingItemCount() {
         let json = """
         {"metadata":{"remainingItemCount":99,"resourceVersion":"1"},"items":[{"metadata":{"name":"a"}}]}

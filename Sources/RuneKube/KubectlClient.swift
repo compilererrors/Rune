@@ -202,6 +202,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [DeploymentSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listDeployments(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+        }
         do {
             let result = try await runKubectl(
                 arguments: builder.deploymentListTextArguments(context: context.name, namespace: namespace),
@@ -439,6 +456,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listReplicaSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.replicaSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -768,19 +802,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
-        if let apiPath = builder.namespacedResourceListMetadataAPIPath(namespace: namespace, resource: resource) {
-            do {
-                let result = try await runKubectl(
-                    arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
-                    environment: env,
-                    timeout: 45
-                )
-                if let total = KubectlListJSON.collectionListTotal(from: result.stdout) {
-                    return total
-                }
-            } catch {
-                // Fall back to line-by-line listing (older apiservers without `remainingItemCount`, etc.).
-            }
+        if let apiPath = builder.namespacedResourceListMetadataAPIPath(namespace: namespace, resource: resource),
+           let total = await collectionListTotalFromMetadataProbe(
+                context: context,
+                environment: env,
+                apiPath: apiPath
+           ) {
+            return total
         }
 
         let result = try await runKubectl(
@@ -801,19 +829,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         resource: String
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
-        if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource) {
-            do {
-                let result = try await runKubectl(
-                    arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
-                    environment: env,
-                    timeout: 45
-                )
-                if let total = KubectlListJSON.collectionListTotal(from: result.stdout) {
-                    return total
-                }
-            } catch {
-                // Legacy path below.
-            }
+        if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource),
+           let total = await collectionListTotalFromMetadataProbe(
+                context: context,
+                environment: env,
+                apiPath: apiPath
+           ) {
+            return total
         }
 
         let result = try await runKubectl(
@@ -825,6 +847,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             timeout: 90
         )
         return Self.parseLineCount(from: result.stdout)
+    }
+
+    /// Cheap total via `kubectl get --raw` + `limit=1` list (`metadata.remainingItemCount` + 1). Returns `nil` on failure or when the server omits a derivable total.
+    private func collectionListTotalFromMetadataProbe(
+        context: KubeContext,
+        environment: [String: String],
+        apiPath: String
+    ) async -> Int? {
+        do {
+            let result = try await runKubectl(
+                arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+                environment: environment,
+                timeout: 45
+            )
+            return KubectlListJSON.collectionListTotal(from: result.stdout)
+        } catch {
+            return nil
+        }
     }
 
     public func clusterUsagePercent(

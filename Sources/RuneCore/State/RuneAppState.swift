@@ -71,14 +71,13 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var podLogs: String = ""
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
-    /// Set when the latest log fetch failed (timeout, kubectl error). Cleared on successful load or new fetch.
+    /// Set when the latest log stream failed (timeout or error). Cleared on successful load or when a new fetch starts.
     @Published public private(set) var lastLogFetchError: String?
     @Published public private(set) var resourceYAML: String = ""
-    /// Last YAML fetched from the cluster (`kubectl get -o yaml`). Used to detect local edits and for Revert.
+    /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
+    /// Read-only describe output Rune fetched for the selected resource (not user-editable).
     @Published public private(set) var resourceDescribe: String = ""
-    /// Last `kubectl describe` output; local edits compare against this (same idea as `resourceYAMLBaseline`).
-    @Published public private(set) var resourceDescribeBaseline: String = ""
     @Published public private(set) var lastResourceYAMLError: String?
     @Published public private(set) var lastResourceDescribeError: String?
     @Published public private(set) var deploymentRolloutHistory: String = ""
@@ -451,7 +450,6 @@ public final class RuneAppState: ObservableObject {
 
     public func setResourceDescribe(_ text: String) {
         resourceDescribe = text
-        resourceDescribeBaseline = text
         lastResourceDescribeError = nil
     }
 
@@ -459,7 +457,6 @@ public final class RuneAppState: ObservableObject {
         resourceYAML = ""
         resourceYAMLBaseline = ""
         resourceDescribe = ""
-        resourceDescribeBaseline = ""
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil
         deploymentRolloutHistory = ""
@@ -478,20 +475,7 @@ public final class RuneAppState: ObservableObject {
 
     public func setResourceDescribeError(_ message: String?) {
         resourceDescribe = ""
-        resourceDescribeBaseline = ""
         lastResourceDescribeError = message
-    }
-
-    public func updateResourceDescribeDraft(_ text: String) {
-        resourceDescribe = text
-    }
-
-    public func revertResourceDescribeToBaseline() {
-        resourceDescribe = resourceDescribeBaseline
-    }
-
-    public var resourceDescribeHasUnsavedEdits: Bool {
-        resourceDescribe != resourceDescribeBaseline
     }
 
     public func setDeploymentRolloutHistory(_ history: String) {
@@ -537,7 +521,6 @@ public final class RuneAppState: ObservableObject {
         resourceYAML = ""
         resourceYAMLBaseline = ""
         resourceDescribe = ""
-        resourceDescribeBaseline = ""
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil
         deploymentRolloutHistory = ""
