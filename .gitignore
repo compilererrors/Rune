@@ -10,5 +10,11 @@ dist/
 # Go helper binary (bygg med: cd go/rune-k8s-agent && go build -o rune-k8s-agent ./cmd/rune-k8s-agent)
 go/rune-k8s-agent/rune-k8s-agent
 
+# Lokala skript, loggar, kopior — aldrig versioneras.
+devstuff/
+
+# Äldre harness-output (om någon kör mot gammal path).
+build/
+
 # Genereras lokalt av fake-k3s (innehåller cert) — ska inte finnas på main.
 assets/readme/kubeconfig.fake-cluster.yaml
