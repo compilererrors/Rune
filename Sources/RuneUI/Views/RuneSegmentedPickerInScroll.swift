@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Wraps `Picker` + `.segmented` in a horizontal `ScrollView` so `NSSegmentedControl` intrinsic width
-/// never draws past the split column (sidebar / neighbor panes).
+/// never draws past the navigation column edge.
 struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: View {
     private let title: LocalizedStringKey
     private let selection: Binding<SelectionValue>
@@ -36,7 +36,7 @@ struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: Vie
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Extra inset so the first segment does not sit under the split divider / rounded pane edge.
+        // Extra inset so the first segment clears the column edge comfortably.
         .padding(.leading, 6)
     }
 }

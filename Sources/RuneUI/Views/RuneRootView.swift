@@ -200,9 +200,9 @@ public struct RuneRootView: View {
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
-    /// Toggles YAML inspector between read-only `ScrollView` and `TextEditor`.
+    /// Toggles YAML inspector between read-only `ScrollView` and AppKit `RuneMonospaceTextEditor`.
     @State private var yamlManifestIsEditing = false
-    /// Toggles describe inspector between read-only `ScrollView` and `TextEditor`.
+    /// Toggles describe inspector between read-only `ScrollView` and AppKit `RuneMonospaceTextEditor`.
     @State private var describePaneIsEditing = false
     @State private var isPreferencesPresented = false
 
@@ -357,37 +357,30 @@ public struct RuneRootView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
     }
 
+    /// Three-column workspace using `NavigationSplitView` (system split chrome, dividers follow columns — same pattern as the first Rune commits).
     private var mainSplitContainer: some View {
-        HSplitView {
+        NavigationSplitView {
             sidebar
-                .padding(.trailing, RuneUILayoutMetrics.splitColumnGutter / 2)
                 .runeAppKitFrameReporter("sidebar")
-                .frame(minWidth: 220, idealWidth: 280, maxWidth: 480)
-                .overlay(alignment: .trailing) {
-                    splitColumnTrailingChrome()
-                }
+                .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 480)
+        } content: {
             contentPane
-                .padding(.horizontal, RuneUILayoutMetrics.splitColumnGutter / 2)
                 .runeAppKitFrameReporter("content")
-                .frame(
-                    minWidth: RuneUILayoutMetrics.splitContentColumnMinWidth,
-                    idealWidth: 760,
-                    maxWidth: .infinity
+                .navigationSplitViewColumnWidth(
+                    min: RuneUILayoutMetrics.splitContentColumnMinWidth,
+                    ideal: 760,
+                    max: 2000
                 )
-                .layoutPriority(2)
-                .overlay(alignment: .trailing) {
-                    splitColumnTrailingChrome()
-                }
+        } detail: {
             detailPane
-                .padding(.leading, RuneUILayoutMetrics.splitColumnGutter / 2)
                 .runeAppKitFrameReporter("detail")
-                .frame(
-                    minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                    idealWidth: 540,
-                    maxWidth: .infinity
+                .navigationSplitViewColumnWidth(
+                    min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
+                    ideal: 540,
+                    max: 1200
                 )
-                .layoutPriority(2)
         }
+        .navigationSplitViewStyle(.balanced)
     }
 
     private var background: some View {
@@ -464,14 +457,9 @@ public struct RuneRootView: View {
             Spacer(minLength: 0)
         }
         .padding(RuneUILayoutMetrics.sidebarPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Navigation rail — quieter than the main list (`.docs/rune-design-plan.md` §4.3 / §7.2).
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial)
-        }
-        .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Sidebar column: system `NavigationSplitView` chrome; vibrancy reads as the familiar macOS “glass” surface.
+        .background(.ultraThinMaterial)
     }
 
     private func sectionRow(_ section: RuneSection) -> some View {
@@ -563,17 +551,14 @@ public struct RuneRootView: View {
             }
         }
         .padding(RuneUILayoutMetrics.paneOuterPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Primary workspace surface — brighter than sidebar, calmer than inspector (`windowBackgroundColor` semantic fill).
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Primary column: solid document surface (HIG-style); sidebar/detail use materials.
         .background {
             ZStack {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
-                    .fill(Color(nsColor: .windowBackgroundColor))
+                Color(nsColor: .windowBackgroundColor)
                 RuneRootLayoutProbe(kind: .content, generation: layoutGeneration)
             }
         }
-        .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
     }
 
     private var contentHeader: some View {
@@ -1208,21 +1193,16 @@ public struct RuneRootView: View {
                     .padding(.top, 8)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.top, RuneUILayoutMetrics.paneOuterPadding)
-        .padding(.bottom, RuneUILayoutMetrics.paneOuterPadding)
-        .padding(.trailing, RuneUILayoutMetrics.paneOuterPadding)
-        .padding(.leading, RuneUILayoutMetrics.paneOuterPadding + RuneUILayoutMetrics.inspectorLeadingInset)
-        // Elevated inspector column; same shell radius as sidebar/content.
+        // `minWidth: 0` lets split columns shrink correctly; without it, nested scroll views can force odd horizontal alignment.
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(RuneUILayoutMetrics.paneOuterPadding)
+        // Inspector column: lighter material than the document column (sidebar-style vibrancy / “glass”).
         .background {
             ZStack {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
-                    .fill(.regularMaterial)
+                Rectangle().fill(.ultraThinMaterial)
                 RuneRootLayoutProbe(kind: .detail, generation: layoutGeneration)
             }
         }
-        .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
     }
 
     private var overviewDetails: some View {
@@ -1954,7 +1934,7 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            ViewThatFits(in: .horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button("Apply YAML") {
                         viewModel.requestApplySelectedResourceYAML()
@@ -1995,78 +1975,34 @@ public struct RuneRootView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(viewModel.state.resourceYAML.isEmpty)
-
-                    Spacer(minLength: 0)
-                }
-                .fixedSize(horizontal: true, vertical: false)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Button("Apply YAML") {
-                            viewModel.requestApplySelectedResourceYAML()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(
-                            !viewModel.canApplyClusterMutations
-                                || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        )
-
-                        Button(yamlManifestIsEditing ? "Done" : "Edit") {
-                            yamlManifestIsEditing.toggle()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
-
-                        Button("Revert") {
-                            viewModel.revertResourceYAMLDraft()
-                            yamlManifestIsEditing = false
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
-
-                        Divider()
-                            .frame(height: 16)
-
-                        Button("Import…") {
-                            viewModel.importResourceYAMLFromFile()
-                            if viewModel.writeActionsEnabled {
-                                yamlManifestIsEditing = true
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Replace the editor with the contents of a YAML file")
-                    }
-
-                    HStack(spacing: 8) {
-                        Button("Export…") {
-                            viewModel.saveCurrentResourceYAML()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.state.resourceYAML.isEmpty)
-
-                        Spacer(minLength: 0)
-                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Group {
                 if yamlManifestIsEditing, viewModel.writeActionsEnabled {
-                    TextEditor(text: yamlDraftBinding)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(10)
-                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    RuneMonospaceTextEditor(text: yamlDraftBinding, isEditable: true)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(8)
+                        .background {
+                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                                .fill(.thinMaterial)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 } else {
                     ScrollView([.horizontal, .vertical]) {
                         Text(yamlDisplayText)
                             .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .textSelection(.enabled)
                             .padding(10)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background {
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                            .fill(.thinMaterial)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 }
             }
             .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
@@ -2083,20 +2019,14 @@ public struct RuneRootView: View {
         }
     }
 
+    /// One pane at a time — avoids `ZStack` + opacity (both branches still participated in layout, causing width drift and editor jumping when switching YAML/Describe).
+    @ViewBuilder
     private func manifestInspectorPane(activeTab: GenericResourceManifestTab) -> some View {
-        ZStack(alignment: .topLeading) {
+        switch activeTab {
+        case .yaml:
             yamlBlock
-                .opacity(activeTab == .yaml ? 1 : 0)
-                .allowsHitTesting(activeTab == .yaml)
-                .accessibilityHidden(activeTab != .yaml)
-
+        case .describe:
             describeBlock
-                .opacity(activeTab == .describe ? 1 : 0)
-                .allowsHitTesting(activeTab == .describe)
-                .accessibilityHidden(activeTab != .describe)
-        }
-        .transaction { transaction in
-            transaction.animation = nil
         }
     }
 
@@ -2112,7 +2042,7 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            ViewThatFits(in: .horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button(describePaneIsEditing ? "Done" : "Edit") {
                         describePaneIsEditing.toggle()
@@ -2133,56 +2063,34 @@ public struct RuneRootView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(viewModel.state.resourceDescribe.isEmpty)
-
-                    Spacer(minLength: 0)
-                }
-                .fixedSize(horizontal: true, vertical: false)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Button(describePaneIsEditing ? "Done" : "Edit") {
-                            describePaneIsEditing.toggle()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
-                        .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
-
-                        Button("Revert") {
-                            viewModel.revertResourceDescribeDraft()
-                            describePaneIsEditing = false
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
-                    }
-                    HStack(spacing: 8) {
-                        Button("Save…") {
-                            viewModel.saveCurrentResourceDescribe()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.state.resourceDescribe.isEmpty)
-                        Spacer(minLength: 0)
-                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Group {
                 if describePaneIsEditing {
-                    TextEditor(text: describeDraftBinding)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(10)
-                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    RuneMonospaceTextEditor(text: describeDraftBinding, isEditable: true)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(8)
+                        .background {
+                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                                .fill(.thinMaterial)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 } else {
                     ScrollView([.horizontal, .vertical]) {
                         Text(describeDisplayText)
                             .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .textSelection(.enabled)
                             .padding(10)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background {
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                            .fill(.thinMaterial)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                 }
             }
             .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
@@ -2653,44 +2561,6 @@ public struct RuneRootView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(Color.red.opacity(0.87), in: Capsule())
-    }
-
-    /// Grabber only — `NSSplitView` draws the divider; no overlay masks (they fight materials and read as clipped chrome).
-    private func splitColumnTrailingChrome() -> some View {
-        splitColumnSeparatorOverlay()
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
-    /// Resize affordance only — `NSSplitView` draws the actual divider (see `.docs/rune-design-plan.md` §6.2).
-    private func splitColumnSeparatorOverlay() -> some View {
-        GeometryReader { geo in
-            let inset = RuneUILayoutMetrics.splitDividerVerticalInset
-            let innerH = max(52, geo.size.height - 2 * inset)
-            VStack(spacing: 0) {
-                Color.clear.frame(height: inset)
-                ZStack {
-                    splitColumnGrabberPill()
-                }
-                .frame(height: innerH)
-                Color.clear.frame(height: inset)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(width: 12)
-    }
-
-    private func splitColumnGrabberPill() -> some View {
-        RoundedRectangle(cornerRadius: 999, style: .continuous)
-            .fill(Color.secondary.opacity(0.38))
-            .frame(width: 5, height: 40)
-            .overlay {
-                VStack(spacing: 4) {
-                    Circle().fill(Color.primary.opacity(0.22)).frame(width: 2, height: 2)
-                    Circle().fill(Color.primary.opacity(0.22)).frame(width: 2, height: 2)
-                    Circle().fill(Color.primary.opacity(0.22)).frame(width: 2, height: 2)
-                }
-            }
     }
 
     private var commandPalettePresentedBinding: Binding<Bool> {
