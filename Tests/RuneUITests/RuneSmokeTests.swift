@@ -6,6 +6,7 @@ import XCTest
 @testable import RuneHelm
 @testable import RuneKube
 @testable import RuneSecurity
+@testable import RuneStore
 @testable import RuneUI
 
 @MainActor
@@ -989,7 +990,8 @@ final class RuneSmokeTests: XCTestCase {
             kubeConfigDiscoverer: kubeConfigDiscoverer,
             exporter: exporter,
             supportBundleBuilder: JSONSupportBundleBuilder(),
-            contextPreferences: InMemoryContextPreferencesStore()
+            contextPreferences: InMemoryContextPreferencesStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
     }
 

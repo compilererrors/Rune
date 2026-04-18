@@ -8,6 +8,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let parser: KubectlOutputParser
     private let builder: KubectlCommandBuilder
     private let kubectlPath: String
+    /// Optional path to `rune-k8s-agent` (Go + client-go). When nil, ``RuneK8sAgentLocator`` is used.
+    private let k8sAgentPath: String?
     private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
@@ -25,6 +27,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         parser: KubectlOutputParser = KubectlOutputParser(),
         builder: KubectlCommandBuilder = KubectlCommandBuilder(),
         kubectlPath: String = "/usr/bin/env",
+        k8sAgentPath: String? = nil,
         commandTimeout: TimeInterval = 30,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
@@ -33,6 +36,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         self.parser = parser
         self.builder = builder
         self.kubectlPath = kubectlPath
+        self.k8sAgentPath = k8sAgentPath
         self.commandTimeout = commandTimeout
         self.access = access
     }
@@ -274,6 +278,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listStatefulSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.statefulSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -292,6 +313,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listDaemonSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.daemonSetListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -310,6 +348,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listJobs(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
+        }
         // Layered like `listPods`: small custom-columns table first; JSON fallback for edge cases / older kubectl quirks.
         do {
             let table = try await runKubectl(
@@ -338,6 +394,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listCronJobs(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                if !rows.isEmpty {
+                    return rows
+                }
+            } catch {
+                // Go agent (client-go) failed; continue with kubectl.
+            }
+            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
+        }
         do {
             let table = try await runKubectl(
                 arguments: builder.cronJobListTextArguments(context: context.name, namespace: namespace),
@@ -1367,6 +1441,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return [
             "KUBECONFIG": urls.map(\.path).joined(separator: ":")
         ]
+    }
+
+    private func resolvedK8sAgentPath() -> String? {
+        if let k8sAgentPath, !k8sAgentPath.isEmpty {
+            return FileManager.default.isExecutableFile(atPath: k8sAgentPath) ? k8sAgentPath : nil
+        }
+        return RuneK8sAgentLocator.resolvedExecutablePath()
     }
 
     private func taggedLines(from logs: String, podName: String) -> [TaggedLogLine] {
