@@ -476,13 +476,26 @@ public final class RuneAppViewModel: ObservableObject {
 
     public var namespaceOptions: [String] {
         guard let context = state.selectedContext else { return [] }
-        // Use the store list for this context only (same source as `listNamespaces` cache), not a stale `state` copy.
-        var options = store.namespaces(context: context)
-        if options.isEmpty, !state.selectedNamespace.isEmpty, !options.contains(state.selectedNamespace) {
-            options.append(state.selectedNamespace)
+        // Only expose namespaces that belong to the current context.
+        // If the context has no loaded namespace list yet, fall back to its own saved preference
+        // (or plain `default`) instead of echoing whatever namespace happened to be selected before.
+        let options = store.namespaces(context: context)
+        if !options.isEmpty {
+            return Array(Set(options)).sorted()
         }
 
-        return Array(Set(options)).sorted()
+        let preferred = contextPreferences.loadPreferredNamespace(for: context.name)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !preferred.isEmpty {
+            return [preferred]
+        }
+
+        let selected = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        if selected.caseInsensitiveCompare("default") == .orderedSame {
+            return ["default"]
+        }
+
+        return []
     }
 
     public var visibleContexts: [KubeContext] {

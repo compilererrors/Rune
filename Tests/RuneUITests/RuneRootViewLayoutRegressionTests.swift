@@ -4,198 +4,260 @@ import XCTest
 @testable import RuneCore
 @testable import RuneUI
 
+/// Layout probes (`RuneRootLayoutSnapshot`) record **minY** and **minX** in window space.
+/// Horizontal assertions catch sideways “offset” in the inspector/content when tabs or editors swap.
+/// Run the app with `RUNE_DEBUG_LAYOUT=1` to log probe coordinates to the console.
 @MainActor
 final class RuneRootViewLayoutRegressionTests: XCTestCase {
-    func testWorkloadPodDescribeTabRemainsTopAligned() async throws {
-        let pod = PodSummary(name: "orders-api-7c9db", namespace: "example-backend", status: "Running", totalRestarts: 1, ageDescription: "5m")
-        let baseline = try await hostSnapshot(
-            viewModel: makePodViewModel(pod: pod),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialPodInspectorTab: .overview
-                )
-            },
-            section: .workloads,
-            kind: .pod
-        )
-        let describe = try await hostSnapshot(
-            viewModel: makePodViewModel(pod: pod),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialPodInspectorTab: .describe
-                )
-            },
-            section: .workloads,
-            kind: .pod
-        )
+    /// Vertical probe alignment (top edges).
+    private let verticalAlignmentAccuracy: CGFloat = 1.5
+    /// Horizontal probe alignment — catches inspector/content shifting sideways (“offset”) when tabs or editors change.
+    private let horizontalOffsetAccuracy: CGFloat = 2.5
 
-        assertAligned(baseline: baseline, candidate: describe)
+    func testWorkloadPodDescribeTabRemainsTopAligned() async throws {
+        let pod = PodSummary(name: "sample-pod-7c9db", namespace: "team-alpha", status: "Running", totalRestarts: 1, ageDescription: "5m")
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makePodViewModel(pod: pod),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod
+                )
+                let describe = try await hostSnapshot(
+                    viewModel: makePodViewModel(pod: pod),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .describe,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod
+                )
+
+                assertAligned(baseline: baseline, candidate: describe)
+            }
+        }
     }
 
     func testWorkloadPodYAMLTabRemainsTopAligned() async throws {
-        let pod = PodSummary(name: "orders-api-7c9db", namespace: "example-backend", status: "Running", totalRestarts: 1, ageDescription: "5m")
-        let baseline = try await hostSnapshot(
-            viewModel: makePodViewModel(pod: pod),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialPodInspectorTab: .overview
+        let pod = PodSummary(name: "sample-pod-7c9db", namespace: "team-alpha", status: "Running", totalRestarts: 1, ageDescription: "5m")
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makePodViewModel(pod: pod),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod
                 )
-            },
-            section: .workloads,
-            kind: .pod
-        )
-        let yaml = try await hostSnapshot(
-            viewModel: makePodViewModel(pod: pod),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialPodInspectorTab: .yaml
+                let yaml = try await hostSnapshot(
+                    viewModel: makePodViewModel(pod: pod),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .yaml,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialYAMLInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod
                 )
-            },
-            section: .workloads,
-            kind: .pod
-        )
 
-        assertAligned(baseline: baseline, candidate: yaml)
+                assertAligned(baseline: baseline, candidate: yaml)
+            }
+        }
     }
 
     func testWorkloadDeploymentDescribeTabRemainsTopAligned() async throws {
-        let deployment = DeploymentSummary(name: "orders-api", namespace: "example-backend", readyReplicas: 2, desiredReplicas: 2)
-        let baseline = try await hostSnapshot(
-            viewModel: makeDeploymentViewModel(deployment: deployment),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialDeploymentInspectorTab: .overview
+        let deployment = DeploymentSummary(name: "sample-deployment", namespace: "team-alpha", readyReplicas: 2, desiredReplicas: 2)
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makeDeploymentViewModel(deployment: deployment),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialDeploymentInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .workloads,
+                    kind: .deployment
                 )
-            },
-            section: .workloads,
-            kind: .deployment
-        )
-        let describe = try await hostSnapshot(
-            viewModel: makeDeploymentViewModel(deployment: deployment),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialDeploymentInspectorTab: .describe
+                let describe = try await hostSnapshot(
+                    viewModel: makeDeploymentViewModel(deployment: deployment),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialDeploymentInspectorTab: .describe,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .workloads,
+                    kind: .deployment
                 )
-            },
-            section: .workloads,
-            kind: .deployment
-        )
 
-        assertAligned(baseline: baseline, candidate: describe)
+                assertAligned(baseline: baseline, candidate: describe)
+            }
+        }
     }
 
     func testWorkloadDeploymentYAMLTabRemainsTopAligned() async throws {
-        let deployment = DeploymentSummary(name: "orders-api", namespace: "example-backend", readyReplicas: 2, desiredReplicas: 2)
-        let baseline = try await hostSnapshot(
-            viewModel: makeDeploymentViewModel(deployment: deployment),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialDeploymentInspectorTab: .overview
+        let deployment = DeploymentSummary(name: "sample-deployment", namespace: "team-alpha", readyReplicas: 2, desiredReplicas: 2)
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makeDeploymentViewModel(deployment: deployment),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialDeploymentInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .workloads,
+                    kind: .deployment
                 )
-            },
-            section: .workloads,
-            kind: .deployment
-        )
-        let yaml = try await hostSnapshot(
-            viewModel: makeDeploymentViewModel(deployment: deployment),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialDeploymentInspectorTab: .yaml
+                let yaml = try await hostSnapshot(
+                    viewModel: makeDeploymentViewModel(deployment: deployment),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialDeploymentInspectorTab: .yaml,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialYAMLInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .workloads,
+                    kind: .deployment
                 )
-            },
-            section: .workloads,
-            kind: .deployment
-        )
 
-        assertAligned(baseline: baseline, candidate: yaml)
+                assertAligned(baseline: baseline, candidate: yaml)
+            }
+        }
     }
 
     func testNetworkingDescribeTabRemainsTopAligned() async throws {
-        let service = ServiceSummary(name: "orders-api", namespace: "example-backend", type: "ClusterIP", clusterIP: "10.0.0.10")
-        let baseline = try await hostSnapshot(
-            viewModel: makeServiceViewModel(service: service),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialServiceInspectorTab: .overview
+        let service = ServiceSummary(name: "sample-service", namespace: "team-alpha", type: "ClusterIP", clusterIP: "10.0.0.10")
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makeServiceViewModel(service: service),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialServiceInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .networking,
+                    kind: .service
                 )
-            },
-            section: .networking,
-            kind: .service
-        )
-        let describe = try await hostSnapshot(
-            viewModel: makeServiceViewModel(service: service),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialServiceInspectorTab: .describe
+                let describe = try await hostSnapshot(
+                    viewModel: makeServiceViewModel(service: service),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialServiceInspectorTab: .describe,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .networking,
+                    kind: .service
                 )
-            },
-            section: .networking,
-            kind: .service
-        )
 
-        assertAligned(baseline: baseline, candidate: describe)
+                assertAligned(baseline: baseline, candidate: describe)
+            }
+        }
     }
 
     func testNetworkingYAMLTabRemainsTopAligned() async throws {
-        let service = ServiceSummary(name: "orders-api", namespace: "example-backend", type: "ClusterIP", clusterIP: "10.0.0.10")
-        let baseline = try await hostSnapshot(
-            viewModel: makeServiceViewModel(service: service),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialServiceInspectorTab: .overview
+        let service = ServiceSummary(name: "sample-service", namespace: "team-alpha", type: "ClusterIP", clusterIP: "10.0.0.10")
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let baseline = try await hostSnapshot(
+                    viewModel: makeServiceViewModel(service: service),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialServiceInspectorTab: .overview,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .networking,
+                    kind: .service
                 )
-            },
-            section: .networking,
-            kind: .service
-        )
-        let yaml = try await hostSnapshot(
-            viewModel: makeServiceViewModel(service: service),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialServiceInspectorTab: .yaml
+                let yaml = try await hostSnapshot(
+                    viewModel: makeServiceViewModel(service: service),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialServiceInspectorTab: .yaml,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialYAMLInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .networking,
+                    kind: .service
                 )
-            },
-            section: .networking,
-            kind: .service
-        )
 
-        assertAligned(baseline: baseline, candidate: yaml)
+                assertAligned(baseline: baseline, candidate: yaml)
+            }
+        }
     }
 
     func testConfigYAMLAndDescribeRemainTopAligned() async throws {
@@ -206,134 +268,167 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             primaryText: "ConfigMap",
             secondaryText: "12 keys"
         )
-        let yaml = try await hostSnapshot(
-            viewModel: makeConfigViewModel(resource: resource),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialGenericResourceManifestTab: .yaml
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let yaml = try await hostSnapshot(
+                    viewModel: makeConfigViewModel(resource: resource),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialGenericResourceManifestTab: .yaml,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialYAMLInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .config,
+                    kind: .configMap
                 )
-            },
-            section: .config,
-            kind: .configMap
-        )
-        let describe = try await hostSnapshot(
-            viewModel: makeConfigViewModel(resource: resource),
-            rootView: { viewModel, capture in
-                RuneRootView(
-                    viewModel: viewModel,
-                    onLayoutSnapshotChange: capture,
-                    debugDisableBootstrap: true,
-                    initialGenericResourceManifestTab: .describe
+                let describe = try await hostSnapshot(
+                    viewModel: makeConfigViewModel(resource: resource),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialGenericResourceManifestTab: .describe,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .config,
+                    kind: .configMap
                 )
-            },
-            section: .config,
-            kind: .configMap
-        )
 
-        assertAligned(baseline: yaml, candidate: describe)
+                assertAligned(baseline: yaml, candidate: describe)
+            }
+        }
     }
 
     func testConfigAndWorkloadsRemainTopAligned() async throws {
-        let viewModel = RuneAppViewModel()
-        var snapshots: [RuneRootLayoutSnapshot] = []
+        for shellVariant in RuneRootShellVariant.allCases {
+            let viewModel = RuneAppViewModel()
+            var snapshots: [RuneRootLayoutSnapshot] = []
 
-        let host = NSHostingController(
-            rootView: RuneRootView(viewModel: viewModel) { snapshot in
-                snapshots.append(snapshot)
+            let host = NSHostingController(
+                rootView: RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: { snapshot in
+                        snapshots.append(snapshot)
+                    },
+                    debugDisableBootstrap: true,
+                    shellVariant: shellVariant
+                )
+            )
+
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+
+            viewModel.state.selectedSection = .workloads
+            viewModel.state.selectedWorkloadKind = .pod
+            let workloadsSnapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
+                $0.section == .workloads
+                    && $0.workloadKind == .pod
+                    && $0.contentMinY != nil
+                    && $0.headerMinY != nil
+                    && $0.detailMinY != nil
+                    && $0.contentMinX != nil
+                    && $0.headerMinX != nil
+                    && $0.detailMinX != nil
             }
-        )
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentViewController = host
-        window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+            viewModel.state.selectedSection = .config
+            viewModel.state.selectedWorkloadKind = .configMap
+            let configSnapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
+                $0.section == .config
+                    && $0.workloadKind == .configMap
+                    && $0.contentMinY != nil
+                    && $0.headerMinY != nil
+                    && $0.detailMinY != nil
+                    && $0.contentMinX != nil
+                    && $0.headerMinX != nil
+                    && $0.detailMinX != nil
+            }
 
-        viewModel.state.selectedSection = .workloads
-        viewModel.state.selectedWorkloadKind = .pod
-        let workloadsSnapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
-            $0.section == .workloads
-                && $0.workloadKind == .pod
-                && $0.contentMinY != nil
-                && $0.headerMinY != nil
-                && $0.detailMinY != nil
+            XCTAssertEqual(
+                workloadsSnapshot.resolvedWindowTopInset,
+                configSnapshot.resolvedWindowTopInset,
+                accuracy: 0.5
+            )
+            XCTAssertEqual(workloadsSnapshot.contentMinY ?? 0, configSnapshot.contentMinY ?? 0, accuracy: verticalAlignmentAccuracy)
+            XCTAssertEqual(workloadsSnapshot.headerMinY ?? 0, configSnapshot.headerMinY ?? 0, accuracy: verticalAlignmentAccuracy)
+            XCTAssertEqual(workloadsSnapshot.detailMinY ?? 0, configSnapshot.detailMinY ?? 0, accuracy: verticalAlignmentAccuracy)
+            XCTAssertEqual(workloadsSnapshot.contentMinX ?? 0, configSnapshot.contentMinX ?? 0, accuracy: horizontalOffsetAccuracy, "content column horizontal offset between sections")
+            XCTAssertEqual(workloadsSnapshot.headerMinX ?? 0, configSnapshot.headerMinX ?? 0, accuracy: horizontalOffsetAccuracy, "header horizontal offset between sections")
+            XCTAssertEqual(workloadsSnapshot.detailMinX ?? 0, configSnapshot.detailMinX ?? 0, accuracy: horizontalOffsetAccuracy, "detail column horizontal offset between sections")
         }
-
-        viewModel.state.selectedSection = .config
-        viewModel.state.selectedWorkloadKind = .configMap
-        let configSnapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
-            $0.section == .config
-                && $0.workloadKind == .configMap
-                && $0.contentMinY != nil
-                && $0.headerMinY != nil
-                && $0.detailMinY != nil
-        }
-
-        XCTAssertEqual(
-            workloadsSnapshot.resolvedWindowTopInset,
-            configSnapshot.resolvedWindowTopInset,
-            accuracy: 0.5
-        )
-        XCTAssertEqual(workloadsSnapshot.contentMinY ?? 0, configSnapshot.contentMinY ?? 0, accuracy: 1.5)
-        XCTAssertEqual(workloadsSnapshot.headerMinY ?? 0, configSnapshot.headerMinY ?? 0, accuracy: 1.5)
-        XCTAssertEqual(workloadsSnapshot.detailMinY ?? 0, configSnapshot.detailMinY ?? 0, accuracy: 1.5)
     }
 
     func testSectionTransitionsDoNotDriftAfterLayoutSettles() async throws {
-        let viewModel = RuneAppViewModel()
-        var snapshots: [RuneRootLayoutSnapshot] = []
+        for shellVariant in RuneRootShellVariant.allCases {
+            let viewModel = RuneAppViewModel()
+            var snapshots: [RuneRootLayoutSnapshot] = []
 
-        let host = NSHostingController(
-            rootView: RuneRootView(viewModel: viewModel) { snapshot in
-                snapshots.append(snapshot)
-            }
-        )
+            let host = NSHostingController(
+                rootView: RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: { snapshot in
+                        snapshots.append(snapshot)
+                    },
+                    debugDisableBootstrap: true,
+                    shellVariant: shellVariant
+                )
+            )
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentViewController = host
-        window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
 
-        try await assertStableTransition(
-            in: window,
-            snapshots: { snapshots },
-            viewModel: viewModel,
-            section: .workloads,
-            kind: .pod
-        )
-        try await assertStableTransition(
-            in: window,
-            snapshots: { snapshots },
-            viewModel: viewModel,
-            section: .config,
-            kind: .configMap
-        )
-        try await assertStableTransition(
-            in: window,
-            snapshots: { snapshots },
-            viewModel: viewModel,
-            section: .rbac,
-            kind: .role
-        )
-        try await assertStableTransition(
-            in: window,
-            snapshots: { snapshots },
-            viewModel: viewModel,
-            section: .workloads,
-            kind: .pod
-        )
+            try await assertStableTransition(
+                in: window,
+                snapshots: { snapshots },
+                viewModel: viewModel,
+                section: .workloads,
+                kind: .pod
+            )
+            try await assertStableTransition(
+                in: window,
+                snapshots: { snapshots },
+                viewModel: viewModel,
+                section: .config,
+                kind: .configMap
+            )
+            try await assertStableTransition(
+                in: window,
+                snapshots: { snapshots },
+                viewModel: viewModel,
+                section: .rbac,
+                kind: .role
+            )
+            try await assertStableTransition(
+                in: window,
+                snapshots: { snapshots },
+                viewModel: viewModel,
+                section: .workloads,
+                kind: .pod
+            )
+        }
     }
 
     private func waitForSnapshot(
@@ -373,11 +468,16 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 && $0.contentMinY != nil
                 && $0.headerMinY != nil
                 && $0.detailMinY != nil
+                && $0.contentMinX != nil
+                && $0.headerMinX != nil
+                && $0.detailMinX != nil
         }
 
         let settledSnapshotCount = snapshots().count
-        let baselineContent = settled.contentMinY ?? 0
-        let baselineDetail = settled.detailMinY ?? 0
+        let baselineContentY = settled.contentMinY ?? 0
+        let baselineDetailY = settled.detailMinY ?? 0
+        let baselineContentX = settled.contentMinX ?? 0
+        let baselineDetailX = settled.detailMinX ?? 0
         let timeout = Date().addingTimeInterval(0.35)
 
         while Date() < timeout {
@@ -390,11 +490,16 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                     && $0.contentMinY != nil
                     && $0.headerMinY != nil
                     && $0.detailMinY != nil
+                    && $0.contentMinX != nil
+                    && $0.headerMinX != nil
+                    && $0.detailMinX != nil
             }
 
             for snapshot in recentSnapshots.suffix(6) {
-                XCTAssertEqual(snapshot.contentMinY ?? 0, baselineContent, accuracy: 2.0)
-                XCTAssertEqual(snapshot.detailMinY ?? 0, baselineDetail, accuracy: 2.0)
+                XCTAssertEqual(snapshot.contentMinY ?? 0, baselineContentY, accuracy: 2.0)
+                XCTAssertEqual(snapshot.detailMinY ?? 0, baselineDetailY, accuracy: 2.0)
+                XCTAssertEqual(snapshot.contentMinX ?? 0, baselineContentX, accuracy: horizontalOffsetAccuracy, "post-settle content MinX offset")
+                XCTAssertEqual(snapshot.detailMinX ?? 0, baselineDetailX, accuracy: horizontalOffsetAccuracy, "post-settle detail MinX offset")
                 XCTAssertGreaterThanOrEqual((snapshot.headerMinY ?? 0) - (snapshot.contentMinY ?? 0), 12.0)
                 XCTAssertLessThanOrEqual((snapshot.headerMinY ?? 0) - (snapshot.contentMinY ?? 0), 64.0)
             }
@@ -480,6 +585,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 && $0.contentMinY != nil
                 && $0.headerMinY != nil
                 && $0.detailMinY != nil
+                && $0.contentMinX != nil
+                && $0.headerMinX != nil
+                && $0.detailMinX != nil
         }
     }
 
@@ -489,18 +597,21 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             candidate.resolvedWindowTopInset,
             accuracy: 0.5
         )
-        XCTAssertEqual(baseline.contentMinY ?? 0, candidate.contentMinY ?? 0, accuracy: 1.5)
-        XCTAssertEqual(baseline.headerMinY ?? 0, candidate.headerMinY ?? 0, accuracy: 1.5)
-        XCTAssertEqual(baseline.detailMinY ?? 0, candidate.detailMinY ?? 0, accuracy: 1.5)
+        XCTAssertEqual(baseline.contentMinY ?? 0, candidate.contentMinY ?? 0, accuracy: verticalAlignmentAccuracy, "content top (minY) drift")
+        XCTAssertEqual(baseline.headerMinY ?? 0, candidate.headerMinY ?? 0, accuracy: verticalAlignmentAccuracy, "header top (minY) drift")
+        XCTAssertEqual(baseline.detailMinY ?? 0, candidate.detailMinY ?? 0, accuracy: verticalAlignmentAccuracy, "detail top (minY) drift")
+        XCTAssertEqual(baseline.contentMinX ?? 0, candidate.contentMinX ?? 0, accuracy: horizontalOffsetAccuracy, "content leading edge offset (minX)")
+        XCTAssertEqual(baseline.headerMinX ?? 0, candidate.headerMinX ?? 0, accuracy: horizontalOffsetAccuracy, "header leading edge offset (minX)")
+        XCTAssertEqual(baseline.detailMinX ?? 0, candidate.detailMinX ?? 0, accuracy: horizontalOffsetAccuracy, "detail leading edge offset (minX) — catches right panel jumping sideways")
     }
 
     private func sampleYAML(named name: String) -> String {
-        Array(repeating: "kind: ConfigMap\nmetadata:\n  name: \(name)\n  namespace: example-backend\n", count: 24)
+        Array(repeating: "kind: ConfigMap\nmetadata:\n  name: \(name)\n  namespace: team-alpha\n", count: 24)
             .joined(separator: "---\n")
     }
 
     private func sampleDescribe(named name: String) -> String {
-        Array(repeating: "Name: \(name)\nNamespace: example-backend\nLabels: app=orders\nEvents: <none>\n", count: 32)
+        Array(repeating: "Name: \(name)\nNamespace: team-alpha\nLabels: app=sample\nEvents: <none>\n", count: 32)
             .joined(separator: "\n")
     }
 }
