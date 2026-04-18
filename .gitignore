@@ -7,7 +7,7 @@
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
 
-# Go helper binary (bygg med: cd go/rune-k8s-agent && go build -o rune-k8s-agent .)
+# Go helper binary (bygg med: cd go/rune-k8s-agent && go build -o rune-k8s-agent ./cmd/rune-k8s-agent)
 go/rune-k8s-agent/rune-k8s-agent
 
 # Genereras lokalt av fake-k3s (innehåller cert) — ska inte finnas på main.
