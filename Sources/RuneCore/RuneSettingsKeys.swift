@@ -2,7 +2,7 @@ import Foundation
 
 /// UserDefaults keys for in-app preferences (Settings, gear menu).
 public enum RuneSettingsKeys {
-    /// When true, namespace lists are loaded from disk on cold start and saved after a successful `kubectl get namespaces`.
+    /// When true, Rune restores the last namespace list from disk on launch and saves it again after a successful namespace refresh.
     public static let persistNamespaceListCache = "rune.settings.persistNamespaceListCache"
     /// When false, `DiagnosticsRecorder` does not emit NSLog lines.
     public static let diagnosticsLogging = "rune.settings.diagnosticsLogging"

@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - Swiftkube-inspired REST shapes (owned code, no third-party client)
+// MARK: - Kubernetes REST helpers (Rune-owned; matches upstream API path layout)
 
 /// Query parameters for Kubernetes **list** calls (`limit`, pagination, selectors). Same names as the API query keys.
-/// Transport today: ``KubectlCommandBuilder/rawGetArguments(context:apiPath:)`` (`kubectl get --raw`). Later: URLSession GET with the same path.
+/// Rune issues these paths via the raw GET helper on ``KubectlCommandBuilder`` today; the same paths would work for a future in-process transport.
 public struct KubernetesListOptions: Sendable, Hashable {
     public var limit: Int?
     public var continueToken: String?
@@ -22,7 +22,7 @@ public struct KubernetesListOptions: Sendable, Hashable {
         self.labelSelector = labelSelector
     }
 
-    /// `kubectl`-style resource plural as used elsewhere in Rune (e.g. `pods`, `deployments`, `cronjobs`).
+    /// Kubernetes resource plural segment as Rune uses in API paths (e.g. `pods`, `deployments`, `cronjobs`).
     public static func metadataProbeLimitOne() -> KubernetesListOptions {
         KubernetesListOptions(limit: 1)
     }
@@ -54,7 +54,7 @@ public struct KubernetesListOptions: Sendable, Hashable {
     }
 }
 
-/// Typed description of a Kubernetes **collection** GET (read-only). Holds the path + query string kubectl expects for `get --raw`.
+/// Typed description of a Kubernetes **collection** GET (read-only). Holds the path and query string Rune passes to a raw list request.
 public struct KubernetesRESTRequest: Sendable, Hashable {
     public var apiPath: String
 
@@ -63,7 +63,7 @@ public struct KubernetesRESTRequest: Sendable, Hashable {
     }
 }
 
-/// Builds REST paths matching the Kubernetes API aggregation layout (same layout client-go / Swiftkube use over HTTPS).
+/// Builds REST paths matching the upstream Kubernetes API layout (group/version/prefix).
 public enum KubernetesRESTPath {
     private static func encodedNamespaceSegment(_ namespace: String) -> String {
         namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
@@ -73,7 +73,7 @@ public enum KubernetesRESTPath {
     public static func namespacedCollectionPath(namespace: String, resource: String) -> String? {
         let ns = encodedNamespaceSegment(namespace)
         switch resource {
-        case "pods", "services", "configmaps", "secrets":
+        case "pods", "services", "configmaps", "secrets", "persistentvolumeclaims":
             return "/api/v1/namespaces/\(ns)/\(resource)"
         case "deployments", "statefulsets", "daemonsets", "replicasets":
             return "/apis/apps/v1/namespaces/\(ns)/\(resource)"
@@ -81,6 +81,11 @@ public enum KubernetesRESTPath {
             return "/apis/batch/v1/namespaces/\(ns)/\(resource)"
         case "ingresses":
             return "/apis/networking.k8s.io/v1/namespaces/\(ns)/ingresses"
+        case "networkpolicies":
+            return "/apis/networking.k8s.io/v1/namespaces/\(ns)/networkpolicies"
+        case "horizontalpodautoscalers":
+            // autoscaling/v2 is the common API for modern clusters; older clusters fall back via kubectl count.
+            return "/apis/autoscaling/v2/namespaces/\(ns)/horizontalpodautoscalers"
         default:
             return nil
         }

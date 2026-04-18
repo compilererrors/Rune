@@ -148,11 +148,11 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let name: String
     public let namespace: String
     public let status: String
-    /// Sum of `restartCount` across containers (same idea as `kubectl get pods` RESTARTS).
+    /// Total restarts Rune shows in the workloads table (sum of container restart counts).
     public let totalRestarts: Int
     /// Human-readable age from `metadata.creationTimestamp` (e.g. `5d`, `3h`).
     public let ageDescription: String
-    /// From `kubectl top pods` / Metrics API when available.
+    /// Live CPU/memory strings when metrics are available for this row; otherwise nil and the UI shows an em dash.
     public let cpuUsage: String?
     public let memoryUsage: String?
     /// `status.podIP` when present (JSON list).
@@ -203,7 +203,7 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
 
-    /// Inspector `kubectl get pod -o json` row merged into list row: keeps list CPU/mem/age/restarts, fills IP/node/QoS/ready from JSON.
+    /// Merge a detail fetch into the table row: keep list metrics and age, fill IP, node, QoS, and readiness from the richer snapshot.
     public func mergingInspectorDetail(_ detail: PodSummary) -> PodSummary {
         PodSummary(
             name: detail.name,
