@@ -576,6 +576,20 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertTrue(viewModel.state.lastError?.contains("namespaces") == true)
     }
 
+    func testNamespaceOptionsDoNotLeakPreviousContextSelection() async throws {
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let preferences = InMemoryContextPreferencesStore(
+            preferredNamespaces: ["example-context": "example-namespace"]
+        )
+        let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
+
+        viewModel.state.selectedContext = KubeContext(name: "example-context")
+        viewModel.state.selectedNamespace = "old-selection"
+
+        XCTAssertEqual(viewModel.namespaceOptions, ["example-namespace"])
+    }
+
     func testUnifiedDeploymentLogsSmokeFlow() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -963,7 +977,8 @@ final class RuneSmokeTests: XCTestCase {
         bookmarkManager: BookmarkManager = BookmarkManager(store: InMemoryBookmarkStore()),
         kubeConfigDiscoverer: KubeConfigDiscovering = StaticKubeConfigDiscoverer(urls: []),
         exporter: FileExporting = NoopExporter(),
-        longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner()
+        longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner(),
+        contextPreferences: ContextPreferencesStoring = InMemoryContextPreferencesStore()
     ) -> RuneAppViewModel {
         let kubeClient = KubectlClient(
             runner: runner,
@@ -990,7 +1005,7 @@ final class RuneSmokeTests: XCTestCase {
             kubeConfigDiscoverer: kubeConfigDiscoverer,
             exporter: exporter,
             supportBundleBuilder: JSONSupportBundleBuilder(),
-            contextPreferences: InMemoryContextPreferencesStore(),
+            contextPreferences: contextPreferences,
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
     }
@@ -1511,8 +1526,11 @@ private final class RecordingExporter: FileExporting {
 }
 
 private struct InMemoryContextPreferencesStore: ContextPreferencesStoring {
+    var preferredNamespaces: [String: String] = [:]
+
     func loadFavoriteContextNames() -> Set<String> { [] }
     func saveFavoriteContextNames(_ names: Set<String>) {}
+    func loadPreferredNamespace(for contextName: String) -> String? { preferredNamespaces[contextName] }
 }
 
 private struct StaticKubeConfigDiscoverer: KubeConfigDiscovering {

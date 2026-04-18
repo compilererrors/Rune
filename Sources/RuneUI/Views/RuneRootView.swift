@@ -11,6 +11,10 @@ public struct RuneRootLayoutSnapshot: Equatable, Sendable {
     public let contentMinY: CGFloat?
     public let headerMinY: CGFloat?
     public let detailMinY: CGFloat?
+    /// Leading edges of layout probes (window space). Used by UI tests to catch horizontal drift / “offset” when swapping inspectors or editors.
+    public let contentMinX: CGFloat?
+    public let headerMinX: CGFloat?
+    public let detailMinX: CGFloat?
 
     public init(
         section: RuneSection,
@@ -19,7 +23,10 @@ public struct RuneRootLayoutSnapshot: Equatable, Sendable {
         resolvedWindowTopInset: CGFloat,
         contentMinY: CGFloat?,
         headerMinY: CGFloat?,
-        detailMinY: CGFloat?
+        detailMinY: CGFloat?,
+        contentMinX: CGFloat? = nil,
+        headerMinX: CGFloat? = nil,
+        detailMinX: CGFloat? = nil
     ) {
         self.section = section
         self.workloadKind = workloadKind
@@ -28,6 +35,9 @@ public struct RuneRootLayoutSnapshot: Equatable, Sendable {
         self.contentMinY = contentMinY
         self.headerMinY = headerMinY
         self.detailMinY = detailMinY
+        self.contentMinX = contentMinX
+        self.headerMinX = headerMinX
+        self.detailMinX = detailMinX
     }
 }
 
@@ -35,6 +45,24 @@ private enum RuneRootLayoutProbeKind: Hashable {
     case content
     case header
     case detail
+}
+
+private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
+    case overview
+    case workloadPodOverview
+    case workloadPodYAML
+    case workloadPodDescribe
+    case workloadDeploymentOverview
+    case workloadDeploymentYAML
+    case workloadDeploymentDescribe
+    case networkingServiceOverview
+    case networkingServiceYAML
+    case networkingServiceDescribe
+    case configConfigMapPrepare
+    case configConfigMapYAML
+    case configConfigMapDescribe
+    case rbacRole
+    case terminal
 }
 
 private struct RuneRootLayoutProbeFrame: Equatable {
@@ -45,20 +73,40 @@ private struct RuneRootLayoutProbeFrame: Equatable {
 private enum RuneRootLayoutDebug {
     static let coordinateSpaceName = "RuneRootLayoutSpace"
     static let isEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT"] == "1"
+    static let liveScenarioEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO"] == "1"
+    static let liveScenarioExitWhenDone = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO_EXIT"] == "1"
+    static let liveScenarioContextName = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_CONTEXT"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let liveScenarioNamespace = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_NAMESPACE"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
-    static func log(_ snapshot: RuneRootLayoutSnapshot) {
+    static func log(
+        _ snapshot: RuneRootLayoutSnapshot,
+        shellVariant: RuneRootShellVariant,
+        inlineEditorImplementation: ManifestInlineEditorImplementation
+    ) {
         guard isEnabled else { return }
 
         NSLog(
-            "[Rune][Layout] section=%@ kind=%@ measuredTopInset=%@ resolvedTopInset=%.1f contentMinY=%@ headerMinY=%@ detailMinY=%@",
+            "[Rune][Layout] shell=%@ editor=%@ section=%@ kind=%@ measuredTopInset=%@ resolvedTopInset=%.1f content=(%.1f,%.1f) header=(%.1f,%.1f) detail=(%.1f,%.1f)",
+            shellVariant.debugLabel,
+            inlineEditorImplementation.debugLabel,
             snapshot.section.rawValue,
             snapshot.workloadKind.kubectlName,
             snapshot.measuredWindowTopInset.map { String(format: "%.1f", $0) } ?? "nil",
             snapshot.resolvedWindowTopInset,
-            snapshot.contentMinY.map { String(format: "%.1f", $0) } ?? "nil",
-            snapshot.headerMinY.map { String(format: "%.1f", $0) } ?? "nil",
-            snapshot.detailMinY.map { String(format: "%.1f", $0) } ?? "nil"
+            snapshot.contentMinX ?? -1,
+            snapshot.contentMinY ?? -1,
+            snapshot.headerMinX ?? -1,
+            snapshot.headerMinY ?? -1,
+            snapshot.detailMinX ?? -1,
+            snapshot.detailMinY ?? -1
         )
+    }
+
+    static func logScenario(_ step: RuneRootLiveDebugScenarioStep, status: String, detail: String = "") {
+        guard isEnabled || liveScenarioEnabled else { return }
+        NSLog("[Rune][LayoutScenario] step=%@ status=%@ %@", step.rawValue, status, detail)
     }
 
 }
@@ -167,6 +215,37 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
     }
 }
 
+private enum PodTableLayout {
+    static let metricsSpacing: CGFloat = 10
+    static let rowHorizontalPadding: CGFloat = 12
+    static let rowVerticalPadding: CGFloat = 8
+    static let listRowEdgeInset: CGFloat = 6
+    static let cpuWidth: CGFloat = 44
+    static let memoryWidth: CGFloat = 56
+    static let restartsWidth: CGFloat = 56
+    static let ageWidth: CGFloat = 44
+    static let statusTextWidth: CGFloat = 120
+    static let statusHorizontalPadding: CGFloat = 8
+    static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
+    static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+}
+
+private enum ManifestDocumentKind: String, CaseIterable, Identifiable {
+    case yaml
+    case describe
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .yaml:
+            return "YAML"
+        case .describe:
+            return "Describe"
+        }
+    }
+}
+
 private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case values
@@ -190,6 +269,8 @@ public struct RuneRootView: View {
 
     private let onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?
     private let debugDisableBootstrap: Bool
+    private let forcedShellVariant: RuneRootShellVariant?
+    private let forcedManifestInlineEditorImplementation: ManifestInlineEditorImplementation?
 
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
@@ -200,11 +281,11 @@ public struct RuneRootView: View {
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
-    /// Toggles YAML inspector between read-only `ScrollView` and AppKit `RuneMonospaceTextEditor`.
     @State private var yamlManifestIsEditing = false
-    /// Toggles describe inspector between read-only `ScrollView` and AppKit `RuneMonospaceTextEditor`.
     @State private var describePaneIsEditing = false
     @State private var isPreferencesPresented = false
+    @State private var manifestSheetEditor: ManifestDocumentKind?
+    @State private var liveDebugScenarioStarted = false
 
     public init(
         viewModel: RuneAppViewModel = RuneAppViewModel(),
@@ -217,7 +298,9 @@ public struct RuneRootView: View {
             initialPodInspectorTab: .overview,
             initialServiceInspectorTab: .overview,
             initialDeploymentInspectorTab: .overview,
-            initialGenericResourceManifestTab: .describe
+            initialGenericResourceManifestTab: .describe,
+            shellVariant: nil,
+            manifestInlineEditorImplementation: nil
         )
     }
 
@@ -228,15 +311,23 @@ public struct RuneRootView: View {
         initialPodInspectorTab: PodInspectorTab = .overview,
         initialServiceInspectorTab: ServiceInspectorTab = .overview,
         initialDeploymentInspectorTab: DeploymentInspectorTab = .overview,
-        initialGenericResourceManifestTab: GenericResourceManifestTab = .describe
+        initialGenericResourceManifestTab: GenericResourceManifestTab = .describe,
+        shellVariant: RuneRootShellVariant? = nil,
+        manifestInlineEditorImplementation: ManifestInlineEditorImplementation? = nil,
+        initialYAMLInlineEditing: Bool = false,
+        initialDescribeInlineEditing: Bool = false
     ) {
         self.viewModel = viewModel
         self.onLayoutSnapshotChange = onLayoutSnapshotChange
         self.debugDisableBootstrap = debugDisableBootstrap
+        self.forcedShellVariant = shellVariant
+        self.forcedManifestInlineEditorImplementation = manifestInlineEditorImplementation
         _podInspectorTab = State(initialValue: initialPodInspectorTab)
         _serviceInspectorTab = State(initialValue: initialServiceInspectorTab)
         _deploymentInspectorTab = State(initialValue: initialDeploymentInspectorTab)
         _genericResourceManifestTab = State(initialValue: initialGenericResourceManifestTab)
+        _yamlManifestIsEditing = State(initialValue: initialYAMLInlineEditing)
+        _describePaneIsEditing = State(initialValue: initialDescribeInlineEditing)
     }
 
     public var body: some View {
@@ -246,96 +337,107 @@ public struct RuneRootView: View {
                 .frame(width: 0, height: 0)
 
             mainSplitContainer
-            .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .toolbar {
-                ToolbarItemGroup(placement: .navigation) {
-                    Button {
-                        viewModel.navigateBack()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                    }
-                    .help("Back")
-                    .disabled(!viewModel.canNavigateBack)
-                    .keyboardShortcut("[", modifiers: [.command, .option])
+                .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .toolbar {
+                    ToolbarItemGroup(placement: .navigation) {
+                        Button {
+                            viewModel.navigateBack()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .help("Back")
+                        .disabled(!viewModel.canNavigateBack)
+                        .keyboardShortcut("[", modifiers: [.command, .option])
 
-                    Button {
-                        viewModel.navigateForward()
-                    } label: {
-                        Image(systemName: "chevron.right")
-                    }
-                    .help("Forward")
-                    .disabled(!viewModel.canNavigateForward)
-                    .keyboardShortcut("]", modifiers: [.command, .option])
+                        Button {
+                            viewModel.navigateForward()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                        .help("Forward")
+                        .disabled(!viewModel.canNavigateForward)
+                        .keyboardShortcut("]", modifiers: [.command, .option])
 
-                    Menu(viewModel.state.selectedContext?.name ?? "No Context") {
-                        ForEach(viewModel.visibleContexts) { context in
-                            Button(context.name) {
-                                viewModel.setContext(context)
+                        Menu(viewModel.state.selectedContext?.name ?? "No Context") {
+                            ForEach(viewModel.visibleContexts) { context in
+                                Button(context.name) {
+                                    viewModel.setContext(context)
+                                }
+                            }
+                        }
+
+                        Menu(namespaceMenuTitle) {
+                            ForEach(namespaceSuggestions, id: \.self) { namespace in
+                                Button(namespace) {
+                                    viewModel.setNamespace(namespace)
+                                }
                             }
                         }
                     }
 
-                    Menu(namespaceMenuTitle) {
-                        ForEach(namespaceSuggestions, id: \.self) { namespace in
-                            Button(namespace) {
-                                viewModel.setNamespace(namespace)
-                            }
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button {
+                            isPreferencesPresented = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .help("Settings")
+
+                        Button("Palette") {
+                            viewModel.presentCommandPalette()
+                        }
+                        .keyboardShortcut("k", modifiers: .command)
+
+                        Button("Reload") {
+                            viewModel.refreshCurrentView()
+                        }
+                        .keyboardShortcut("r", modifiers: .command)
+                    }
+                }
+                .toolbarBackground(.visible, for: .windowToolbar)
+                .sheet(isPresented: commandPalettePresentedBinding) {
+                    CommandPaletteView(viewModel: viewModel)
+                }
+                .sheet(isPresented: $isPreferencesPresented) {
+                    RunePreferencesView()
+                }
+                .sheet(item: $manifestSheetEditor) { documentKind in
+                    manifestEditorSheet(documentKind)
+                }
+                .confirmationDialog(
+                    viewModel.pendingWriteActionTitle,
+                    isPresented: pendingWriteActionPresentedBinding,
+                    titleVisibility: .visible
+                ) {
+                    if viewModel.pendingWriteActionIsDestructive {
+                        Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
+                            viewModel.confirmPendingWriteAction()
+                        }
+                    } else {
+                        Button(viewModel.pendingWriteActionConfirmLabel) {
+                            viewModel.confirmPendingWriteAction()
                         }
                     }
-                }
 
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        isPreferencesPresented = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                    Button("Cancel", role: .cancel) {
+                        viewModel.cancelPendingWriteAction()
                     }
-                    .help("Settings")
-
-                    Button("Palette") {
-                        viewModel.presentCommandPalette()
-                    }
-                    .keyboardShortcut("k", modifiers: .command)
-
-                    Button("Reload") {
-                        viewModel.refreshCurrentView()
-                    }
-                    .keyboardShortcut("r", modifiers: .command)
+                } message: {
+                    Text(viewModel.pendingWriteActionMessage)
                 }
-            }
-            .toolbarBackground(.visible, for: .windowToolbar)
-            .sheet(isPresented: commandPalettePresentedBinding) {
-                CommandPaletteView(viewModel: viewModel)
-            }
-            .sheet(isPresented: $isPreferencesPresented) {
-                RunePreferencesView()
-            }
-            .confirmationDialog(
-                viewModel.pendingWriteActionTitle,
-                isPresented: pendingWriteActionPresentedBinding,
-                titleVisibility: .visible
-            ) {
-                if viewModel.pendingWriteActionIsDestructive {
-                    Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                        viewModel.confirmPendingWriteAction()
+                .onAppear {
+                    if RuneRootLayoutDebug.isEnabled {
+                        NSLog(
+                            "[Rune][Layout] configured shell=%@ editor=%@",
+                            resolvedShellVariant.debugLabel,
+                            resolvedManifestInlineEditorImplementation.debugLabel
+                        )
                     }
-                } else {
-                    Button(viewModel.pendingWriteActionConfirmLabel) {
-                        viewModel.confirmPendingWriteAction()
-                    }
+                    startLiveDebugScenarioIfNeeded()
+                    guard !debugDisableBootstrap else { return }
+                    viewModel.bootstrapIfNeeded()
                 }
-
-                Button("Cancel", role: .cancel) {
-                    viewModel.cancelPendingWriteAction()
-                }
-            } message: {
-                Text(viewModel.pendingWriteActionMessage)
-            }
-            .onAppear {
-                guard !debugDisableBootstrap else { return }
-                viewModel.bootstrapIfNeeded()
-            }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
@@ -357,53 +459,327 @@ public struct RuneRootView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
     }
 
-    /// Three-column workspace using `NavigationSplitView` (system split chrome, dividers follow columns — same pattern as the first Rune commits).
-    private var mainSplitContainer: some View {
-        NavigationSplitView {
-            sidebar
-                .runeAppKitFrameReporter("sidebar")
-                .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 480)
-        } content: {
-            contentPane
-                .runeAppKitFrameReporter("content")
-                .navigationSplitViewColumnWidth(
-                    min: RuneUILayoutMetrics.splitContentColumnMinWidth,
-                    ideal: 760,
-                    max: 2000
-                )
-        } detail: {
-            detailPane
-                .runeAppKitFrameReporter("detail")
-                .navigationSplitViewColumnWidth(
-                    min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                    ideal: 540,
-                    max: 1200
-                )
+    private var resolvedShellVariant: RuneRootShellVariant {
+        RuneRootShellVariant.resolved(override: forcedShellVariant)
+    }
+
+    private var resolvedManifestInlineEditorImplementation: ManifestInlineEditorImplementation {
+        ManifestInlineEditorImplementation.resolved(override: forcedManifestInlineEditorImplementation)
+    }
+
+    private func startLiveDebugScenarioIfNeeded() {
+        guard RuneRootLayoutDebug.liveScenarioEnabled else { return }
+        guard !liveDebugScenarioStarted else { return }
+        liveDebugScenarioStarted = true
+
+        Task { @MainActor in
+            await runLiveDebugScenario()
         }
-        .navigationSplitViewStyle(.balanced)
+    }
+
+    @MainActor
+    private func runLiveDebugScenario() async {
+        RuneRootLayoutDebug.logScenario(
+            .overview,
+            status: "start",
+            detail: "shell=\(resolvedShellVariant.debugLabel) editor=\(resolvedManifestInlineEditorImplementation.debugLabel)"
+        )
+
+        await waitForLiveScenarioReady()
+
+        for step in RuneRootLiveDebugScenarioStep.allCases {
+            await performLiveDebugScenarioStep(step)
+        }
+
+        RuneRootLayoutDebug.logScenario(.overview, status: "finished")
+
+        if RuneRootLayoutDebug.liveScenarioExitWhenDone {
+            NSApp.terminate(nil)
+        }
+    }
+
+    @MainActor
+    private func waitForLiveScenarioReady() async {
+        let timeout = Date().addingTimeInterval(20)
+        while Date() < timeout {
+            if viewModel.state.selectedContext != nil, !viewModel.visibleContexts.isEmpty {
+                var appliedOverride = false
+
+                if let contextName = RuneRootLayoutDebug.liveScenarioContextName, !contextName.isEmpty,
+                   let context = viewModel.visibleContexts.first(where: { $0.name == contextName }),
+                   viewModel.state.selectedContext != context {
+                    viewModel.setContext(context)
+                    appliedOverride = true
+                }
+                if let namespace = RuneRootLayoutDebug.liveScenarioNamespace, !namespace.isEmpty,
+                   viewModel.state.selectedNamespace != namespace {
+                    viewModel.setNamespace(namespace)
+                    appliedOverride = true
+                }
+
+                let contextSettled =
+                    RuneRootLayoutDebug.liveScenarioContextName == nil
+                    || RuneRootLayoutDebug.liveScenarioContextName?.isEmpty == true
+                    || viewModel.state.selectedContext?.name == RuneRootLayoutDebug.liveScenarioContextName
+                let namespaceSettled =
+                    RuneRootLayoutDebug.liveScenarioNamespace == nil
+                    || RuneRootLayoutDebug.liveScenarioNamespace?.isEmpty == true
+                    || viewModel.state.selectedNamespace == RuneRootLayoutDebug.liveScenarioNamespace
+
+                if appliedOverride, contextSettled, namespaceSettled {
+                    viewModel.refreshCurrentView()
+                }
+
+                if contextSettled && namespaceSettled {
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    return
+                }
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    @MainActor
+    private func performLiveDebugScenarioStep(_ step: RuneRootLiveDebugScenarioStep) async {
+        RuneRootLayoutDebug.logScenario(step, status: "begin")
+
+        let applied = applyLiveDebugScenarioStep(step)
+        if !applied {
+            RuneRootLayoutDebug.logScenario(step, status: "skip")
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 900_000_000)
+
+        if let snapshot = lastLayoutSnapshot {
+            RuneRootLayoutDebug.logScenario(
+                step,
+                status: "snapshot",
+                detail: "content=(\(snapshot.contentMinX ?? -1),\(snapshot.contentMinY ?? -1)) detail=(\(snapshot.detailMinX ?? -1),\(snapshot.detailMinY ?? -1))"
+            )
+        } else {
+            RuneRootLayoutDebug.logScenario(step, status: "snapshot-missing")
+        }
+    }
+
+    @MainActor
+    private func applyLiveDebugScenarioStep(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
+        switch step {
+        case .overview:
+            viewModel.setSection(.overview)
+            return true
+        case .workloadPodOverview:
+            guard let pod = viewModel.visiblePods.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.selectPod(pod)
+            podInspectorTab = .overview
+            yamlManifestIsEditing = false
+            describePaneIsEditing = false
+            return true
+        case .workloadPodYAML:
+            guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
+            if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
+                viewModel.setSection(.workloads)
+                viewModel.selectPod(pod)
+            }
+            podInspectorTab = .yaml
+            yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .workloadPodDescribe:
+            guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
+            if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
+                viewModel.setSection(.workloads)
+                viewModel.selectPod(pod)
+            }
+            podInspectorTab = .describe
+            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .workloadDeploymentOverview:
+            guard let deployment = viewModel.visibleDeployments.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .overview
+            yamlManifestIsEditing = false
+            describePaneIsEditing = false
+            return true
+        case .workloadDeploymentYAML:
+            guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
+            if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
+                viewModel.setSection(.workloads)
+                viewModel.selectDeployment(deployment)
+            }
+            deploymentInspectorTab = .yaml
+            yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .workloadDeploymentDescribe:
+            guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
+            if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
+                viewModel.setSection(.workloads)
+                viewModel.selectDeployment(deployment)
+            }
+            deploymentInspectorTab = .describe
+            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .networkingServiceOverview:
+            guard let service = viewModel.visibleServices.first else { return false }
+            viewModel.setSection(.networking)
+            viewModel.selectService(service)
+            serviceInspectorTab = .overview
+            yamlManifestIsEditing = false
+            describePaneIsEditing = false
+            return true
+        case .networkingServiceYAML:
+            guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
+            if viewModel.state.selectedService == nil, let service = viewModel.visibleServices.first {
+                viewModel.setSection(.networking)
+                viewModel.selectService(service)
+            }
+            serviceInspectorTab = .yaml
+            yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .networkingServiceDescribe:
+            guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
+            if viewModel.state.selectedService == nil, let service = viewModel.visibleServices.first {
+                viewModel.setSection(.networking)
+                viewModel.selectService(service)
+            }
+            serviceInspectorTab = .describe
+            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .configConfigMapPrepare:
+            viewModel.setSection(.config)
+            viewModel.setWorkloadKind(.configMap)
+            if let configMap = viewModel.visibleConfigMaps.first {
+                viewModel.selectConfigMap(configMap)
+            } else {
+                viewModel.refreshCurrentView()
+            }
+            yamlManifestIsEditing = false
+            describePaneIsEditing = false
+            return true
+        case .configConfigMapYAML:
+            viewModel.setSection(.config)
+            viewModel.setWorkloadKind(.configMap)
+            guard let configMap = viewModel.visibleConfigMaps.first else { return false }
+            viewModel.selectConfigMap(configMap)
+            genericResourceManifestTab = .yaml
+            yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            describePaneIsEditing = false
+            return true
+        case .configConfigMapDescribe:
+            viewModel.setSection(.config)
+            viewModel.setWorkloadKind(.configMap)
+            guard viewModel.state.selectedConfigMap != nil || viewModel.visibleConfigMaps.first != nil else { return false }
+            if viewModel.state.selectedConfigMap == nil, let configMap = viewModel.visibleConfigMaps.first {
+                viewModel.selectConfigMap(configMap)
+            }
+            genericResourceManifestTab = .describe
+            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            return true
+        case .rbacRole:
+            guard let resource = viewModel.visibleRBACResources.first else { return false }
+            viewModel.setSection(.rbac)
+            viewModel.selectRBACResource(resource)
+            genericResourceManifestTab = .describe
+            describePaneIsEditing = false
+            return true
+        case .terminal:
+            viewModel.setSection(.terminal)
+            yamlManifestIsEditing = false
+            describePaneIsEditing = false
+            return true
+        }
+    }
+
+    /// Three-column workspace — shell can be tested under both native `NavigationSplitView` and AppKit-backed split behavior.
+    @ViewBuilder
+    private var mainSplitContainer: some View {
+        switch resolvedShellVariant {
+        case .navigationSplitView:
+            NavigationSplitView {
+                sidebar
+                    .runeAppKitFrameReporter("sidebar")
+                    .overlay(alignment: .trailing) {
+                        splitColumnResizeHandle
+                            .offset(x: 7)
+                    }
+                    .navigationSplitViewColumnWidth(
+                        min: 220,
+                        ideal: 280,
+                        max: RuneUILayoutMetrics.splitSidebarMaxWidth
+                    )
+            } content: {
+                contentPane
+                    .runeAppKitFrameReporter("content")
+                    .overlay(alignment: .trailing) {
+                        splitColumnResizeHandle
+                            .offset(x: 7)
+                    }
+                    .navigationSplitViewColumnWidth(
+                        min: RuneUILayoutMetrics.splitContentColumnMinWidth,
+                        ideal: 760,
+                        max: RuneUILayoutMetrics.splitContentColumnMaxWidth
+                    )
+            } detail: {
+                detailPane
+                    .runeAppKitFrameReporter("detail")
+                    .navigationSplitViewColumnWidth(
+                        min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
+                        ideal: RuneUILayoutMetrics.splitDetailColumnIdealWidth,
+                        max: RuneUILayoutMetrics.splitDetailColumnMaxWidth
+                    )
+            }
+            .navigationSplitViewStyle(.balanced)
+        case .appKitSplitView:
+            HSplitView {
+                sidebar
+                    .runeAppKitFrameReporter("sidebar")
+                    .frame(minWidth: 220, idealWidth: 280, maxWidth: RuneUILayoutMetrics.splitSidebarMaxWidth)
+                    .overlay(alignment: .trailing) {
+                        splitColumnResizeHandle
+                            .offset(x: 7)
+                    }
+                contentPane
+                    .runeAppKitFrameReporter("content")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.splitContentColumnMinWidth,
+                        idealWidth: 760,
+                        maxWidth: .infinity
+                    )
+                    .layoutPriority(1)
+                    .clipped()
+                    .overlay(alignment: .trailing) {
+                        splitColumnResizeHandle
+                            .offset(x: 7)
+                    }
+                detailPane
+                    .runeAppKitFrameReporter("detail")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
+                        idealWidth: RuneUILayoutMetrics.splitDetailColumnIdealWidth,
+                        maxWidth: .infinity
+                    )
+                    .clipped()
+            }
+        }
     }
 
     private var background: some View {
-        Color(nsColor: .windowBackgroundColor)
+        RuneGlassPaneSurface(role: .window)
             .ignoresSafeArea()
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Sidebar filter: flat fill only — `.docs/rune-design-plan.md` §6.2 (avoid heavy bordered fields).
+            Text("Rune")
+                .font(.largeTitle.weight(.bold))
+
             TextField("Search contexts", text: Binding(get: {
                 viewModel.state.contextSearchQuery
             }, set: { newValue in
                 viewModel.setContextSearchQuery(newValue)
             }))
-            .textFieldStyle(.plain)
-            .font(.body)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(Color.primary.opacity(0.07))
-            )
+            .textFieldStyle(.roundedBorder)
 
             Text("Sections")
                 .font(.headline)
@@ -435,8 +811,7 @@ public struct RuneRootView: View {
                             }
                             .buttonStyle(.borderedProminent)
                         }
-                        .padding(10)
-                        .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+                        .runePanelCard(padding: 10)
                     } else {
                         ForEach(viewModel.visibleContexts) { context in
                             contextRow(context)
@@ -458,8 +833,12 @@ public struct RuneRootView: View {
         }
         .padding(RuneUILayoutMetrics.sidebarPadding)
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Sidebar column: system `NavigationSplitView` chrome; vibrancy reads as the familiar macOS “glass” surface.
-        .background(.ultraThinMaterial)
+        .background {
+            ZStack(alignment: .trailing) {
+                RuneGlassPaneSurface(role: .sidebar)
+                RuneGlassPaneBorder(role: .sidebar)
+            }
+        }
     }
 
     private func sectionRow(_ section: RuneSection) -> some View {
@@ -475,10 +854,7 @@ public struct RuneRootView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(viewModel.state.selectedSection == section ? Color.accentColor.opacity(0.16) : Color.clear)
-            )
+            .runeSidebarSelection(isSelected: viewModel.state.selectedSection == section)
         }
         .buttonStyle(.plain)
     }
@@ -500,10 +876,7 @@ public struct RuneRootView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                        .fill(viewModel.state.selectedContext == context ? Color.accentColor.opacity(0.12) : Color.clear)
-                )
+                .runeSidebarSelection(isSelected: viewModel.state.selectedContext == context)
             }
             .buttonStyle(.plain)
 
@@ -552,10 +925,10 @@ public struct RuneRootView: View {
         }
         .padding(RuneUILayoutMetrics.paneOuterPadding)
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Primary column: solid document surface (HIG-style); sidebar/detail use materials.
         .background {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
+            ZStack(alignment: .trailing) {
+                RuneGlassPaneSurface(role: .content)
+                RuneGlassPaneBorder(role: .content)
                 RuneRootLayoutProbe(kind: .content, generation: layoutGeneration)
             }
         }
@@ -576,8 +949,8 @@ public struct RuneRootView: View {
                         .imageScale(.small)
                         .lineLimit(1)
                         .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-                        .background(.thinMaterial, in: Capsule())
+                        .frame(height: 36)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .help(context.name)
                 }
 
@@ -590,8 +963,8 @@ public struct RuneRootView: View {
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
                         .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-                        .background(Color.orange.opacity(0.16), in: Capsule())
+                        .frame(height: 36)
+                        .background(Color.orange.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 if viewModel.state.selectedSection == .events {
@@ -727,8 +1100,7 @@ public struct RuneRootView: View {
                             }
                         }
                     }
-                    .padding(14)
-                    .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+                    .runePanelCard(padding: 14)
                 }
 
                 overviewStatusBanner
@@ -768,8 +1140,7 @@ public struct RuneRootView: View {
                         healthBadge(label: "Other", value: max(0, viewModel.state.overviewPods.count - podStatusCount("running") - podStatusCount("pending") - podStatusCount("failed")), color: .gray)
                     }
                 }
-                .padding(12)
-                .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+                .runePanelCard()
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Recent Events")
@@ -822,8 +1193,7 @@ public struct RuneRootView: View {
                         }
                     }
                 }
-                .padding(12)
-                .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+                .runePanelCard()
             }
         }
         .scrollContentBackground(.hidden)
@@ -840,21 +1210,21 @@ public struct RuneRootView: View {
                             Button {
                                 viewModel.selectPod(pod)
                             } label: {
-                                HStack(spacing: 10) {
+                                HStack(spacing: PodTableLayout.metricsSpacing) {
                                     Text(pod.name)
                                         .font(.body.weight(.medium))
                                         .lineLimit(1)
                                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                                    HStack(spacing: 10) {
+                                    HStack(spacing: PodTableLayout.metricsSpacing) {
                                         Text(pod.cpuDisplay)
-                                            .frame(width: 44, alignment: .trailing)
+                                            .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
                                         Text(pod.memoryDisplay)
-                                            .frame(width: 56, alignment: .trailing)
+                                            .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
                                         Text("\(pod.totalRestarts)")
-                                            .frame(width: 56, alignment: .trailing)
+                                            .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
                                         Text(pod.ageDescription)
-                                            .frame(width: 44, alignment: .trailing)
+                                            .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
                                     }
                                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                                     .foregroundStyle(.secondary)
@@ -864,25 +1234,33 @@ public struct RuneRootView: View {
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.78)
                                         .multilineTextAlignment(.center)
-                                        .frame(width: 120, alignment: .center)
-                                        .padding(.horizontal, 8)
+                                        .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
+                                        .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
                                         .padding(.vertical, 2)
                                         .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
                                         .foregroundStyle(statusColor(for: pod.status))
                                         .help("Phase (kubectl)")
                                 }
-                                .padding(.vertical, 3)
-                                .background(
-                                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                                        .fill(viewModel.state.selectedPod?.id == pod.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .runeListRowCard(
+                                    isSelected: viewModel.state.selectedPod?.id == pod.id,
+                                    horizontalPadding: PodTableLayout.rowHorizontalPadding,
+                                    verticalPadding: PodTableLayout.rowVerticalPadding
                                 )
                             }
                             .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(
+                                top: 4,
+                                leading: PodTableLayout.listRowEdgeInset,
+                                bottom: 4,
+                                trailing: PodTableLayout.listRowEdgeInset
+                            ))
+                            .listRowBackground(Color.clear)
                         }
                     } header: {
                         podTableHeader
                     }
                 }
+                .listStyle(.plain)
 
             case .deployment:
                 List(viewModel.visibleDeployments) { deployment in
@@ -900,14 +1278,13 @@ public struct RuneRootView: View {
                                 .background(Color.blue.opacity(0.22), in: Capsule())
                                 .foregroundStyle(.blue)
                         }
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                                .fill(viewModel.state.selectedDeployment == deployment ? Color.accentColor.opacity(0.12) : Color.clear)
-                        )
+                        .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 8)
                     }
                     .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
+                    .listRowBackground(Color.clear)
                 }
+                .listStyle(.plain)
 
             case .statefulSet:
                 genericResourceList(viewModel.visibleStatefulSets, selection: viewModel.state.selectedStatefulSet, action: viewModel.selectStatefulSet)
@@ -947,7 +1324,7 @@ public struct RuneRootView: View {
             switch viewModel.state.selectedWorkloadKind {
             case .service:
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(viewModel.visibleServices) { service in
                             Button {
                                 viewModel.selectService(service)
@@ -964,18 +1341,13 @@ public struct RuneRootView: View {
                                         .background(Color.purple.opacity(0.22), in: Capsule())
                                         .foregroundStyle(.purple)
                                 }
-                                .padding(.vertical, 3)
-                                .padding(.horizontal, 2)
-                                .contentShape(Rectangle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                                        .fill(viewModel.state.selectedService == service ? Color.accentColor.opacity(0.12) : Color.clear)
-                                )
+                                .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 8)
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
                 }
 
             case .ingress:
@@ -1095,14 +1467,13 @@ public struct RuneRootView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 }
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                        .fill(viewModel.state.selectedHelmRelease == release ? Color.accentColor.opacity(0.12) : Color.clear)
-                )
+                .runeListRowCard(isSelected: viewModel.state.selectedHelmRelease == release)
             }
             .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
+            .listRowBackground(Color.clear)
         }
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -1133,16 +1504,14 @@ public struct RuneRootView: View {
                             .lineLimit(2)
                     }
                 }
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                        .fill(viewModel.state.selectedEvent == event ? Color.accentColor.opacity(0.12) : Color.clear)
-                )
-                .contentShape(Rectangle())
+                .runeListRowCard(isSelected: viewModel.state.selectedEvent == event)
             }
             .buttonStyle(.plain)
             .help(eventHint(for: event))
+            .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
+            .listRowBackground(Color.clear)
         }
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
     }
 
@@ -1184,7 +1553,7 @@ public struct RuneRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(RuneUILayoutMetrics.paneInnerPadding)
-            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
 
             if let error = viewModel.state.lastError {
                 Text(error)
@@ -1196,10 +1565,10 @@ public struct RuneRootView: View {
         // `minWidth: 0` lets split columns shrink correctly; without it, nested scroll views can force odd horizontal alignment.
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(RuneUILayoutMetrics.paneOuterPadding)
-        // Inspector column: lighter material than the document column (sidebar-style vibrancy / “glass”).
         .background {
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
+            ZStack(alignment: .leading) {
+                RuneGlassPaneSurface(role: .inspector)
+                RuneGlassPaneBorder(role: .inspector)
                 RuneRootLayoutProbe(kind: .detail, generation: layoutGeneration)
             }
         }
@@ -1785,20 +2154,6 @@ public struct RuneRootView: View {
         }
     }
 
-    private var yamlDraftBinding: Binding<String> {
-        Binding(
-            get: { viewModel.state.resourceYAML },
-            set: { viewModel.state.updateResourceYAMLDraft($0) }
-        )
-    }
-
-    private var describeDraftBinding: Binding<String> {
-        Binding(
-            get: { viewModel.state.resourceDescribe },
-            set: { viewModel.state.updateResourceDescribeDraft($0) }
-        )
-    }
-
     private var yamlDisplayText: String {
         if !viewModel.state.resourceYAML.isEmpty {
             return viewModel.state.resourceYAML
@@ -1833,6 +2188,20 @@ public struct RuneRootView: View {
             return error
         }
         return "No describe output available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or kubectl describe returned no output."
+    }
+
+    private var yamlDraftBinding: Binding<String> {
+        Binding(
+            get: { viewModel.state.resourceYAML },
+            set: { viewModel.state.updateResourceYAMLDraft($0) }
+        )
+    }
+
+    private var describeDraftBinding: Binding<String> {
+        Binding(
+            get: { viewModel.state.resourceDescribe },
+            set: { viewModel.state.updateResourceDescribeDraft($0) }
+        )
     }
 
     private var manifestResourceReference: String {
@@ -1923,6 +2292,203 @@ public struct RuneRootView: View {
         return AnyView(inspectorEmptyState("Select a resource", symbol: "list.bullet.rectangle"))
     }
 
+    private func manifestHasUnsavedEdits(_ documentKind: ManifestDocumentKind) -> Bool {
+        switch documentKind {
+        case .yaml:
+            return viewModel.state.resourceYAMLHasUnsavedEdits
+        case .describe:
+            return viewModel.state.resourceDescribeHasUnsavedEdits
+        }
+    }
+
+    private func manifestTextIsEmpty(_ documentKind: ManifestDocumentKind) -> Bool {
+        switch documentKind {
+        case .yaml:
+            return viewModel.state.resourceYAML.isEmpty
+        case .describe:
+            return viewModel.state.resourceDescribe.isEmpty
+        }
+    }
+
+    private func manifestInlineEditing(_ documentKind: ManifestDocumentKind) -> Bool {
+        switch documentKind {
+        case .yaml:
+            return yamlManifestIsEditing
+        case .describe:
+            return describePaneIsEditing
+        }
+    }
+
+    private func setManifestInlineEditing(_ documentKind: ManifestDocumentKind, _ isEditing: Bool) {
+        switch documentKind {
+        case .yaml:
+            yamlManifestIsEditing = isEditing
+        case .describe:
+            describePaneIsEditing = isEditing
+        }
+    }
+
+    private func manifestDraftBinding(for documentKind: ManifestDocumentKind) -> Binding<String> {
+        switch documentKind {
+        case .yaml:
+            return yamlDraftBinding
+        case .describe:
+            return describeDraftBinding
+        }
+    }
+
+    private func manifestDisplayText(for documentKind: ManifestDocumentKind) -> String {
+        switch documentKind {
+        case .yaml:
+            return yamlDisplayText
+        case .describe:
+            return describeDisplayText
+        }
+    }
+
+    private func manifestFooterText(for documentKind: ManifestDocumentKind) -> String? {
+        switch documentKind {
+        case .yaml:
+            return viewModel.state.resourceYAML.isEmpty ? yamlFooterText : nil
+        case .describe:
+            return "Describe shows the resource’s current state from the cluster. Editing here does not apply changes. Use the YAML tab to modify resources."
+        }
+    }
+
+    private func openManifestSheet(_ documentKind: ManifestDocumentKind) {
+        setManifestInlineEditing(documentKind, false)
+        manifestSheetEditor = documentKind
+    }
+
+    @ViewBuilder
+    private func manifestEditorSurface(
+        for documentKind: ManifestDocumentKind,
+        inlineEditing: Bool,
+        implementation: ManifestInlineEditorImplementation? = nil
+    ) -> some View {
+        let resolvedImplementation = implementation ?? resolvedManifestInlineEditorImplementation
+        let activeImplementation = inlineEditing ? resolvedImplementation : .readOnlyScroll
+        let binding = manifestDraftBinding(for: documentKind)
+
+        Group {
+            switch activeImplementation {
+            case .readOnlyScroll:
+                ScrollView([.horizontal, .vertical]) {
+                    Text(manifestDisplayText(for: documentKind))
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .textSelection(.enabled)
+                        .padding(10)
+                }
+            case .swiftUITextEditor:
+                TextEditor(text: binding)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+            case .appKitTextView:
+                AppKitManifestTextView(text: binding, isEditable: true)
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .fill(.thinMaterial)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func manifestSheetActionBar(_ documentKind: ManifestDocumentKind) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if documentKind == .yaml {
+                    Button("Apply YAML") {
+                        viewModel.requestApplySelectedResourceYAML()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        !viewModel.canApplyClusterMutations
+                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+
+                Button("Revert") {
+                    switch documentKind {
+                    case .yaml:
+                        viewModel.revertResourceYAMLDraft()
+                    case .describe:
+                        viewModel.revertResourceDescribeDraft()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!manifestHasUnsavedEdits(documentKind))
+
+                if documentKind == .yaml {
+                    Button("Import…") {
+                        viewModel.importResourceYAMLFromFile()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Export…") {
+                        viewModel.saveCurrentResourceYAML()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceYAML.isEmpty)
+                } else {
+                    Button("Save…") {
+                        viewModel.saveCurrentResourceDescribe()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.resourceDescribe.isEmpty)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func manifestEditorSheet(_ documentKind: ManifestDocumentKind) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(documentKind.title) Editor")
+                        .font(.title2.weight(.bold))
+                    Text(manifestResourceReference)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") {
+                    manifestSheetEditor = nil
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+
+            manifestSheetActionBar(documentKind)
+
+            manifestEditorSurface(
+                for: documentKind,
+                inlineEditing: true,
+                implementation: .appKitTextView
+            )
+
+            if let footer = manifestFooterText(for: documentKind) {
+                Text(footer)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 760, minHeight: 560)
+        .background(.regularMaterial)
+    }
+
     private var yamlBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -1945,11 +2511,19 @@ public struct RuneRootView: View {
                             || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
 
-                    Button(yamlManifestIsEditing ? "Done" : "Edit") {
-                        yamlManifestIsEditing.toggle()
+                    if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
+                        Button(yamlManifestIsEditing ? "Done" : "Quick Edit") {
+                            yamlManifestIsEditing.toggle()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(manifestTextIsEmpty(.yaml))
+                    }
+
+                    Button("Edit…") {
+                        openManifestSheet(.yaml)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(!viewModel.writeActionsEnabled || viewModel.state.resourceYAML.isEmpty)
+                    .disabled(manifestTextIsEmpty(.yaml))
 
                     Button("Revert") {
                         viewModel.revertResourceYAMLDraft()
@@ -1963,9 +2537,7 @@ public struct RuneRootView: View {
 
                     Button("Import…") {
                         viewModel.importResourceYAMLFromFile()
-                        if viewModel.writeActionsEnabled {
-                            yamlManifestIsEditing = true
-                        }
+                        openManifestSheet(.yaml)
                     }
                     .buttonStyle(.bordered)
                     .help("Replace the editor with the contents of a YAML file")
@@ -1979,33 +2551,7 @@ public struct RuneRootView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Group {
-                if yamlManifestIsEditing, viewModel.writeActionsEnabled {
-                    RuneMonospaceTextEditor(text: yamlDraftBinding, isEditable: true)
-                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(8)
-                        .background {
-                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                                .fill(.thinMaterial)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                } else {
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(yamlDisplayText)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .textSelection(.enabled)
-                            .padding(10)
-                    }
-                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background {
-                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                            .fill(.thinMaterial)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                }
-            }
-            .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
+            manifestEditorSurface(for: .yaml, inlineEditing: yamlManifestIsEditing)
 
             if viewModel.state.resourceYAML.isEmpty {
                 Text(yamlFooterText)
@@ -2044,12 +2590,20 @@ public struct RuneRootView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Button(describePaneIsEditing ? "Done" : "Edit") {
-                        describePaneIsEditing.toggle()
+                    if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
+                        Button(describePaneIsEditing ? "Done" : "Quick Edit") {
+                            describePaneIsEditing.toggle()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(manifestTextIsEmpty(.describe))
+                    }
+
+                    Button("Edit…") {
+                        openManifestSheet(.describe)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceDescribe.isEmpty || viewModel.state.isReadOnlyMode)
-                    .help("Edit describe text locally (export only). Unavailable while read-only mode is on.")
+                    .disabled(manifestTextIsEmpty(.describe))
+                    .help("Open a dedicated editor sheet for exportable describe text.")
 
                     Button("Revert") {
                         viewModel.revertResourceDescribeDraft()
@@ -2067,33 +2621,7 @@ public struct RuneRootView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Group {
-                if describePaneIsEditing {
-                    RuneMonospaceTextEditor(text: describeDraftBinding, isEditable: true)
-                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(8)
-                        .background {
-                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                                .fill(.thinMaterial)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                } else {
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(describeDisplayText)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .textSelection(.enabled)
-                            .padding(10)
-                    }
-                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background {
-                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                            .fill(.thinMaterial)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                }
-            }
-            .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
+            manifestEditorSurface(for: .describe, inlineEditing: describePaneIsEditing)
 
             Text(
                 "Describe shows the resource’s current state from the cluster. Editing here does not apply changes. Use the YAML tab to modify resources."
@@ -2104,11 +2632,6 @@ public struct RuneRootView: View {
         }
         .onChange(of: viewModel.state.resourceDescribeBaseline) { _, _ in
             describePaneIsEditing = false
-        }
-        .onChange(of: viewModel.state.isReadOnlyMode) { _, isReadOnly in
-            if isReadOnly {
-                describePaneIsEditing = false
-            }
         }
     }
 
@@ -2492,25 +3015,14 @@ public struct RuneRootView: View {
                             }
                             Spacer()
                             if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                                Text(namespace)
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous))
-                                    .foregroundStyle(.secondary)
+                                RuneChip {
+                                    Text(namespace)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                                .fill(panelFill)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                                .fill(selection == resource ? Color.accentColor.opacity(0.12) : Color.clear)
-                        )
+                        .runeListRowCard(isSelected: selection == resource)
                     }
                     .buttonStyle(.plain)
                 }
@@ -2532,13 +3044,20 @@ public struct RuneRootView: View {
             resolvedWindowTopInset: RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset),
             contentMinY: layoutProbeFrames[.content]?.minY,
             headerMinY: layoutProbeFrames[.header]?.minY,
-            detailMinY: layoutProbeFrames[.detail]?.minY
+            detailMinY: layoutProbeFrames[.detail]?.minY,
+            contentMinX: layoutProbeFrames[.content]?.minX,
+            headerMinX: layoutProbeFrames[.header]?.minX,
+            detailMinX: layoutProbeFrames[.detail]?.minX
         )
 
         guard snapshot != lastLayoutSnapshot else { return }
 
         lastLayoutSnapshot = snapshot
-        RuneRootLayoutDebug.log(snapshot)
+        RuneRootLayoutDebug.log(
+            snapshot,
+            shellVariant: resolvedShellVariant,
+            inlineEditorImplementation: resolvedManifestInlineEditorImplementation
+        )
         onLayoutSnapshotChange?(snapshot)
     }
 
@@ -2550,6 +3069,26 @@ public struct RuneRootView: View {
         layoutGeneration += 1
         layoutProbeFrames = [:]
         lastLayoutSnapshot = nil
+    }
+
+    /// Visual resize affordance on column edges (`49c6517`); hit testing stays on the system split divider.
+    private var splitColumnResizeHandle: some View {
+        VStack {
+            Spacer(minLength: 0)
+            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                .fill(Color.secondary.opacity(0.42))
+                .frame(width: 4, height: 44)
+                .overlay {
+                    VStack(spacing: 4) {
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                    }
+                }
+                .allowsHitTesting(false)
+            Spacer(minLength: 0)
+        }
+        .frame(width: 14)
     }
 
     private var productionBanner: some View {
@@ -2620,18 +3159,19 @@ public struct RuneRootView: View {
     }
 
     private var podTableHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: PodTableLayout.metricsSpacing) {
             podSortHeaderButton(title: "Name", column: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 10) {
-                podSortHeaderButton(title: "CPU", column: .cpu, width: 44, alignment: .trailing)
+            HStack(spacing: PodTableLayout.metricsSpacing) {
+                podSortHeaderButton(title: "CPU", column: .cpu, width: PodTableLayout.cpuWidth, alignment: .trailing)
                     .help("CPU in millicores (1000m = 1 core), from kubectl top.")
-                podSortHeaderButton(title: "MEM", column: .memory, width: 56, alignment: .trailing)
-                podSortHeaderButton(title: "Restarts", column: .restarts, width: 56, alignment: .trailing)
-                podSortHeaderButton(title: "Age", column: .age, width: 44, alignment: .trailing)
+                podSortHeaderButton(title: "MEM", column: .memory, width: PodTableLayout.memoryWidth, alignment: .trailing)
+                podSortHeaderButton(title: "Restarts", column: .restarts, width: PodTableLayout.restartsWidth, alignment: .trailing)
+                podSortHeaderButton(title: "Age", column: .age, width: PodTableLayout.ageWidth, alignment: .trailing)
             }
-            podSortHeaderButton(title: "Status", column: .status, width: 120, alignment: .center)
+            podSortHeaderButton(title: "Status", column: .status, width: PodTableLayout.statusTotalWidth, alignment: .center)
         }
+        .padding(.horizontal, PodTableLayout.headerHorizontalInset)
         .textCase(nil)
     }
 
@@ -2710,16 +3250,7 @@ public struct RuneRootView: View {
 
     private func inspectorInsetCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
-            )
+            .runeInsetCard()
     }
 
     @ViewBuilder
@@ -2974,11 +3505,15 @@ public struct RuneRootView: View {
     }
 
     private var panelFill: some ShapeStyle {
-        .regularMaterial
+        RuneSurfaceKind.panel.fill
     }
 
     private var editorFill: Color {
-        Color(nsColor: .textBackgroundColor)
+        RuneSurfaceKind.editor.fill
+    }
+
+    private func contentListRowChrome(isSelected: Bool) -> some View {
+        RuneSurfaceBackground(kind: .listRow(isSelected: isSelected))
     }
 
     private func eventHint(for event: EventSummary) -> String {
