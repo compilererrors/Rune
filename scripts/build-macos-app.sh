@@ -15,7 +15,7 @@ cd "${ROOT_DIR}"
 if command -v go >/dev/null 2>&1; then
   echo "Bygger rune-k8s-agent (Go + client-go)…"
   # -ldflags=-s -w strips symbol/DWARF (smaller bundle; client-go is ~40MB+ otherwise).
-  (cd "${ROOT_DIR}/go/rune-k8s-agent" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o rune-k8s-agent .)
+  (cd "${ROOT_DIR}/go/rune-k8s-agent" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o rune-k8s-agent ./cmd/rune-k8s-agent)
 else
   echo "Varning: go saknas i PATH — hoppar över rune-k8s-agent (sätt RUNE_K8S_AGENT eller installera Go)." >&2
 fi
