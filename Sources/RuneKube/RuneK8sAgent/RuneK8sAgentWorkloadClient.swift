@@ -18,7 +18,7 @@ enum RuneK8sAgentLocator {
     }
 }
 
-/// Lists batch workloads via the Go `rune-k8s-agent` binary (stdout JSON). Caller supplies the same `KUBECONFIG` env as kubectl.
+/// Lists batch workloads via the bundled `rune-k8s-agent` helper (stdout JSON). Uses the same kubeconfig environment as the rest of Rune.
 enum RuneK8sAgentWorkloadClient {
     static func listJobs(
         executablePath: String,
@@ -110,6 +110,65 @@ enum RuneK8sAgentWorkloadClient {
             )
         }
         return try decodeSummaries(from: result.stdout)
+    }
+
+    static func listDeployments(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        timeout: TimeInterval
+    ) async throws -> [DeploymentSummary] {
+        let result = try await runner.run(
+            executable: executablePath,
+            arguments: ["list", "deployments", "--context", contextName, "--namespace", namespace],
+            environment: environment,
+            timeout: timeout
+        )
+        guard result.exitCode == 0 else {
+            throw RuneError.commandFailed(
+                command: "rune-k8s-agent list deployments",
+                message: result.stderr.isEmpty ? "exit \(result.exitCode)" : result.stderr
+            )
+        }
+        return try decodeDeployments(from: result.stdout)
+    }
+
+    static func listReplicaSets(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        timeout: TimeInterval
+    ) async throws -> [ClusterResourceSummary] {
+        let result = try await runner.run(
+            executable: executablePath,
+            arguments: ["list", "replicasets", "--context", contextName, "--namespace", namespace],
+            environment: environment,
+            timeout: timeout
+        )
+        guard result.exitCode == 0 else {
+            throw RuneError.commandFailed(
+                command: "rune-k8s-agent list replicasets",
+                message: result.stderr.isEmpty ? "exit \(result.exitCode)" : result.stderr
+            )
+        }
+        return try decodeSummaries(from: result.stdout)
+    }
+
+    private static func decodeDeployments(from stdout: String) throws -> [DeploymentSummary] {
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return []
+        }
+        let data = Data(trimmed.utf8)
+        do {
+            return try JSONDecoder().decode([DeploymentSummary].self, from: data)
+        } catch {
+            throw RuneError.parseError(message: "rune-k8s-agent deployments JSON kunde inte tolkas")
+        }
     }
 
     private static func decodeSummaries(from stdout: String) throws -> [ClusterResourceSummary] {

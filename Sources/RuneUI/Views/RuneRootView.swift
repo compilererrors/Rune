@@ -232,22 +232,6 @@ private enum PodTableLayout {
     static let headerBottomSpacing: CGFloat = 10
 }
 
-private enum ManifestDocumentKind: String, CaseIterable, Identifiable {
-    case yaml
-    case describe
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .yaml:
-            return "YAML"
-        case .describe:
-            return "Describe"
-        }
-    }
-}
-
 private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case values
@@ -284,9 +268,8 @@ public struct RuneRootView: View {
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
     @State private var yamlManifestIsEditing = false
-    @State private var describePaneIsEditing = false
     @State private var isPreferencesPresented = false
-    @State private var manifestSheetEditor: ManifestDocumentKind?
+    @State private var isYAMLEditorSheetPresented = false
     @State private var liveDebugScenarioStarted = false
 
     public init(
@@ -316,8 +299,7 @@ public struct RuneRootView: View {
         initialGenericResourceManifestTab: GenericResourceManifestTab = .describe,
         shellVariant: RuneRootShellVariant? = nil,
         manifestInlineEditorImplementation: ManifestInlineEditorImplementation? = nil,
-        initialYAMLInlineEditing: Bool = false,
-        initialDescribeInlineEditing: Bool = false
+        initialYAMLInlineEditing: Bool = false
     ) {
         self.viewModel = viewModel
         self.onLayoutSnapshotChange = onLayoutSnapshotChange
@@ -329,7 +311,6 @@ public struct RuneRootView: View {
         _deploymentInspectorTab = State(initialValue: initialDeploymentInspectorTab)
         _genericResourceManifestTab = State(initialValue: initialGenericResourceManifestTab)
         _yamlManifestIsEditing = State(initialValue: initialYAMLInlineEditing)
-        _describePaneIsEditing = State(initialValue: initialDescribeInlineEditing)
     }
 
     public var body: some View {
@@ -404,8 +385,8 @@ public struct RuneRootView: View {
                 .sheet(isPresented: $isPreferencesPresented) {
                     RunePreferencesView()
                 }
-                .sheet(item: $manifestSheetEditor) { documentKind in
-                    manifestEditorSheet(documentKind)
+                .sheet(isPresented: $isYAMLEditorSheetPresented) {
+                    yamlManifestEditorSheet()
                 }
                 .confirmationDialog(
                     viewModel.pendingWriteActionTitle,
@@ -576,7 +557,6 @@ public struct RuneRootView: View {
             viewModel.selectPod(pod)
             podInspectorTab = .overview
             yamlManifestIsEditing = false
-            describePaneIsEditing = false
             return true
         case .workloadPodYAML:
             guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
@@ -594,7 +574,6 @@ public struct RuneRootView: View {
                 viewModel.selectPod(pod)
             }
             podInspectorTab = .describe
-            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
         case .workloadDeploymentOverview:
             guard let deployment = viewModel.visibleDeployments.first else { return false }
@@ -602,7 +581,6 @@ public struct RuneRootView: View {
             viewModel.selectDeployment(deployment)
             deploymentInspectorTab = .overview
             yamlManifestIsEditing = false
-            describePaneIsEditing = false
             return true
         case .workloadDeploymentYAML:
             guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
@@ -620,7 +598,6 @@ public struct RuneRootView: View {
                 viewModel.selectDeployment(deployment)
             }
             deploymentInspectorTab = .describe
-            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
         case .networkingServiceOverview:
             guard let service = viewModel.visibleServices.first else { return false }
@@ -628,7 +605,6 @@ public struct RuneRootView: View {
             viewModel.selectService(service)
             serviceInspectorTab = .overview
             yamlManifestIsEditing = false
-            describePaneIsEditing = false
             return true
         case .networkingServiceYAML:
             guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
@@ -646,7 +622,6 @@ public struct RuneRootView: View {
                 viewModel.selectService(service)
             }
             serviceInspectorTab = .describe
-            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
         case .configConfigMapPrepare:
             viewModel.setSection(.config)
@@ -657,7 +632,6 @@ public struct RuneRootView: View {
                 viewModel.refreshCurrentView()
             }
             yamlManifestIsEditing = false
-            describePaneIsEditing = false
             return true
         case .configConfigMapYAML:
             viewModel.setSection(.config)
@@ -666,7 +640,6 @@ public struct RuneRootView: View {
             viewModel.selectConfigMap(configMap)
             genericResourceManifestTab = .yaml
             yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
-            describePaneIsEditing = false
             return true
         case .configConfigMapDescribe:
             viewModel.setSection(.config)
@@ -676,19 +649,16 @@ public struct RuneRootView: View {
                 viewModel.selectConfigMap(configMap)
             }
             genericResourceManifestTab = .describe
-            describePaneIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
         case .rbacRole:
             guard let resource = viewModel.visibleRBACResources.first else { return false }
             viewModel.setSection(.rbac)
             viewModel.selectRBACResource(resource)
             genericResourceManifestTab = .describe
-            describePaneIsEditing = false
             return true
         case .terminal:
             viewModel.setSection(.terminal)
             yamlManifestIsEditing = false
-            describePaneIsEditing = false
             return true
         }
     }
@@ -1244,7 +1214,7 @@ public struct RuneRootView: View {
                                         .padding(.vertical, 2)
                                         .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
                                         .foregroundStyle(statusColor(for: pod.status))
-                                        .help("Phase (kubectl)")
+                                        .help("Pod phase from the cluster")
                                 }
                                 .runeListRowCard(
                                     isSelected: viewModel.state.selectedPod?.id == pod.id,
@@ -2170,7 +2140,7 @@ public struct RuneRootView: View {
         if let error = viewModel.state.lastResourceYAMLError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             return error
         }
-        return "No YAML available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or kubectl returned an empty manifest."
+        return "No YAML available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or the cluster returned an empty manifest."
     }
 
     private var yamlFooterText: String {
@@ -2178,7 +2148,7 @@ public struct RuneRootView: View {
             return "Loading resource YAML from the cluster."
         }
         if viewModel.state.lastResourceYAMLError != nil {
-            return "YAML could not be loaded for the current selection. Check context, namespace and kubectl access."
+            return "YAML could not be loaded for the current selection. Check context, namespace, and cluster access in Settings."
         }
         return "No YAML was returned for the current selection yet. You can also use Import… to paste YAML from a file."
     }
@@ -2193,20 +2163,13 @@ public struct RuneRootView: View {
         if let error = viewModel.state.lastResourceDescribeError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             return error
         }
-        return "No describe output available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or kubectl describe returned no output."
+        return "No describe output available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or describe returned no output."
     }
 
     private var yamlDraftBinding: Binding<String> {
         Binding(
             get: { viewModel.state.resourceYAML },
             set: { viewModel.state.updateResourceYAMLDraft($0) }
-        )
-    }
-
-    private var describeDraftBinding: Binding<String> {
-        Binding(
-            get: { viewModel.state.resourceDescribe },
-            set: { viewModel.state.updateResourceDescribeDraft($0) }
         )
     }
 
@@ -2298,89 +2261,22 @@ public struct RuneRootView: View {
         return AnyView(inspectorEmptyState("Select a resource", symbol: "list.bullet.rectangle"))
     }
 
-    private func manifestHasUnsavedEdits(_ documentKind: ManifestDocumentKind) -> Bool {
-        switch documentKind {
-        case .yaml:
-            return viewModel.state.resourceYAMLHasUnsavedEdits
-        case .describe:
-            return viewModel.state.resourceDescribeHasUnsavedEdits
-        }
-    }
-
-    private func manifestTextIsEmpty(_ documentKind: ManifestDocumentKind) -> Bool {
-        switch documentKind {
-        case .yaml:
-            return viewModel.state.resourceYAML.isEmpty
-        case .describe:
-            return viewModel.state.resourceDescribe.isEmpty
-        }
-    }
-
-    private func manifestInlineEditing(_ documentKind: ManifestDocumentKind) -> Bool {
-        switch documentKind {
-        case .yaml:
-            return yamlManifestIsEditing
-        case .describe:
-            return describePaneIsEditing
-        }
-    }
-
-    private func setManifestInlineEditing(_ documentKind: ManifestDocumentKind, _ isEditing: Bool) {
-        switch documentKind {
-        case .yaml:
-            yamlManifestIsEditing = isEditing
-        case .describe:
-            describePaneIsEditing = isEditing
-        }
-    }
-
-    private func manifestDraftBinding(for documentKind: ManifestDocumentKind) -> Binding<String> {
-        switch documentKind {
-        case .yaml:
-            return yamlDraftBinding
-        case .describe:
-            return describeDraftBinding
-        }
-    }
-
-    private func manifestDisplayText(for documentKind: ManifestDocumentKind) -> String {
-        switch documentKind {
-        case .yaml:
-            return yamlDisplayText
-        case .describe:
-            return describeDisplayText
-        }
-    }
-
-    private func manifestFooterText(for documentKind: ManifestDocumentKind) -> String? {
-        switch documentKind {
-        case .yaml:
-            return viewModel.state.resourceYAML.isEmpty ? yamlFooterText : nil
-        case .describe:
-            return "Describe text is for export or notes only. To change the cluster, edit the manifest YAML and use Apply on the YAML or Describe tab."
-        }
-    }
-
-    private func openManifestSheet(_ documentKind: ManifestDocumentKind) {
-        setManifestInlineEditing(documentKind, false)
-        manifestSheetEditor = documentKind
+    private func openYAMLEditorSheet() {
+        yamlManifestIsEditing = false
+        isYAMLEditorSheetPresented = true
     }
 
     @ViewBuilder
-    private func manifestEditorSurface(
-        for documentKind: ManifestDocumentKind,
-        inlineEditing: Bool,
-        implementation: ManifestInlineEditorImplementation? = nil
-    ) -> some View {
+    private func yamlManifestEditorSurface(inlineEditing: Bool, implementation: ManifestInlineEditorImplementation? = nil) -> some View {
         let resolvedImplementation = implementation ?? resolvedManifestInlineEditorImplementation
         let activeImplementation = inlineEditing ? resolvedImplementation : .readOnlyScroll
-        let binding = manifestDraftBinding(for: documentKind)
+        let binding = yamlDraftBinding
 
         Group {
             switch activeImplementation {
             case .readOnlyScroll:
                 ScrollView([.horizontal, .vertical]) {
-                    Text(manifestDisplayText(for: documentKind))
+                    Text(yamlDisplayText)
                         .font(.system(size: 12, weight: .regular, design: .monospaced))
                         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .textSelection(.enabled)
@@ -2408,50 +2304,57 @@ public struct RuneRootView: View {
         .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func manifestSheetActionBar(_ documentKind: ManifestDocumentKind) -> some View {
+    /// Read-only describe output Rune loaded from the cluster (no local editing).
+    private var describeOutputReadOnlySurface: some View {
+        ScrollView([.horizontal, .vertical]) {
+            Text(describeDisplayText)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .textSelection(.enabled)
+                .padding(10)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .fill(.thinMaterial)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func yamlManifestSheetActionBar() -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if documentKind == .yaml {
-                    Button("Apply YAML") {
-                        viewModel.requestApplySelectedResourceYAML()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        !viewModel.canApplyClusterMutations
-                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    .help("Sends the manifest to the cluster. Closing this sheet does not.")
+                Button("Apply YAML") {
+                    viewModel.requestApplySelectedResourceYAML()
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    !viewModel.canApplyClusterMutations
+                        || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .help("Sends the manifest to the cluster. Closing this sheet does not.")
 
                 Button("Revert") {
-                    switch documentKind {
-                    case .yaml:
-                        viewModel.revertResourceYAMLDraft()
-                    case .describe:
-                        viewModel.revertResourceDescribeDraft()
-                    }
+                    viewModel.revertResourceYAMLDraft()
                 }
                 .buttonStyle(.bordered)
-                .disabled(!manifestHasUnsavedEdits(documentKind))
+                .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
 
-                if documentKind == .yaml {
-                    Button("Import…") {
-                        viewModel.importResourceYAMLFromFile()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("Export…") {
-                        viewModel.saveCurrentResourceYAML()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceYAML.isEmpty)
-                } else {
-                    Button("Save…") {
-                        viewModel.saveCurrentResourceDescribe()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceDescribe.isEmpty)
+                Button("Import…") {
+                    viewModel.importResourceYAMLFromFile()
                 }
+                .buttonStyle(.bordered)
+
+                Button("Export…") {
+                    viewModel.saveCurrentResourceYAML()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.state.resourceYAML.isEmpty)
 
                 Spacer(minLength: 0)
             }
@@ -2459,20 +2362,11 @@ public struct RuneRootView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func manifestSheetDismissFootnote(for documentKind: ManifestDocumentKind) -> String {
-        switch documentKind {
-        case .yaml:
-            return "Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab."
-        case .describe:
-            return "Close dismisses this sheet only. Describe text is never sent to the cluster."
-        }
-    }
-
-    private func manifestEditorSheet(_ documentKind: ManifestDocumentKind) -> some View {
+    private func yamlManifestEditorSheet() -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(documentKind.title) Editor")
+                    Text("YAML Editor")
                         .font(.title2.weight(.bold))
                     Text(manifestResourceReference)
                         .font(.subheadline)
@@ -2480,26 +2374,22 @@ public struct RuneRootView: View {
                 }
                 Spacer()
                 Button("Close") {
-                    manifestSheetEditor = nil
+                    isYAMLEditorSheetPresented = false
                 }
             }
 
-            manifestSheetActionBar(documentKind)
+            yamlManifestSheetActionBar()
 
-            manifestEditorSurface(
-                for: documentKind,
-                inlineEditing: true,
-                implementation: .appKitTextView
-            )
+            yamlManifestEditorSurface(inlineEditing: true, implementation: .appKitTextView)
 
-            if let footer = manifestFooterText(for: documentKind) {
-                Text(footer)
+            if viewModel.state.resourceYAML.isEmpty {
+                Text(yamlFooterText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text(manifestSheetDismissFootnote(for: documentKind))
+            Text("Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2537,14 +2427,14 @@ public struct RuneRootView: View {
                             yamlManifestIsEditing.toggle()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(manifestTextIsEmpty(.yaml))
+                        .disabled(viewModel.state.resourceYAML.isEmpty)
                     }
 
                     Button("Edit…") {
-                        openManifestSheet(.yaml)
+                        openYAMLEditorSheet()
                     }
                     .buttonStyle(.bordered)
-                    .disabled(manifestTextIsEmpty(.yaml))
+                    .disabled(viewModel.state.resourceYAML.isEmpty)
 
                     Button("Revert") {
                         viewModel.revertResourceYAMLDraft()
@@ -2558,7 +2448,7 @@ public struct RuneRootView: View {
 
                     Button("Import…") {
                         viewModel.importResourceYAMLFromFile()
-                        openManifestSheet(.yaml)
+                        openYAMLEditorSheet()
                     }
                     .buttonStyle(.bordered)
                     .help("Replace the editor with the contents of a YAML file")
@@ -2572,7 +2462,7 @@ public struct RuneRootView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            manifestEditorSurface(for: .yaml, inlineEditing: yamlManifestIsEditing)
+            yamlManifestEditorSurface(inlineEditing: yamlManifestIsEditing)
 
             if viewModel.state.resourceYAML.isEmpty {
                 Text(yamlFooterText)
@@ -2597,17 +2487,13 @@ public struct RuneRootView: View {
         }
     }
 
-    /// Read-only `kubectl describe` below. Edit manifest edits the same YAML buffer as the YAML tab; Apply is the only control that sends that YAML to the cluster (closing the sheet does not).
+    /// Describe tab: read-only describe output; cluster updates use the YAML manifest (same buffer as the YAML tab) and Apply.
     private var describeBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if viewModel.state.resourceDescribeHasUnsavedEdits {
-                    Text("Unsaved edits (describe)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 0)
-            }
+            Text("Describe output is read-only. Edit the YAML manifest to change the resource, then Apply.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -2621,58 +2507,24 @@ public struct RuneRootView: View {
                     )
                     .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
 
-                    Button("Edit manifest…") {
-                        openManifestSheet(.yaml)
+                    Button("YAML manifest…") {
+                        openYAMLEditorSheet()
                     }
                     .buttonStyle(.bordered)
                     .disabled(viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Edit the resource manifest (same flow as k9s e after describe). Close the sheet when finished; use Apply when you want to update the cluster.")
-
-                    Divider()
-                        .frame(height: 16)
-
-                    if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
-                        Button(describePaneIsEditing ? "Done" : "Quick Edit") {
-                            describePaneIsEditing.toggle()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(manifestTextIsEmpty(.describe))
-                    }
-
-                    Button("Edit describe…") {
-                        openManifestSheet(.describe)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(manifestTextIsEmpty(.describe))
-                    .help("Edit describe output in a sheet (export only; does not change the cluster).")
-
-                    Button("Revert") {
-                        viewModel.revertResourceDescribeDraft()
-                        describePaneIsEditing = false
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!viewModel.state.resourceDescribeHasUnsavedEdits)
-
-                    Button("Save…") {
-                        viewModel.saveCurrentResourceDescribe()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceDescribe.isEmpty)
+                    .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            manifestEditorSurface(for: .describe, inlineEditing: describePaneIsEditing)
+            describeOutputReadOnlySurface
 
             Text(
-                "Below: kubectl describe (reference only). In k9s, e opens the resource editor and saving updates the cluster. Here you get an extra step: edit the manifest, Close the sheet, then tap Apply when you are ready to push changes."
+                "The pane above is describe output from the cluster. To update the cluster, open YAML manifest (or the YAML tab), edit, then Apply."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-        }
-        .onChange(of: viewModel.state.resourceDescribeBaseline) { _, _ in
-            describePaneIsEditing = false
         }
     }
 
@@ -2721,7 +2573,7 @@ public struct RuneRootView: View {
 
     // MARK: - Log panes (pod + unified workloads)
 
-    /// Shown while kubectl log fetch is in flight (`isLoadingLogs` or global `isLoading`).
+    /// Shown while a log stream request is in flight (`isLoadingLogs` or global `isLoading`).
     private func logLoadingPlaceholder() -> some View {
         HStack(spacing: 10) {
             ProgressView()
@@ -2733,7 +2585,7 @@ public struct RuneRootView: View {
         .padding(10)
     }
 
-    /// Error banner for failed `kubectl logs` (timeout or non-zero exit).
+    /// Error banner when the log stream failed (timeout or non-zero exit from the log fetch).
     private func logFetchErrorView(message: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Could not load logs")
@@ -3205,7 +3057,7 @@ public struct RuneRootView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: PodTableLayout.metricsSpacing) {
                 podSortHeaderButton(title: "CPU", column: .cpu, width: PodTableLayout.cpuWidth, alignment: .trailing)
-                    .help("CPU in millicores (1000m = 1 core), from kubectl top.")
+                    .help("CPU in millicores (1000m = 1 core), from the metrics snapshot Rune loaded when available.")
                 podSortHeaderButton(title: "MEM", column: .memory, width: PodTableLayout.memoryWidth, alignment: .trailing)
                 podSortHeaderButton(title: "Restarts", column: .restarts, width: PodTableLayout.restartsWidth, alignment: .trailing)
                 podSortHeaderButton(title: "Age", column: .age, width: PodTableLayout.ageWidth, alignment: .trailing)

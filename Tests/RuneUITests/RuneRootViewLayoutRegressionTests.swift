@@ -42,8 +42,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                             debugDisableBootstrap: true,
                             initialPodInspectorTab: .describe,
                             shellVariant: shellVariant,
-                            manifestInlineEditorImplementation: editorImplementation,
-                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                            manifestInlineEditorImplementation: editorImplementation
                         )
                     },
                     section: .workloads,
@@ -124,8 +123,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                             debugDisableBootstrap: true,
                             initialDeploymentInspectorTab: .describe,
                             shellVariant: shellVariant,
-                            manifestInlineEditorImplementation: editorImplementation,
-                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                            manifestInlineEditorImplementation: editorImplementation
                         )
                     },
                     section: .workloads,
@@ -206,8 +204,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                             debugDisableBootstrap: true,
                             initialServiceInspectorTab: .describe,
                             shellVariant: shellVariant,
-                            manifestInlineEditorImplementation: editorImplementation,
-                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                            manifestInlineEditorImplementation: editorImplementation
                         )
                     },
                     section: .networking,
@@ -295,8 +292,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                             debugDisableBootstrap: true,
                             initialGenericResourceManifestTab: .describe,
                             shellVariant: shellVariant,
-                            manifestInlineEditorImplementation: editorImplementation,
-                            initialDescribeInlineEditing: editorImplementation.supportsInlineEditing
+                            manifestInlineEditorImplementation: editorImplementation
                         )
                     },
                     section: .config,
