@@ -26,6 +26,22 @@ final class KubectlTests: XCTestCase {
             builder.rawGetArguments(context: "prod", apiPath: "/apis/apps/v1/namespaces/default/deployments?limit=1"),
             ["--context", "prod", "get", "--raw", "/apis/apps/v1/namespaces/default/deployments?limit=1"]
         )
+        let req = KubernetesRESTRequest(apiPath: "/apis/apps/v1/namespaces/default/deployments?limit=1")
+        XCTAssertEqual(
+            builder.rawGetArguments(context: "prod", request: req),
+            ["--context", "prod", "get", "--raw", "/apis/apps/v1/namespaces/default/deployments?limit=1"]
+        )
+    }
+
+    func testKubernetesRESTPathJobsAndStatefulSets() {
+        XCTAssertEqual(
+            KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: "ns-a", resource: "jobs"),
+            "/apis/batch/v1/namespaces/ns-a/jobs?limit=1"
+        )
+        XCTAssertEqual(
+            KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: "ns-a", resource: "statefulsets"),
+            "/apis/apps/v1/namespaces/ns-a/statefulsets?limit=1"
+        )
     }
 
     func testCollectionListTotalUsesRemainingItemCount() {

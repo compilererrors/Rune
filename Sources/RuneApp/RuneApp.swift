@@ -7,6 +7,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
     private var didScheduleActivation = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        RuneSettingsKeys.registerDefaults()
         NSApp.setActivationPolicy(.regular)
         scheduleForegroundActivation(reason: "didFinishLaunching")
     }
