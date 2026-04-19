@@ -4297,7 +4297,7 @@ public final class RuneAppViewModel: ObservableObject {
         let sources = state.kubeConfigSources
         guard !sources.isEmpty else { return }
         let contextName = context.name
-        let nodeCountFallback = max(store.nodes(context: context).count, state.overviewNodesCount)
+        let nodeCountFallback = store.nodes(context: context).count
         var eventFallbackByNamespace: [String: [EventSummary]] = [:]
         for namespace in targetsToPrefetch {
             eventFallbackByNamespace[namespace] = store.snapshot(context: context, namespace: namespace).events
@@ -4385,8 +4385,8 @@ public final class RuneAppViewModel: ObservableObject {
                             configMapsCount: prefetchedConfigMapsCount,
                             cronJobsCount: prefetchedCronJobsCount,
                             nodesCount: nodeCountFallback,
-                            clusterCPUPercent: self.state.overviewClusterCPUPercent,
-                            clusterMemoryPercent: self.state.overviewClusterMemoryPercent,
+                            clusterCPUPercent: nodeCountFallback > 0 ? self.state.overviewClusterCPUPercent : nil,
+                            clusterMemoryPercent: nodeCountFallback > 0 ? self.state.overviewClusterMemoryPercent : nil,
                             events: eventFallbackByNamespace[namespace] ?? []
                         )
                     }
@@ -4580,8 +4580,12 @@ public final class RuneAppViewModel: ObservableObject {
             let mergedIngressesCount = cached.ingresses.isEmpty ? cachedOverview.ingressesCount : cached.ingresses.count
             let mergedConfigMapsCount = cached.configMaps.isEmpty ? cachedOverview.configMapsCount : cached.configMaps.count
             let mergedCronJobsCount = cached.cronJobs.isEmpty ? cachedOverview.cronJobsCount : cached.cronJobs.count
-            let mergedNodesCount = cachedNodes.isEmpty ? cachedOverview.nodesCount : cachedNodes.count
+            // Node list is cluster-scoped RAM cache; if it is empty we must not reuse overview/disk cache counts or
+            // CPU/MEM from a warm entry — those can come from another session or stale prefetch (see scheduleOverviewPrefetch).
+            let mergedNodesCount = cachedNodes.isEmpty ? 0 : cachedNodes.count
             let mergedEvents = cached.events.isEmpty ? cachedOverview.events : cached.events
+            let mergedClusterCPU = cachedNodes.isEmpty ? nil : cachedOverview.clusterCPUPercent
+            let mergedClusterMem = cachedNodes.isEmpty ? nil : cachedOverview.clusterMemoryPercent
             state.setOverviewSnapshot(
                 pods: mergedPods,
                 deploymentsCount: mergedDeploymentsCount,
@@ -4590,8 +4594,8 @@ public final class RuneAppViewModel: ObservableObject {
                 configMapsCount: mergedConfigMapsCount,
                 cronJobsCount: mergedCronJobsCount,
                 nodesCount: mergedNodesCount,
-                clusterCPUPercent: cachedOverview.clusterCPUPercent,
-                clusterMemoryPercent: cachedOverview.clusterMemoryPercent,
+                clusterCPUPercent: mergedClusterCPU,
+                clusterMemoryPercent: mergedClusterMem,
                 events: mergedEvents
             )
             return

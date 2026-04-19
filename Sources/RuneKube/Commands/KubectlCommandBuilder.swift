@@ -383,9 +383,9 @@ public struct KubectlCommandBuilder {
     public func eventListArguments(context: String, namespace: String) -> [String] {
         [
             "--context", context,
+            "--request-timeout=90s",
             "get", "events",
             "-n", namespace,
-            "--sort-by=.lastTimestamp",
             "-o", "json"
         ]
     }
@@ -393,9 +393,9 @@ public struct KubectlCommandBuilder {
     public func eventListAllNamespacesArguments(context: String) -> [String] {
         [
             "--context", context,
+            "--request-timeout=90s",
             "get", "events",
             "-A",
-            "--sort-by=.lastTimestamp",
             "-o", "json"
         ]
     }

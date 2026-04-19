@@ -702,6 +702,12 @@ public struct KubectlOutputParser {
                     involvedNamespace: item.involvedObject.namespace
                 )
             }
+            .sorted { lhs, rhs in
+                let l = lhs.lastTimestamp ?? ""
+                let r = rhs.lastTimestamp ?? ""
+                if l != r { return l > r }
+                return lhs.objectName.localizedCaseInsensitiveCompare(rhs.objectName) == .orderedAscending
+            }
     }
 
     public func parseClusterRoleNames(from raw: String) -> [ClusterResourceSummary] {
