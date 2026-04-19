@@ -373,7 +373,7 @@ public struct RuneRootView: View {
                         .keyboardShortcut("k", modifiers: .command)
 
                         Button("Reload") {
-                            viewModel.refreshCurrentView()
+                            viewModel.refreshCurrentView(debounced: false)
                         }
                         .keyboardShortcut("r", modifiers: .command)
                     }
@@ -912,6 +912,25 @@ public struct RuneRootView: View {
                 Text(viewModel.state.selectedSection.title)
                     .font(.title2.weight(.bold))
 
+                if viewModel.visibleContexts.isEmpty == false, viewModel.state.selectedSection != .terminal {
+                    Button {
+                        viewModel.refreshCurrentView(debounced: false)
+                    } label: {
+                        if viewModel.state.isLoading {
+                            ProgressView()
+                                .scaleEffect(0.75)
+                                .frame(width: 22, height: 22)
+                        } else {
+                            Image(systemName: "arrow.clockwise.circle")
+                                .font(.title3)
+                                .symbolRenderingMode(.hierarchical)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh data for this section (same as ⌘R)")
+                    .accessibilityLabel("Refresh section")
+                }
+
                 Spacer()
 
                 if let context = viewModel.state.selectedContext {
@@ -1078,28 +1097,76 @@ public struct RuneRootView: View {
                 overviewStatusBanner
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                    overviewStatCard(title: "Pods", value: "\(viewModel.state.overviewPods.count)", symbol: "cube.box.fill", tint: .cyan) {
+                    overviewStatCard(
+                        title: "Pods",
+                        count: viewModel.state.overviewPods.count,
+                        symbol: "cube.box.fill",
+                        tint: .cyan,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.pods)
                     }
-                    overviewStatCard(title: "Deployments", value: "\(viewModel.state.overviewDeploymentsCount)", symbol: "shippingbox.fill", tint: .blue) {
+                    overviewStatCard(
+                        title: "Deployments",
+                        count: viewModel.state.overviewDeploymentsCount,
+                        symbol: "shippingbox.fill",
+                        tint: .blue,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.deployments)
                     }
-                    overviewStatCard(title: "Services", value: "\(viewModel.state.overviewServicesCount)", symbol: "point.3.connected.trianglepath.dotted", tint: .purple) {
+                    overviewStatCard(
+                        title: "Services",
+                        count: viewModel.state.overviewServicesCount,
+                        symbol: "point.3.connected.trianglepath.dotted",
+                        tint: .purple,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.services)
                     }
-                    overviewStatCard(title: "Ingresses", value: "\(viewModel.state.overviewIngressesCount)", symbol: "network", tint: .indigo) {
+                    overviewStatCard(
+                        title: "Ingresses",
+                        count: viewModel.state.overviewIngressesCount,
+                        symbol: "network",
+                        tint: .indigo,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.ingresses)
                     }
-                    overviewStatCard(title: "ConfigMaps", value: "\(viewModel.state.overviewConfigMapsCount)", symbol: "doc.text.fill", tint: .teal) {
+                    overviewStatCard(
+                        title: "ConfigMaps",
+                        count: viewModel.state.overviewConfigMapsCount,
+                        symbol: "doc.text.fill",
+                        tint: .teal,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.configMaps)
                     }
-                    overviewStatCard(title: "CronJobs", value: "\(viewModel.state.overviewCronJobsCount)", symbol: "calendar.badge.clock", tint: .mint) {
+                    overviewStatCard(
+                        title: "CronJobs",
+                        count: viewModel.state.overviewCronJobsCount,
+                        symbol: "calendar.badge.clock",
+                        tint: .mint,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.cronJobs)
                     }
-                    overviewStatCard(title: "Nodes", value: "\(viewModel.state.overviewNodesCount)", symbol: "server.rack", tint: .gray) {
+                    overviewStatCard(
+                        title: "Nodes",
+                        count: viewModel.state.overviewNodesCount,
+                        symbol: "server.rack",
+                        tint: .gray,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.nodes)
                     }
-                    overviewStatCard(title: "Events", value: "\(viewModel.state.overviewEvents.count)", symbol: "bolt.badge.clock.fill", tint: .orange) {
+                    overviewStatCard(
+                        title: "Events",
+                        count: viewModel.state.overviewEvents.count,
+                        symbol: "bolt.badge.clock.fill",
+                        tint: .orange,
+                        isLoading: viewModel.state.isLoading
+                    ) {
                         viewModel.openOverviewModule(.events)
                     }
                 }
@@ -1575,7 +1642,7 @@ public struct RuneRootView: View {
                 }
 
                 Button("Reload") {
-                    viewModel.refreshCurrentView()
+                    viewModel.refreshCurrentView(debounced: false)
                 }
 
                 Button("Save Bundle") {
@@ -3102,9 +3169,10 @@ public struct RuneRootView: View {
 
     private func overviewStatCard(
         title: String,
-        value: String,
+        count: Int,
         symbol: String,
         tint: Color,
+        isLoading: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -3117,8 +3185,22 @@ public struct RuneRootView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(value)
-                    .font(.title2.weight(.bold))
+                if isLoading && count == 0 {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.85)
+                        .padding(.vertical, 5)
+                } else {
+                    HStack(spacing: 6) {
+                        Text("\(count)")
+                            .font(.title2.weight(.bold))
+                        if isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.75)
+                        }
+                    }
+                }
                 Text(title)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)

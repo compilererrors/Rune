@@ -627,7 +627,7 @@ public final class RuneAppViewModel: ObservableObject {
     public var pendingWriteActionMessage: String {
         guard let pendingWriteAction else { return "" }
         if state.isReadOnlyMode {
-            return "READ-ONLY MODE: stäng av read-only innan write-actions körs."
+            return "READ-ONLY MODE: turn off read-only before running write actions."
         }
         if isProductionContext {
             return "PRODUCTION CONTEXT: \(pendingWriteAction.message)"
@@ -769,8 +769,16 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    public func refreshCurrentView() {
-        scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: true)
+    /// - Parameter debounced: When `false`, reload runs immediately (⌘R, panel refresh). When `true`, waits briefly to coalesce rapid triggers.
+    public func refreshCurrentView(debounced: Bool = true) {
+        scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: debounced)
+    }
+
+    /// Refetches only the right-hand inspector (YAML, describe, logs, etc.) for the current selection — **not** the center list or overview tiles.
+    /// List data comes from ``refreshCurrentView`` / ``loadResourceSnapshot`` (driven by ``SnapshotLoadPlan`` per section, e.g. workloads → pods loads only pod list).
+    public func refreshResourceInspectorOnly() {
+        guard state.selectedContext != nil else { return }
+        loadResourceDetailsForCurrentSelection()
     }
 
     private func scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: Bool, debounced: Bool) {
@@ -797,6 +805,10 @@ public final class RuneAppViewModel: ObservableObject {
         let namespace = state.selectedNamespace
 
         do {
+            diagnostics.trace(
+                "refresh",
+                "performRefreshCurrentView begin context=\(context.name) namespace=\(namespace) forceNamespaceMeta=\(forceNamespaceMetadataRefresh)"
+            )
             diagnostics.log("refreshCurrentView context=\(context.name) namespace=\(namespace)")
             let requestID = beginSnapshotRequest(
                 context: context,
@@ -812,10 +824,13 @@ public final class RuneAppViewModel: ObservableObject {
             if state.selectedSection == .helm {
                 try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
             }
+            diagnostics.trace("refresh", "performRefreshCurrentView done context=\(context.name)")
         } catch {
             if error is CancellationError {
+                diagnostics.trace("refresh", "performRefreshCurrentView cancelled")
                 return
             }
+            diagnostics.trace("refresh", "performRefreshCurrentView failed: \(error.localizedDescription)")
             diagnostics.log("refreshCurrentView failed: \(error.localizedDescription)")
             state.setError(error)
         }
@@ -890,7 +905,9 @@ public final class RuneAppViewModel: ObservableObject {
         if state.selectedSection == .rbac {
             state.reconcileRBACSelection()
         }
-        if triggerReload, shouldReloadForWorkloadKind(kind) {
+        let willReload = triggerReload && shouldReloadForWorkloadKind(kind)
+        diagnostics.trace("workloadKind", "setWorkloadKind kind=\(kind.rawValue) willReload=\(willReload)")
+        if willReload {
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
         }
         loadResourceDetailsForCurrentSelection()
@@ -962,6 +979,7 @@ public final class RuneAppViewModel: ObservableObject {
         triggerReload: Bool
     ) {
         diagnostics.log("setContext -> \(context.name)")
+        diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
         overviewPrefetchTask?.cancel()
         state.selectedContext = context
         // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
@@ -985,6 +1003,10 @@ public final class RuneAppViewModel: ObservableObject {
                 contextDefaultNamespace: nil
             )
         } else if !requestedPreferredNamespace.isEmpty {
+            diagnostics.trace(
+                "context",
+                "checkpoint namespace=\(requestedPreferredNamespace) for context=\(context.name) until namespace list is loaded"
+            )
             // Navigation checkpoint supplies a namespace string before `listNamespaces` has run for this context.
             state.selectedNamespace = requestedPreferredNamespace
         } else {
@@ -1883,7 +1905,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         do {
             guard let revision = try parseOptionalRevisionInput(helmRollbackRevisionInput) else {
-                throw RuneError.invalidInput(message: "helm rollback kräver en revisionssiffra.")
+                throw RuneError.invalidInput(message: "Helm rollback requires a revision number.")
             }
             pendingWriteAction = .helmRollback(releaseName: release.name, namespace: release.namespace, revision: revision)
         } catch {
@@ -1908,7 +1930,7 @@ public final class RuneAppViewModel: ObservableObject {
                     guard let service = state.selectedService else { return }
                     target = (.service, service.name)
                 case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-                    throw RuneError.invalidInput(message: "Port-forward stöds just nu för pod eller service.")
+                    throw RuneError.invalidInput(message: "Port-forward is only supported for Pod or Service right now.")
                 }
 
                 state.isStartingPortForward = true
@@ -2306,14 +2328,24 @@ public final class RuneAppViewModel: ObservableObject {
         requestID: UUID,
         forceNamespaceMetadataRefresh: Bool = false
     ) async throws {
-        guard snapshotRequestIsCurrent(requestID, context: context) else {
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
             diagnostics.log("loadResourceSnapshot ignored stale start context=\(context.name) namespace=\(namespace)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "ignored start context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+            )
             return
         }
 
         state.isLoading = true
         defer { state.isLoading = false }
 
+        try Task.checkCancellation()
+
+        diagnostics.trace(
+            "snapshot",
+            "loadResourceSnapshot start context=\(context.name) namespace=\(namespace) forceMeta=\(forceNamespaceMetadataRefresh) request=\(requestID.uuidString)"
+        )
         diagnostics.log("loadResourceSnapshot start context=\(context.name) namespace=\(namespace)")
 
         let storeWasEmpty = store.namespaces(context: context).isEmpty
@@ -2381,8 +2413,12 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot using cached namespaces context=\(context.name) count=\(loadedNamespaces.count)")
         }
 
-        guard snapshotRequestIsCurrent(requestID, context: context) else {
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
             diagnostics.log("loadResourceSnapshot discarded stale result context=\(context.name) namespace=\(namespace)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "discarded after namespace metadata context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+            )
             return
         }
 
@@ -2434,12 +2470,15 @@ public final class RuneAppViewModel: ObservableObject {
             }
         }
         let plan = computedPlan
+        try Task.checkCancellation()
+
         let warmOverview = await warmOverviewSnapshot(
             contextName: context.name,
             namespace: effectiveNamespace,
             reference: now,
             allowDiskCache: !forceNamespaceMetadataRefresh && plan.podStatuses
         )
+        try Task.checkCancellation()
 
         let preservedRBACRoles = state.rbacRoles
         let preservedRBACRoleBindings = state.rbacRoleBindings
@@ -2493,15 +2532,20 @@ public final class RuneAppViewModel: ObservableObject {
             if !cachedSnapshot.deployments.isEmpty {
                 return cachedSnapshot.deployments.count
             }
-            if let warmOverview {
-                return warmOverview.deploymentsCount
+            let warm = warmOverview?.deploymentsCount
+            do {
+                return try await kubeClient.countNamespacedResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    resource: "deployments"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countNamespacedResources(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: effectiveNamespace,
-                resource: "deployments"
-            )
         }
         async let statefulSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.statefulSets else { return cachedSnapshot.statefulSets }
@@ -2564,15 +2608,20 @@ public final class RuneAppViewModel: ObservableObject {
             if !cachedSnapshot.services.isEmpty {
                 return cachedSnapshot.services.count
             }
-            if let warmOverview {
-                return warmOverview.servicesCount
+            let warm = warmOverview?.servicesCount
+            do {
+                return try await kubeClient.countNamespacedResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    resource: "services"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countNamespacedResources(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: effectiveNamespace,
-                resource: "services"
-            )
         }
         async let ingressResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.ingresses else { return cachedSnapshot.ingresses }
@@ -2583,15 +2632,20 @@ public final class RuneAppViewModel: ObservableObject {
             if !cachedSnapshot.ingresses.isEmpty {
                 return cachedSnapshot.ingresses.count
             }
-            if let warmOverview {
-                return warmOverview.ingressesCount
+            let warm = warmOverview?.ingressesCount
+            do {
+                return try await kubeClient.countNamespacedResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    resource: "ingresses"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countNamespacedResources(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: effectiveNamespace,
-                resource: "ingresses"
-            )
         }
         async let configMapResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.configMaps else { return cachedSnapshot.configMaps }
@@ -2602,30 +2656,40 @@ public final class RuneAppViewModel: ObservableObject {
             if !cachedSnapshot.configMaps.isEmpty {
                 return cachedSnapshot.configMaps.count
             }
-            if let warmOverview {
-                return warmOverview.configMapsCount
+            let warm = warmOverview?.configMapsCount
+            do {
+                return try await kubeClient.countNamespacedResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    resource: "configmaps"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countNamespacedResources(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: effectiveNamespace,
-                resource: "configmaps"
-            )
         }
         async let cronJobsCountResult: Result<Int, Error> = Self.capture {
             guard plan.cronJobsCount else { return cachedSnapshot.cronJobs.count }
             if !cachedSnapshot.cronJobs.isEmpty {
                 return cachedSnapshot.cronJobs.count
             }
-            if let warmOverview {
-                return warmOverview.cronJobsCount
+            let warm = warmOverview?.cronJobsCount
+            do {
+                return try await kubeClient.countNamespacedResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: effectiveNamespace,
+                    resource: "cronjobs"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countNamespacedResources(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: effectiveNamespace,
-                resource: "cronjobs"
-            )
         }
         async let secretResult: Result<[ClusterResourceSummary], Error> = Self.capture {
             guard plan.secrets else { return cachedSnapshot.secrets }
@@ -2640,14 +2704,19 @@ public final class RuneAppViewModel: ObservableObject {
             if !cachedNodes.isEmpty {
                 return cachedNodes.count
             }
-            if let warmOverview {
-                return warmOverview.nodesCount
+            let warm = warmOverview?.nodesCount
+            do {
+                return try await kubeClient.countClusterResources(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    resource: "nodes"
+                )
+            } catch {
+                if let warm {
+                    return warm
+                }
+                throw error
             }
-            return try await kubeClient.countClusterResources(
-                from: state.kubeConfigSources,
-                context: context,
-                resource: "nodes"
-            )
         }
         async let eventResult: Result<[EventSummary], Error> = Self.capture {
             guard plan.events else { return cachedSnapshot.events }
@@ -2754,8 +2823,12 @@ public final class RuneAppViewModel: ObservableObject {
             warnings: &warnings
         )
 
-        guard snapshotRequestIsCurrent(requestID, context: context) else {
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: effectiveNamespace) else {
             diagnostics.log("loadResourceSnapshot discarded stale resource result context=\(context.name) namespace=\(effectiveNamespace)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "discarded after core resource fetch context=\(context.name) effectiveNamespace=\(effectiveNamespace) request=\(requestID.uuidString) selectedNamespace=\(state.selectedNamespace)"
+            )
             return
         }
 
@@ -2827,8 +2900,9 @@ public final class RuneAppViewModel: ObservableObject {
             state.clearError()
         } else {
             let warningText = warnings.joined(separator: " | ")
-            state.setErrorMessage("Delvis laddning: \(warningText)")
+            state.setErrorMessage("Partial load: \(warningText)")
             diagnostics.log("loadResourceSnapshot partial warnings: \(warningText)")
+            diagnostics.trace("snapshot", "partial load warnings: \(warningText)")
         }
 
         loadOverviewSnapshot(
@@ -2868,8 +2942,12 @@ public final class RuneAppViewModel: ObservableObject {
             )
         }
 
-        guard snapshotRequestIsCurrent(requestID, context: context) else {
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: effectiveNamespace) else {
             diagnostics.log("loadResourceSnapshot skipped details for stale context=\(context.name) namespace=\(namespace)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "skipped resource details context=\(context.name) namespace=\(effectiveNamespace) request=\(requestID.uuidString)"
+            )
             return
         }
 
@@ -2888,6 +2966,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
+        diagnostics.trace("snapshot", "loadResourceSnapshot done context=\(context.name) namespace=\(effectiveNamespace)")
     }
 
     /// Second snapshot pass: merge full pod JSON so the inspector shows IP, node, QoS, and readiness while keeping CPU/mem from the first pass.
@@ -2897,7 +2976,7 @@ public final class RuneAppViewModel: ObservableObject {
         namespace: String,
         basePods: [PodSummary]
     ) async {
-        guard snapshotRequestIsCurrent(requestID, context: context) else { return }
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else { return }
         guard state.selectedNamespace == namespace else { return }
         do {
             let merged = try await kubeClient.enrichPodsWithJSONList(
@@ -2906,7 +2985,7 @@ public final class RuneAppViewModel: ObservableObject {
                 namespace: namespace,
                 merging: basePods
             )
-            guard snapshotRequestIsCurrent(requestID, context: context) else { return }
+            guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else { return }
             guard state.selectedNamespace == namespace else { return }
             state.setPods(merged)
             let snap = store.snapshot(context: context, namespace: namespace)
@@ -2977,8 +3056,12 @@ public final class RuneAppViewModel: ObservableObject {
         events: [EventSummary]
     ) {
         diagnostics.log("loadOverviewSnapshot start context=\(context.name) namespace=\(namespace)")
-        guard snapshotRequestIsCurrent(requestID, context: context) else {
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
             diagnostics.log("loadOverviewSnapshot discarded stale result context=\(context.name)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "loadOverviewSnapshot discarded context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+            )
             return
         }
 
@@ -2996,6 +3079,10 @@ public final class RuneAppViewModel: ObservableObject {
         )
         diagnostics.log(
             "loadOverviewSnapshot done context=\(context.name) pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount) cronjobs=\(cronJobsCount)"
+        )
+        diagnostics.trace(
+            "snapshot.overview",
+            "applied overview tiles namespace=\(namespace) context=\(context.name) pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount) ingresses=\(ingressesCount) configmaps=\(configMapsCount) cronjobs=\(cronJobsCount) nodes=\(nodesCount)"
         )
     }
 
@@ -3195,6 +3282,11 @@ public final class RuneAppViewModel: ObservableObject {
                 state.finishResourceDetailLoad()
             }
         }
+
+        diagnostics.trace(
+            "resourceDetails",
+            "async begin request=\(requestID.uuidString) kind=\(state.selectedWorkloadKind.rawValue) section=\(state.selectedSection.rawValue) namespace=\(state.selectedNamespace)"
+        )
 
         guard let context = state.selectedContext else {
             if isCurrentResourceDetailsRequest(requestID) {
@@ -4303,6 +4395,10 @@ public final class RuneAppViewModel: ObservableObject {
                         self?.diagnostics.log(
                             "overview prefetch failed context=\(contextName) namespace=\(namespace): \(error.localizedDescription)"
                         )
+                        self?.diagnostics.trace(
+                            "prefetch.overview",
+                            "failed context=\(contextName) namespace=\(namespace): \(error.localizedDescription)"
+                        )
                     }
                 }
             }
@@ -4310,18 +4406,31 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func beginSnapshotRequest(context: KubeContext, namespace: String, source: String) -> UUID {
+        // New list/snapshot work supersedes in-flight inspector fetches (YAML/describe) so stale results cannot apply after refresh.
+        latestResourceDetailsRequestID = UUID()
+        if state.isLoadingResourceDetails {
+            state.finishResourceDetailLoad()
+        }
+
         let requestID = UUID()
         latestSnapshotRequestID = requestID
         diagnostics.log("snapshot request=\(requestID.uuidString) source=\(source) context=\(context.name) namespace=\(namespace)")
         return requestID
     }
 
-    private func snapshotRequestIsCurrent(_ requestID: UUID, context: KubeContext) -> Bool {
-        guard latestSnapshotRequestID == requestID else {
-            return false
-        }
-
-        return state.selectedContext?.name == context.name
+    /// Ensures the snapshot request is still the latest **and** the user has not switched context or namespace (avoids applying data for the wrong pair).
+    private func snapshotRequestIsCurrent(
+        _ requestID: UUID,
+        context: KubeContext,
+        expectedNamespace: String?
+    ) -> Bool {
+        guard latestSnapshotRequestID == requestID else { return false }
+        guard state.selectedContext?.name == context.name else { return false }
+        guard let expectedRaw = expectedNamespace else { return true }
+        let expected = expectedRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if expected.isEmpty { return true }
+        let current = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        return current.caseInsensitiveCompare(expected) == .orderedSame
     }
 
     private func resolvedNamespace(
@@ -5559,7 +5668,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func parsePort(_ value: String, fieldName: String) throws -> Int {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let port = Int(trimmed), (1...65535).contains(port) else {
-            throw RuneError.invalidInput(message: "\(fieldName) måste vara ett nummer mellan 1 och 65535.")
+            throw RuneError.invalidInput(message: "\(fieldName) must be a number between 1 and 65535.")
         }
         return port
     }
@@ -5571,7 +5680,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         guard let revision = Int(trimmed), revision > 0 else {
-            throw RuneError.invalidInput(message: "revision måste vara ett positivt heltal.")
+            throw RuneError.invalidInput(message: "Revision must be a positive integer.")
         }
 
         return revision
@@ -5585,7 +5694,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func parseCommandInput(_ input: String) throws -> [String] {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            throw RuneError.invalidInput(message: "exec-kommandot får inte vara tomt.")
+            throw RuneError.invalidInput(message: "Exec command cannot be empty.")
         }
 
         var tokens: [String] = []

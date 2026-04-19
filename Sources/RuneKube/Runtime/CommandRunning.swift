@@ -1,6 +1,12 @@
 import Foundation
 import OSLog
 import RuneCore
+import RuneDiagnostics
+
+private func mirrorCommandNSLog(_ message: String) {
+    guard UserDefaults.standard.runeDiagnosticsLogging else { return }
+    NSLog("[Rune][Command] %@", message)
+}
 
 public struct CommandResult: Sendable {
     public let stdout: String
@@ -66,6 +72,7 @@ public final class ProcessCommandRunner: CommandRunning {
         let command = renderCommand(executable: executable, arguments: arguments)
         let timeoutValue = timeout.map { max(1, $0) }
         let state = ProcessCommandState()
+        let started = Date()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -76,6 +83,7 @@ public final class ProcessCommandRunner: CommandRunning {
                 process.environment = mergedEnvironment(overrides: environment)
 
                 commandLogger.log("Starting command: \(command, privacy: .public)")
+                mirrorCommandNSLog("Starting command: \(command)")
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
@@ -87,32 +95,75 @@ public final class ProcessCommandRunner: CommandRunning {
                         guard let activeProcess = state.process(), activeProcess.isRunning else { return }
 
                         commandLogger.error("Command timed out after \(timeoutValue, privacy: .public)s: \(command, privacy: .public)")
+                        mirrorCommandNSLog("Command timed out after \(timeoutValue)s: \(command)")
                         activeProcess.terminate()
+                        let err = RuneError.commandFailed(
+                            command: command,
+                            message: "Timed out after \(Int(timeoutValue)) seconds"
+                        )
+                        K8sWireTrace.logKubectlCompletion(
+                            command: command,
+                            timeout: timeout,
+                            duration: Date().timeIntervalSince(started),
+                            exitCode: nil,
+                            stdoutBytes: nil,
+                            stderrBytes: nil,
+                            error: err
+                        )
                         state.resume(
                             continuation,
-                            result: .failure(
-                                RuneError.commandFailed(
-                                    command: command,
-                                    message: "Timed out after \(Int(timeoutValue)) seconds"
-                                )
-                            )
+                            result: .failure(err)
                         )
                     }
                     state.setTimeoutItem(timeoutItem)
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutValue, execute: timeoutItem)
                 }
 
-                process.terminationHandler = { _ in
+                process.terminationHandler = { process in
                     state.cancelTimeoutItem()
+                    if state.hasAlreadyResumed() {
+                        return
+                    }
 
                     let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let duration = Date().timeIntervalSince(started)
+
+                    if state.takeTerminatedByCancellation() {
+                        commandLogger.log("Command cancelled: \(command, privacy: .public)")
+                        mirrorCommandNSLog("Command cancelled: \(command)")
+                        let cancel = CancellationError()
+                        K8sWireTrace.logKubectlCompletion(
+                            command: command,
+                            timeout: timeout,
+                            duration: duration,
+                            exitCode: process.terminationStatus,
+                            stdoutBytes: stdout.utf8.count,
+                            stderrBytes: stderr.utf8.count,
+                            error: cancel
+                        )
+                        state.resume(continuation, result: .failure(cancel))
+                        return
+                    }
+
                     let result = CommandResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
 
                     commandLogger.log("Finished command (exit \(process.terminationStatus)): \(command, privacy: .public)")
+                    mirrorCommandNSLog("Finished command (exit \(process.terminationStatus)): \(command)")
                     if process.terminationStatus != 0 {
                         commandLogger.error("Command stderr: \(stderr, privacy: .public)")
+                        mirrorCommandNSLog("Command stderr: \(stderr)")
                     }
+
+                    K8sWireTrace.logKubectlCompletion(
+                        command: command,
+                        timeout: timeout,
+                        duration: duration,
+                        exitCode: result.exitCode,
+                        stdoutBytes: result.stdout.utf8.count,
+                        stderrBytes: result.stderr.utf8.count,
+                        error: nil
+                    )
 
                     state.resume(continuation, result: .success(result))
                 }
@@ -122,6 +173,16 @@ public final class ProcessCommandRunner: CommandRunning {
                 } catch {
                     state.cancelTimeoutItem()
                     commandLogger.error("Failed to start command: \(command, privacy: .public) :: \(error.localizedDescription, privacy: .public)")
+                    mirrorCommandNSLog("Failed to start command: \(command) :: \(error.localizedDescription)")
+                    K8sWireTrace.logKubectlCompletion(
+                        command: command,
+                        timeout: timeout,
+                        duration: Date().timeIntervalSince(started),
+                        exitCode: nil,
+                        stdoutBytes: nil,
+                        stderrBytes: nil,
+                        error: error
+                    )
                     state.resume(
                         continuation,
                         result: .failure(
@@ -134,6 +195,7 @@ public final class ProcessCommandRunner: CommandRunning {
                 }
             }
         } onCancel: {
+            state.markTerminatedByCancellation()
             state.cancelTimeoutItem()
             if let process = state.process(), process.isRunning {
                 process.terminate()
@@ -158,7 +220,9 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         process.arguments = arguments
 
         process.environment = mergedEnvironment(overrides: environment)
-        commandLogger.log("Starting long-running command: \(renderCommand(executable: executable, arguments: arguments), privacy: .public)")
+        let renderedLong = renderCommand(executable: executable, arguments: arguments)
+        commandLogger.log("Starting long-running command: \(renderedLong, privacy: .public)")
+        mirrorCommandNSLog("Starting long-running command: \(renderedLong)")
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -180,9 +244,11 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         process.terminationHandler = { process in
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let renderedEnd = renderCommand(executable: executable, arguments: arguments)
             commandLogger.log(
-                "Long-running command ended (exit \(process.terminationStatus)): \(renderCommand(executable: executable, arguments: arguments), privacy: .public)"
+                "Long-running command ended (exit \(process.terminationStatus)): \(renderedEnd, privacy: .public)"
             )
+            mirrorCommandNSLog("Long-running command ended (exit \(process.terminationStatus)): \(renderedEnd)")
             onTermination(process.terminationStatus)
         }
 
@@ -191,7 +257,9 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
-            commandLogger.error("Failed to start long-running command: \(renderCommand(executable: executable, arguments: arguments), privacy: .public) :: \(error.localizedDescription, privacy: .public)")
+            let renderedFail = renderCommand(executable: executable, arguments: arguments)
+            commandLogger.error("Failed to start long-running command: \(renderedFail, privacy: .public) :: \(error.localizedDescription, privacy: .public)")
+            mirrorCommandNSLog("Failed to start long-running command: \(renderedFail) :: \(error.localizedDescription)")
             throw RuneError.commandFailed(command: executable, message: error.localizedDescription)
         }
 
@@ -204,11 +272,33 @@ private final class ProcessCommandState: @unchecked Sendable {
     private var processRef: Process?
     private var timeoutItem: DispatchWorkItem?
     private var didResume = false
+    private var terminatedByCancellation = false
 
     func setProcess(_ process: Process) {
         lock.lock()
         processRef = process
         lock.unlock()
+    }
+
+    func markTerminatedByCancellation() {
+        lock.lock()
+        terminatedByCancellation = true
+        lock.unlock()
+    }
+
+    func takeTerminatedByCancellation() -> Bool {
+        lock.lock()
+        let v = terminatedByCancellation
+        terminatedByCancellation = false
+        lock.unlock()
+        return v
+    }
+
+    func hasAlreadyResumed() -> Bool {
+        lock.lock()
+        let v = didResume
+        lock.unlock()
+        return v
     }
 
     func process() -> Process? {
