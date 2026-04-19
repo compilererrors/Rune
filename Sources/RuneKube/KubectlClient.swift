@@ -1,5 +1,6 @@
 import Foundation
 import RuneCore
+import RuneDiagnostics
 import RuneSecurity
 
 public final class KubectlClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ResourceWriteService, @unchecked Sendable {
@@ -20,6 +21,10 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let retryTimeoutAfterQuickFailure: TimeInterval = 90
     /// Explicit ceiling for slow namespaced `kubectl get … -o json` on large / high-latency clusters (skips quick+retry when passed to `runKubectl`).
     private let slowNamespacedJSONListTimeout: TimeInterval = 120
+    /// Page size for raw list count pagination (`kubectl get --raw ...?limit=N`).
+    private let pagedCountLimit: Int = 250
+    /// Hard stop for paged counts to avoid infinite loops on broken continue tokens.
+    private let pagedCountMaxPages: Int = 500
 
     public init(
         runner: CommandRunning = ProcessCommandRunner(),
@@ -799,16 +804,36 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         from sources: [KubeConfigSource],
         context: KubeContext,
         namespace: String,
-        resource: String
+        resource: String,
+        progress: ((Int) -> Void)? = nil
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agentCount = await namespacedResourceCountViaAgentIfPossible(
+            context: context,
+            namespace: namespace,
+            resource: resource,
+            environment: env
+        ) {
+            progress?(agentCount)
+            return agentCount
+        }
         if let apiPath = builder.namespacedResourceListMetadataAPIPath(namespace: namespace, resource: resource),
            let total = await collectionListTotalFromMetadataProbe(
                 context: context,
                 environment: env,
                 apiPath: apiPath
            ) {
+            progress?(total)
             return total
+        }
+        if let paged = await pagedNamespacedCollectionCount(
+            context: context,
+            namespace: namespace,
+            resource: resource,
+            environment: env,
+            progress: progress
+        ) {
+            return paged
         }
 
         let result = try await runKubectl(
@@ -820,13 +845,98 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             environment: env,
             timeout: 90
         )
-        return Self.parseLineCount(from: result.stdout)
+        let total = Self.parseLineCount(from: result.stdout)
+        progress?(total)
+        return total
+    }
+
+    /// Prefer Go helper (client-go) counts where supported; return `nil` for unsupported resources or uncertain zero-row results.
+    /// Returning `nil` keeps existing kubectl-based count fallbacks intact.
+    private func namespacedResourceCountViaAgentIfPossible(
+        context: KubeContext,
+        namespace: String,
+        resource: String,
+        environment: [String: String]
+    ) async -> Int? {
+        guard let agent = resolvedK8sAgentPath() else { return nil }
+
+        let normalized = resource.lowercased()
+        let timeout = slowNamespacedJSONListTimeout
+        do {
+            switch normalized {
+            case "deployments", "deployment":
+                let rows = try await RuneK8sAgentWorkloadClient.listDeployments(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            case "statefulsets", "statefulset":
+                let rows = try await RuneK8sAgentWorkloadClient.listStatefulSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            case "daemonsets", "daemonset":
+                let rows = try await RuneK8sAgentWorkloadClient.listDaemonSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            case "jobs", "job":
+                let rows = try await RuneK8sAgentWorkloadClient.listJobs(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            case "cronjobs", "cronjob":
+                let rows = try await RuneK8sAgentWorkloadClient.listCronJobs(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            case "replicasets", "replicaset":
+                let rows = try await RuneK8sAgentWorkloadClient.listReplicaSets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.isEmpty ? nil : rows.count
+            default:
+                return nil
+            }
+        } catch {
+            return nil
+        }
     }
 
     public func countClusterResources(
         from sources: [KubeConfigSource],
         context: KubeContext,
-        resource: String
+        resource: String,
+        progress: ((Int) -> Void)? = nil
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
         if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource),
@@ -835,7 +945,16 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 environment: env,
                 apiPath: apiPath
            ) {
+            progress?(total)
             return total
+        }
+        if let paged = await pagedClusterCollectionCount(
+            context: context,
+            resource: resource,
+            environment: env,
+            progress: progress
+        ) {
+            return paged
         }
 
         let result = try await runKubectl(
@@ -846,7 +965,116 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             environment: env,
             timeout: 90
         )
-        return Self.parseLineCount(from: result.stdout)
+        let total = Self.parseLineCount(from: result.stdout)
+        progress?(total)
+        return total
+    }
+
+    /// Chunked raw list count: iterate `limit` pages and accumulate `items.count` from each response.
+    /// Uses `remainingItemCount` for early finish when the apiserver provides it.
+    private func pagedNamespacedCollectionCount(
+        context: KubeContext,
+        namespace: String,
+        resource: String,
+        environment: [String: String],
+        progress: ((Int) -> Void)?
+    ) async -> Int? {
+        guard let first = KubernetesRESTPath.namespacedCollectionRequest(
+            namespace: namespace,
+            resource: resource,
+            options: KubernetesListOptions(limit: pagedCountLimit)
+        ) else {
+            return nil
+        }
+
+        return await pagedCollectionCount(
+            context: context,
+            firstRequest: first,
+            nextRequest: { token in
+                KubernetesRESTPath.namespacedCollectionRequest(
+                    namespace: namespace,
+                    resource: resource,
+                    options: KubernetesListOptions(limit: pagedCountLimit, continueToken: token)
+                )
+            },
+            environment: environment,
+            progress: progress
+        )
+    }
+
+    private func pagedClusterCollectionCount(
+        context: KubeContext,
+        resource: String,
+        environment: [String: String],
+        progress: ((Int) -> Void)?
+    ) async -> Int? {
+        guard let first = KubernetesRESTPath.clusterCollectionRequest(
+            resource: resource,
+            options: KubernetesListOptions(limit: pagedCountLimit)
+        ) else {
+            return nil
+        }
+
+        return await pagedCollectionCount(
+            context: context,
+            firstRequest: first,
+            nextRequest: { token in
+                KubernetesRESTPath.clusterCollectionRequest(
+                    resource: resource,
+                    options: KubernetesListOptions(limit: pagedCountLimit, continueToken: token)
+                )
+            },
+            environment: environment,
+            progress: progress
+        )
+    }
+
+    private func pagedCollectionCount(
+        context: KubeContext,
+        firstRequest: KubernetesRESTRequest,
+        nextRequest: (String) -> KubernetesRESTRequest?,
+        environment: [String: String],
+        progress: ((Int) -> Void)?
+    ) async -> Int? {
+        var request = firstRequest
+        var total = 0
+
+        for _ in 0..<pagedCountMaxPages {
+            let result: CommandResult
+            do {
+                result = try await runKubectl(
+                    arguments: builder.rawGetArguments(context: context.name, request: request),
+                    environment: environment,
+                    timeout: 45
+                )
+            } catch {
+                return nil
+            }
+
+            guard let page = KubectlListJSON.collectionPageInfo(from: result.stdout) else {
+                return nil
+            }
+            total += page.itemsCount
+            progress?(total)
+
+            if let remaining = page.remainingItemCount {
+                let predicted = total + remaining
+                if predicted != total {
+                    progress?(predicted)
+                }
+                return predicted
+            }
+
+            guard let token = page.continueToken else {
+                return total
+            }
+            guard let next = nextRequest(token) else {
+                return nil
+            }
+            request = next
+        }
+
+        return nil
     }
 
     /// Cheap total via `kubectl get --raw` + `limit=1` list (`metadata.remainingItemCount` + 1). Returns `nil` on failure or when the server omits a derivable total.
@@ -1442,6 +1670,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         environment: [String: String],
         timeout: TimeInterval
     ) async throws -> CommandResult {
+        let started = Date()
         let result = try await runner.run(
             executable: kubectlPath,
             arguments: ["kubectl"] + arguments,
@@ -1452,6 +1681,12 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         guard result.exitCode == 0 else {
             throw RuneError.commandFailed(command: "kubectl \(arguments.joined(separator: " "))", message: result.stderr)
         }
+
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        VerboseKubeTrace.append(
+            "kubectl",
+            "ok ms=\(ms) stdoutBytes=\(result.stdout.utf8.count) stderrBytes=\(result.stderr.utf8.count) kubeconfig=\(VerboseKubeTrace.kubeconfigSummary(environment))"
+        )
 
         return result
     }

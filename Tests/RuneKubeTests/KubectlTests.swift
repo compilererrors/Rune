@@ -80,6 +80,25 @@ final class KubectlTests: XCTestCase {
         XCTAssertNil(KubectlListJSON.collectionListTotal(from: json))
     }
 
+    func testCollectionPageInfoReadsItemsContinueAndRemaining() {
+        let json = """
+        {"metadata":{"continue":"next-token","remainingItemCount":42},"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}}]}
+        """
+        let page = KubectlListJSON.collectionPageInfo(from: json)
+        XCTAssertEqual(page?.itemsCount, 2)
+        XCTAssertEqual(page?.continueToken, "next-token")
+        XCTAssertEqual(page?.remainingItemCount, 42)
+    }
+
+    func testCollectionPageInfoNormalizesBlankContinue() {
+        let json = """
+        {"metadata":{"continue":"   "},"items":[{"metadata":{"name":"a"}}]}
+        """
+        let page = KubectlListJSON.collectionPageInfo(from: json)
+        XCTAssertEqual(page?.itemsCount, 1)
+        XCTAssertNil(page?.continueToken)
+    }
+
     func testCronJobListTextArgumentsUsesTabsFriendlyColumns() {
         let builder = KubectlCommandBuilder()
         let args = builder.cronJobListTextArguments(context: "example-context", namespace: "example-namespace")

@@ -6,11 +6,17 @@ public enum RuneSettingsKeys {
     public static let persistNamespaceListCache = "rune.settings.persistNamespaceListCache"
     /// When false, `DiagnosticsRecorder` does not emit NSLog lines.
     public static let diagnosticsLogging = "rune.settings.diagnosticsLogging"
+    /// When true, `DiagnosticsRecorder.trace` appends detailed lines to `Rune/Logs/debug-trace.log` under Application Support.
+    public static let verboseDebugTrace = "rune.settings.verboseDebugTrace"
+    /// When true, after the active context snapshot finishes, Rune may warm overview cache for a few other contexts in the background (bounded).
+    public static let backgroundPrefetchOtherContexts = "rune.settings.backgroundPrefetchOtherContexts"
 
     public static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             persistNamespaceListCache: true,
-            diagnosticsLogging: true
+            diagnosticsLogging: true,
+            verboseDebugTrace: false,
+            backgroundPrefetchOtherContexts: false
         ])
     }
 }
@@ -24,5 +30,15 @@ public extension UserDefaults {
     var runeDiagnosticsLogging: Bool {
         get { (object(forKey: RuneSettingsKeys.diagnosticsLogging) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.diagnosticsLogging) }
+    }
+
+    var runeVerboseDebugTrace: Bool {
+        get { (object(forKey: RuneSettingsKeys.verboseDebugTrace) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.verboseDebugTrace) }
+    }
+
+    var runeBackgroundPrefetchOtherContexts: Bool {
+        get { (object(forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) }
     }
 }

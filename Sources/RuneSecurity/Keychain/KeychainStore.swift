@@ -13,7 +13,7 @@ public enum KeychainError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case let .operationFailed(status):
-            return "Keychain-operation misslyckades med status: \(status)"
+            return "Keychain operation failed with status: \(status)"
         }
     }
 }

@@ -32,7 +32,8 @@ let package = Package(
             name: "RuneKube",
             dependencies: [
                 "RuneCore",
-                "RuneSecurity"
+                "RuneSecurity",
+                "RuneDiagnostics"
             ]
         ),
         .target(

@@ -11,17 +11,17 @@ public enum RuneError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .missingKubeConfig:
-            return "Ingen kubeconfig vald."
+            return "No kubeconfig selected."
         case let .commandFailed(command, message):
-            return "Kommandot \(command) misslyckades: \(message)"
+            return "Command failed: \(command): \(message)"
         case let .parseError(message):
-            return "Kunde inte tolka data: \(message)"
+            return "Could not parse data: \(message)"
         case .readOnlyMode:
-            return "Read-only mode är aktivt. Write-actions är blockerade."
+            return "Read-only mode is on; write actions are blocked."
         case let .invalidInput(message):
-            return "Ogiltig inmatning: \(message)"
+            return "Invalid input: \(message)"
         case .userCancelled:
-            return "Åtgärden avbröts."
+            return "The action was cancelled."
         }
     }
 }

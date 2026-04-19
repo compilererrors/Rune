@@ -8,6 +8,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         RuneSettingsKeys.registerDefaults()
+        RuneLaunchEnvironment.applyProcessOverrides()
         NSApp.setActivationPolicy(.regular)
         scheduleForegroundActivation(reason: "didFinishLaunching")
     }
@@ -27,14 +28,12 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
                 window.makeKeyAndOrderFront(nil)
             }
 
-            if ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT"] == "1" {
-                NSLog(
-                    "[Rune][App] activated reason=%@ windows=%ld keyWindow=%@",
-                    reason,
-                    NSApp.windows.count,
-                    NSApp.keyWindow?.title ?? "nil"
-                )
-            }
+            NSLog(
+                "[Rune][App] activated reason=%@ windows=%ld keyWindow=%@",
+                reason,
+                NSApp.windows.count,
+                NSApp.keyWindow?.title ?? "nil"
+            )
         }
     }
 }
@@ -63,7 +62,7 @@ struct RuneApplication: App {
                 .keyboardShortcut("k", modifiers: .command)
 
                 Button("Reload") {
-                    viewModel.refreshCurrentView()
+                    viewModel.refreshCurrentView(debounced: false)
                 }
                 .keyboardShortcut("r", modifiers: .command)
 
