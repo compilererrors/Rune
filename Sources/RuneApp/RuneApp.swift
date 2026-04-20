@@ -48,6 +48,9 @@ struct RuneApplication: App {
             RuneRootView(viewModel: viewModel)
                 .frame(minWidth: 1280, minHeight: 820)
         }
+        Settings {
+            RunePreferencesView()
+        }
         .commands {
             CommandMenu("Rune") {
                 Button("Import Kubeconfig...") {

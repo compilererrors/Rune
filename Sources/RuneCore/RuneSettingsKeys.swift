@@ -10,13 +10,29 @@ public enum RuneSettingsKeys {
     public static let verboseDebugTrace = "rune.settings.verboseDebugTrace"
     /// When true, after the active context snapshot finishes, Rune may warm overview cache for a few other contexts in the background (bounded).
     public static let backgroundPrefetchOtherContexts = "rune.settings.backgroundPrefetchOtherContexts"
+    public static let logsCustomPresetOneMode = "rune.settings.logs.customPresetOne.mode"
+    public static let logsCustomPresetOneLines = "rune.settings.logs.customPresetOne.lines"
+    public static let logsCustomPresetOneTimeValue = "rune.settings.logs.customPresetOne.timeValue"
+    public static let logsCustomPresetOneTimeUnit = "rune.settings.logs.customPresetOne.timeUnit"
+    public static let logsCustomPresetTwoMode = "rune.settings.logs.customPresetTwo.mode"
+    public static let logsCustomPresetTwoLines = "rune.settings.logs.customPresetTwo.lines"
+    public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
+    public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
 
     public static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             persistNamespaceListCache: true,
             diagnosticsLogging: true,
             verboseDebugTrace: false,
-            backgroundPrefetchOtherContexts: false
+            backgroundPrefetchOtherContexts: false,
+            logsCustomPresetOneMode: RuneCustomLogPresetMode.lines.rawValue,
+            logsCustomPresetOneLines: "5000",
+            logsCustomPresetOneTimeValue: "15",
+            logsCustomPresetOneTimeUnit: RuneCustomLogPresetTimeUnit.minutes.rawValue,
+            logsCustomPresetTwoMode: RuneCustomLogPresetMode.time.rawValue,
+            logsCustomPresetTwoLines: "99999",
+            logsCustomPresetTwoTimeValue: "6",
+            logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue
         ])
     }
 }
@@ -40,5 +56,47 @@ public extension UserDefaults {
     var runeBackgroundPrefetchOtherContexts: Bool {
         get { (object(forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) as? Bool) ?? false }
         set { set(newValue, forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) }
+    }
+
+    func runeCustomLogPresetConfig(slot: RuneCustomLogPresetSlot) -> RuneCustomLogPresetConfig {
+        let keys = runeCustomLogPresetKeys(for: slot)
+
+        let modeRaw = (object(forKey: keys.mode) as? String) ?? RuneCustomLogPresetMode.lines.rawValue
+        let mode = RuneCustomLogPresetMode(rawValue: modeRaw) ?? .lines
+
+        let linesRaw = (object(forKey: keys.lines) as? String) ?? "200"
+        let lines = Int(linesRaw) ?? 200
+
+        let timeValueRaw = (object(forKey: keys.timeValue) as? String) ?? "15"
+        let timeValue = Int(timeValueRaw) ?? 15
+
+        let unitRaw = (object(forKey: keys.timeUnit) as? String) ?? RuneCustomLogPresetTimeUnit.minutes.rawValue
+        let unit = RuneCustomLogPresetTimeUnit(rawValue: unitRaw) ?? .minutes
+
+        return RuneCustomLogPresetConfig(
+            mode: mode,
+            lines: lines,
+            timeValue: timeValue,
+            timeUnit: unit
+        )
+    }
+
+    private func runeCustomLogPresetKeys(for slot: RuneCustomLogPresetSlot) -> (mode: String, lines: String, timeValue: String, timeUnit: String) {
+        switch slot {
+        case .one:
+            return (
+                mode: RuneSettingsKeys.logsCustomPresetOneMode,
+                lines: RuneSettingsKeys.logsCustomPresetOneLines,
+                timeValue: RuneSettingsKeys.logsCustomPresetOneTimeValue,
+                timeUnit: RuneSettingsKeys.logsCustomPresetOneTimeUnit
+            )
+        case .two:
+            return (
+                mode: RuneSettingsKeys.logsCustomPresetTwoMode,
+                lines: RuneSettingsKeys.logsCustomPresetTwoLines,
+                timeValue: RuneSettingsKeys.logsCustomPresetTwoTimeValue,
+                timeUnit: RuneSettingsKeys.logsCustomPresetTwoTimeUnit
+            )
+        }
     }
 }

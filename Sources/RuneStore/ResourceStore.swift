@@ -148,6 +148,15 @@ public final class ResourceStore {
         storageClassesByContext.removeValue(forKey: context.name)
     }
 
+    public func clearAll() {
+        snapshotsByContextAndNamespace.removeAll(keepingCapacity: false)
+        snapshotKeysByContext.removeAll(keepingCapacity: false)
+        namespacesByContext.removeAll(keepingCapacity: false)
+        nodesByContext.removeAll(keepingCapacity: false)
+        persistentVolumesByContext.removeAll(keepingCapacity: false)
+        storageClassesByContext.removeAll(keepingCapacity: false)
+    }
+
     private func touchSnapshotKey(_ key: String, contextName: String) {
         var keys = snapshotKeysByContext[contextName] ?? []
         keys.removeAll(where: { $0 == key })
