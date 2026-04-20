@@ -304,6 +304,96 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
     }
 
+    func testAppKitSplitViewRestoresPersistedSidebarWidthOnLaunch() async throws {
+        let pod = PodSummary(name: "sample-pod-7c9db", namespace: "team-alpha", status: "Running", totalRestarts: 1, ageDescription: "5m")
+
+        let baseline = try await hostSnapshot(
+            viewModel: makePodViewModel(pod: pod),
+            rootView: { viewModel, capture in
+                RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: capture,
+                    debugDisableBootstrap: true,
+                    initialPodInspectorTab: .overview,
+                    shellVariant: .appKitSplitView,
+                    manifestInlineEditorImplementation: .swiftUITextEditor
+                )
+            },
+            section: .workloads,
+            kind: .pod,
+            sidebarWidth: 280,
+            detailWidth: 440,
+            settleNanoseconds: 400_000_000
+        )
+
+        let widerSidebar = try await hostSnapshot(
+            viewModel: makePodViewModel(pod: pod),
+            rootView: { viewModel, capture in
+                RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: capture,
+                    debugDisableBootstrap: true,
+                    initialPodInspectorTab: .overview,
+                    shellVariant: .appKitSplitView,
+                    manifestInlineEditorImplementation: .swiftUITextEditor
+                )
+            },
+            section: .workloads,
+            kind: .pod,
+            sidebarWidth: 360,
+            detailWidth: 440,
+            settleNanoseconds: 400_000_000
+        )
+
+        XCTAssertEqual((widerSidebar.contentMinX ?? 0) - (baseline.contentMinX ?? 0), 80, accuracy: 10)
+        XCTAssertEqual(widerSidebar.detailMinX ?? 0, baseline.detailMinX ?? 0, accuracy: 10)
+    }
+
+    func testAppKitSplitViewRestoresPersistedDetailWidthOnLaunch() async throws {
+        let pod = PodSummary(name: "sample-pod-7c9db", namespace: "team-alpha", status: "Running", totalRestarts: 1, ageDescription: "5m")
+
+        let baseline = try await hostSnapshot(
+            viewModel: makePodViewModel(pod: pod),
+            rootView: { viewModel, capture in
+                RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: capture,
+                    debugDisableBootstrap: true,
+                    initialPodInspectorTab: .overview,
+                    shellVariant: .appKitSplitView,
+                    manifestInlineEditorImplementation: .swiftUITextEditor
+                )
+            },
+            section: .workloads,
+            kind: .pod,
+            sidebarWidth: 280,
+            detailWidth: 440,
+            settleNanoseconds: 400_000_000
+        )
+
+        let widerDetail = try await hostSnapshot(
+            viewModel: makePodViewModel(pod: pod),
+            rootView: { viewModel, capture in
+                RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: capture,
+                    debugDisableBootstrap: true,
+                    initialPodInspectorTab: .overview,
+                    shellVariant: .appKitSplitView,
+                    manifestInlineEditorImplementation: .swiftUITextEditor
+                )
+            },
+            section: .workloads,
+            kind: .pod,
+            sidebarWidth: 280,
+            detailWidth: 520,
+            settleNanoseconds: 400_000_000
+        )
+
+        XCTAssertEqual(widerDetail.contentMinX ?? 0, baseline.contentMinX ?? 0, accuracy: 10)
+        XCTAssertEqual((widerDetail.detailMinX ?? 0) - (baseline.detailMinX ?? 0), -80, accuracy: 10)
+    }
+
     func testConfigAndWorkloadsRemainTopAligned() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
@@ -556,8 +646,34 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         viewModel: RuneAppViewModel,
         rootView: (RuneAppViewModel, @escaping (RuneRootLayoutSnapshot) -> Void) -> RuneRootView,
         section: RuneSection,
-        kind: KubeResourceKind
+        kind: KubeResourceKind,
+        sidebarWidth: Double = 280,
+        detailWidth: Double = 440,
+        settleNanoseconds: UInt64 = 0
     ) async throws -> RuneRootLayoutSnapshot {
+        let defaults = UserDefaults.standard
+        let sidebarKey = RuneSettingsKeys.layoutSidebarWidth
+        let detailKey = RuneSettingsKeys.layoutDetailWidth
+        let originalSidebar = defaults.object(forKey: sidebarKey)
+        let originalDetail = defaults.object(forKey: detailKey)
+
+        defaults.set(sidebarWidth, forKey: sidebarKey)
+        defaults.set(detailWidth, forKey: detailKey)
+
+        defer {
+            if let originalSidebar {
+                defaults.set(originalSidebar, forKey: sidebarKey)
+            } else {
+                defaults.removeObject(forKey: sidebarKey)
+            }
+
+            if let originalDetail {
+                defaults.set(originalDetail, forKey: detailKey)
+            } else {
+                defaults.removeObject(forKey: detailKey)
+            }
+        }
+
         var snapshots: [RuneRootLayoutSnapshot] = []
         let host = NSHostingController(
             rootView: rootView(viewModel) { snapshot in
@@ -575,7 +691,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
 
-        return try await waitForSnapshot(in: window, snapshots: { snapshots }) {
+        let snapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
             $0.section == section
                 && $0.workloadKind == kind
                 && $0.contentMinY != nil
@@ -585,6 +701,27 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 && $0.headerMinX != nil
                 && $0.detailMinX != nil
         }
+
+        guard settleNanoseconds > 0 else {
+            return snapshot
+        }
+
+        try await Task.sleep(nanoseconds: settleNanoseconds)
+
+        if let settled = snapshots.last(where: {
+            $0.section == section
+                && $0.workloadKind == kind
+                && $0.contentMinY != nil
+                && $0.headerMinY != nil
+                && $0.detailMinY != nil
+                && $0.contentMinX != nil
+                && $0.headerMinX != nil
+                && $0.detailMinX != nil
+        }) {
+            return settled
+        }
+
+        return snapshot
     }
 
     private func assertAligned(baseline: RuneRootLayoutSnapshot, candidate: RuneRootLayoutSnapshot) {

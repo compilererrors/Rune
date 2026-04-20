@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct CommandPaletteView: View {
@@ -9,6 +10,7 @@ struct CommandPaletteView: View {
     @ObservedObject var viewModel: RuneAppViewModel
     @State private var query: String = ""
     @State private var selectedItemID: String?
+    @State private var localKeyMonitor: Any?
     @FocusState private var focusedTarget: FocusTarget?
 
     var body: some View {
@@ -29,6 +31,9 @@ struct CommandPaletteView: View {
                 TextField("Search or type e.g. :po api, :service billing, :no node1, :ns kube-system, :cj", text: $query)
                     .textFieldStyle(.plain)
                     .focused($focusedTarget, equals: .input)
+                    .onMoveCommand { direction in
+                        handleMoveCommand(direction: direction, items: items)
+                    }
                     .onSubmit {
                         executePrimaryAction(items: items)
                     }
@@ -55,36 +60,57 @@ struct CommandPaletteView: View {
                 }
             }
 
-            List(items, selection: $selectedItemID) { item in
-                Button {
-                    viewModel.executeCommandPaletteItem(item)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: item.symbolName)
-                            .frame(width: 18)
-                            .foregroundStyle(Color.accentColor)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.headline)
-                            Text(item.subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(items) { item in
+                            Button {
+                                selectedItemID = item.id
+                                viewModel.executeCommandPaletteItem(item)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: item.symbolName)
+                                        .frame(width: 18)
+                                        .foregroundStyle(Color.accentColor)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.title)
+                                            .font(.headline)
+                                        Text(item.subtitle)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(selectedItemID == item.id ? Color.accentColor.opacity(0.22) : Color.clear)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(selectedItemID == item.id ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1)
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(item.id)
                         }
-                        Spacer()
                     }
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
+                    .padding(6)
                 }
-                .buttonStyle(.plain)
-                .tag(item.id)
-            }
-            .focusable(true)
-            .focused($focusedTarget, equals: .results)
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            .onMoveCommand { direction in
-                guard focusedTarget == .results else { return }
-                moveSelection(direction: direction, items: items)
+                .focusable(true)
+                .focused($focusedTarget, equals: .results)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onChange(of: selectedItemID) { _, newID in
+                    guard let newID else { return }
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            proxy.scrollTo(newID, anchor: .center)
+                        }
+                    }
+                }
             }
 
             keyboardActionBridge(items: items)
@@ -95,14 +121,22 @@ struct CommandPaletteView: View {
         .onAppear {
             focusedTarget = .input
             selectedItemID = items.first?.id
+            installLocalKeyMonitor()
+        }
+        .onDisappear {
+            removeLocalKeyMonitor()
         }
         .onChange(of: query) { _, _ in
-            selectedItemID = items.first?.id
+            let refreshedItems = viewModel.commandPaletteItems(query: query)
+            selectedItemID = refreshedItems.first?.id
         }
         .onChange(of: items.map(\.id)) { _, newIDs in
             if selectedItemID == nil || !newIDs.contains(selectedItemID ?? "") {
                 selectedItemID = newIDs.first
             }
+        }
+        .onMoveCommand { direction in
+            handleMoveCommand(direction: direction, items: items)
         }
     }
 
@@ -130,8 +164,17 @@ struct CommandPaletteView: View {
     }
 
     private func executePrimaryAction(items: [CommandPaletteItem]) {
-        if focusedTarget == .results,
-           let selectedItemID,
+        if focusedTarget == .input {
+            if let selectedItemID,
+               let selectedItem = items.first(where: { $0.id == selectedItemID }) {
+                viewModel.executeCommandPaletteItem(selectedItem)
+                return
+            }
+            viewModel.executeCommandPaletteQuery(query)
+            return
+        }
+
+        if let selectedItemID,
            let selectedItem = items.first(where: { $0.id == selectedItemID }) {
             viewModel.executeCommandPaletteItem(selectedItem)
             return
@@ -194,5 +237,63 @@ struct CommandPaletteView: View {
         }
 
         selectedItemID = items[nextIndex].id
+    }
+
+    private func handleMoveCommand(direction: MoveCommandDirection, items: [CommandPaletteItem]) {
+        switch direction {
+        case .down, .up:
+            if focusedTarget == .input {
+                focusResults(items: items)
+                return
+            }
+            if focusedTarget == .results {
+                moveSelection(direction: direction, items: items)
+                return
+            }
+        default:
+            return
+        }
+    }
+
+    private func installLocalKeyMonitor() {
+        removeLocalKeyMonitor()
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let items = viewModel.commandPaletteItems(query: query)
+            if handleLocalKeyEvent(event, items: items) {
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeLocalKeyMonitor() {
+        guard let localKeyMonitor else { return }
+        NSEvent.removeMonitor(localKeyMonitor)
+        self.localKeyMonitor = nil
+    }
+
+    private func handleLocalKeyEvent(_ event: NSEvent, items: [CommandPaletteItem]) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let hasBlockingModifiers = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
+        if hasBlockingModifiers {
+            return false
+        }
+
+        switch event.keyCode {
+        case 125: // down arrow
+            handleMoveCommand(direction: .down, items: items)
+            return focusedTarget == .input || focusedTarget == .results
+        case 126: // up arrow
+            handleMoveCommand(direction: .up, items: items)
+            return focusedTarget == .input || focusedTarget == .results
+        case 36, 76: // return / keypad enter
+            if focusedTarget == .input || focusedTarget == .results {
+                executePrimaryAction(items: items)
+                return true
+            }
+            return false
+        default:
+            return false
+        }
     }
 }

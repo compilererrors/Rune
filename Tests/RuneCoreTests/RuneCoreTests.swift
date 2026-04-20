@@ -2,6 +2,36 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
+    func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
+        let shortcut = RuneKeyboardShortcut(storageValue: "shift-f")
+
+        XCTAssertEqual(shortcut?.key, "f")
+        XCTAssertEqual(shortcut?.displayValue, "Shift-F")
+        XCTAssertTrue(shortcut?.matches(baseKey: "f", requiresShift: true) ?? false)
+        XCTAssertFalse(shortcut?.matches(baseKey: "f", requiresShift: false) ?? true)
+    }
+
+    func testRuneKeyboardShortcutRejectsUnsupportedValues() {
+        XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-/"))
+        XCTAssertNil(RuneKeyboardShortcut(storageValue: "describe"))
+        XCTAssertNil(RuneKeyboardShortcut(key: "-", requiresShift: false))
+    }
+
+    func testUserDefaultsFallsBackToDefaultRuneKeyBindingShortcut() {
+        let suiteName = "RuneCoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let action = RuneKeyBindingAction.describe
+
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(defaults.runeKeyBindingShortcut(for: action), action.defaultShortcut)
+
+        let custom = RuneKeyboardShortcut(key: "x", requiresShift: true)!
+        defaults.setRuneKeyBindingShortcut(custom, for: action)
+
+        XCTAssertEqual(defaults.runeKeyBindingShortcut(for: action), custom)
+    }
+
     func testLogTimeFilterUsesSinceTimeOnlyForAbsoluteDate() {
         XCTAssertFalse(LogTimeFilter.lastMinutes(15).usesSinceTime)
         XCTAssertFalse(LogTimeFilter.lastHours(1).usesSinceTime)

@@ -890,7 +890,7 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertFalse(usedWrongNamespace)
     }
 
-    func testNamespaceOptionsDoNotLeakPreviousContextSelection() async throws {
+    func testNamespaceOptionsPreferCurrentSelectionWhenNamespaceListUnavailable() async throws {
         let builder = KubectlCommandBuilder()
         let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
         let preferences = InMemoryContextPreferencesStore(
@@ -901,7 +901,7 @@ final class RuneSmokeTests: XCTestCase {
         viewModel.state.selectedContext = KubeContext(name: "example-context")
         viewModel.state.selectedNamespace = "old-selection"
 
-        XCTAssertEqual(viewModel.namespaceOptions, ["example-namespace"])
+        XCTAssertEqual(viewModel.namespaceOptions, ["old-selection"])
     }
 
     func testUnifiedDeploymentLogsSmokeFlow() async throws {
@@ -1167,6 +1167,185 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertEqual(viewModel.state.selectedService?.name, "api-svc")
     }
 
+    func testCommandPaletteNamespaceSwitchWorksInCinderzoneContext() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "vectorprod\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vectorprod"))] = CommandResult(
+            stdout: "cert-manager",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "vectorprod"))] = CommandResult(
+            stdout: "cert-manager\ncinderzone\ndefault\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+            stdout: "cert-manager-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+            stdout: "cinderzone-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"cert-manager-0","namespace":"cert-manager","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"cinderzone-api-0","namespace":"cinderzone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "vectorprod"
+                && viewModel.state.selectedNamespace == "cert-manager"
+        }
+
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.pod)
+
+        let namespaceRows = viewModel.commandPaletteItems(query: ":ns")
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cert-manager" }))
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinderzone" }))
+
+        guard let cinderzoneItem = namespaceRows.first(where: { $0.title == "cinderzone" }) else {
+            XCTFail("Expected cinderzone namespace row in command palette")
+            return
+        }
+
+        viewModel.executeCommandPaletteItem(cinderzoneItem)
+
+        try await waitUntil {
+            viewModel.state.selectedNamespace == "cinderzone"
+        }
+
+        let cinderzoneArgs = ["kubectl"] + builder.podListArguments(
+            context: "vectorprod",
+            namespace: "cinderzone"
+        )
+        try await waitUntil {
+            await runner.didRun(arguments: cinderzoneArgs)
+        }
+        let calledCinderzoneNamespace = await runner.didRun(arguments: cinderzoneArgs)
+        XCTAssertTrue(calledCinderzoneNamespace)
+        try await waitUntil { !viewModel.state.isLoading }
+    }
+
+    func testCommandPaletteContextThenNamespaceQueryUsesCurrentContextNamespaces() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nvectorprod\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vectorprod"))] = CommandResult(
+            stdout: "cert-manager",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "vectorprod"))] = CommandResult(
+            stdout: "cert-manager\ncinderzone\ndefault\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+            stdout: "cert-manager-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+            stdout: "cinderzone-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"cert-manager-0","namespace":"cert-manager","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+            stdout: """
+            {"items":[
+            {"metadata":{"name":"cinderzone-api-0","namespace":"cinderzone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            ]}
+            """,
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        viewModel.executeCommandPaletteQuery(":ctx vectorprod")
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "vectorprod"
+                && viewModel.state.selectedNamespace == "cert-manager"
+        }
+
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.pod)
+
+        let namespaceRows = viewModel.commandPaletteItems(query: ":ns")
+        XCTAssertFalse(namespaceRows.contains(where: { $0.title == "platform" }))
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinderzone" }))
+
+        viewModel.executeCommandPaletteQuery(":ns cinderzone")
+
+        try await waitUntil {
+            viewModel.state.selectedNamespace == "cinderzone"
+        }
+
+        let cinderzoneArgs = ["kubectl"] + builder.podListArguments(
+            context: "vectorprod",
+            namespace: "cinderzone"
+        )
+        try await waitUntil {
+            await runner.didRun(arguments: cinderzoneArgs)
+        }
+        let calledCinderzoneNamespace = await runner.didRun(arguments: cinderzoneArgs)
+        XCTAssertTrue(calledCinderzoneNamespace)
+        try await waitUntil { !viewModel.state.isLoading }
+    }
+
     func testSaveVisibleEventsUsesExporter() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -1293,7 +1472,8 @@ final class RuneSmokeTests: XCTestCase {
         exporter: FileExporting = NoopExporter(),
         longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner(),
         contextPreferences: ContextPreferencesStoring = InMemoryContextPreferencesStore(),
-        namespaceListPersistence: NamespaceListPersisting = NoopNamespaceListPersistenceStore()
+        namespaceListPersistence: NamespaceListPersisting = NoopNamespaceListPersistenceStore(),
+        overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = NoopOverviewSnapshotCacheStore()
     ) -> RuneAppViewModel {
         let kubeClient = KubectlClient(
             runner: runner,
@@ -1321,6 +1501,7 @@ final class RuneSmokeTests: XCTestCase {
             exporter: exporter,
             supportBundleBuilder: JSONSupportBundleBuilder(),
             contextPreferences: contextPreferences,
+            overviewSnapshotPersistence: overviewSnapshotPersistence,
             namespaceListPersistence: namespaceListPersistence
         )
     }

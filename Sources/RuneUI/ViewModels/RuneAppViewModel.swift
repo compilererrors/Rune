@@ -380,24 +380,37 @@ public final class RuneAppViewModel: ObservableObject {
     private var namespaceMetadataRefreshedAt: [String: Date] = [:]
     /// In-memory overview rows keyed by `overviewCacheKey(contextName:namespace:)`; TTL `overviewSnapshotFreshnessTTL`. Mirrors disk where possible; merged with `ResourceStore` on apply.
     private var overviewSnapshotCache: [String: OverviewSnapshotCacheEntry] = [:]
+    /// One-shot bypass after cancelled/stale snapshots so the next load for a key does not get stuck behind cooldown.
+    private var bypassOverviewCooldownKeys: Set<String> = []
     /// Background task: `listPodStatuses` + count queries for sibling namespaces; cancelled on context change.
     private var overviewPrefetchTask: Task<Void, Never>?
+    /// Background task: warms overview cache for non-selected contexts; cancelled on context change.
+    private var contextOverviewPrefetchTask: Task<Void, Never>?
     private var recentNamespacesByContext: [String: [String]] = [:]
+    /// Recently selected contexts (most-recent first); used with favorites when selecting prefetch targets.
+    private var recentContextNames: [String] = []
 
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
     /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.
     private let namespaceMetadataTTL: TimeInterval = 120
     /// Maximum age of `overviewSnapshotCache` entries before refresh is preferred over warm paths.
     private let overviewSnapshotFreshnessTTL: TimeInterval = 60
+    /// Cooldown for repeating heavy overview network calls (pod statuses + count queries).
+    /// Within this window, Rune reuses warm overview cache and avoids issuing the same expensive requests.
+    private let overviewHeavyRequestCooldownTTL: TimeInterval = 12
     /// Maximum age for treating `overviewSnapshotPersistence` loads as warm data when hydrating memory.
     private let overviewDiskSnapshotFreshnessTTL: TimeInterval = 60 * 5
     private let overviewSnapshotRetentionTTL: TimeInterval = 60 * 20
     private let maxOverviewSnapshotEntries = 180
     private let maxRecentNamespacesPerContext = 4
+    private let maxRecentContexts = 8
     /// Cap on namespaces to prefetch per snapshot (pod status + resource counts).
     /// Disabled by default to avoid API pressure that can delay foreground pod loads.
     private let maxOverviewPrefetchNamespaces = 0
     private let overviewPrefetchThrottleNanoseconds: UInt64 = 120_000_000
+    /// Max non-selected contexts to warm in background (favorites + recent first).
+    private let maxOverviewPrefetchContexts = 2
+    private let contextOverviewPrefetchThrottleNanoseconds: UInt64 = 250_000_000
 
     public init(
         state: RuneAppState = RuneAppState(),
@@ -800,6 +813,7 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.log("reloadContexts contexts=\(contexts.count)")
 
         if let selected = state.selectedContext {
+            rememberRecentContext(selected.name)
             // Keep current in-memory namespace only when staying on the same context.
             // If selected context changed (startup/new context list), start empty and let
             // `loadResourceSnapshot` resolve from context default + live namespace list.
@@ -890,6 +904,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.trace("refresh", "performRefreshCurrentView done context=\(context.name)")
         } catch {
             if error is CancellationError {
+                markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
                 diagnostics.trace("refresh", "performRefreshCurrentView cancelled")
                 return
             }
@@ -1046,10 +1061,12 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.log("setContext -> \(context.name)")
         diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
         overviewPrefetchTask?.cancel()
+        contextOverviewPrefetchTask?.cancel()
         logsReloadTask?.cancel()
         resourceDetailsTask?.cancel()
         let previousContextName = state.selectedContext?.name
         state.selectedContext = context
+        rememberRecentContext(context.name)
         // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
         state.setNamespaces([])
         let requestedPreferredNamespace = preferredNamespace?
@@ -1115,7 +1132,9 @@ public final class RuneAppViewModel: ObservableObject {
             applyCachedSnapshot(context: context, namespace: trimmed)
         }
         if triggerReload {
-            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
+            // Namespace switches are explicit user intent; always revalidate namespace metadata
+            // for this context to avoid stale cache ordering or missing namespace rows.
+            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: true, debounced: false)
         }
         if trackHistory {
             recordNavigationCheckpoint()
@@ -2302,6 +2321,9 @@ public final class RuneAppViewModel: ObservableObject {
         case let .context(context):
             setContext(context)
         case let .namespace(namespace):
+            diagnostics.log(
+                "commandPalette namespace action context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) to=\(namespace)"
+            )
             setNamespace(namespace)
         case .importKubeConfig:
             importKubeConfig()
@@ -2414,7 +2436,44 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func executeCommandPaletteQuery(_ query: String) {
-        guard let first = commandPaletteItems(query: query).first else { return }
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalized.hasPrefix(":") {
+            let tokens = normalized.dropFirst().split(whereSeparator: \.isWhitespace).map(String.init)
+            if let command = tokens.first?.lowercased() {
+                let remainder = tokens.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !remainder.isEmpty {
+                    switch command {
+                    case "ns", "namespace", "namespaces":
+                        if let exactNamespace = namespaceOptions.first(where: {
+                            $0.compare(remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                        }) {
+                            diagnostics.log(
+                                "commandPalette query direct namespace context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) query=\(remainder) matched=\(exactNamespace)"
+                            )
+                            setNamespace(exactNamespace)
+                            dismissCommandPalette()
+                            return
+                        }
+                    case "ctx", "context", "contexts":
+                        if let exactContext = visibleContexts.first(where: {
+                            $0.name.compare(remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                        }) {
+                            diagnostics.log(
+                                "commandPalette query direct context from=\(state.selectedContext?.name ?? "none") query=\(remainder) matched=\(exactContext.name)"
+                            )
+                            setContext(exactContext)
+                            dismissCommandPalette()
+                            return
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+        }
+
+        guard let first = commandPaletteItems(query: normalized).first else { return }
         executeCommandPaletteItem(first)
     }
 
@@ -2425,6 +2484,7 @@ public final class RuneAppViewModel: ObservableObject {
         forceNamespaceMetadataRefresh: Bool = false
     ) async throws {
         guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
+            markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
             diagnostics.log("loadResourceSnapshot ignored stale start context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
@@ -2519,6 +2579,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
+            markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
             diagnostics.log("loadResourceSnapshot discarded stale result context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
@@ -2553,6 +2614,16 @@ public final class RuneAppViewModel: ObservableObject {
             preferredForResolution = savedForContext
         } else {
             preferredForResolution = ""
+        }
+
+        guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
+            markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
+            diagnostics.log("loadResourceSnapshot discarded stale result before namespace apply context=\(context.name) namespace=\(namespace)")
+            diagnostics.trace(
+                "snapshot.stale",
+                "discarded before namespace apply context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+            )
+            return
         }
 
         let effectiveNamespace = resolvedNamespace(
@@ -2591,6 +2662,13 @@ public final class RuneAppViewModel: ObservableObject {
             reference: now,
             allowDiskCache: !forceNamespaceMetadataRefresh && plan.podStatuses
         )
+        let overviewCooldownKey = Self.overviewCacheKey(contextName: context.name, namespace: effectiveNamespace)
+        let bypassOverviewCooldown = bypassOverviewCooldownKeys.remove(overviewCooldownKey) != nil
+        let shouldUseWarmOverviewForHeavyRequests = Self.isOverviewCacheFresh(
+            warmOverview,
+            ttl: overviewHeavyRequestCooldownTTL,
+            reference: now
+        ) && !forceNamespaceMetadataRefresh && !bypassOverviewCooldown
         try Task.checkCancellation()
 
         let preservedRBACRoles = state.rbacRoles
@@ -2603,7 +2681,8 @@ public final class RuneAppViewModel: ObservableObject {
 
         async let clusterUsageResult: (cpuPercent: Int?, memoryPercent: Int?) = {
             if shouldRefreshClusterUsage {
-                if let warmOverview,
+                if shouldUseWarmOverviewForHeavyRequests,
+                   let warmOverview,
                    warmOverview.clusterCPUPercent != nil || warmOverview.clusterMemoryPercent != nil {
                     return (warmOverview.clusterCPUPercent, warmOverview.clusterMemoryPercent)
                 }
@@ -2626,6 +2705,9 @@ public final class RuneAppViewModel: ObservableObject {
                     return cachedSnapshot.pods
                 }
                 if let warmOverview {
+                    if shouldUseWarmOverviewForHeavyRequests {
+                        return warmOverview.pods
+                    }
                     // Empty warm pod rows can come from partial (non-overview) snapshots; fetch live pod status in that case.
                     if !warmOverview.pods.isEmpty {
                         return warmOverview.pods
@@ -2651,6 +2733,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedSnapshot.deployments.count
             }
             let warm = warmOverview?.deploymentsCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countNamespacedResources(
                     from: state.kubeConfigSources,
@@ -2729,6 +2814,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedSnapshot.services.count
             }
             let warm = warmOverview?.servicesCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countNamespacedResources(
                     from: state.kubeConfigSources,
@@ -2753,6 +2841,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedSnapshot.ingresses.count
             }
             let warm = warmOverview?.ingressesCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countNamespacedResources(
                     from: state.kubeConfigSources,
@@ -2777,6 +2868,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedSnapshot.configMaps.count
             }
             let warm = warmOverview?.configMapsCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countNamespacedResources(
                     from: state.kubeConfigSources,
@@ -2797,6 +2891,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedSnapshot.cronJobs.count
             }
             let warm = warmOverview?.cronJobsCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countNamespacedResources(
                     from: state.kubeConfigSources,
@@ -2825,6 +2922,9 @@ public final class RuneAppViewModel: ObservableObject {
                 return cachedNodes.count
             }
             let warm = warmOverview?.nodesCount
+            if shouldUseWarmOverviewForHeavyRequests, let warm {
+                return warm
+            }
             do {
                 return try await kubeClient.countClusterResources(
                     from: state.kubeConfigSources,
@@ -2944,6 +3044,7 @@ public final class RuneAppViewModel: ObservableObject {
         )
 
         guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: effectiveNamespace) else {
+            markOverviewCooldownBypass(contextName: context.name, namespace: effectiveNamespace)
             diagnostics.log("loadResourceSnapshot discarded stale resource result context=\(context.name) namespace=\(effectiveNamespace)")
             diagnostics.trace(
                 "snapshot.stale",
@@ -3067,6 +3168,12 @@ public final class RuneAppViewModel: ObservableObject {
                 "snapshot.overview",
                 "skipped overview write section=\(state.selectedSection.rawValue) context=\(context.name) namespace=\(effectiveNamespace)"
             )
+        }
+
+        // After primary snapshot work, optionally warm a few non-selected contexts so sidebar/context
+        // switching can reuse overview cache immediately.
+        if plan.podStatuses || forceNamespaceMetadataRefresh {
+            scheduleContextOverviewPrefetch(currentContext: context)
         }
 
         guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: effectiveNamespace) else {
@@ -4201,6 +4308,12 @@ public final class RuneAppViewModel: ObservableObject {
         "\(contextName)::\(namespace)"
     }
 
+    private func markOverviewCooldownBypass(contextName: String, namespace: String) {
+        let normalized = namespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        bypassOverviewCooldownKeys.insert(Self.overviewCacheKey(contextName: contextName, namespace: normalized))
+    }
+
     private static func isOverviewCacheFresh(
         _ entry: OverviewSnapshotCacheEntry?,
         ttl: TimeInterval,
@@ -4345,17 +4458,270 @@ public final class RuneAppViewModel: ObservableObject {
         recentNamespacesByContext[contextName] = updated
     }
 
+    private func rememberRecentContext(_ contextName: String) {
+        let trimmed = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        recentContextNames.removeAll { $0 == trimmed }
+        recentContextNames.insert(trimmed, at: 0)
+        if recentContextNames.count > maxRecentContexts {
+            recentContextNames = Array(recentContextNames.prefix(maxRecentContexts))
+        }
+    }
+
+    private var isRunningUnderTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["SWIFT_TESTING_ENABLED"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    private func preferredOverviewPrefetchContexts(currentContextName: String) -> [KubeContext] {
+        guard maxOverviewPrefetchContexts > 0 else { return [] }
+
+        let recentRank = Dictionary(uniqueKeysWithValues: recentContextNames.enumerated().map { ($1, $0) })
+        let favorites = state.favoriteContextNames
+
+        let ranked = state.contexts
+            .filter { $0.name != currentContextName }
+            .sorted { lhs, rhs in
+                let lhsFavorite = favorites.contains(lhs.name)
+                let rhsFavorite = favorites.contains(rhs.name)
+                if lhsFavorite != rhsFavorite {
+                    return lhsFavorite && !rhsFavorite
+                }
+
+                let lhsRecent = recentRank[lhs.name] ?? Int.max
+                let rhsRecent = recentRank[rhs.name] ?? Int.max
+                if lhsRecent != rhsRecent {
+                    return lhsRecent < rhsRecent
+                }
+
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+
+        return Array(ranked.prefix(maxOverviewPrefetchContexts))
+    }
+
+    private func resolveContextPrefetchNamespace(
+        context: KubeContext,
+        sources: [KubeConfigSource]
+    ) async -> String {
+        let preferred = contextPreferences.loadPreferredNamespace(for: context.name) ?? ""
+        let cachedNamespaces = store.namespaces(context: context)
+        if !cachedNamespaces.isEmpty {
+            return resolvedNamespace(
+                contextName: context.name,
+                preferred: preferred,
+                availableNamespaces: cachedNamespaces,
+                contextDefaultNamespace: nil
+            )
+        }
+
+        if UserDefaults.standard.runePersistNamespaceListCache,
+           let disk = namespaceListPersistence.load(contextName: context.name),
+           !disk.isEmpty {
+            store.cacheNamespaces(disk, context: context)
+            return resolvedNamespace(
+                contextName: context.name,
+                preferred: preferred,
+                availableNamespaces: disk,
+                contextDefaultNamespace: nil
+            )
+        }
+
+        async let namespaceResult: Result<[String], Error> = Self.capture {
+            try await kubeClient.listNamespaces(from: sources, context: context)
+        }
+        async let contextNamespaceResult: Result<String?, Error> = Self.capture {
+            try await kubeClient.contextNamespace(from: sources, context: context)
+        }
+
+        let contextDefaultNamespace: String?
+        switch await contextNamespaceResult {
+        case let .success(value):
+            contextDefaultNamespace = value
+        case let .failure(error):
+            diagnostics.trace(
+                "prefetch.context",
+                "context-namespace failed context=\(context.name): \(error.localizedDescription)"
+            )
+            contextDefaultNamespace = nil
+        }
+
+        let mergedNamespaces: [String]
+        switch await namespaceResult {
+        case let .success(value):
+            mergedNamespaces = NamespaceListOrdering.merge(previousOrder: [], apiNames: value)
+            store.cacheNamespaces(mergedNamespaces, context: context)
+            if UserDefaults.standard.runePersistNamespaceListCache {
+                namespaceListPersistence.save(names: mergedNamespaces, contextName: context.name)
+            }
+        case let .failure(error):
+            diagnostics.trace(
+                "prefetch.context",
+                "namespaces failed context=\(context.name): \(error.localizedDescription)"
+            )
+            mergedNamespaces = []
+        }
+
+        return resolvedNamespace(
+            contextName: context.name,
+            preferred: preferred,
+            availableNamespaces: mergedNamespaces,
+            contextDefaultNamespace: contextDefaultNamespace
+        )
+    }
+
+    /// Background warm-up for non-selected contexts so context switches can reuse overview cache immediately.
+    private func scheduleContextOverviewPrefetch(currentContext: KubeContext) {
+        guard UserDefaults.standard.runeBackgroundPrefetchOtherContexts else {
+            contextOverviewPrefetchTask?.cancel()
+            return
+        }
+        guard !isRunningUnderTests else { return }
+
+        let targets = preferredOverviewPrefetchContexts(currentContextName: currentContext.name)
+        guard !targets.isEmpty else { return }
+
+        let sources = state.kubeConfigSources
+        guard !sources.isEmpty else { return }
+
+        contextOverviewPrefetchTask?.cancel()
+        contextOverviewPrefetchTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+
+            for (index, targetContext) in targets.enumerated() {
+                if Task.isCancelled { return }
+                if index > 0 {
+                    try? await Task.sleep(nanoseconds: self.contextOverviewPrefetchThrottleNanoseconds)
+                }
+
+                let stillSameSelectedContext = self.state.selectedContext?.name == currentContext.name
+                guard stillSameSelectedContext else { return }
+
+                let targetNamespace = await self.resolveContextPrefetchNamespace(
+                    context: targetContext,
+                    sources: sources
+                )
+                let normalizedNamespace = targetNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedNamespace.isEmpty else { continue }
+
+                let reference = Date()
+                let cacheKey = Self.overviewCacheKey(
+                    contextName: targetContext.name,
+                    namespace: normalizedNamespace
+                )
+                if Self.isOverviewCacheFresh(
+                    self.overviewSnapshotCache[cacheKey],
+                    ttl: self.overviewSnapshotFreshnessTTL,
+                    reference: reference
+                ) {
+                    continue
+                }
+
+                if let persisted = await self.overviewSnapshotPersistence.loadSnapshot(
+                    contextName: targetContext.name,
+                    namespace: normalizedNamespace,
+                    maxAge: self.overviewSnapshotFreshnessTTL
+                ) {
+                    _ = self.cachePersistedOverviewSnapshot(persisted, reference: reference)
+                    continue
+                }
+
+                do {
+                    async let pods = self.kubeClient.listPodStatuses(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace
+                    )
+                    async let deploymentsCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace,
+                        resource: "deployments"
+                    )
+                    async let servicesCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace,
+                        resource: "services"
+                    )
+                    async let ingressesCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace,
+                        resource: "ingresses"
+                    )
+                    async let configMapsCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace,
+                        resource: "configmaps"
+                    )
+                    async let cronJobsCount = self.kubeClient.countNamespacedResources(
+                        from: sources,
+                        context: targetContext,
+                        namespace: normalizedNamespace,
+                        resource: "cronjobs"
+                    )
+                    async let nodesCount = self.kubeClient.countClusterResources(
+                        from: sources,
+                        context: targetContext,
+                        resource: "nodes"
+                    )
+
+                    let prefetchedPods = try await pods
+                    let prefetchedDeploymentsCount = try await deploymentsCount
+                    let prefetchedServicesCount = try await servicesCount
+                    let prefetchedIngressesCount = try await ingressesCount
+                    let prefetchedConfigMapsCount = try await configMapsCount
+                    let prefetchedCronJobsCount = try await cronJobsCount
+                    let prefetchedNodesCount = try await nodesCount
+
+                    guard self.state.selectedContext?.name == currentContext.name else { return }
+
+                    self.updateOverviewCache(
+                        contextName: targetContext.name,
+                        namespace: normalizedNamespace,
+                        pods: prefetchedPods,
+                        deploymentsCount: prefetchedDeploymentsCount,
+                        servicesCount: prefetchedServicesCount,
+                        ingressesCount: prefetchedIngressesCount,
+                        configMapsCount: prefetchedConfigMapsCount,
+                        cronJobsCount: prefetchedCronJobsCount,
+                        nodesCount: prefetchedNodesCount,
+                        clusterCPUPercent: nil,
+                        clusterMemoryPercent: nil,
+                        events: []
+                    )
+                    self.diagnostics.trace(
+                        "prefetch.context",
+                        "warmed context=\(targetContext.name) namespace=\(normalizedNamespace)"
+                    )
+                } catch {
+                    self.diagnostics.trace(
+                        "prefetch.context",
+                        "failed context=\(targetContext.name) namespace=\(normalizedNamespace): \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+    }
+
     private func handleCachesCleared() {
         diagnostics.log("cache clear requested from settings")
         overviewPrefetchTask?.cancel()
+        contextOverviewPrefetchTask?.cancel()
         scheduledRefreshTask?.cancel()
         logsReloadTask?.cancel()
         resourceDetailsTask?.cancel()
 
         store.clearAll()
         overviewSnapshotCache.removeAll(keepingCapacity: false)
+        bypassOverviewCooldownKeys.removeAll(keepingCapacity: false)
         namespaceMetadataRefreshedAt.removeAll(keepingCapacity: false)
         recentNamespacesByContext.removeAll(keepingCapacity: false)
+        recentContextNames.removeAll(keepingCapacity: false)
 
         state.setNamespaces([])
 
@@ -4432,9 +4798,7 @@ public final class RuneAppViewModel: ObservableObject {
         namespaces: [String],
         currentNamespace: String
     ) {
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || ProcessInfo.processInfo.environment["SWIFT_TESTING_ENABLED"] != nil
-            || NSClassFromString("XCTestCase") != nil {
+        if isRunningUnderTests {
             return
         }
 
@@ -4588,7 +4952,10 @@ public final class RuneAppViewModel: ObservableObject {
         guard state.selectedContext?.name == context.name else { return false }
         guard let expectedRaw = expectedNamespace else { return true }
         let expected = expectedRaw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if expected.isEmpty { return true }
+        if expected.isEmpty {
+            let current = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+            return current.isEmpty
+        }
         let current = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
         return current.caseInsensitiveCompare(expected) == .orderedSame
     }
