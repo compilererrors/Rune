@@ -250,7 +250,29 @@ private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     }
 }
 
+private enum RuneRootKeyboardPane: CaseIterable {
+    case sidebarSections
+    case sidebarContexts
+    case content
+    case detail
+
+    func advanced(forward: Bool) -> RuneRootKeyboardPane {
+        let all = Self.allCases
+        guard let index = all.firstIndex(of: self) else { return self }
+        if forward {
+            return all[(index + 1) % all.count]
+        }
+        return all[(index + all.count - 1) % all.count]
+    }
+}
+
+private enum RuneRootTextInputFocus: Hashable {
+    case contextSearch
+    case resourceFilter
+}
+
 public struct RuneRootView: View {
+    @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
 
     private let onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?
@@ -268,9 +290,12 @@ public struct RuneRootView: View {
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
     @State private var yamlManifestIsEditing = false
-    @State private var isPreferencesPresented = false
     @State private var isYAMLEditorSheetPresented = false
     @State private var liveDebugScenarioStarted = false
+    @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
+    @State private var overviewCardSelectionIndex = 0
+    @State private var localKeyEventMonitor: Any?
+    @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
         viewModel: RuneAppViewModel = RuneAppViewModel(),
@@ -318,6 +343,7 @@ public struct RuneRootView: View {
             background
             WindowChromeConfigurator(measuredTopInset: $measuredWindowContentTopInset)
                 .frame(width: 0, height: 0)
+            keyboardNavigationBridge
 
             mainSplitContainer
                 .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
@@ -361,7 +387,7 @@ public struct RuneRootView: View {
 
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
-                            isPreferencesPresented = true
+                            openSettingsWindow()
                         } label: {
                             Image(systemName: "gearshape")
                         }
@@ -381,9 +407,6 @@ public struct RuneRootView: View {
                 .toolbarBackground(.visible, for: .windowToolbar)
                 .sheet(isPresented: commandPalettePresentedBinding) {
                     CommandPaletteView(viewModel: viewModel)
-                }
-                .sheet(isPresented: $isPreferencesPresented) {
-                    RunePreferencesView()
                 }
                 .sheet(isPresented: $isYAMLEditorSheetPresented) {
                     yamlManifestEditorSheet()
@@ -410,6 +433,12 @@ public struct RuneRootView: View {
                     Text(viewModel.pendingWriteActionMessage)
                 }
                 .onAppear {
+                    keyboardPaneFocus = .sidebarSections
+                    textInputFocus = nil
+                    DispatchQueue.main.async {
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    }
+                    installLocalKeyboardMonitorIfNeeded()
                     if RuneRootLayoutDebug.isEnabled {
                         NSLog(
                             "[Rune][Layout] configured shell=%@ editor=%@",
@@ -420,6 +449,9 @@ public struct RuneRootView: View {
                     startLiveDebugScenarioIfNeeded()
                     guard !debugDisableBootstrap else { return }
                     viewModel.bootstrapIfNeeded()
+                }
+                .onDisappear {
+                    removeLocalKeyboardMonitor()
                 }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
@@ -433,8 +465,10 @@ public struct RuneRootView: View {
         .onChange(of: measuredWindowContentTopInset) { _, _ in
             emitLayoutSnapshotIfNeeded()
         }
-        .onChange(of: viewModel.state.selectedSection) { _, _ in
+        .onChange(of: viewModel.state.selectedSection) { _, section in
             advanceLayoutGeneration()
+            guard section == .overview, !overviewCardModules.isEmpty else { return }
+            overviewCardSelectionIndex = min(overviewCardSelectionIndex, overviewCardModules.count - 1)
         }
         .onChange(of: viewModel.state.selectedWorkloadKind) { _, _ in
             advanceLayoutGeneration()
@@ -752,10 +786,11 @@ public struct RuneRootView: View {
                 viewModel.setContextSearchQuery(newValue)
             }))
             .textFieldStyle(.roundedBorder)
+            .focused($textInputFocus, equals: .contextSearch)
 
             Text("Sections")
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(keyboardPaneFocus == .sidebarSections ? Color.accentColor : .secondary)
 
             ForEach(RuneSection.allCases) { section in
                 sectionRow(section)
@@ -766,7 +801,7 @@ public struct RuneRootView: View {
 
             Text("Contexts")
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -809,6 +844,7 @@ public struct RuneRootView: View {
             ZStack(alignment: .trailing) {
                 RuneGlassPaneSurface(role: .sidebar)
                 RuneGlassPaneBorder(role: .sidebar)
+                paneFocusOutline(isFocused: keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts)
             }
         }
     }
@@ -902,6 +938,7 @@ public struct RuneRootView: View {
                 RuneGlassPaneSurface(role: .content)
                 RuneGlassPaneBorder(role: .content)
                 RuneRootLayoutProbe(kind: .content, generation: layoutGeneration)
+                paneFocusOutline(isFocused: keyboardPaneFocus == .content)
             }
         }
     }
@@ -1020,6 +1057,7 @@ public struct RuneRootView: View {
             .font(.caption)
             .controlSize(.small)
             .frame(maxWidth: 280)
+            .focused($textInputFocus, equals: .resourceFilter)
 
             if viewModel.state.isLoading {
                 ProgressView()
@@ -1070,6 +1108,16 @@ public struct RuneRootView: View {
         .accessibilityLabel("Resource kind")
     }
 
+    private var overviewCardModules: [OverviewModule] {
+        [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes, .events]
+    }
+
+    private func isOverviewCardKeyboardFocused(_ index: Int) -> Bool {
+        keyboardPaneFocus == .content
+            && viewModel.state.selectedSection == .overview
+            && overviewCardSelectionIndex == index
+    }
+
     private var overviewPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -1102,8 +1150,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewPods.count,
                         symbol: "cube.box.fill",
                         tint: .cyan,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(0)
                     ) {
+                        overviewCardSelectionIndex = 0
                         viewModel.openOverviewModule(.pods)
                     }
                     overviewStatCard(
@@ -1111,8 +1161,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewDeploymentsCount,
                         symbol: "shippingbox.fill",
                         tint: .blue,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(1)
                     ) {
+                        overviewCardSelectionIndex = 1
                         viewModel.openOverviewModule(.deployments)
                     }
                     overviewStatCard(
@@ -1120,8 +1172,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewServicesCount,
                         symbol: "point.3.connected.trianglepath.dotted",
                         tint: .purple,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(2)
                     ) {
+                        overviewCardSelectionIndex = 2
                         viewModel.openOverviewModule(.services)
                     }
                     overviewStatCard(
@@ -1129,8 +1183,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewIngressesCount,
                         symbol: "network",
                         tint: .indigo,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(3)
                     ) {
+                        overviewCardSelectionIndex = 3
                         viewModel.openOverviewModule(.ingresses)
                     }
                     overviewStatCard(
@@ -1138,8 +1194,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewConfigMapsCount,
                         symbol: "doc.text.fill",
                         tint: .teal,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(4)
                     ) {
+                        overviewCardSelectionIndex = 4
                         viewModel.openOverviewModule(.configMaps)
                     }
                     overviewStatCard(
@@ -1147,8 +1205,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewCronJobsCount,
                         symbol: "calendar.badge.clock",
                         tint: .mint,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(5)
                     ) {
+                        overviewCardSelectionIndex = 5
                         viewModel.openOverviewModule(.cronJobs)
                     }
                     overviewStatCard(
@@ -1156,8 +1216,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewNodesCount,
                         symbol: "server.rack",
                         tint: .gray,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(6)
                     ) {
+                        overviewCardSelectionIndex = 6
                         viewModel.openOverviewModule(.nodes)
                     }
                     overviewStatCard(
@@ -1165,8 +1227,10 @@ public struct RuneRootView: View {
                         count: viewModel.state.overviewEvents.count,
                         symbol: "bolt.badge.clock.fill",
                         tint: .orange,
-                        isLoading: viewModel.state.isLoading
+                        isLoading: viewModel.state.isLoading,
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(7)
                     ) {
+                        overviewCardSelectionIndex = 7
                         viewModel.openOverviewModule(.events)
                     }
                 }
@@ -1612,6 +1676,7 @@ public struct RuneRootView: View {
                 RuneGlassPaneSurface(role: .inspector)
                 RuneGlassPaneBorder(role: .inspector)
                 RuneRootLayoutProbe(kind: .detail, generation: layoutGeneration)
+                paneFocusOutline(isFocused: keyboardPaneFocus == .detail)
             }
         }
     }
@@ -2996,6 +3061,488 @@ public struct RuneRootView: View {
         }
     }
 
+    @ViewBuilder
+    private var keyboardNavigationBridge: some View {
+        VStack(spacing: 0) {
+            Button("") {
+                focusNextKeyboardPane()
+            }
+            .keyboardShortcut(.tab, modifiers: [])
+
+            Button("") {
+                focusPreviousKeyboardPane()
+            }
+            .keyboardShortcut(.tab, modifiers: [.shift])
+
+            Button("") {
+                moveKeyboardSelection(.up)
+            }
+            .keyboardShortcut(.upArrow, modifiers: [])
+
+            Button("") {
+                moveKeyboardSelection(.down)
+            }
+            .keyboardShortcut(.downArrow, modifiers: [])
+
+            Button("") {
+                moveKeyboardSelection(.left)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+
+            Button("") {
+                moveKeyboardSelection(.right)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+
+            Button("") {
+                activateKeyboardSelection()
+            }
+            .keyboardShortcut(.return, modifiers: [])
+
+            // k9s-style alternates for keyboard-only navigation.
+            Button("") {
+                focusPreviousKeyboardPane()
+            }
+            .keyboardShortcut("h", modifiers: [.control])
+
+            Button("") {
+                moveKeyboardSelection(.down)
+            }
+            .keyboardShortcut("j", modifiers: [.control])
+
+            Button("") {
+                moveKeyboardSelection(.up)
+            }
+            .keyboardShortcut("k", modifiers: [.control])
+
+            Button("") {
+                focusNextKeyboardPane()
+            }
+            .keyboardShortcut("l", modifiers: [.control])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func paneFocusOutline(isFocused: Bool) -> some View {
+        if isFocused {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+                .padding(2)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var keyboardNavigationSuspended: Bool {
+        if viewModel.state.isCommandPalettePresented || isYAMLEditorSheetPresented || yamlManifestIsEditing {
+            return true
+        }
+        if let responder = NSApp.keyWindow?.firstResponder, responder is NSTextView {
+            return true
+        }
+        return false
+    }
+
+    private func focusNextKeyboardPane() {
+        guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
+        if textInputFocus != nil {
+            textInputFocus = nil
+            keyboardPaneFocus = keyboardPaneFocus.advanced(forward: true)
+            return
+        }
+        guard !keyboardNavigationSuspended else { return }
+        keyboardPaneFocus = keyboardPaneFocus.advanced(forward: true)
+    }
+
+    private func focusPreviousKeyboardPane() {
+        guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
+        if textInputFocus != nil {
+            textInputFocus = nil
+            keyboardPaneFocus = keyboardPaneFocus.advanced(forward: false)
+            return
+        }
+        guard !keyboardNavigationSuspended else { return }
+        keyboardPaneFocus = keyboardPaneFocus.advanced(forward: false)
+    }
+
+    private func moveKeyboardSelection(_ direction: MoveCommandDirection) {
+        guard !keyboardNavigationSuspended else { return }
+        switch keyboardPaneFocus {
+        case .sidebarSections:
+            moveSectionSelection(direction)
+        case .sidebarContexts:
+            moveContextSelection(direction)
+        case .content:
+            moveContentSelection(direction)
+        case .detail:
+            moveDetailSelection(direction)
+        }
+    }
+
+    private func activateKeyboardSelection() {
+        guard !keyboardNavigationSuspended else { return }
+        switch keyboardPaneFocus {
+        case .sidebarSections, .sidebarContexts:
+            keyboardPaneFocus = .content
+        case .content:
+            if viewModel.state.selectedSection == .overview {
+                openSelectedOverviewCard()
+            } else {
+                keyboardPaneFocus = .detail
+            }
+        case .detail:
+            break
+        }
+    }
+
+    private func moveSectionSelection(_ direction: MoveCommandDirection) {
+        let sections = RuneSection.allCases
+        guard let currentIndex = sections.firstIndex(of: viewModel.state.selectedSection),
+              let nextIndex = steppedIndex(count: sections.count, current: currentIndex, direction: direction) else {
+            return
+        }
+        viewModel.setSection(sections[nextIndex])
+    }
+
+    private func moveContextSelection(_ direction: MoveCommandDirection) {
+        let contexts = viewModel.visibleContexts
+        guard !contexts.isEmpty else { return }
+        let currentID = viewModel.state.selectedContext?.id
+        guard let next = steppedItem(items: contexts, currentID: currentID, direction: direction) else { return }
+        viewModel.setContext(next)
+    }
+
+    private func moveContentSelection(_ direction: MoveCommandDirection) {
+        if moveContentKindIfNeeded(direction) {
+            return
+        }
+
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                if let next = steppedItem(items: viewModel.visiblePods, currentID: viewModel.state.selectedPod?.id, direction: direction) {
+                    viewModel.selectPod(next)
+                }
+            case .deployment:
+                if let next = steppedItem(items: viewModel.visibleDeployments, currentID: viewModel.state.selectedDeployment?.id, direction: direction) {
+                    viewModel.selectDeployment(next)
+                }
+            case .statefulSet:
+                if let next = steppedItem(items: viewModel.visibleStatefulSets, currentID: viewModel.state.selectedStatefulSet?.id, direction: direction) {
+                    viewModel.selectStatefulSet(next)
+                }
+            case .daemonSet:
+                if let next = steppedItem(items: viewModel.visibleDaemonSets, currentID: viewModel.state.selectedDaemonSet?.id, direction: direction) {
+                    viewModel.selectDaemonSet(next)
+                }
+            case .job:
+                if let next = steppedItem(items: viewModel.visibleJobs, currentID: viewModel.state.selectedJob?.id, direction: direction) {
+                    viewModel.selectJob(next)
+                }
+            case .cronJob:
+                if let next = steppedItem(items: viewModel.visibleCronJobs, currentID: viewModel.state.selectedCronJob?.id, direction: direction) {
+                    viewModel.selectCronJob(next)
+                }
+            case .replicaSet:
+                if let next = steppedItem(items: viewModel.visibleReplicaSets, currentID: viewModel.state.selectedReplicaSet?.id, direction: direction) {
+                    viewModel.selectReplicaSet(next)
+                }
+            case .horizontalPodAutoscaler:
+                if let next = steppedItem(items: viewModel.visibleHorizontalPodAutoscalers, currentID: viewModel.state.selectedHorizontalPodAutoscaler?.id, direction: direction) {
+                    viewModel.selectHorizontalPodAutoscaler(next)
+                }
+            default:
+                break
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                if let next = steppedItem(items: viewModel.visibleServices, currentID: viewModel.state.selectedService?.id, direction: direction) {
+                    viewModel.selectService(next)
+                }
+            case .ingress:
+                if let next = steppedItem(items: viewModel.visibleIngresses, currentID: viewModel.state.selectedIngress?.id, direction: direction) {
+                    viewModel.selectIngress(next)
+                }
+            case .networkPolicy:
+                if let next = steppedItem(items: viewModel.visibleNetworkPolicies, currentID: viewModel.state.selectedNetworkPolicy?.id, direction: direction) {
+                    viewModel.selectNetworkPolicy(next)
+                }
+            default:
+                break
+            }
+        case .config:
+            switch viewModel.state.selectedWorkloadKind {
+            case .configMap:
+                if let next = steppedItem(items: viewModel.visibleConfigMaps, currentID: viewModel.state.selectedConfigMap?.id, direction: direction) {
+                    viewModel.selectConfigMap(next)
+                }
+            case .secret:
+                if let next = steppedItem(items: viewModel.visibleSecrets, currentID: viewModel.state.selectedSecret?.id, direction: direction) {
+                    viewModel.selectSecret(next)
+                }
+            default:
+                break
+            }
+        case .storage:
+            switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolumeClaim:
+                if let next = steppedItem(items: viewModel.visiblePersistentVolumeClaims, currentID: viewModel.state.selectedPersistentVolumeClaim?.id, direction: direction) {
+                    viewModel.selectPersistentVolumeClaim(next)
+                }
+            case .persistentVolume:
+                if let next = steppedItem(items: viewModel.visiblePersistentVolumes, currentID: viewModel.state.selectedPersistentVolume?.id, direction: direction) {
+                    viewModel.selectPersistentVolume(next)
+                }
+            case .storageClass:
+                if let next = steppedItem(items: viewModel.visibleStorageClasses, currentID: viewModel.state.selectedStorageClass?.id, direction: direction) {
+                    viewModel.selectStorageClass(next)
+                }
+            case .node:
+                if let next = steppedItem(items: viewModel.visibleNodes, currentID: viewModel.state.selectedNode?.id, direction: direction) {
+                    viewModel.selectNode(next)
+                }
+            default:
+                break
+            }
+        case .rbac:
+            if let next = steppedItem(items: viewModel.visibleRBACResources, currentID: viewModel.state.selectedRBACResource?.id, direction: direction) {
+                viewModel.selectRBACResource(next)
+            }
+        case .events:
+            if let next = steppedItem(items: viewModel.visibleEvents, currentID: viewModel.state.selectedEvent?.id, direction: direction) {
+                viewModel.selectEvent(next)
+            }
+        case .helm:
+            if let next = steppedItem(items: viewModel.visibleHelmReleases, currentID: viewModel.state.selectedHelmRelease?.id, direction: direction) {
+                viewModel.selectHelmRelease(next)
+            }
+        case .overview:
+            moveOverviewCardSelection(direction)
+        case .terminal:
+            break
+        }
+    }
+
+    private func moveOverviewCardSelection(_ direction: MoveCommandDirection) {
+        guard !overviewCardModules.isEmpty else { return }
+        let current = min(max(overviewCardSelectionIndex, 0), overviewCardModules.count - 1)
+        guard let next = steppedIndex(count: overviewCardModules.count, current: current, direction: direction) else {
+            return
+        }
+        overviewCardSelectionIndex = next
+    }
+
+    private func openSelectedOverviewCard() {
+        guard !overviewCardModules.isEmpty else { return }
+        let index = min(max(overviewCardSelectionIndex, 0), overviewCardModules.count - 1)
+        overviewCardSelectionIndex = index
+        viewModel.openOverviewModule(overviewCardModules[index])
+    }
+
+    /// In the middle/content pane, use left/right to switch between kind tabs
+    /// (for sections that expose segmented kinds), and leave up/down for row stepping.
+    private func moveContentKindIfNeeded(_ direction: MoveCommandDirection) -> Bool {
+        guard direction == .left || direction == .right else { return false }
+        guard let kinds = contentKindsForSelectedSection(), !kinds.isEmpty else { return false }
+        guard let currentIndex = kinds.firstIndex(of: viewModel.state.selectedWorkloadKind) else { return false }
+
+        let nextIndex: Int
+        switch direction {
+        case .right:
+            nextIndex = (currentIndex + 1) % kinds.count
+        case .left:
+            nextIndex = (currentIndex + kinds.count - 1) % kinds.count
+        default:
+            return false
+        }
+
+        viewModel.setWorkloadKind(kinds[nextIndex])
+        return true
+    }
+
+    private func contentKindsForSelectedSection() -> [KubeResourceKind]? {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            return viewModel.workloadKinds
+        case .networking:
+            return viewModel.networkingKinds
+        case .config:
+            return viewModel.configKinds
+        case .storage:
+            return viewModel.storageKinds
+        case .rbac:
+            return viewModel.rbacKinds
+        case .overview, .events, .helm, .terminal:
+            return nil
+        }
+    }
+
+    private func installLocalKeyboardMonitorIfNeeded() {
+        guard localKeyEventMonitor == nil else { return }
+        localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard event.keyCode == 48 else { return event } // Tab
+            let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
+            if !event.modifierFlags.isDisjoint(with: disallowedModifiers) {
+                return event
+            }
+
+            guard textInputFocus == .contextSearch || textInputFocus == .resourceFilter else {
+                return event
+            }
+
+            if event.modifierFlags.contains(.shift) {
+                focusPreviousKeyboardPane()
+            } else {
+                focusNextKeyboardPane()
+            }
+            return nil
+        }
+    }
+
+    private func removeLocalKeyboardMonitor() {
+        guard let localKeyEventMonitor else { return }
+        NSEvent.removeMonitor(localKeyEventMonitor)
+        self.localKeyEventMonitor = nil
+    }
+
+    private func moveDetailSelection(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .left, .right:
+            moveDetailInspectorTab(direction)
+        case .up, .down:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func moveDetailInspectorTab(_ direction: MoveCommandDirection) {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard viewModel.state.selectedPod != nil else { return }
+                podInspectorTab = advancedTab(current: podInspectorTab, direction: direction)
+            case .deployment:
+                guard viewModel.state.selectedDeployment != nil else { return }
+                deploymentInspectorTab = advancedTab(current: deploymentInspectorTab, direction: direction)
+            case .cronJob:
+                guard viewModel.state.selectedCronJob != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .statefulSet:
+                guard viewModel.state.selectedStatefulSet != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .daemonSet:
+                guard viewModel.state.selectedDaemonSet != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .job:
+                guard viewModel.state.selectedJob != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .replicaSet:
+                guard viewModel.state.selectedReplicaSet != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .horizontalPodAutoscaler:
+                guard viewModel.state.selectedHorizontalPodAutoscaler != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            default:
+                break
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                guard viewModel.state.selectedService != nil else { return }
+                serviceInspectorTab = advancedTab(current: serviceInspectorTab, direction: direction)
+            case .ingress:
+                guard viewModel.state.selectedIngress != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .networkPolicy:
+                guard viewModel.state.selectedNetworkPolicy != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            default:
+                break
+            }
+        case .config:
+            switch viewModel.state.selectedWorkloadKind {
+            case .configMap:
+                guard viewModel.state.selectedConfigMap != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .secret:
+                guard viewModel.state.selectedSecret != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            default:
+                break
+            }
+        case .storage:
+            switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolumeClaim:
+                guard viewModel.state.selectedPersistentVolumeClaim != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .persistentVolume:
+                guard viewModel.state.selectedPersistentVolume != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .storageClass:
+                guard viewModel.state.selectedStorageClass != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .node:
+                guard viewModel.state.selectedNode != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            default:
+                break
+            }
+        case .rbac:
+            guard viewModel.state.selectedRBACResource != nil else { return }
+            genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+        case .helm:
+            guard viewModel.state.selectedHelmRelease != nil else { return }
+            helmInspectorTab = advancedTab(current: helmInspectorTab, direction: direction)
+        case .overview, .events, .terminal:
+            break
+        }
+    }
+
+    private func advancedTab<T: CaseIterable & Equatable>(current: T, direction: MoveCommandDirection) -> T {
+        let all = Array(T.allCases)
+        guard let index = all.firstIndex(of: current), !all.isEmpty else { return current }
+        switch direction {
+        case .right, .down:
+            return all[(index + 1) % all.count]
+        case .left, .up:
+            return all[(index + all.count - 1) % all.count]
+        @unknown default:
+            return current
+        }
+    }
+
+    private func steppedIndex(count: Int, current: Int, direction: MoveCommandDirection) -> Int? {
+        guard count > 0 else { return nil }
+        switch direction {
+        case .down, .right:
+            return min(current + 1, count - 1)
+        case .up, .left:
+            return max(current - 1, 0)
+        @unknown default:
+            return current
+        }
+    }
+
+    private func steppedItem<T: Identifiable>(
+        items: [T],
+        currentID: T.ID?,
+        direction: MoveCommandDirection
+    ) -> T? where T.ID: Equatable {
+        guard !items.isEmpty else { return nil }
+        guard let currentID,
+              let currentIndex = items.firstIndex(where: { $0.id == currentID }),
+              let nextIndex = steppedIndex(count: items.count, current: currentIndex, direction: direction) else {
+            return items.first
+        }
+        return items[nextIndex]
+    }
+
     private func emitLayoutSnapshotIfNeeded() {
         let snapshot = RuneRootLayoutSnapshot(
             section: viewModel.state.selectedSection,
@@ -3092,8 +3639,6 @@ public struct RuneRootView: View {
                 .foregroundStyle(viewModel.isProductionContext ? .red : .green)
             Text(viewModel.isProductionContext ? "Production context active" : "Non-production context")
                 .font(.subheadline.weight(.semibold))
-            contextUsageBadge(label: "CPU", value: contextUsageValue(viewModel.state.overviewClusterCPUPercent))
-            contextUsageBadge(label: "MEM", value: contextUsageValue(viewModel.state.overviewClusterMemoryPercent))
             Spacer()
             Text(viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write")
                 .font(.caption.weight(.bold))
@@ -3173,6 +3718,7 @@ public struct RuneRootView: View {
         symbol: String,
         tint: Color,
         isLoading: Bool = false,
+        isKeyboardFocused: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -3208,6 +3754,10 @@ public struct RuneRootView: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
+                    .stroke(isKeyboardFocused ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 1.5)
+            }
         }
         .buttonStyle(.plain)
     }
@@ -3469,6 +4019,10 @@ public struct RuneRootView: View {
     private var namespaceMenuTitle: String {
         let trimmed = viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Namespace" : trimmed
+    }
+
+    private func openSettingsWindow() {
+        openSettings()
     }
 
     /// When the toolbar already scopes to a namespace, omit duplicate namespace chips/labels for resources in that namespace.

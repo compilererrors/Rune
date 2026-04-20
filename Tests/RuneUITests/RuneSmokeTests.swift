@@ -234,6 +234,29 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertEqual(viewModel.state.overviewEvents.count, 1)
     }
 
+    func testOverviewFromEventsColdStartRefreshesPodsInsteadOfKeepingZero() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(runner: runner)
+
+        // Reproduces startup in Events section where pod rows are not part of the first snapshot.
+        viewModel.state.selectedSection = .events
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        viewModel.setSection(.overview)
+
+        try await waitUntil {
+            viewModel.state.selectedSection == .overview
+                && viewModel.state.overviewPods.count == 2
+                && viewModel.state.overviewDeploymentsCount == 1
+                && viewModel.state.overviewServicesCount == 1
+        }
+    }
+
     func testNavigationBackForwardRestoresView() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -579,6 +602,292 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertTrue(viewModel.state.namespaces.isEmpty)
         XCTAssertTrue(viewModel.namespaceOptions.contains("default"))
         XCTAssertTrue(viewModel.state.lastError?.contains("namespaces") == true)
+    }
+
+    func testSnapshotDoesNotExposeDiskHydratedNamespacesWhenLiveNamespaceFetchFails() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "latticezone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
+            stdout: "deltazone",
+            stderr: "",
+            exitCode: 0
+        )
+        script.removeValue(forKey: key(["kubectl"] + builder.namespaceListArguments(context: "latticezone")))
+
+        let runner = ScriptedCommandRunner(script: script)
+        let namespacePersistence = InMemoryNamespaceListPersistenceStore(
+            values: ["latticezone": ["echozone", "deltazone", "default"]]
+        )
+        let viewModel = makeViewModel(
+            runner: runner,
+            namespaceListPersistence: namespacePersistence
+        )
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(viewModel.state.selectedNamespace, "deltazone")
+        XCTAssertTrue(viewModel.state.namespaces.isEmpty)
+        XCTAssertFalse(viewModel.namespaceOptions.contains("echozone"))
+    }
+
+    func testContextSwitchPrefersContextDefaultWhenNamespaceListUnavailable() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nqa-main\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "qa-main"))] = CommandResult(
+            stdout: "deltazone",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
+            stdout: "qa-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let preferences = InMemoryContextPreferencesStore(
+            preferredNamespaces: ["qa-main": "foxtrotzone"]
+        )
+        let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setContext(KubeContext(name: "qa-main"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "qa-main"
+                && viewModel.state.selectedNamespace == "deltazone"
+        }
+
+        let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "qa-main",
+            namespace: "foxtrotzone"
+        )
+        let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
+        XCTAssertFalse(usedStaleNamespace)
+
+        let usedContextDefaultArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "qa-main",
+            namespace: "deltazone"
+        )
+        let usedContextDefaultNamespace = await runner.didRun(arguments: usedContextDefaultArgs)
+        XCTAssertTrue(usedContextDefaultNamespace)
+    }
+
+    func testReloadContextsUsesContextDefaultInsteadOfSavedNamespaceForNewSelection() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "latticezone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
+            stdout: "deltazone",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "latticezone"))] = CommandResult(
+            stdout: "default\ndeltazone\nechozone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "latticezone", namespace: "deltazone"))] = CommandResult(
+            stdout: "article-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let preferences = InMemoryContextPreferencesStore(
+            preferredNamespaces: ["latticezone": "echozone"]
+        )
+        let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "latticezone"
+                && viewModel.state.selectedNamespace == "deltazone"
+        }
+
+        let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "latticezone",
+            namespace: "echozone"
+        )
+        let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
+        XCTAssertFalse(usedStaleNamespace)
+
+        XCTAssertEqual(viewModel.namespaceOptions.first, "deltazone")
+        XCTAssertTrue(viewModel.namespaceOptions.contains("echozone"))
+    }
+
+    func testContextSwitchPrefersContextDefaultOverSavedNamespaceWhenNamespacesLoad() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nqa-main\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "qa-main"))] = CommandResult(
+            stdout: "deltazone",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "default\ndeltazone\nfoxtrotzone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
+            stdout: "qa-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let preferences = InMemoryContextPreferencesStore(
+            preferredNamespaces: ["qa-main": "foxtrotzone"]
+        )
+        let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setContext(KubeContext(name: "qa-main"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "qa-main"
+                && viewModel.state.selectedNamespace == "deltazone"
+        }
+
+        let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "qa-main",
+            namespace: "foxtrotzone"
+        )
+        let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
+        XCTAssertFalse(usedStaleNamespace)
+    }
+
+    func testContextSwitchRevalidatesNamespaceAndAvoidsStaleSavedNamespaceWhenContextDefaultIsEmpty() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nqa-main\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "qa-main"))] = CommandResult(
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
+            stdout: "default\ndeltazone\nfoxtrotzone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
+            stdout: "qa-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let preferences = InMemoryContextPreferencesStore(
+            preferredNamespaces: ["qa-main": "foxtrotzone"]
+        )
+        let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setContext(KubeContext(name: "qa-main"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "qa-main"
+                && viewModel.state.selectedNamespace == "deltazone"
+        }
+
+        let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "qa-main",
+            namespace: "foxtrotzone"
+        )
+        let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
+        XCTAssertFalse(usedStaleNamespace)
+    }
+
+    func testContextSwitchPrefersContextSuffixOverMismatchedContextDefault() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        var script = baseScript(builder: builder)
+        script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
+            stdout: "prod-main\nlatticezone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
+            stdout: "echozone",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "latticezone"))] = CommandResult(
+            stdout: "default\ndeltazone\nechozone\n",
+            stderr: "",
+            exitCode: 0
+        )
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "latticezone", namespace: "deltazone"))] = CommandResult(
+            stdout: "article-api-0   Running\n",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let runner = ScriptedCommandRunner(script: script)
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+        viewModel.setContext(KubeContext(name: "latticezone"))
+
+        try await waitUntil {
+            viewModel.state.selectedContext?.name == "latticezone"
+                && viewModel.state.selectedNamespace == "deltazone"
+        }
+
+        let wrongNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
+            context: "latticezone",
+            namespace: "echozone"
+        )
+        let usedWrongNamespace = await runner.didRun(arguments: wrongNamespaceArgs)
+        XCTAssertFalse(usedWrongNamespace)
     }
 
     func testNamespaceOptionsDoNotLeakPreviousContextSelection() async throws {
@@ -983,7 +1292,8 @@ final class RuneSmokeTests: XCTestCase {
         kubeConfigDiscoverer: KubeConfigDiscovering = StaticKubeConfigDiscoverer(urls: []),
         exporter: FileExporting = NoopExporter(),
         longRunningRunner: LongRunningCommandRunning = ScriptedLongRunningCommandRunner(),
-        contextPreferences: ContextPreferencesStoring = InMemoryContextPreferencesStore()
+        contextPreferences: ContextPreferencesStoring = InMemoryContextPreferencesStore(),
+        namespaceListPersistence: NamespaceListPersisting = NoopNamespaceListPersistenceStore()
     ) -> RuneAppViewModel {
         let kubeClient = KubectlClient(
             runner: runner,
@@ -1011,7 +1321,7 @@ final class RuneSmokeTests: XCTestCase {
             exporter: exporter,
             supportBundleBuilder: JSONSupportBundleBuilder(),
             contextPreferences: contextPreferences,
-            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            namespaceListPersistence: namespaceListPersistence
         )
     }
 
@@ -1549,4 +1859,14 @@ private struct StaticKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         urls
     }
+}
+
+private struct InMemoryNamespaceListPersistenceStore: NamespaceListPersisting {
+    var values: [String: [String]] = [:]
+
+    func load(contextName: String) -> [String]? {
+        values[contextName]
+    }
+
+    func save(names: [String], contextName: String) {}
 }

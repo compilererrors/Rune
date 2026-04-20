@@ -25,6 +25,15 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let pagedCountLimit: Int = 250
     /// Hard stop for paged counts to avoid infinite loops on broken continue tokens.
     private let pagedCountMaxPages: Int = 500
+    /// Keep pod metrics merge opportunistic so `Workloads > Pods` does not stall on metrics hiccups.
+    private let opportunisticPodTopTimeout: TimeInterval = 0.8
+    /// Unified logs should stay responsive in large namespaces with many historical pods.
+    private let unifiedLogsMaxPods: Int = 8
+    private let unifiedLogsMaxConcurrentPodFetches: Int = 3
+    /// Keep per-pod log fetch short so one slow pod does not block the whole merged view.
+    private let unifiedLogsPerPodTimeout: TimeInterval = 8
+    /// Selector/pod-discovery for unified logs should fail fast; stale workloads should not block the inspector for minutes.
+    private let unifiedLogsSelectorTimeout: TimeInterval = 12
 
     public init(
         runner: CommandRunning = ProcessCommandRunner(),
@@ -48,6 +57,19 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
     public func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listContexts(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    timeout: commandTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(arguments: builder.contextListArguments(), environment: env)
         return parser.parseContexts(from: result.stdout)
     }
@@ -57,6 +79,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [String] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: commandTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.namespaceListArguments(context: context.name),
             environment: env
@@ -69,6 +105,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> String? {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.contextNamespace(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: commandTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.contextNamespaceArguments(context: context.name),
             environment: env
@@ -84,6 +134,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listPods(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let pods: [PodSummary]
         do {
             // Fast path: lightweight table; IP/node/QoS/ready come from `enrichPodsWithJSONList` (background).
@@ -102,10 +167,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
 
         var merged = pods
-        if let top = await runKubectlAllowFailure(
+        if let agent = resolvedK8sAgentPath() {
+            if let metrics = try? await RuneK8sAgentOperationsClient.podTopByName(
+                executablePath: agent,
+                runner: runner,
+                environment: env,
+                contextName: context.name,
+                namespace: namespace,
+                timeout: opportunisticPodTopTimeout
+            ) {
+                merged = mergePodNameMetrics(merged, metrics)
+            }
+        } else if let top = await runKubectlAllowFailure(
             arguments: builder.podTopArguments(context: context.name, namespace: namespace),
             environment: env,
-            timeout: 6
+            timeout: opportunisticPodTopTimeout
         ),
             top.exitCode == 0 {
             let metrics = parser.parsePodTopByName(from: top.stdout)
@@ -122,6 +198,11 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String,
         merging base: [PodSummary]
     ) async throws -> [PodSummary] {
+        // Agent list pods already includes the extended fields this enrichment adds.
+        // Avoid an extra kubectl round-trip when agent mode is available.
+        if resolvedK8sAgentPath() != nil {
+            return base
+        }
         let env = try kubeconfigEnvironment(from: sources)
         let list = try await runKubectl(
             arguments: builder.podListArguments(context: context.name, namespace: namespace),
@@ -159,6 +240,31 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let pods = try await RuneK8sAgentWorkloadClient.listPods(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return pods.map { pod in
+                    PodSummary(
+                        name: pod.name,
+                        namespace: pod.namespace,
+                        status: pod.status,
+                        totalRestarts: pod.totalRestarts,
+                        ageDescription: pod.ageDescription
+                    )
+                }
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
+
         let result = try await runKubectl(
             arguments: builder.podStatusListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -171,6 +277,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listPodsAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let pods: [PodSummary]
         do {
             let list = try await runKubectl(
@@ -188,10 +308,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         }
 
         var merged = pods
-        if let top = await runKubectlAllowFailure(
+        if let agent = resolvedK8sAgentPath() {
+            if let metrics = try? await RuneK8sAgentOperationsClient.podTopByNamespaceAndName(
+                executablePath: agent,
+                runner: runner,
+                environment: env,
+                contextName: context.name,
+                timeout: opportunisticPodTopTimeout
+            ) {
+                merged = mergePodNamespacedMetrics(merged, metrics)
+            }
+        } else if let top = await runKubectlAllowFailure(
             arguments: builder.podTopAllNamespacesArguments(context: context.name),
             environment: env,
-            timeout: 6
+            timeout: opportunisticPodTopTimeout
         ),
             top.exitCode == 0 {
             let metrics = parser.parsePodTopByNamespaceAndName(from: top.stdout)
@@ -209,7 +339,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listDeployments(
+                return try await RuneK8sAgentWorkloadClient.listDeployments(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -217,10 +347,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
         }
@@ -244,6 +372,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [DeploymentSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listDeploymentsAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         do {
             let result = try await runKubectl(
                 arguments: builder.deploymentListAllNamespacesTextArguments(context: context.name),
@@ -265,6 +407,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ServiceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listServices(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.serviceListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -282,6 +439,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ServiceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listServicesAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.serviceListAllNamespacesArguments(context: context.name),
             environment: env
@@ -302,7 +473,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listStatefulSets(
+                return try await RuneK8sAgentWorkloadClient.listStatefulSets(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -310,10 +481,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
         }
@@ -337,7 +506,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listDaemonSets(
+                return try await RuneK8sAgentWorkloadClient.listDaemonSets(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -345,10 +514,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
         }
@@ -372,7 +539,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listJobs(
+                return try await RuneK8sAgentWorkloadClient.listJobs(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -380,13 +547,10 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
-            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
         }
         // Layered like `listPods`: small custom-columns table first; JSON fallback for edge cases / older kubectl quirks.
         do {
@@ -418,7 +582,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listCronJobs(
+                return try await RuneK8sAgentWorkloadClient.listCronJobs(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -426,13 +590,10 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
-            // Agent returned [] or failed: still use kubectl so we do not hide resources (API/version quirks).
         }
         do {
             let table = try await runKubectl(
@@ -463,7 +624,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
         if let agent = resolvedK8sAgentPath() {
             do {
-                let rows = try await RuneK8sAgentWorkloadClient.listReplicaSets(
+                return try await RuneK8sAgentWorkloadClient.listReplicaSets(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -471,10 +632,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: slowNamespacedJSONListTimeout
                 )
-                if !rows.isEmpty {
-                    return rows
-                }
             } catch {
+                try rethrowCancellationIfNeeded(error)
                 // Go agent (client-go) failed; continue with kubectl.
             }
         }
@@ -496,6 +655,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listPersistentVolumeClaims(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.persistentVolumeClaimListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -513,6 +687,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listPersistentVolumes(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.persistentVolumeListArguments(context: context.name),
             environment: env
@@ -530,6 +718,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listStorageClasses(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.storageClassListArguments(context: context.name),
             environment: env
@@ -548,6 +750,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listHorizontalPodAutoscalers(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.horizontalPodAutoscalerListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -566,6 +783,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listNetworkPolicies(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.networkPolicyListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -584,6 +816,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listIngresses(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.ingressListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -601,6 +848,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listIngressesAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.ingressListAllNamespacesArguments(context: context.name),
             environment: env
@@ -619,6 +880,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listConfigMaps(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.configMapListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -636,6 +912,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listConfigMapsAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.configMapListAllNamespacesArguments(context: context.name),
             environment: env
@@ -654,6 +944,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listSecrets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.secretListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -671,6 +976,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listNodes(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.nodeListArguments(context: context.name),
             environment: env
@@ -689,9 +1008,25 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [EventSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listEvents(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: 20
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.eventListArguments(context: context.name, namespace: namespace),
-            environment: env
+            environment: env,
+            timeout: 20
         )
 
         do {
@@ -706,9 +1041,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [EventSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listEventsAllNamespaces(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: 20
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.eventListAllNamespacesArguments(context: context.name),
-            environment: env
+            environment: env,
+            timeout: 20
         )
 
         do {
@@ -724,6 +1074,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listRoles(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.roleListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -742,6 +1107,21 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         namespace: String
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listRoleBindings(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.roleBindingListArguments(context: context.name, namespace: namespace),
             environment: env
@@ -759,6 +1139,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listClusterRoles(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.clusterRoleListArguments(context: context.name),
             environment: env,
@@ -782,6 +1176,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [ClusterResourceSummary] {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentWorkloadClient.listClusterRoleBindings(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Go agent failed; continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.clusterRoleBindingListArguments(context: context.name),
             environment: env,
@@ -850,7 +1258,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return total
     }
 
-    /// Prefer Go helper (client-go) counts where supported; return `nil` for unsupported resources or uncertain zero-row results.
+    /// Prefer Go helper (client-go) counts where supported; return `nil` for unsupported resources.
     /// Returning `nil` keeps existing kubectl-based count fallbacks intact.
     private func namespacedResourceCountViaAgentIfPossible(
         context: KubeContext,
@@ -864,6 +1272,116 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let timeout = slowNamespacedJSONListTimeout
         do {
             switch normalized {
+            case "pods", "pod":
+                let rows = try await RuneK8sAgentWorkloadClient.listPods(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "services", "service":
+                let rows = try await RuneK8sAgentWorkloadClient.listServices(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "ingresses", "ingress":
+                let rows = try await RuneK8sAgentWorkloadClient.listIngresses(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "configmaps", "configmap":
+                let rows = try await RuneK8sAgentWorkloadClient.listConfigMaps(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "events", "event":
+                let rows = try await RuneK8sAgentWorkloadClient.listEvents(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "secrets", "secret":
+                let rows = try await RuneK8sAgentWorkloadClient.listSecrets(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "roles", "role":
+                let rows = try await RuneK8sAgentWorkloadClient.listRoles(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "rolebindings", "rolebinding":
+                let rows = try await RuneK8sAgentWorkloadClient.listRoleBindings(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "persistentvolumeclaims", "persistentvolumeclaim", "pvc":
+                let rows = try await RuneK8sAgentWorkloadClient.listPersistentVolumeClaims(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "horizontalpodautoscalers", "horizontalpodautoscaler", "hpa":
+                let rows = try await RuneK8sAgentWorkloadClient.listHorizontalPodAutoscalers(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
+            case "networkpolicies", "networkpolicy":
+                let rows = try await RuneK8sAgentWorkloadClient.listNetworkPolicies(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    namespace: namespace,
+                    timeout: timeout
+                )
+                return rows.count
             case "deployments", "deployment":
                 let rows = try await RuneK8sAgentWorkloadClient.listDeployments(
                     executablePath: agent,
@@ -873,7 +1391,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             case "statefulsets", "statefulset":
                 let rows = try await RuneK8sAgentWorkloadClient.listStatefulSets(
                     executablePath: agent,
@@ -883,7 +1401,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             case "daemonsets", "daemonset":
                 let rows = try await RuneK8sAgentWorkloadClient.listDaemonSets(
                     executablePath: agent,
@@ -893,7 +1411,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             case "jobs", "job":
                 let rows = try await RuneK8sAgentWorkloadClient.listJobs(
                     executablePath: agent,
@@ -903,7 +1421,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             case "cronjobs", "cronjob":
                 let rows = try await RuneK8sAgentWorkloadClient.listCronJobs(
                     executablePath: agent,
@@ -913,7 +1431,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             case "replicasets", "replicaset":
                 let rows = try await RuneK8sAgentWorkloadClient.listReplicaSets(
                     executablePath: agent,
@@ -923,7 +1441,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     namespace: namespace,
                     timeout: timeout
                 )
-                return rows.isEmpty ? nil : rows.count
+                return rows.count
             default:
                 return nil
             }
@@ -939,6 +1457,14 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         progress: ((Int) -> Void)? = nil
     ) async throws -> Int {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agentCount = await clusterResourceCountViaAgentIfPossible(
+            context: context,
+            resource: resource,
+            environment: env
+        ) {
+            progress?(agentCount)
+            return agentCount
+        }
         if let apiPath = builder.clusterResourceListMetadataAPIPath(resource: resource),
            let total = await collectionListTotalFromMetadataProbe(
                 context: context,
@@ -968,6 +1494,83 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let total = Self.parseLineCount(from: result.stdout)
         progress?(total)
         return total
+    }
+
+    private func clusterResourceCountViaAgentIfPossible(
+        context: KubeContext,
+        resource: String,
+        environment: [String: String]
+    ) async -> Int? {
+        guard let agent = resolvedK8sAgentPath() else { return nil }
+        switch resource.lowercased() {
+        case "nodes", "node":
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listNodes(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return rows.count
+            } catch {
+                return nil
+            }
+        case "persistentvolumes", "persistentvolume", "pv":
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listPersistentVolumes(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return rows.count
+            } catch {
+                return nil
+            }
+        case "storageclasses", "storageclass":
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listStorageClasses(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return rows.count
+            } catch {
+                return nil
+            }
+        case "clusterroles", "clusterrole":
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listClusterRoles(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return rows.count
+            } catch {
+                return nil
+            }
+        case "clusterrolebindings", "clusterrolebinding":
+            do {
+                let rows = try await RuneK8sAgentWorkloadClient.listClusterRoleBindings(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: environment,
+                    contextName: context.name,
+                    timeout: slowNamespacedJSONListTimeout
+                )
+                return rows.count
+            } catch {
+                return nil
+            }
+        default:
+            return nil
+        }
     }
 
     /// Chunked raw list count: iterate `limit` pages and accumulate `items.count` from each response.
@@ -1103,10 +1706,27 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             return (nil, nil)
         }
 
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentOperationsClient.clusterUsagePercent(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    timeout: 3
+                )
+            } catch {
+                if isCancellationLikeError(error) {
+                    return (nil, nil)
+                }
+                // Continue with kubectl fallback.
+            }
+        }
+
         guard let result = await runKubectlAllowFailure(
             arguments: builder.nodeTopArguments(context: context.name),
             environment: env,
-            timeout: 6
+            timeout: 3
         ), result.exitCode == 0 else {
             return (nil, nil)
         }
@@ -1122,7 +1742,50 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         filter: LogTimeFilter,
         previous: Bool
     ) async throws -> String {
+        try await podLogs(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            podName: podName,
+            filter: filter,
+            previous: previous,
+            timeoutOverride: nil
+        )
+    }
+
+    private func podLogs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        filter: LogTimeFilter,
+        previous: Bool,
+        timeoutOverride: TimeInterval?
+    ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
+        let timeoutBudget = timeoutOverride ?? logFetchTimeout(for: filter)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentOperationsClient.podLogs(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    podName: podName,
+                    filter: filter,
+                    previous: previous,
+                    timeout: timeoutBudget
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                if previous, isMissingPreviousLogsError(error) {
+                    return "No previous logs available for \(podName)."
+                }
+                // Continue with kubectl fallback.
+            }
+        }
+
         let arguments = builder.podLogsArguments(
             context: context.name,
             namespace: namespace,
@@ -1134,7 +1797,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         )
 
         // Fail fast: short first attempt surfaces wedged API servers quickly; second attempt uses the full budget.
-        let budget = logFetchTimeout(for: filter)
+        let budget = timeoutBudget
         let phase1 = min(20, max(12, budget / 3))
         let phase2 = min(60, max(phase1 + 5, budget))
 
@@ -1164,16 +1827,42 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     ) async throws -> UnifiedServiceLogs {
         let env = try kubeconfigEnvironment(from: sources)
 
-        let serviceJSON = try await runKubectl(
-            arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
-            environment: env
-        )
-
         let selectorMap: [String: String]
-        do {
-            selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
-        } catch {
-            throw RuneError.parseError(message: "service selector kunde inte tolkas")
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                selectorMap = try await RuneK8sAgentOperationsClient.serviceSelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    serviceName: service.name,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                let serviceJSON = try await runKubectl(
+                    arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+                do {
+                    selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
+                } catch {
+                    throw RuneError.parseError(message: "service selector kunde inte tolkas")
+                }
+            }
+        } else {
+            let serviceJSON = try await runKubectl(
+                arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
+                environment: env,
+                timeout: unifiedLogsSelectorTimeout
+            )
+            do {
+                selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
+            } catch {
+                throw RuneError.parseError(message: "service selector kunde inte tolkas")
+            }
         }
 
         guard !selectorMap.isEmpty else {
@@ -1185,48 +1874,70 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
 
-        let podResult = try await runKubectl(
-            arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
-            environment: env
-        )
-
-        let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let pods: [PodSummary]
-        do {
-            pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
-        } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
-                environment: env
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                pods = try await RuneK8sAgentOperationsClient.podsBySelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    selector: selector,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                let podResult = try await runKubectl(
+                    arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+
+                let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                do {
+                    pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+                } catch {
+                    let fallback = try await runKubectl(
+                        arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+                    pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+                }
+            }
+        } else {
+            let podResult = try await runKubectl(
+                arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                environment: env,
+                timeout: unifiedLogsSelectorTimeout
             )
-            pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+
+            let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            do {
+                pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+            } catch {
+                let fallback = try await runKubectl(
+                    arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+                pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+            }
         }
-        guard !pods.isEmpty else {
+        let selectedPods = selectPodsForUnifiedLogs(pods)
+        guard !selectedPods.isEmpty else {
             return UnifiedServiceLogs(service: service, podNames: [], mergedText: "No pods found for service selector: \(selector)")
         }
 
-        var collectedLines: [TaggedLogLine] = []
-
-        try await withThrowingTaskGroup(of: [TaggedLogLine].self) { group in
-            for pod in pods {
-                group.addTask {
-                    let logs = try await self.podLogs(
-                        from: sources,
-                        context: context,
-                        namespace: namespace,
-                        podName: pod.name,
-                        filter: filter,
-                        previous: previous
-                    )
-
-                    return self.taggedLines(from: logs, podName: pod.name)
-                }
-            }
-
-            for try await podLines in group {
-                collectedLines.append(contentsOf: podLines)
-            }
-        }
+        let collectedLines = try await collectUnifiedPodLogLines(
+            pods: selectedPods,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            filter: filter,
+            previous: previous
+        )
 
         let merged = collectedLines
             .sorted(by: Self.taggedLineSort)
@@ -1237,7 +1948,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
         return UnifiedServiceLogs(
             service: service,
-            podNames: pods.map(\.name).sorted(),
+            podNames: selectedPods.map(\.name).sorted(),
             mergedText: merged
         )
     }
@@ -1252,16 +1963,44 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     ) async throws -> UnifiedDeploymentLogs {
         let env = try kubeconfigEnvironment(from: sources)
 
-        let deploymentJSON = try await runKubectl(
-            arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
-            environment: env
-        )
-
         let selectorMap: [String: String]
-        do {
-            selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
-        } catch {
-            throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                selectorMap = try await RuneK8sAgentOperationsClient.deploymentSelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    deploymentName: deployment.name,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                let deploymentJSON = try await runKubectl(
+                    arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+
+                do {
+                    selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
+                } catch {
+                    throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+                }
+            }
+        } else {
+            let deploymentJSON = try await runKubectl(
+                arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
+                environment: env,
+                timeout: unifiedLogsSelectorTimeout
+            )
+
+            do {
+                selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
+            } catch {
+                throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+            }
         }
 
         guard !selectorMap.isEmpty else {
@@ -1273,48 +2012,70 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
 
-        let podResult = try await runKubectl(
-            arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
-            environment: env
-        )
-
-        let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let pods: [PodSummary]
-        do {
-            pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
-        } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
-                environment: env
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                pods = try await RuneK8sAgentOperationsClient.podsBySelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    selector: selector,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                let podResult = try await runKubectl(
+                    arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+
+                let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                do {
+                    pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+                } catch {
+                    let fallback = try await runKubectl(
+                        arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+                    pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+                }
+            }
+        } else {
+            let podResult = try await runKubectl(
+                arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                environment: env,
+                timeout: unifiedLogsSelectorTimeout
             )
-            pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+
+            let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            do {
+                pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+            } catch {
+                let fallback = try await runKubectl(
+                    arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                    environment: env,
+                    timeout: unifiedLogsSelectorTimeout
+                )
+                pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+            }
         }
-        guard !pods.isEmpty else {
+        let selectedPods = selectPodsForUnifiedLogs(pods)
+        guard !selectedPods.isEmpty else {
             return UnifiedDeploymentLogs(deployment: deployment, podNames: [], mergedText: "No pods found for deployment selector: \(selector)")
         }
 
-        var collectedLines: [TaggedLogLine] = []
-
-        try await withThrowingTaskGroup(of: [TaggedLogLine].self) { group in
-            for pod in pods {
-                group.addTask {
-                    let logs = try await self.podLogs(
-                        from: sources,
-                        context: context,
-                        namespace: namespace,
-                        podName: pod.name,
-                        filter: filter,
-                        previous: previous
-                    )
-
-                    return self.taggedLines(from: logs, podName: pod.name)
-                }
-            }
-
-            for try await podLines in group {
-                collectedLines.append(contentsOf: podLines)
-            }
-        }
+        let collectedLines = try await collectUnifiedPodLogLines(
+            pods: selectedPods,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            filter: filter,
+            previous: previous
+        )
 
         let merged = collectedLines
             .sorted(by: Self.taggedLineSort)
@@ -1325,9 +2086,90 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
         return UnifiedDeploymentLogs(
             deployment: deployment,
-            podNames: pods.map(\.name).sorted(),
+            podNames: selectedPods.map(\.name).sorted(),
             mergedText: merged
         )
+    }
+
+    private func selectPodsForUnifiedLogs(_ pods: [PodSummary]) -> [PodSummary] {
+        guard !pods.isEmpty else { return [] }
+        let active = pods.filter { pod in
+            let status = pod.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return status == "running" || status == "pending" || status == "unknown"
+        }
+        let source = active.isEmpty ? pods : active
+        return Array(source.prefix(unifiedLogsMaxPods))
+    }
+
+    private func collectUnifiedPodLogLines(
+        pods: [PodSummary],
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        filter: LogTimeFilter,
+        previous: Bool
+    ) async throws -> [TaggedLogLine] {
+        guard !pods.isEmpty else { return [] }
+
+        var collectedLines: [TaggedLogLine] = []
+        try await withThrowingTaskGroup(of: [TaggedLogLine].self) { group in
+            var nextPodIndex = 0
+            let initial = min(unifiedLogsMaxConcurrentPodFetches, pods.count)
+
+            for _ in 0..<initial {
+                let pod = pods[nextPodIndex]
+                nextPodIndex += 1
+                group.addTask {
+                    do {
+                        let logs = try await self.podLogs(
+                            from: sources,
+                            context: context,
+                            namespace: namespace,
+                            podName: pod.name,
+                            filter: filter,
+                            previous: previous,
+                            timeoutOverride: self.unifiedLogsPerPodTimeout
+                        )
+                        return self.taggedLines(from: logs, podName: pod.name)
+                    } catch {
+                        if error is CancellationError {
+                            throw error
+                        }
+                        // Keep unified logs responsive even when one pod log fetch fails.
+                        return []
+                    }
+                }
+            }
+
+            while let podLines = try await group.next() {
+                collectedLines.append(contentsOf: podLines)
+                if nextPodIndex < pods.count {
+                    let pod = pods[nextPodIndex]
+                    nextPodIndex += 1
+                    group.addTask {
+                        do {
+                            let logs = try await self.podLogs(
+                                from: sources,
+                                context: context,
+                                namespace: namespace,
+                                podName: pod.name,
+                                filter: filter,
+                                previous: previous,
+                                timeoutOverride: self.unifiedLogsPerPodTimeout
+                            )
+                            return self.taggedLines(from: logs, podName: pod.name)
+                        } catch {
+                            if error is CancellationError {
+                                throw error
+                            }
+                            return []
+                        }
+                    }
+                }
+            }
+        }
+
+        return collectedLines
     }
 
     public func resourceYAML(
@@ -1376,6 +2218,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         command: [String]
     ) async throws -> PodExecResult {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentOperationsClient.execInPod(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    podName: podName,
+                    container: container,
+                    command: command,
+                    timeout: 90
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.podExecArguments(
                 context: context.name,
@@ -1405,6 +2265,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         name: String
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.deleteResource(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    kind: kind,
+                    name: name,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.deleteResourceArguments(context: context.name, namespace: namespace, kind: kind, name: name),
             environment: env
@@ -1419,6 +2297,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         replicas: Int
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.scaleDeployment(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    deploymentName: deploymentName,
+                    replicas: replicas,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.scaleDeploymentArguments(context: context.name, namespace: namespace, deploymentName: deploymentName, replicas: replicas),
             environment: env
@@ -1432,6 +2328,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         deploymentName: String
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.restartDeploymentRollout(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    deploymentName: deploymentName,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.rolloutRestartArguments(context: context.name, namespace: namespace, deploymentName: deploymentName),
             environment: env
@@ -1445,6 +2358,22 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         deploymentName: String
     ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                return try await RuneK8sAgentOperationsClient.deploymentRolloutHistory(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    deploymentName: deploymentName,
+                    timeout: 90
+                )
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         let result = try await runKubectl(
             arguments: builder.rolloutHistoryArguments(context: context.name, namespace: namespace, deploymentName: deploymentName),
             environment: env
@@ -1461,6 +2390,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         revision: Int?
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.rollbackDeploymentRollout(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    deploymentName: deploymentName,
+                    revision: revision,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.rolloutUndoArguments(
                 context: context.name,
@@ -1497,9 +2444,22 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             status: .starting
         )
 
-        let handle = try longRunningRunner.start(
-            executable: kubectlPath,
-            arguments: ["kubectl"] + builder.portForwardArguments(
+        let executable: String
+        let arguments: [String]
+        if let agent = resolvedK8sAgentPath() {
+            executable = agent
+            arguments = RuneK8sAgentOperationsClient.portForwardArguments(
+                contextName: context.name,
+                namespace: namespace,
+                targetKind: targetKind,
+                targetName: targetName,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address
+            )
+        } else {
+            executable = kubectlPath
+            arguments = ["kubectl"] + builder.portForwardArguments(
                 context: context.name,
                 namespace: namespace,
                 targetKind: targetKind,
@@ -1507,7 +2467,12 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 localPort: localPort,
                 remotePort: remotePort,
                 address: address
-            ),
+            )
+        }
+
+        let handle = try longRunningRunner.start(
+            executable: executable,
+            arguments: arguments,
             environment: env,
             onStdout: { output in
                 let message = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1588,6 +2553,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         try yaml.write(to: tempURL, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.applyFile(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    filePath: tempURL.path,
+                    timeout: 120
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
+
         _ = try await runKubectl(
             arguments: builder.applyFileArguments(context: context.name, namespace: namespace, filePath: tempURL.path),
             environment: env
@@ -1602,6 +2585,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         suspend: Bool
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.patchCronJobSuspend(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    name: name,
+                    suspend: suspend,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.patchCronJobSuspendArguments(
                 context: context.name,
@@ -1621,6 +2622,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         jobName: String
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                try await RuneK8sAgentOperationsClient.createJobFromCronJob(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    cronJobName: cronJobName,
+                    jobName: jobName,
+                    timeout: 90
+                )
+                return
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with kubectl fallback.
+            }
+        }
         _ = try await runKubectl(
             arguments: builder.createJobFromCronJobArguments(
                 context: context.name,
@@ -1694,6 +2713,22 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private func isProcessTimeoutError(_ error: Error) -> Bool {
         guard case let RuneError.commandFailed(_, message) = error else { return false }
         return message.localizedCaseInsensitiveContains("timed out")
+    }
+
+    private func rethrowCancellationIfNeeded(_ error: Error) throws {
+        if isCancellationLikeError(error) {
+            throw CancellationError()
+        }
+    }
+
+    private func isCancellationLikeError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        let description = String(describing: error).lowercased()
+        return description.contains("cancellationerror")
+            || description.contains("command cancelled")
+            || description.contains("command canceled")
     }
 
     private func ensureSources(_ sources: [KubeConfigSource]) throws {

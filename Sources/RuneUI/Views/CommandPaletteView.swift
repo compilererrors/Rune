@@ -18,7 +18,7 @@ struct CommandPaletteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Command Palette")
                     .font(.title3.weight(.semibold))
-                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:rbac`, `:cr`, `:helm`, `:cj` …")
+                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ov`, `:rbac`, `:cr`, `:helm`, `:cj` …")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -47,6 +47,7 @@ struct CommandPaletteView: View {
                     paletteHint(":cm")
                     paletteHint(":ctx")
                     paletteHint(":ns")
+                    paletteHint(":ov")
                     paletteHint(":rbac")
                     paletteHint(":helm")
                     paletteHint(":reload")
@@ -81,6 +82,12 @@ struct CommandPaletteView: View {
             .focused($focusedTarget, equals: .results)
             .scrollContentBackground(.hidden)
             .background(Color.clear)
+            .onMoveCommand { direction in
+                guard focusedTarget == .results else { return }
+                moveSelection(direction: direction, items: items)
+            }
+
+            keyboardActionBridge(items: items)
         }
         .padding(16)
         .frame(minWidth: 680, minHeight: 440)
@@ -115,7 +122,7 @@ struct CommandPaletteView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text("focus results")
+            Text("focus results, arrows select, Enter runs")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
         }
@@ -131,5 +138,61 @@ struct CommandPaletteView: View {
         }
 
         viewModel.executeCommandPaletteQuery(query)
+    }
+
+    @ViewBuilder
+    private func keyboardActionBridge(items: [CommandPaletteItem]) -> some View {
+        VStack(spacing: 0) {
+            Button("") {
+                focusResults(items: items)
+            }
+            .keyboardShortcut(.tab, modifiers: [])
+
+            Button("") {
+                focusedTarget = .input
+            }
+            .keyboardShortcut(.tab, modifiers: [.shift])
+
+            Button("") {
+                guard focusedTarget == .results else { return }
+                executePrimaryAction(items: items)
+            }
+            .keyboardShortcut(.return, modifiers: [])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private func focusResults(items: [CommandPaletteItem]) {
+        focusedTarget = .results
+        if selectedItemID == nil || !items.contains(where: { $0.id == selectedItemID }) {
+            selectedItemID = items.first?.id
+        }
+    }
+
+    private func moveSelection(direction: MoveCommandDirection, items: [CommandPaletteItem]) {
+        guard !items.isEmpty else {
+            selectedItemID = nil
+            return
+        }
+
+        guard let currentID = selectedItemID,
+              let currentIndex = items.firstIndex(where: { $0.id == currentID }) else {
+            selectedItemID = items.first?.id
+            return
+        }
+
+        let nextIndex: Int
+        switch direction {
+        case .down, .right:
+            nextIndex = min(currentIndex + 1, items.count - 1)
+        case .up, .left:
+            nextIndex = max(currentIndex - 1, 0)
+        @unknown default:
+            nextIndex = currentIndex
+        }
+
+        selectedItemID = items[nextIndex].id
     }
 }
