@@ -36,6 +36,7 @@ private struct SettingsHelpButton: View {
 public struct RunePreferencesView: View {
     private enum PreferencesPane: String, CaseIterable, Identifiable {
         case general
+        case keyBindings
         case logs
         case diagnostics
         case performance
@@ -45,6 +46,7 @@ public struct RunePreferencesView: View {
         var title: String {
             switch self {
             case .general: return "General"
+            case .keyBindings: return "Key Bindings"
             case .logs: return "Logs"
             case .diagnostics: return "Diagnostics"
             case .performance: return "Performance"
@@ -54,6 +56,7 @@ public struct RunePreferencesView: View {
         var symbol: String {
             switch self {
             case .general: return "gearshape"
+            case .keyBindings: return "keyboard"
             case .logs: return "text.alignleft"
             case .diagnostics: return "stethoscope"
             case .performance: return "speedometer"
@@ -75,6 +78,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw = "6"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
     @State private var cacheClearStatus: String?
+    @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
 
     public init() {}
 
@@ -84,6 +88,12 @@ public struct RunePreferencesView: View {
                 .tag(PreferencesPane.general)
                 .tabItem {
                     Label(PreferencesPane.general.title, systemImage: PreferencesPane.general.symbol)
+                }
+
+            keyBindingsSettingsForm
+                .tag(PreferencesPane.keyBindings)
+                .tabItem {
+                    Label(PreferencesPane.keyBindings.title, systemImage: PreferencesPane.keyBindings.symbol)
                 }
 
             logsSettingsForm
@@ -137,6 +147,72 @@ public struct RunePreferencesView: View {
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    private var keyBindingsSettingsForm: some View {
+        settingsPane(
+            title: "Key Bindings",
+            subtitle: "k9s-inspired action keys for the selected resource or release."
+        ) {
+            settingsSection("Defaults") {
+                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `d`, `l`, `s`, and `Shift-F` follow k9s conventions; YAML and Helm-specific actions are Rune mappings built around the same workflow.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button("Reset to k9s-style defaults") {
+                    resetKeyBindingShortcuts()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            settingsSection("Actions") {
+                ForEach(RuneKeyBindingAction.allCases) { action in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(action.title)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(action.detail)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer(minLength: 12)
+
+                            Toggle("Shift", isOn: shortcutShiftBinding(for: action))
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                                .help("Require Shift for this action")
+
+                            Picker("Key", selection: shortcutKeyBinding(for: action)) {
+                                ForEach(Self.availableShortcutKeys, id: \.self) { key in
+                                    Text(key.uppercased()).tag(key)
+                                }
+                            }
+                            .frame(width: 96)
+                        }
+
+                        HStack(spacing: 8) {
+                            Text("Current: \(shortcut(for: action).displayValue)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+
+                            if let conflict = conflictingAction(for: action) {
+                                Text("Conflicts with \(conflict.title)")
+                                    .font(.footnote)
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
+
+                    if action != RuneKeyBindingAction.allCases.last {
+                        Divider()
                     }
                 }
             }
@@ -415,5 +491,62 @@ public struct RunePreferencesView: View {
         } else {
             cacheClearStatus = "Cleared \(result.removedCount), failed \(result.failedCount). Close and reopen Rune if paths stay locked."
         }
+    }
+
+    private func shortcut(for action: RuneKeyBindingAction) -> RuneKeyboardShortcut {
+        keyBindingShortcuts[action] ?? action.defaultShortcut
+    }
+
+    private func shortcutKeyBinding(for action: RuneKeyBindingAction) -> Binding<String> {
+        Binding(
+            get: { shortcut(for: action).key },
+            set: { newValue in
+                updateShortcut(for: action) { current in
+                    RuneKeyboardShortcut(key: newValue, requiresShift: current.requiresShift) ?? current
+                }
+            }
+        )
+    }
+
+    private func shortcutShiftBinding(for action: RuneKeyBindingAction) -> Binding<Bool> {
+        Binding(
+            get: { shortcut(for: action).requiresShift },
+            set: { newValue in
+                updateShortcut(for: action) { current in
+                    RuneKeyboardShortcut(key: current.key, requiresShift: newValue) ?? current
+                }
+            }
+        )
+    }
+
+    private func updateShortcut(
+        for action: RuneKeyBindingAction,
+        transform: (RuneKeyboardShortcut) -> RuneKeyboardShortcut
+    ) {
+        let updated = transform(shortcut(for: action))
+        keyBindingShortcuts[action] = updated
+        UserDefaults.standard.setRuneKeyBindingShortcut(updated, for: action)
+    }
+
+    private func conflictingAction(for action: RuneKeyBindingAction) -> RuneKeyBindingAction? {
+        let currentShortcut = shortcut(for: action)
+        return RuneKeyBindingAction.allCases.first {
+            $0 != action && shortcut(for: $0) == currentShortcut
+        }
+    }
+
+    private func resetKeyBindingShortcuts() {
+        UserDefaults.standard.resetRuneKeyBindingShortcuts()
+        keyBindingShortcuts = Self.loadKeyBindingShortcuts()
+    }
+
+    private static var availableShortcutKeys: [String] {
+        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init)
+    }
+
+    private static func loadKeyBindingShortcuts() -> [RuneKeyBindingAction: RuneKeyboardShortcut] {
+        Dictionary(uniqueKeysWithValues: RuneKeyBindingAction.allCases.map {
+            ($0, UserDefaults.standard.runeKeyBindingShortcut(for: $0))
+        })
     }
 }

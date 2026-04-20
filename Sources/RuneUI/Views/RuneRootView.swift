@@ -47,6 +47,11 @@ private enum RuneRootLayoutProbeKind: Hashable {
     case detail
 }
 
+private enum RuneRootPaneWidthKind: Hashable {
+    case sidebar
+    case detail
+}
+
 private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case overview
     case workloadPodOverview
@@ -68,6 +73,30 @@ private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
 private struct RuneRootLayoutProbeFrame: Equatable {
     let generation: Int
     let rect: CGRect
+}
+
+private struct RuneRootPaneWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: [RuneRootPaneWidthKind: CGFloat] = [:]
+
+    static func reduce(
+        value: inout [RuneRootPaneWidthKind: CGFloat],
+        nextValue: () -> [RuneRootPaneWidthKind: CGFloat]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct RuneRootPaneWidthReporter: View {
+    let kind: RuneRootPaneWidthKind
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: RuneRootPaneWidthPreferenceKey.self,
+                value: [kind: proxy.size.width]
+            )
+        }
+    }
 }
 
 private enum RuneRootLayoutDebug {
@@ -274,6 +303,8 @@ private enum RuneRootTextInputFocus: Hashable {
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
+    @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
+    @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
 
     private let onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?
     private let debugDisableBootstrap: Bool
@@ -472,6 +503,9 @@ public struct RuneRootView: View {
         }
         .onChange(of: viewModel.state.selectedWorkloadKind) { _, _ in
             advanceLayoutGeneration()
+        }
+        .onPreferenceChange(RuneRootPaneWidthPreferenceKey.self) { paneWidths in
+            persistPaneWidthsIfNeeded(paneWidths)
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
     }
@@ -705,13 +739,14 @@ public struct RuneRootView: View {
             NavigationSplitView {
                 sidebar
                     .runeAppKitFrameReporter("sidebar")
+                    .background(RuneRootPaneWidthReporter(kind: .sidebar))
                     .overlay(alignment: .trailing) {
                         splitColumnResizeHandle
                             .offset(x: 7)
                     }
                     .navigationSplitViewColumnWidth(
-                        min: 220,
-                        ideal: 280,
+                        min: RuneUILayoutMetrics.splitSidebarMinWidth,
+                        ideal: resolvedSidebarWidth,
                         max: RuneUILayoutMetrics.splitSidebarMaxWidth
                     )
             } content: {
@@ -729,44 +764,45 @@ public struct RuneRootView: View {
             } detail: {
                 detailPane
                     .runeAppKitFrameReporter("detail")
+                    .background(RuneRootPaneWidthReporter(kind: .detail))
                     .navigationSplitViewColumnWidth(
                         min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                        ideal: RuneUILayoutMetrics.splitDetailColumnIdealWidth,
+                        ideal: resolvedDetailWidth,
                         max: RuneUILayoutMetrics.splitDetailColumnMaxWidth
                     )
             }
             .navigationSplitViewStyle(.balanced)
         case .appKitSplitView:
-            HSplitView {
-                sidebar
-                    .runeAppKitFrameReporter("sidebar")
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: RuneUILayoutMetrics.splitSidebarMaxWidth)
-                    .overlay(alignment: .trailing) {
-                        splitColumnResizeHandle
-                            .offset(x: 7)
-                    }
-                contentPane
-                    .runeAppKitFrameReporter("content")
-                    .frame(
-                        minWidth: RuneUILayoutMetrics.splitContentColumnMinWidth,
-                        idealWidth: 760,
-                        maxWidth: .infinity
-                    )
-                    .layoutPriority(1)
-                    .clipped()
-                    .overlay(alignment: .trailing) {
-                        splitColumnResizeHandle
-                            .offset(x: 7)
-                    }
-                detailPane
-                    .runeAppKitFrameReporter("detail")
-                    .frame(
-                        minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                        idealWidth: RuneUILayoutMetrics.splitDetailColumnIdealWidth,
-                        maxWidth: .infinity
-                    )
-                    .clipped()
-            }
+            AppKitTripleSplitView(
+                sidebar: AnyView(
+                    sidebar
+                        .runeAppKitFrameReporter("sidebar")
+                        .overlay(alignment: .trailing) {
+                            splitColumnResizeHandle
+                                .offset(x: 7)
+                        }
+                ),
+                content: AnyView(
+                    contentPane
+                        .runeAppKitFrameReporter("content")
+                        .overlay(alignment: .trailing) {
+                            splitColumnResizeHandle
+                                .offset(x: 7)
+                        }
+                ),
+                detail: AnyView(
+                    detailPane
+                        .runeAppKitFrameReporter("detail")
+                ),
+                sidebarWidth: resolvedSidebarWidth,
+                detailWidth: resolvedDetailWidth,
+                onSidebarWidthChange: { width in
+                    persistSidebarWidthIfNeeded(width)
+                },
+                onDetailWidthChange: { width in
+                    persistDetailWidthIfNeeded(width)
+                }
+            )
         }
     }
 
@@ -777,9 +813,6 @@ public struct RuneRootView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Rune")
-                .font(.largeTitle.weight(.bold))
-
             TextField("Search contexts", text: Binding(get: {
                 viewModel.state.contextSearchQuery
             }, set: { newValue in
@@ -838,7 +871,9 @@ public struct RuneRootView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(RuneUILayoutMetrics.sidebarPadding)
+        .padding(.horizontal, RuneUILayoutMetrics.sidebarPadding)
+        .padding(.bottom, RuneUILayoutMetrics.sidebarPadding)
+        .padding(.top, 8)
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
             ZStack(alignment: .trailing) {
@@ -3128,7 +3163,7 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func paneFocusOutline(isFocused: Bool) -> some View {
         if isFocused {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
+            Rectangle()
                 .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
                 .padding(2)
                 .allowsHitTesting(false)
@@ -3384,22 +3419,50 @@ public struct RuneRootView: View {
     private func installLocalKeyboardMonitorIfNeeded() {
         guard localKeyEventMonitor == nil else { return }
         localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            guard event.keyCode == 48 else { return event } // Tab
-            let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
-            if !event.modifierFlags.isDisjoint(with: disallowedModifiers) {
-                return event
+            if let handledEvent = handleLocalKeyEvent(event) {
+                return handledEvent
             }
+            return nil
+        }
+    }
 
-            guard textInputFocus == .contextSearch || textInputFocus == .resourceFilter else {
-                return event
-            }
-
+    private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent? {
+        if shouldHandleTabNavigation(event) {
             if event.modifierFlags.contains(.shift) {
                 focusPreviousKeyboardPane()
             } else {
                 focusNextKeyboardPane()
             }
             return nil
+        }
+
+        guard shouldHandleConfiguredActionKey(event) else { return event }
+        guard let action = configuredAction(for: event) else { return event }
+        return performConfiguredAction(action) ? nil : event
+    }
+
+    private func shouldHandleTabNavigation(_ event: NSEvent) -> Bool {
+        guard event.keyCode == 48 else { return false }
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
+        guard event.modifierFlags.isDisjoint(with: disallowedModifiers) else { return false }
+        return textInputFocus == .contextSearch || textInputFocus == .resourceFilter
+    }
+
+    private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
+        guard keyboardPaneFocus == .content || keyboardPaneFocus == .detail else { return false }
+        guard !keyboardNavigationSuspended else { return false }
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
+        return event.modifierFlags.isDisjoint(with: disallowedModifiers)
+    }
+
+    private func configuredAction(for event: NSEvent) -> RuneKeyBindingAction? {
+        guard let baseKey = event.charactersIgnoringModifiers?.lowercased(), baseKey.count == 1 else {
+            return nil
+        }
+
+        let requiresShift = event.modifierFlags.contains(.shift)
+        return RuneKeyBindingAction.allCases.first {
+            UserDefaults.standard.runeKeyBindingShortcut(for: $0).matches(baseKey: baseKey, requiresShift: requiresShift)
         }
     }
 
@@ -3417,6 +3480,233 @@ public struct RuneRootView: View {
             break
         @unknown default:
             break
+        }
+    }
+
+    private func performConfiguredAction(_ action: RuneKeyBindingAction) -> Bool {
+        switch action {
+        case .describe:
+            return openDescribeInspectorForSelection()
+        case .logs:
+            return openLogsInspectorForSelection()
+        case .shell:
+            return openShellInspectorForSelection()
+        case .yaml:
+            return openYAMLInspectorForSelection()
+        case .portForward:
+            return openPortForwardInspectorForSelection()
+        case .rollout:
+            return openRolloutInspectorForSelection()
+        case .helmValues:
+            return openHelmInspectorTab(.values)
+        case .helmManifest:
+            return openHelmInspectorTab(.manifest)
+        case .helmHistory:
+            return openHelmInspectorTab(.history)
+        }
+    }
+
+    private func openDescribeInspectorForSelection() -> Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard viewModel.state.selectedPod != nil else { return false }
+                podInspectorTab = .describe
+            case .deployment:
+                guard viewModel.state.selectedDeployment != nil else { return false }
+                deploymentInspectorTab = .describe
+            default:
+                guard hasGenericManifestSelection else { return false }
+                genericResourceManifestTab = .describe
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                guard viewModel.state.selectedService != nil else { return false }
+                serviceInspectorTab = .describe
+            default:
+                guard hasGenericManifestSelection else { return false }
+                genericResourceManifestTab = .describe
+            }
+        case .config, .storage, .rbac:
+            guard hasGenericManifestSelection else { return false }
+            genericResourceManifestTab = .describe
+        case .overview, .events, .helm, .terminal:
+            return false
+        }
+
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openYAMLInspectorForSelection() -> Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard viewModel.state.selectedPod != nil else { return false }
+                podInspectorTab = .yaml
+            case .deployment:
+                guard viewModel.state.selectedDeployment != nil else { return false }
+                deploymentInspectorTab = .yaml
+            default:
+                guard hasGenericManifestSelection else { return false }
+                genericResourceManifestTab = .yaml
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                guard viewModel.state.selectedService != nil else { return false }
+                serviceInspectorTab = .yaml
+            default:
+                guard hasGenericManifestSelection else { return false }
+                genericResourceManifestTab = .yaml
+            }
+        case .config, .storage, .rbac:
+            guard hasGenericManifestSelection else { return false }
+            genericResourceManifestTab = .yaml
+        case .overview, .events, .helm, .terminal:
+            return false
+        }
+
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openLogsInspectorForSelection() -> Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard viewModel.state.selectedPod != nil else { return false }
+                podInspectorTab = .logs
+            case .deployment:
+                guard viewModel.state.selectedDeployment != nil else { return false }
+                deploymentInspectorTab = .unifiedLogs
+            default:
+                return false
+            }
+        case .networking:
+            guard viewModel.state.selectedWorkloadKind == .service, viewModel.state.selectedService != nil else { return false }
+            serviceInspectorTab = .unifiedLogs
+        case .overview, .config, .storage, .rbac, .events, .helm, .terminal:
+            return false
+        }
+
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openShellInspectorForSelection() -> Bool {
+        guard viewModel.state.selectedSection == .workloads,
+              viewModel.state.selectedWorkloadKind == .pod,
+              viewModel.state.selectedPod != nil else {
+            return false
+        }
+        podInspectorTab = .exec
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openPortForwardInspectorForSelection() -> Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            guard viewModel.state.selectedWorkloadKind == .pod, viewModel.state.selectedPod != nil else { return false }
+            podInspectorTab = .portForward
+        case .networking:
+            guard viewModel.state.selectedWorkloadKind == .service, viewModel.state.selectedService != nil else { return false }
+            serviceInspectorTab = .portForward
+        case .overview, .config, .storage, .rbac, .events, .helm, .terminal:
+            return false
+        }
+
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openRolloutInspectorForSelection() -> Bool {
+        guard viewModel.state.selectedSection == .workloads,
+              viewModel.state.selectedWorkloadKind == .deployment,
+              viewModel.state.selectedDeployment != nil else {
+            return false
+        }
+        deploymentInspectorTab = .rollout
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func openHelmInspectorTab(_ tab: HelmInspectorTab) -> Bool {
+        guard viewModel.state.selectedSection == .helm,
+              viewModel.state.selectedHelmRelease != nil else {
+            return false
+        }
+        helmInspectorTab = tab
+        yamlManifestIsEditing = false
+        keyboardPaneFocus = .detail
+        return true
+    }
+
+    private var hasGenericManifestSelection: Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .statefulSet:
+                return viewModel.state.selectedStatefulSet != nil
+            case .daemonSet:
+                return viewModel.state.selectedDaemonSet != nil
+            case .job:
+                return viewModel.state.selectedJob != nil
+            case .cronJob:
+                return viewModel.state.selectedCronJob != nil
+            case .replicaSet:
+                return viewModel.state.selectedReplicaSet != nil
+            case .horizontalPodAutoscaler:
+                return viewModel.state.selectedHorizontalPodAutoscaler != nil
+            default:
+                return false
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .ingress:
+                return viewModel.state.selectedIngress != nil
+            case .networkPolicy:
+                return viewModel.state.selectedNetworkPolicy != nil
+            default:
+                return false
+            }
+        case .config:
+            switch viewModel.state.selectedWorkloadKind {
+            case .configMap:
+                return viewModel.state.selectedConfigMap != nil
+            case .secret:
+                return viewModel.state.selectedSecret != nil
+            default:
+                return false
+            }
+        case .storage:
+            switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolumeClaim:
+                return viewModel.state.selectedPersistentVolumeClaim != nil
+            case .persistentVolume:
+                return viewModel.state.selectedPersistentVolume != nil
+            case .storageClass:
+                return viewModel.state.selectedStorageClass != nil
+            case .node:
+                return viewModel.state.selectedNode != nil
+            default:
+                return false
+            }
+        case .rbac:
+            return viewModel.state.selectedRBACResource != nil
+        case .overview, .events, .helm, .terminal:
+            return false
         }
     }
 
@@ -3576,6 +3866,46 @@ public struct RuneRootView: View {
         layoutGeneration += 1
         layoutProbeFrames = [:]
         lastLayoutSnapshot = nil
+    }
+
+    private var resolvedSidebarWidth: CGFloat {
+        clampedSidebarWidth(CGFloat(persistedSidebarWidth))
+    }
+
+    private var resolvedDetailWidth: CGFloat {
+        clampedDetailWidth(CGFloat(persistedDetailWidth))
+    }
+
+    private func clampedSidebarWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, RuneUILayoutMetrics.splitSidebarMinWidth), RuneUILayoutMetrics.splitSidebarMaxWidth)
+    }
+
+    private func clampedDetailWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, RuneUILayoutMetrics.splitDetailColumnMinWidth), RuneUILayoutMetrics.splitDetailColumnMaxWidth)
+    }
+
+    private func persistPaneWidthsIfNeeded(_ paneWidths: [RuneRootPaneWidthKind: CGFloat]) {
+        if let sidebarWidth = paneWidths[.sidebar], sidebarWidth > 1 {
+            persistSidebarWidthIfNeeded(sidebarWidth)
+        }
+
+        if let detailWidth = paneWidths[.detail], detailWidth > 1 {
+            persistDetailWidthIfNeeded(detailWidth)
+        }
+    }
+
+    private func persistSidebarWidthIfNeeded(_ width: CGFloat) {
+        let clamped = clampedSidebarWidth(width)
+        if abs(clamped - CGFloat(persistedSidebarWidth)) >= 1 {
+            persistedSidebarWidth = Double(clamped)
+        }
+    }
+
+    private func persistDetailWidthIfNeeded(_ width: CGFloat) {
+        let clamped = clampedDetailWidth(width)
+        if abs(clamped - CGFloat(persistedDetailWidth)) >= 1 {
+            persistedDetailWidth = Double(clamped)
+        }
     }
 
     /// Visual resize affordance on column edges (`49c6517`); hit testing stays on the system split divider.

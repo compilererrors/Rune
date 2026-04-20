@@ -62,6 +62,9 @@ let package = Package(
                 "RuneStore",
                 "RuneSecurity",
                 "RuneExport"
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .testTarget(

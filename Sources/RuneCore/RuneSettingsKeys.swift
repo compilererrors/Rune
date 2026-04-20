@@ -18,6 +18,19 @@ public enum RuneSettingsKeys {
     public static let logsCustomPresetTwoLines = "rune.settings.logs.customPresetTwo.lines"
     public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
     public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
+    public static let keyBindingDescribe = "rune.settings.keybindings.describe"
+    public static let keyBindingLogs = "rune.settings.keybindings.logs"
+    public static let keyBindingShell = "rune.settings.keybindings.shell"
+    public static let keyBindingYAML = "rune.settings.keybindings.yaml"
+    public static let keyBindingPortForward = "rune.settings.keybindings.portForward"
+    public static let keyBindingRollout = "rune.settings.keybindings.rollout"
+    public static let keyBindingHelmValues = "rune.settings.keybindings.helmValues"
+    public static let keyBindingHelmManifest = "rune.settings.keybindings.helmManifest"
+    public static let keyBindingHelmHistory = "rune.settings.keybindings.helmHistory"
+    /// Persisted sidebar width in the 3-column shell.
+    public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
+    /// Persisted detail/inspector width in the 3-column shell.
+    public static let layoutDetailWidth = "rune.settings.layout.detailWidth"
 
     public static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -32,7 +45,18 @@ public enum RuneSettingsKeys {
             logsCustomPresetTwoMode: RuneCustomLogPresetMode.time.rawValue,
             logsCustomPresetTwoLines: "99999",
             logsCustomPresetTwoTimeValue: "6",
-            logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue
+            logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue,
+            keyBindingDescribe: RuneKeyBindingAction.describe.defaultShortcut.storageValue,
+            keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
+            keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
+            keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,
+            keyBindingPortForward: RuneKeyBindingAction.portForward.defaultShortcut.storageValue,
+            keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
+            keyBindingHelmValues: RuneKeyBindingAction.helmValues.defaultShortcut.storageValue,
+            keyBindingHelmManifest: RuneKeyBindingAction.helmManifest.defaultShortcut.storageValue,
+            keyBindingHelmHistory: RuneKeyBindingAction.helmHistory.defaultShortcut.storageValue,
+            layoutSidebarWidth: 280.0,
+            layoutDetailWidth: 440.0
         ])
     }
 }
