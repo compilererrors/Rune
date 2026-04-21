@@ -3,6 +3,103 @@ import XCTest
 @testable import RuneKube
 
 final class KubectlTests: XCTestCase {
+    func testListContextsPrefersKubectlBeforeRESTNormalization() async throws {
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "config", "get-contexts", "-o", "name"]
+            ): .success(CommandResult(
+                stdout: "orbitprod\norbitqa\n",
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = makeClient(runner: runner)
+        let sources = try makeKubeConfigSources()
+
+        let contexts = try await client.listContexts(from: sources)
+        let didRunContextList = await runner.didRun(arguments: ["kubectl", "config", "get-contexts", "-o", "name"])
+        let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
+
+        XCTAssertEqual(contexts.map(\.name), ["orbitprod", "orbitqa"])
+        XCTAssertTrue(didRunContextList)
+        XCTAssertFalse(didRunNormalizedConfig)
+    }
+
+    func testListNamespacesPrefersKubectlBeforeRESTNormalization() async throws {
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "--context", "orbitprod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+            ): .success(CommandResult(
+                stdout: "alphazone\nkube-system\n",
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = makeClient(runner: runner)
+        let sources = try makeKubeConfigSources()
+
+        let namespaces = try await client.listNamespaces(from: sources, context: KubeContext(name: "orbitprod"))
+        let didRunNamespaceList = await runner.didRun(arguments: ["kubectl", "--context", "orbitprod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"])
+        let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
+
+        XCTAssertEqual(namespaces, ["alphazone", "kube-system"])
+        XCTAssertTrue(didRunNamespaceList)
+        XCTAssertFalse(didRunNormalizedConfig)
+    }
+
+    func testContextNamespacePrefersKubectlBeforeRESTNormalization() async throws {
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "config", "view", "--minify", "--context", "orbitprod", "-o", "jsonpath={..namespace}"]
+            ): .success(CommandResult(
+                stdout: "alphazone",
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = makeClient(runner: runner)
+        let sources = try makeKubeConfigSources()
+
+        let namespace = try await client.contextNamespace(from: sources, context: KubeContext(name: "orbitprod"))
+        let didRunContextNamespace = await runner.didRun(arguments: ["kubectl", "config", "view", "--minify", "--context", "orbitprod", "-o", "jsonpath={..namespace}"])
+        let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
+
+        XCTAssertEqual(namespace, "alphazone")
+        XCTAssertTrue(didRunContextNamespace)
+        XCTAssertFalse(didRunNormalizedConfig)
+    }
+
+    func testRESTNormalizationFailureTemporarilyDisablesRepeatedAttempts() async throws {
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"]
+            ): .failure(RuneError.commandFailed(command: "kubectl config view", message: "Timed out after 2 seconds"))
+        ])
+        let client = KubernetesRESTClient(runner: runner, kubectlPath: "/usr/bin/env")
+        let environment = ["KUBECONFIG": "/tmp/rune-tests-config"]
+
+        do {
+            _ = try await client.listContexts(environment: environment)
+            XCTFail("Expected first normalization to fail")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("Timed out"))
+        }
+
+        do {
+            _ = try await client.listContexts(environment: environment)
+            XCTFail("Expected second normalization to be blocked")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("temporarily disabled"))
+        }
+
+        let normalizedConfigRunCount = await runner.runCount(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
+        XCTAssertEqual(normalizedConfigRunCount, 1)
+    }
+
     func testContextArguments() {
         let builder = KubectlCommandBuilder()
         XCTAssertEqual(builder.contextListArguments(), ["config", "get-contexts", "-o", "name"])
@@ -539,4 +636,91 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(selector["app"], "api")
         XCTAssertEqual(selector["component"], "web")
     }
+
+    private func makeClient(runner: ScriptedCommandRunner) -> KubectlClient {
+        KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env"
+        )
+    }
+
+    private func makeKubeConfigSources(file: StaticString = #filePath, line: UInt = #line) throws -> [KubeConfigSource] {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("yaml")
+        let created = FileManager.default.createFile(atPath: url.path, contents: Data(), attributes: nil)
+        XCTAssertTrue(created, file: file, line: line)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return [KubeConfigSource(url: url)]
+    }
+}
+
+private struct CommandKey: Hashable, Sendable {
+    let executable: String
+    let arguments: [String]
+}
+
+private enum ScriptedCommandOutcome {
+    case success(CommandResult)
+    case failure(Error)
+}
+
+private actor ScriptedCommandRunner: CommandRunning {
+    private let script: [CommandKey: ScriptedCommandOutcome]
+    private var calls: [CommandKey] = []
+
+    init(script: [CommandKey: ScriptedCommandOutcome]) {
+        self.script = script
+    }
+
+    func run(
+        executable: String,
+        arguments: [String],
+        environment: [String : String],
+        timeout: TimeInterval?
+    ) async throws -> CommandResult {
+        let key = CommandKey(executable: executable, arguments: arguments)
+        calls.append(key)
+
+        guard let outcome = script[key] else {
+            throw RuneError.commandFailed(command: "missing scripted command", message: arguments.joined(separator: " "))
+        }
+
+        switch outcome {
+        case let .success(result):
+            return result
+        case let .failure(error):
+            throw error
+        }
+    }
+
+    func didRun(arguments: [String]) -> Bool {
+        calls.contains(where: { $0.arguments == arguments })
+    }
+
+    func runCount(arguments: [String]) -> Int {
+        calls.filter { $0.arguments == arguments }.count
+    }
+}
+
+private final class NoopLongRunningCommandRunner: LongRunningCommandRunning, @unchecked Sendable {
+    func start(
+        executable: String,
+        arguments: [String],
+        environment: [String : String],
+        onStdout: @escaping @Sendable (String) -> Void,
+        onStderr: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) throws -> any RunningCommandControlling {
+        DummyRunningCommandController()
+    }
+}
+
+private final class DummyRunningCommandController: RunningCommandControlling, @unchecked Sendable {
+    let id = UUID()
+
+    func terminate() {}
 }

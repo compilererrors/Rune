@@ -54,7 +54,9 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 window.toolbar?.showsBaselineSeparator = false
             }
 
-            let inset = trackingView.safeAreaInsets.top
+            let safeAreaTop = trackingView.safeAreaInsets.top
+            let derivedWindowInset = max(0, window.frame.height - window.contentLayoutRect.maxY)
+            let inset = max(safeAreaTop, derivedWindowInset)
             guard context.coordinator.lastMeasuredTopInset != inset else { return }
 
             context.coordinator.lastMeasuredTopInset = inset

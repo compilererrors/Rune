@@ -376,114 +376,22 @@ public struct RuneRootView: View {
                 .frame(width: 0, height: 0)
             keyboardNavigationBridge
 
-            mainSplitContainer
-                .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .toolbar {
-                    ToolbarItemGroup(placement: .navigation) {
-                        Button {
-                            viewModel.navigateBack()
-                        } label: {
-                            Image(systemName: "chevron.left")
-                        }
-                        .help("Back")
-                        .disabled(!viewModel.canNavigateBack)
-                        .keyboardShortcut("[", modifiers: [.command, .option])
+            if resolvedShellVariant == .navigationSplitView {
+                GeometryReader { geometry in
+                    let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
+                    let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
 
-                        Button {
-                            viewModel.navigateForward()
-                        } label: {
-                            Image(systemName: "chevron.right")
-                        }
-                        .help("Forward")
-                        .disabled(!viewModel.canNavigateForward)
-                        .keyboardShortcut("]", modifiers: [.command, .option])
-
-                        Menu(viewModel.state.selectedContext?.name ?? "No Context") {
-                            ForEach(viewModel.visibleContexts) { context in
-                                Button(context.name) {
-                                    viewModel.setContext(context)
-                                }
-                            }
-                        }
-
-                        Menu(namespaceMenuTitle) {
-                            ForEach(namespaceSuggestions, id: \.self) { namespace in
-                                Button(namespace) {
-                                    viewModel.setNamespace(namespace)
-                                }
-                            }
-                        }
-                    }
-
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Button {
-                            openSettingsWindow()
-                        } label: {
-                            Image(systemName: "gearshape")
-                        }
-                        .help("Settings")
-
-                        Button("Palette") {
-                            viewModel.presentCommandPalette()
-                        }
-                        .keyboardShortcut("k", modifiers: .command)
-
-                        Button("Reload") {
-                            viewModel.refreshCurrentView(debounced: false)
-                        }
-                        .keyboardShortcut("r", modifiers: .command)
-                    }
+                    configuredMainSplitContainer
+                        .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
+                        .offset(y: resolvedTopInset)
+                        .clipped()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .toolbarBackground(.visible, for: .windowToolbar)
-                .sheet(isPresented: commandPalettePresentedBinding) {
-                    CommandPaletteView(viewModel: viewModel)
-                }
-                .sheet(isPresented: $isYAMLEditorSheetPresented) {
-                    yamlManifestEditorSheet()
-                }
-                .confirmationDialog(
-                    viewModel.pendingWriteActionTitle,
-                    isPresented: pendingWriteActionPresentedBinding,
-                    titleVisibility: .visible
-                ) {
-                    if viewModel.pendingWriteActionIsDestructive {
-                        Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                            viewModel.confirmPendingWriteAction()
-                        }
-                    } else {
-                        Button(viewModel.pendingWriteActionConfirmLabel) {
-                            viewModel.confirmPendingWriteAction()
-                        }
-                    }
-
-                    Button("Cancel", role: .cancel) {
-                        viewModel.cancelPendingWriteAction()
-                    }
-                } message: {
-                    Text(viewModel.pendingWriteActionMessage)
-                }
-                .onAppear {
-                    keyboardPaneFocus = .sidebarSections
-                    textInputFocus = nil
-                    DispatchQueue.main.async {
-                        NSApp.keyWindow?.makeFirstResponder(nil)
-                    }
-                    installLocalKeyboardMonitorIfNeeded()
-                    if RuneRootLayoutDebug.isEnabled {
-                        NSLog(
-                            "[Rune][Layout] configured shell=%@ editor=%@",
-                            resolvedShellVariant.debugLabel,
-                            resolvedManifestInlineEditorImplementation.debugLabel
-                        )
-                    }
-                    startLiveDebugScenarioIfNeeded()
-                    guard !debugDisableBootstrap else { return }
-                    viewModel.bootstrapIfNeeded()
-                }
-                .onDisappear {
-                    removeLocalKeyboardMonitor()
-                }
+            } else {
+                configuredMainSplitContainer
+                    .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
@@ -508,6 +416,115 @@ public struct RuneRootView: View {
             persistPaneWidthsIfNeeded(paneWidths)
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
+    }
+
+    private var configuredMainSplitContainer: some View {
+        mainSplitContainer
+            .toolbar {
+                ToolbarItemGroup(placement: .navigation) {
+                    Button {
+                        viewModel.navigateBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .help("Back")
+                    .disabled(!viewModel.canNavigateBack)
+                    .keyboardShortcut("[", modifiers: [.command, .option])
+
+                    Button {
+                        viewModel.navigateForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .help("Forward")
+                    .disabled(!viewModel.canNavigateForward)
+                    .keyboardShortcut("]", modifiers: [.command, .option])
+
+                    Menu(viewModel.state.selectedContext?.name ?? "No Context") {
+                        ForEach(viewModel.visibleContexts) { context in
+                            Button(context.name) {
+                                viewModel.setContext(context)
+                            }
+                        }
+                    }
+
+                    Menu(namespaceMenuTitle) {
+                        ForEach(namespaceSuggestions, id: \.self) { namespace in
+                            Button(namespace) {
+                                viewModel.setNamespace(namespace)
+                            }
+                        }
+                    }
+                }
+
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        openSettingsWindow()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Settings")
+
+                    Button("Palette") {
+                        viewModel.presentCommandPalette()
+                    }
+                    .keyboardShortcut("k", modifiers: .command)
+
+                    Button("Reload") {
+                        viewModel.refreshCurrentView(debounced: false)
+                    }
+                    .keyboardShortcut("r", modifiers: .command)
+                }
+            }
+            .toolbarBackground(.visible, for: .windowToolbar)
+            .sheet(isPresented: commandPalettePresentedBinding) {
+                CommandPaletteView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $isYAMLEditorSheetPresented) {
+                yamlManifestEditorSheet()
+            }
+            .confirmationDialog(
+                viewModel.pendingWriteActionTitle,
+                isPresented: pendingWriteActionPresentedBinding,
+                titleVisibility: .visible
+            ) {
+                if viewModel.pendingWriteActionIsDestructive {
+                    Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
+                        viewModel.confirmPendingWriteAction()
+                    }
+                } else {
+                    Button(viewModel.pendingWriteActionConfirmLabel) {
+                        viewModel.confirmPendingWriteAction()
+                    }
+                }
+
+                Button("Cancel", role: .cancel) {
+                    viewModel.cancelPendingWriteAction()
+                }
+            } message: {
+                Text(viewModel.pendingWriteActionMessage)
+            }
+            .onAppear {
+                keyboardPaneFocus = .sidebarSections
+                textInputFocus = nil
+                DispatchQueue.main.async {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+                installLocalKeyboardMonitorIfNeeded()
+                if RuneRootLayoutDebug.isEnabled {
+                    NSLog(
+                        "[Rune][Layout] configured shell=%@ editor=%@",
+                        resolvedShellVariant.debugLabel,
+                        resolvedManifestInlineEditorImplementation.debugLabel
+                    )
+                }
+                startLiveDebugScenarioIfNeeded()
+                guard !debugDisableBootstrap else { return }
+                viewModel.bootstrapIfNeeded()
+            }
+            .onDisappear {
+                removeLocalKeyboardMonitor()
+            }
     }
 
     private var resolvedShellVariant: RuneRootShellVariant {

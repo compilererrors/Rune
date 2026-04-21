@@ -9,6 +9,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let parser: KubectlOutputParser
     private let builder: KubectlCommandBuilder
     private let kubectlPath: String
+    private let restClient: KubernetesRESTClient
     /// Optional path to `rune-k8s-agent` (Go + client-go). When nil, ``RuneK8sAgentLocator`` is used.
     private let k8sAgentPath: String?
     private let commandTimeout: TimeInterval
@@ -50,6 +51,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         self.parser = parser
         self.builder = builder
         self.kubectlPath = kubectlPath
+        self.restClient = KubernetesRESTClient(runner: runner, kubectlPath: kubectlPath)
         self.k8sAgentPath = k8sAgentPath
         self.commandTimeout = commandTimeout
         self.access = access
@@ -57,6 +59,11 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
 
     public func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext] {
         let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(arguments: builder.contextListArguments(), environment: env)
+        let parsed = parser.parseContexts(from: result.stdout)
+        if !parsed.isEmpty {
+            return parsed
+        }
         if let agent = resolvedK8sAgentPath() {
             do {
                 return try await RuneK8sAgentWorkloadClient.listContexts(
@@ -67,11 +74,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
-        let result = try await runKubectl(arguments: builder.contextListArguments(), environment: env)
-        return parser.parseContexts(from: result.stdout)
+        if let contexts = try await contextsViaREST(environment: env) {
+            return contexts
+        }
+        return parsed
     }
 
     public func listNamespaces(
@@ -79,6 +88,14 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> [String] {
         let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.namespaceListArguments(context: context.name),
+            environment: env
+        )
+        let parsed = parser.parseNamespaces(from: result.stdout)
+        if !parsed.isEmpty {
+            return parsed
+        }
         if let agent = resolvedK8sAgentPath() {
             do {
                 return try await RuneK8sAgentWorkloadClient.listNamespaces(
@@ -90,14 +107,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
-        let result = try await runKubectl(
-            arguments: builder.namespaceListArguments(context: context.name),
-            environment: env
-        )
-        return parser.parseNamespaces(from: result.stdout)
+        if let namespaces = try await namespacesViaREST(environment: env, context: context) {
+            return namespaces
+        }
+        return parsed
     }
 
     public func contextNamespace(
@@ -105,6 +121,15 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         context: KubeContext
     ) async throws -> String? {
         let env = try kubeconfigEnvironment(from: sources)
+        let result = try await runKubectl(
+            arguments: builder.contextNamespaceArguments(context: context.name),
+            environment: env
+        )
+
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
         if let agent = resolvedK8sAgentPath() {
             do {
                 return try await RuneK8sAgentWorkloadClient.contextNamespace(
@@ -116,16 +141,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
-        let result = try await runKubectl(
-            arguments: builder.contextNamespaceArguments(context: context.name),
-            environment: env
-        )
-
-        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        if let namespace = try await contextNamespaceViaREST(environment: env, context: context) {
+            return namespace
+        }
+        return nil
     }
 
     public func listPods(
@@ -146,18 +168,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
         let pods: [PodSummary]
-        do {
-            // Fast path: lightweight table; IP/node/QoS/ready come from `enrichPodsWithJSONList` (background).
-            let list = try await runKubectl(
-                arguments: builder.podListTextArguments(context: context.name, namespace: namespace),
-                environment: env
-            )
-            pods = parser.parsePodsTable(namespace: namespace, from: list.stdout)
-        } catch {
+        if let restPods = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "pods",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return try self.parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+            }
+        ) {
+            pods = restPods
+        } else {
             let fallback = try await runKubectl(
                 arguments: builder.podListArguments(context: context.name, namespace: namespace),
                 environment: env
@@ -204,12 +231,27 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             return base
         }
         let env = try kubeconfigEnvironment(from: sources)
-        let list = try await runKubectl(
-            arguments: builder.podListArguments(context: context.name, namespace: namespace),
-            environment: env
-        )
-        let trimmed = list.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let detailed = try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+        let detailed: [PodSummary]
+        if let restPods = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "pods",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return try self.parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+            }
+        ) {
+            detailed = restPods
+        } else {
+            let list = try await runKubectl(
+                arguments: builder.podListArguments(context: context.name, namespace: namespace),
+                environment: env
+            )
+            let trimmed = list.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            detailed = try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+        }
         return Self.mergePodSummariesPreservingMetrics(base: base, detail: detailed)
     }
 
@@ -221,6 +263,20 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         podName: String
     ) async throws -> PodSummary {
         let env = try kubeconfigEnvironment(from: sources)
+        if let summary = try await resourceViaREST(
+            environment: env,
+            context: context,
+            kind: .pod,
+            namespace: namespace,
+            name: podName,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return try self.parser.parseSinglePodJSON(namespace: namespace, from: trimmed)
+            }
+        ) {
+            return summary
+        }
         let result = try await runKubectl(
             arguments: builder.resourceJSONArguments(
                 context: context.name,
@@ -261,7 +317,28 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 }
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
+            }
+        }
+        if let restPods = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "pods",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return try self.parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+            }
+        ) {
+            return restPods.map { pod in
+                PodSummary(
+                    name: pod.name,
+                    namespace: pod.namespace,
+                    status: pod.status,
+                    totalRestarts: pod.totalRestarts,
+                    ageDescription: pod.ageDescription
+                )
             }
         }
 
@@ -288,17 +365,23 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
         let pods: [PodSummary]
-        do {
-            let list = try await runKubectl(
-                arguments: builder.podListAllNamespacesTextArguments(context: context.name),
-                environment: env
-            )
-            pods = parser.parsePodsAllNamespacesTable(from: list.stdout)
-        } catch {
+        if let restPods = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "pods",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return try self.parser.parsePodsListJSONAllNamespaces(from: trimmed)
+            }
+        ) {
+            pods = restPods
+        } else {
             let fallback = try await runKubectl(
                 arguments: builder.podListAllNamespacesArguments(context: context.name),
                 environment: env
@@ -349,22 +432,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
         }
-        do {
-            let result = try await runKubectl(
-                arguments: builder.deploymentListTextArguments(context: context.name, namespace: namespace),
-                environment: env
-            )
-            return parser.parseDeploymentsTable(namespace: namespace, from: result.stdout)
-        } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.deploymentListArguments(context: context.name, namespace: namespace),
-                environment: env
-            )
-            return try parser.parseDeployments(namespace: namespace, from: fallback.stdout)
+        if let deployments = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "deployments",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseDeployments(namespace: namespace, from: raw) }
+        ) {
+            return deployments
         }
+        let fallback = try await runKubectl(
+            arguments: builder.deploymentListArguments(context: context.name, namespace: namespace),
+            environment: env
+        )
+        return try parser.parseDeployments(namespace: namespace, from: fallback.stdout)
     }
 
     public func listDeploymentsAllNamespaces(
@@ -383,22 +468,24 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
         }
-        do {
-            let result = try await runKubectl(
-                arguments: builder.deploymentListAllNamespacesTextArguments(context: context.name),
-                environment: env
-            )
-            return parser.parseDeploymentsAllNamespacesTable(from: result.stdout)
-        } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.deploymentListAllNamespacesArguments(context: context.name),
-                environment: env
-            )
-            return try parser.parseDeployments(namespace: "", from: fallback.stdout)
+        if let deployments = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "deployments",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseDeployments(namespace: "", from: raw) }
+        ) {
+            return deployments
         }
+        let fallback = try await runKubectl(
+            arguments: builder.deploymentListAllNamespacesArguments(context: context.name),
+            environment: env
+        )
+        return try parser.parseDeployments(namespace: "", from: fallback.stdout)
     }
 
     public func listServices(
@@ -419,8 +506,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let services = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "services",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseServices(namespace: namespace, from: raw) }
+        ) {
+            return services
         }
         let result = try await runKubectl(
             arguments: builder.serviceListArguments(context: context.name, namespace: namespace),
@@ -450,8 +547,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let services = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "services",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseServices(namespace: "", from: raw) }
+        ) {
+            return services
         }
         let result = try await runKubectl(
             arguments: builder.serviceListAllNamespacesArguments(context: context.name),
@@ -483,8 +590,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "statefulsets",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseStatefulSets(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.statefulSetListArguments(context: context.name, namespace: namespace),
@@ -516,8 +633,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "daemonsets",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseDaemonSets(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.daemonSetListArguments(context: context.name, namespace: namespace),
@@ -549,28 +676,28 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
         }
-        // Layered like `listPods`: small custom-columns table first; JSON fallback for edge cases / older kubectl quirks.
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "jobs",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseJobs(namespace: namespace, from: raw) }
+        ) {
+            return items
+        }
+        let fallback = try await runKubectl(
+            arguments: builder.jobListArguments(context: context.name, namespace: namespace),
+            environment: env,
+            timeout: slowNamespacedJSONListTimeout
+        )
         do {
-            let table = try await runKubectl(
-                arguments: builder.jobListTextArguments(context: context.name, namespace: namespace),
-                environment: env,
-                timeout: slowNamespacedJSONListTimeout
-            )
-            return parser.parseJobsTable(namespace: namespace, from: table.stdout)
+            return try parser.parseJobs(namespace: namespace, from: fallback.stdout)
         } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.jobListArguments(context: context.name, namespace: namespace),
-                environment: env,
-                timeout: slowNamespacedJSONListTimeout
-            )
-            do {
-                return try parser.parseJobs(namespace: namespace, from: fallback.stdout)
-            } catch {
-                throw RuneError.parseError(message: "jobs kunde inte tolkas")
-            }
+            throw RuneError.parseError(message: "jobs kunde inte tolkas")
         }
     }
 
@@ -592,27 +719,28 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
         }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "cronjobs",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseCronJobs(namespace: namespace, from: raw) }
+        ) {
+            return items
+        }
+        let fallback = try await runKubectl(
+            arguments: builder.cronJobListArguments(context: context.name, namespace: namespace),
+            environment: env,
+            timeout: slowNamespacedJSONListTimeout
+        )
         do {
-            let table = try await runKubectl(
-                arguments: builder.cronJobListTextArguments(context: context.name, namespace: namespace),
-                environment: env,
-                timeout: slowNamespacedJSONListTimeout
-            )
-            return parser.parseCronJobsTable(namespace: namespace, from: table.stdout)
+            return try parser.parseCronJobs(namespace: namespace, from: fallback.stdout)
         } catch {
-            let fallback = try await runKubectl(
-                arguments: builder.cronJobListArguments(context: context.name, namespace: namespace),
-                environment: env,
-                timeout: slowNamespacedJSONListTimeout
-            )
-            do {
-                return try parser.parseCronJobs(namespace: namespace, from: fallback.stdout)
-            } catch {
-                throw RuneError.parseError(message: "cronjobs kunde inte tolkas")
-            }
+            throw RuneError.parseError(message: "cronjobs kunde inte tolkas")
         }
     }
 
@@ -634,8 +762,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent (client-go) failed; continue with kubectl.
+                // Go agent (client-go) failed; continue with REST.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "replicasets",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseReplicaSets(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.replicaSetListArguments(context: context.name, namespace: namespace),
@@ -667,8 +805,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "persistentvolumeclaims",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parsePersistentVolumeClaims(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.persistentVolumeClaimListArguments(context: context.name, namespace: namespace),
@@ -698,8 +846,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "persistentvolumes",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parsePersistentVolumes(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.persistentVolumeListArguments(context: context.name),
@@ -729,8 +887,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "storageclasses",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseStorageClasses(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.storageClassListArguments(context: context.name),
@@ -762,8 +930,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "horizontalpodautoscalers",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseHorizontalPodAutoscalers(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.horizontalPodAutoscalerListArguments(context: context.name, namespace: namespace),
@@ -795,8 +973,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "networkpolicies",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseNetworkPolicies(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.networkPolicyListArguments(context: context.name, namespace: namespace),
@@ -828,8 +1016,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "ingresses",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseIngresses(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.ingressListArguments(context: context.name, namespace: namespace),
@@ -859,8 +1057,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "ingresses",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseIngresses(namespace: "", from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.ingressListAllNamespacesArguments(context: context.name),
@@ -892,8 +1100,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "configmaps",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseConfigMaps(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.configMapListArguments(context: context.name, namespace: namespace),
@@ -923,8 +1141,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "configmaps",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseConfigMaps(namespace: "", from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.configMapListAllNamespacesArguments(context: context.name),
@@ -956,8 +1184,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "secrets",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseSecrets(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.secretListArguments(context: context.name, namespace: namespace),
@@ -987,8 +1225,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "nodes",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseNodes(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.nodeListArguments(context: context.name),
@@ -1020,8 +1268,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "events",
+            namespace: namespace,
+            timeout: 20,
+            parse: { raw in try self.parser.parseEvents(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.eventListArguments(context: context.name, namespace: namespace),
@@ -1052,8 +1310,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "events",
+            namespace: nil,
+            timeout: 20,
+            parse: { raw in try self.parser.parseEvents(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.eventListAllNamespacesArguments(context: context.name),
@@ -1086,8 +1354,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "roles",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseRoles(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.roleListArguments(context: context.name, namespace: namespace),
@@ -1119,8 +1397,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "rolebindings",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseRoleBindings(namespace: namespace, from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.roleBindingListArguments(context: context.name, namespace: namespace),
@@ -1150,8 +1438,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "clusterroles",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseClusterRoles(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.clusterRoleListArguments(context: context.name),
@@ -1187,8 +1485,18 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Go agent failed; continue with kubectl fallback.
+                // Go agent failed; continue with REST fallback.
             }
+        }
+        if let items = try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "clusterrolebindings",
+            namespace: nil,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseClusterRoleBindings(from: raw) }
+        ) {
+            return items
         }
         let result = try await runKubectl(
             arguments: builder.clusterRoleBindingListArguments(context: context.name),
@@ -1643,18 +1951,19 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         var total = 0
 
         for _ in 0..<pagedCountMaxPages {
-            let result: CommandResult
+            let raw: String
             do {
-                result = try await runKubectl(
-                    arguments: builder.rawGetArguments(context: context.name, request: request),
+                raw = try await restClient.rawGET(
                     environment: environment,
+                    contextName: context.name,
+                    apiPath: request.apiPath,
                     timeout: 45
                 )
             } catch {
                 return nil
             }
 
-            guard let page = KubectlListJSON.collectionPageInfo(from: result.stdout) else {
+            guard let page = KubectlListJSON.collectionPageInfo(from: raw) else {
                 return nil
             }
             total += page.itemsCount
@@ -1687,12 +1996,13 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         apiPath: String
     ) async -> Int? {
         do {
-            let result = try await runKubectl(
-                arguments: builder.rawGetArguments(context: context.name, apiPath: apiPath),
+            let raw = try await restClient.rawGET(
                 environment: environment,
+                contextName: context.name,
+                apiPath: apiPath,
                 timeout: 45
             )
-            return KubectlListJSON.collectionListTotal(from: result.stdout)
+            return KubectlListJSON.collectionListTotal(from: raw)
         } catch {
             return nil
         }
@@ -1782,8 +2092,19 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 if previous, isMissingPreviousLogsError(error) {
                     return "No previous logs available for \(podName)."
                 }
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
             }
+        }
+        if let logs = try await podLogsViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            podName: podName,
+            filter: filter,
+            previous: previous,
+            timeout: timeoutBudget
+        ) {
+            return logs
         }
 
         let arguments = builder.podLogsArguments(
@@ -1841,6 +2162,35 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
+                if let selector = try await serviceSelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    serviceName: service.name
+                ) {
+                    selectorMap = selector
+                } else {
+                    let serviceJSON = try await runKubectl(
+                        arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+                    do {
+                        selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
+                    } catch {
+                        throw RuneError.parseError(message: "service selector kunde inte tolkas")
+                    }
+                }
+            }
+        } else {
+            if let selector = try await serviceSelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                serviceName: service.name
+            ) {
+                selectorMap = selector
+            } else {
                 let serviceJSON = try await runKubectl(
                     arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
                     environment: env,
@@ -1851,17 +2201,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 } catch {
                     throw RuneError.parseError(message: "service selector kunde inte tolkas")
                 }
-            }
-        } else {
-            let serviceJSON = try await runKubectl(
-                arguments: builder.serviceJSONArguments(context: context.name, namespace: namespace, serviceName: service.name),
-                environment: env,
-                timeout: unifiedLogsSelectorTimeout
-            )
-            do {
-                selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
-            } catch {
-                throw RuneError.parseError(message: "service selector kunde inte tolkas")
             }
         }
 
@@ -1888,6 +2227,42 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
+                if let restPods = try await podsBySelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    selector: selector
+                ) {
+                    pods = restPods
+                } else {
+                    let podResult = try await runKubectl(
+                        arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+
+                    let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    do {
+                        pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+                    } catch {
+                        let fallback = try await runKubectl(
+                            arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                            environment: env,
+                            timeout: unifiedLogsSelectorTimeout
+                        )
+                        pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+                    }
+                }
+            }
+        } else {
+            if let restPods = try await podsBySelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                selector: selector
+            ) {
+                pods = restPods
+            } else {
                 let podResult = try await runKubectl(
                     arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
                     environment: env,
@@ -1905,24 +2280,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     )
                     pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
                 }
-            }
-        } else {
-            let podResult = try await runKubectl(
-                arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
-                environment: env,
-                timeout: unifiedLogsSelectorTimeout
-            )
-
-            let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
-            } catch {
-                let fallback = try await runKubectl(
-                    arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
-                    environment: env,
-                    timeout: unifiedLogsSelectorTimeout
-                )
-                pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
             }
         }
         let selectedPods = selectPodsForUnifiedLogs(pods)
@@ -1977,6 +2334,36 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
+                if let selector = try await deploymentSelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    deploymentName: deployment.name
+                ) {
+                    selectorMap = selector
+                } else {
+                    let deploymentJSON = try await runKubectl(
+                        arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+
+                    do {
+                        selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
+                    } catch {
+                        throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+                    }
+                }
+            }
+        } else {
+            if let selector = try await deploymentSelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                deploymentName: deployment.name
+            ) {
+                selectorMap = selector
+            } else {
                 let deploymentJSON = try await runKubectl(
                     arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
                     environment: env,
@@ -1988,18 +2375,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 } catch {
                     throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
                 }
-            }
-        } else {
-            let deploymentJSON = try await runKubectl(
-                arguments: builder.deploymentJSONArguments(context: context.name, namespace: namespace, deploymentName: deployment.name),
-                environment: env,
-                timeout: unifiedLogsSelectorTimeout
-            )
-
-            do {
-                selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
-            } catch {
-                throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
             }
         }
 
@@ -2026,6 +2401,42 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 )
             } catch {
                 try rethrowCancellationIfNeeded(error)
+                if let restPods = try await podsBySelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    selector: selector
+                ) {
+                    pods = restPods
+                } else {
+                    let podResult = try await runKubectl(
+                        arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
+                        environment: env,
+                        timeout: unifiedLogsSelectorTimeout
+                    )
+
+                    let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    do {
+                        pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
+                    } catch {
+                        let fallback = try await runKubectl(
+                            arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
+                            environment: env,
+                            timeout: unifiedLogsSelectorTimeout
+                        )
+                        pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
+                    }
+                }
+            }
+        } else {
+            if let restPods = try await podsBySelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                selector: selector
+            ) {
+                pods = restPods
+            } else {
                 let podResult = try await runKubectl(
                     arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
                     environment: env,
@@ -2043,24 +2454,6 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     )
                     pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
                 }
-            }
-        } else {
-            let podResult = try await runKubectl(
-                arguments: builder.podsByLabelSelectorArguments(context: context.name, namespace: namespace, selector: selector),
-                environment: env,
-                timeout: unifiedLogsSelectorTimeout
-            )
-
-            let podsTrimmed = podResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                pods = try parser.parsePodsListJSON(namespace: namespace, from: podsTrimmed)
-            } catch {
-                let fallback = try await runKubectl(
-                    arguments: builder.podsByLabelSelectorTextArguments(context: context.name, namespace: namespace, selector: selector),
-                    environment: env,
-                    timeout: unifiedLogsSelectorTimeout
-                )
-                pods = parser.parsePods(namespace: namespace, from: fallback.stdout)
             }
         }
         let selectedPods = selectPodsForUnifiedLogs(pods)
@@ -2180,6 +2573,15 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         name: String
     ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
+        if let manifest = try await resourceYAMLViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            kind: kind,
+            name: name
+        ) {
+            return manifest
+        }
         let result = try await runKubectl(
             arguments: builder.resourceYAMLArguments(context: context.name, namespace: namespace, kind: kind, name: name),
             environment: env
@@ -2280,8 +2682,17 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 return
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
             }
+        }
+        if try await deleteResourceViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            kind: kind,
+            name: name
+        ) {
+            return
         }
         _ = try await runKubectl(
             arguments: builder.deleteResourceArguments(context: context.name, namespace: namespace, kind: kind, name: name),
@@ -2312,8 +2723,17 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 return
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
             }
+        }
+        if try await scaleDeploymentViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            replicas: replicas
+        ) {
+            return
         }
         _ = try await runKubectl(
             arguments: builder.scaleDeploymentArguments(context: context.name, namespace: namespace, deploymentName: deploymentName, replicas: replicas),
@@ -2342,8 +2762,16 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 return
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
             }
+        }
+        if try await restartDeploymentRolloutViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName
+        ) {
+            return
         }
         _ = try await runKubectl(
             arguments: builder.rolloutRestartArguments(context: context.name, namespace: namespace, deploymentName: deploymentName),
@@ -2600,8 +3028,17 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 return
             } catch {
                 try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                // Continue with REST fallback.
             }
+        }
+        if try await patchCronJobSuspendViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            name: name,
+            suspend: suspend
+        ) {
+            return
         }
         _ = try await runKubectl(
             arguments: builder.patchCronJobSuspendArguments(
@@ -2751,6 +3188,292 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         return [
             "KUBECONFIG": urls.map(\.path).joined(separator: ":")
         ]
+    }
+
+    private func contextsViaREST(environment: [String: String]) async throws -> [KubeContext]? {
+        do {
+            return try await restClient.listContexts(environment: environment)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func namespacesViaREST(environment: [String: String], context: KubeContext) async throws -> [String]? {
+        do {
+            return try await restClient.listNamespaces(
+                environment: environment,
+                contextName: context.name,
+                timeout: commandTimeout
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func contextNamespaceViaREST(environment: [String: String], context: KubeContext) async throws -> String?? {
+        do {
+            return try await restClient.contextNamespace(
+                environment: environment,
+                contextName: context.name
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func listViaREST<T>(
+        environment: [String: String],
+        context: KubeContext,
+        resource: String,
+        namespace: String?,
+        timeout: TimeInterval,
+        parse: (String) throws -> [T]
+    ) async throws -> [T]? {
+        do {
+            let raw = try await restClient.collection(
+                environment: environment,
+                contextName: context.name,
+                resource: resource,
+                namespace: namespace,
+                timeout: timeout
+            )
+            return try parse(raw)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func resourceViaREST<T>(
+        environment: [String: String],
+        context: KubeContext,
+        kind: KubeResourceKind,
+        namespace: String,
+        name: String,
+        timeout: TimeInterval,
+        parse: (String) throws -> T
+    ) async throws -> T? {
+        do {
+            let raw = try await restClient.resourceJSON(
+                environment: environment,
+                contextName: context.name,
+                kind: kind,
+                namespace: namespace,
+                name: name,
+                timeout: timeout
+            )
+            return try parse(raw)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func podLogsViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        filter: LogTimeFilter,
+        previous: Bool,
+        timeout: TimeInterval
+    ) async throws -> String? {
+        do {
+            return try await restClient.podLogs(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                podName: podName,
+                filter: filter,
+                previous: previous,
+                timeout: timeout
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            if previous, isMissingPreviousLogsError(error) {
+                return "No previous logs available for \(podName)."
+            }
+            return nil
+        }
+    }
+
+    private func serviceSelectorViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        serviceName: String
+    ) async throws -> [String: String]? {
+        do {
+            let raw = try await restClient.serviceSelector(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                serviceName: serviceName,
+                timeout: unifiedLogsSelectorTimeout
+            )
+            return try parser.parseServiceSelector(from: raw)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func deploymentSelectorViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String
+    ) async throws -> [String: String]? {
+        do {
+            let raw = try await restClient.deploymentSelector(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                deploymentName: deploymentName,
+                timeout: unifiedLogsSelectorTimeout
+            )
+            return try parser.parseDeploymentSelector(from: raw)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func podsBySelectorViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        selector: String
+    ) async throws -> [PodSummary]? {
+        do {
+            let raw = try await restClient.podsBySelector(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                selector: selector,
+                timeout: unifiedLogsSelectorTimeout
+            )
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func resourceYAMLViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws -> String? {
+        do {
+            return try await restClient.resourceYAML(
+                environment: environment,
+                contextName: context.name,
+                kind: kind,
+                namespace: namespace,
+                name: name,
+                timeout: commandTimeout
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return nil
+        }
+    }
+
+    private func deleteResourceViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String
+    ) async throws -> Bool {
+        do {
+            try await restClient.deleteResource(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                kind: kind,
+                name: name,
+                timeout: 90
+            )
+            return true
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return false
+        }
+    }
+
+    private func scaleDeploymentViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        replicas: Int
+    ) async throws -> Bool {
+        do {
+            try await restClient.scaleDeployment(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                deploymentName: deploymentName,
+                replicas: replicas,
+                timeout: 90
+            )
+            return true
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return false
+        }
+    }
+
+    private func restartDeploymentRolloutViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String
+    ) async throws -> Bool {
+        do {
+            try await restClient.restartDeploymentRollout(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                deploymentName: deploymentName,
+                timeout: 90
+            )
+            return true
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return false
+        }
+    }
+
+    private func patchCronJobSuspendViaREST(
+        environment: [String: String],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        suspend: Bool
+    ) async throws -> Bool {
+        do {
+            try await restClient.patchCronJobSuspend(
+                environment: environment,
+                contextName: context.name,
+                namespace: namespace,
+                name: name,
+                suspend: suspend,
+                timeout: 90
+            )
+            return true
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return false
+        }
     }
 
     private func resolvedK8sAgentPath() -> String? {

@@ -1,4 +1,5 @@
 import Foundation
+import RuneCore
 
 // MARK: - Kubernetes REST helpers (Rune-owned; matches upstream API path layout)
 
@@ -27,7 +28,7 @@ public struct KubernetesListOptions: Sendable, Hashable {
         KubernetesListOptions(limit: 1)
     }
 
-    fileprivate func appendingPercentEncoded(to path: String) -> String {
+    public func appendingPercentEncoded(to path: String) -> String {
         guard path.hasPrefix("/") else { return path }
         var items: [URLQueryItem] = []
         if let limit {
@@ -69,33 +70,110 @@ public enum KubernetesRESTPath {
         namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
     }
 
+    private static func encodedNameSegment(_ name: String) -> String {
+        name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+    }
+
+    private static func apiBasePath(resource: String, namespace: String?) -> String? {
+        if let namespace {
+            return namespacedCollectionPath(namespace: namespace, resource: resource)
+        }
+
+        if let clusterScoped = clusterCollectionPath(resource: resource) {
+            return clusterScoped
+        }
+
+        switch resource {
+        case "pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "events":
+            return "/api/v1/\(resource)"
+        case "deployments", "statefulsets", "daemonsets", "replicasets":
+            return "/apis/apps/v1/\(resource)"
+        case "jobs", "cronjobs":
+            return "/apis/batch/v1/\(resource)"
+        case "ingresses", "networkpolicies":
+            return "/apis/networking.k8s.io/v1/\(resource)"
+        case "horizontalpodautoscalers":
+            return "/apis/autoscaling/v2/\(resource)"
+        case "roles", "rolebindings":
+            return "/apis/rbac.authorization.k8s.io/v1/\(resource)"
+        default:
+            return nil
+        }
+    }
+
     /// REST collection path for a **namespaced** resource, or `nil` if Rune does not map this plural yet.
     public static func namespacedCollectionPath(namespace: String, resource: String) -> String? {
         let ns = encodedNamespaceSegment(namespace)
-        switch resource {
-        case "pods", "services", "configmaps", "secrets", "persistentvolumeclaims":
+        guard let base = apiBasePath(resource: resource, namespace: nil) else { return nil }
+
+        if base.hasPrefix("/api/") {
             return "/api/v1/namespaces/\(ns)/\(resource)"
-        case "deployments", "statefulsets", "daemonsets", "replicasets":
-            return "/apis/apps/v1/namespaces/\(ns)/\(resource)"
-        case "jobs", "cronjobs":
-            return "/apis/batch/v1/namespaces/\(ns)/\(resource)"
-        case "ingresses":
-            return "/apis/networking.k8s.io/v1/namespaces/\(ns)/ingresses"
-        case "networkpolicies":
-            return "/apis/networking.k8s.io/v1/namespaces/\(ns)/networkpolicies"
-        case "horizontalpodautoscalers":
-            // autoscaling/v2 is the common API for modern clusters; older clusters fall back via kubectl count.
-            return "/apis/autoscaling/v2/namespaces/\(ns)/horizontalpodautoscalers"
-        default:
-            return nil
+        }
+
+        guard let resourceIndex = base.lastIndex(of: "/") else { return nil }
+        let prefix = String(base[..<resourceIndex])
+        return "\(prefix)/namespaces/\(ns)/\(resource)"
+    }
+
+    /// Collection path without namespace scoping (all namespaces for namespaced resources, cluster scope for cluster resources).
+    public static func collectionPath(resource: String, namespace: String?) -> String? {
+        apiBasePath(resource: resource, namespace: namespace)
+    }
+
+    public static func resourcePath(
+        namespace: String?,
+        resource: String,
+        name: String,
+        subresource: String? = nil
+    ) -> String? {
+        guard let base = collectionPath(resource: resource, namespace: namespace) else { return nil }
+        let encodedName = encodedNameSegment(name)
+        if let subresource, !subresource.isEmpty {
+            return "\(base)/\(encodedName)/\(encodedNameSegment(subresource))"
+        }
+        return "\(base)/\(encodedName)"
+    }
+
+    public static func resourceName(for kind: KubeResourceKind) -> String {
+        switch kind {
+        case .pod: return "pods"
+        case .deployment: return "deployments"
+        case .statefulSet: return "statefulsets"
+        case .daemonSet: return "daemonsets"
+        case .job: return "jobs"
+        case .cronJob: return "cronjobs"
+        case .replicaSet: return "replicasets"
+        case .service: return "services"
+        case .ingress: return "ingresses"
+        case .configMap: return "configmaps"
+        case .secret: return "secrets"
+        case .node: return "nodes"
+        case .event: return "events"
+        case .role: return "roles"
+        case .roleBinding: return "rolebindings"
+        case .clusterRole: return "clusterroles"
+        case .clusterRoleBinding: return "clusterrolebindings"
+        case .persistentVolumeClaim: return "persistentvolumeclaims"
+        case .persistentVolume: return "persistentvolumes"
+        case .storageClass: return "storageclasses"
+        case .horizontalPodAutoscaler: return "horizontalpodautoscalers"
+        case .networkPolicy: return "networkpolicies"
         }
     }
 
     /// Cluster-scoped collection path (e.g. nodes).
     public static func clusterCollectionPath(resource: String) -> String? {
         switch resource {
+        case "namespaces":
+            return "/api/v1/namespaces"
         case "nodes":
             return "/api/v1/nodes"
+        case "persistentvolumes":
+            return "/api/v1/persistentvolumes"
+        case "storageclasses":
+            return "/apis/storage.k8s.io/v1/storageclasses"
+        case "clusterroles", "clusterrolebindings":
+            return "/apis/rbac.authorization.k8s.io/v1/\(resource)"
         default:
             return nil
         }
