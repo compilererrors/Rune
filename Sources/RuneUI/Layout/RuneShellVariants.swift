@@ -22,12 +22,12 @@ enum RuneRootShellVariant: String, CaseIterable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         else {
-            // Default to SwiftUI's native split shell until the AppKit-backed variant
-            // is proven stable again in real app windows with the unified toolbar.
-            return .navigationSplitView
+            // Default to the AppKit-backed split shell: it matches the desired three-column
+            // structure but has proven stable in live runs where NavigationSplitView still drifts.
+            return .appKitSplitView
         }
 
-        return RuneRootShellVariant(rawValue: envValue) ?? .navigationSplitView
+        return RuneRootShellVariant(rawValue: envValue) ?? .appKitSplitView
     }
 }
 
