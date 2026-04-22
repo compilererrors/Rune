@@ -2473,200 +2473,39 @@ public struct RuneRootView: View {
         isYAMLEditorSheetPresented = true
     }
 
-    @ViewBuilder
-    private func yamlManifestEditorSurface(inlineEditing: Bool, implementation: ManifestInlineEditorImplementation? = nil) -> some View {
-        let resolvedImplementation = implementation ?? resolvedManifestInlineEditorImplementation
-        let activeImplementation = inlineEditing ? resolvedImplementation : .readOnlyScroll
-        let binding = yamlDraftBinding
-
-        Group {
-            switch activeImplementation {
-            case .readOnlyScroll:
-                readOnlyTextContent(
-                    yamlDisplayText,
-                    resetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)",
-                    contentStyle: .yaml
-                )
-            case .swiftUITextEditor:
-                TextEditor(text: binding)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-            case .appKitTextView:
-                AppKitManifestTextView(text: binding, isEditable: true, contentStyle: .yaml)
-            }
-        }
-        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(.thinMaterial)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-        .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    /// Read-only describe output Rune loaded from the cluster (no local editing).
-    private var describeOutputReadOnlySurface: some View {
-        readOnlyTextSurface(
-            describeDisplayText,
-            minHeight: 280,
-            resetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)",
-            contentStyle: .plainText
+    private func yamlManifestEditorSheet() -> some View {
+        ResourceYAMLEditorSheetView(
+            resourceReference: manifestResourceReference,
+            yamlText: yamlDraftBinding,
+            yamlFooterText: yamlFooterText,
+            canApplyMutations: viewModel.canApplyClusterMutations,
+            hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
+            onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onRevert: { viewModel.revertResourceYAMLDraft() },
+            onImport: { viewModel.importResourceYAMLFromFile() },
+            onExport: { viewModel.saveCurrentResourceYAML() },
+            onClose: { isYAMLEditorSheetPresented = false }
         )
     }
 
-    private func yamlManifestSheetActionBar() -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Button("Apply YAML") {
-                    viewModel.requestApplySelectedResourceYAML()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    !viewModel.canApplyClusterMutations
-                        || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
-                .help("Sends the manifest to the cluster. Closing this sheet does not.")
-
-                Button("Revert") {
-                    viewModel.revertResourceYAMLDraft()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
-
-                Button("Import…") {
-                    viewModel.importResourceYAMLFromFile()
-                }
-                .buttonStyle(.bordered)
-
-                Button("Export…") {
-                    viewModel.saveCurrentResourceYAML()
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.resourceYAML.isEmpty)
-
-                Spacer(minLength: 0)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func yamlManifestEditorSheet() -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("YAML Editor")
-                        .font(.title2.weight(.bold))
-                    Text(manifestResourceReference)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Close") {
-                    isYAMLEditorSheetPresented = false
-                }
-            }
-
-            yamlManifestSheetActionBar()
-
-            yamlManifestEditorSurface(inlineEditing: true, implementation: .appKitTextView)
-
-            if viewModel.state.resourceYAML.isEmpty {
-                Text(yamlFooterText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Text("Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .frame(minWidth: 760, minHeight: 560)
-        .background(.regularMaterial)
-    }
-
     private var yamlBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if viewModel.state.resourceYAMLHasUnsavedEdits {
-                    Text("Unsaved edits")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 0)
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button("Apply YAML") {
-                        viewModel.requestApplySelectedResourceYAML()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        !viewModel.canApplyClusterMutations
-                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
-
-                    if resolvedManifestInlineEditorImplementation.supportsInlineEditing {
-                        Button(yamlManifestIsEditing ? "Done" : "Quick Edit") {
-                            yamlManifestIsEditing.toggle()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.state.resourceYAML.isEmpty)
-                    }
-
-                    Button("Edit…") {
-                        openYAMLEditorSheet()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceYAML.isEmpty)
-
-                    Button("Revert") {
-                        viewModel.revertResourceYAMLDraft()
-                        yamlManifestIsEditing = false
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!viewModel.state.resourceYAMLHasUnsavedEdits)
-
-                    Divider()
-                        .frame(height: 16)
-
-                    Button("Import…") {
-                        viewModel.importResourceYAMLFromFile()
-                        openYAMLEditorSheet()
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Replace the editor with the contents of a YAML file")
-
-                    Button("Export…") {
-                        viewModel.saveCurrentResourceYAML()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceYAML.isEmpty)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            yamlManifestEditorSurface(inlineEditing: yamlManifestIsEditing)
-
-            if viewModel.state.resourceYAML.isEmpty {
-                Text(yamlFooterText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .onChange(of: viewModel.state.resourceYAMLBaseline) { _, _ in
-            yamlManifestIsEditing = false
-        }
+        ResourceYAMLInspectorPane(
+            resourceReference: manifestResourceReference,
+            yamlText: yamlDraftBinding,
+            yamlDisplayText: yamlDisplayText,
+            yamlFooterText: yamlFooterText,
+            baseline: viewModel.state.resourceYAMLBaseline,
+            hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
+            canApplyMutations: viewModel.canApplyClusterMutations,
+            isInlineEditing: $yamlManifestIsEditing,
+            inlineEditorImplementation: resolvedManifestInlineEditorImplementation,
+            onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onOpenEditor: { openYAMLEditorSheet() },
+            onRevert: { viewModel.revertResourceYAMLDraft() },
+            onImport: { viewModel.importResourceYAMLFromFile() },
+            onExport: { viewModel.saveCurrentResourceYAML() },
+            readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+        )
     }
 
     /// One pane at a time — avoids `ZStack` + opacity (both branches still participated in layout, causing width drift and editor jumping when switching YAML/Describe).
@@ -2682,43 +2521,15 @@ public struct RuneRootView: View {
 
     /// Describe tab: read-only describe output; cluster updates use the YAML manifest (same buffer as the YAML tab) and Apply.
     private var describeBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Describe output is read-only. Edit the YAML manifest to change the resource, then Apply.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button("Apply") {
-                        viewModel.requestApplySelectedResourceYAML()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        !viewModel.canApplyClusterMutations
-                            || viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
-
-                    Button("YAML manifest…") {
-                        openYAMLEditorSheet()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            describeOutputReadOnlySurface
-
-            Text(
-                "The pane above is describe output from the cluster. To update the cluster, open YAML manifest (or the YAML tab), edit, then Apply."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        ResourceDescribeInspectorPane(
+            describeText: describeDisplayText,
+            resourceReference: manifestResourceReference,
+            canApplyMutations: viewModel.canApplyClusterMutations,
+            yamlText: viewModel.state.resourceYAML,
+            onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onOpenYAMLEditor: { openYAMLEditorSheet() },
+            readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+        )
     }
 
     private func exportableTextPane(text: String, emptyText: String, saveAction: @escaping () -> Void) -> some View {
@@ -2731,8 +2542,8 @@ public struct RuneRootView: View {
             }
 
             ScrollView {
-                readOnlyTextContent(
-                    text.isEmpty ? emptyText : text,
+                InspectorReadOnlyTextView(
+                    text: text.isEmpty ? emptyText : text,
                     resetID: "export:\(emptyText):\((text.isEmpty ? emptyText : text).count)"
                 )
                 .padding(10)
@@ -2816,8 +2627,8 @@ public struct RuneRootView: View {
                 } else if viewModel.state.podLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     podLogsEmptyPlaceholder()
                 } else {
-                    readOnlyTextContent(
-                        viewModel.state.podLogs,
+                    InspectorReadOnlyTextView(
+                        text: viewModel.state.podLogs,
                         resetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
                     )
                     .padding(10)
@@ -2852,8 +2663,8 @@ public struct RuneRootView: View {
                 } else if viewModel.state.unifiedServiceLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     unifiedLogsEmptyPlaceholder()
                 } else {
-                    readOnlyTextContent(
-                        viewModel.state.unifiedServiceLogs,
+                    InspectorReadOnlyTextView(
+                        text: viewModel.state.unifiedServiceLogs,
                         resetID: "unifiedlogs:\(viewModel.state.selectedService?.name ?? viewModel.state.selectedDeployment?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
                     )
                     .padding(10)
@@ -2909,8 +2720,8 @@ public struct RuneRootView: View {
                         .foregroundStyle(.secondary)
 
                     ScrollView {
-                        readOnlyTextContent(
-                            execOutputText(for: result),
+                        InspectorReadOnlyTextView(
+                            text: execOutputText(for: result),
                             resetID: "exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
                         )
                         .padding(10)
@@ -3005,8 +2816,8 @@ public struct RuneRootView: View {
                             .foregroundStyle(.secondary)
 
                         ScrollView {
-                            readOnlyTextContent(
-                                execOutputText(for: result),
+                            InspectorReadOnlyTextView(
+                                text: execOutputText(for: result),
                                 resetID: "terminal-exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
                             )
                             .padding(10)
@@ -3129,41 +2940,6 @@ public struct RuneRootView: View {
         .transaction { transaction in
             transaction.animation = nil
         }
-    }
-
-    private func readOnlyTextSurface(
-        _ text: String,
-        minHeight: CGFloat,
-        resetID: String,
-        contentStyle: AppKitManifestTextView.ContentStyle = .plainText
-    ) -> some View {
-        readOnlyTextContent(text, resetID: resetID, contentStyle: contentStyle)
-            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(.thinMaterial)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-            .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func readOnlyTextContent(
-        _ text: String,
-        resetID: String,
-        contentStyle: AppKitManifestTextView.ContentStyle = .plainText
-    ) -> some View {
-        AppKitManifestTextView(
-            text: .constant(text),
-            isEditable: false,
-            resetScrollOnExternalChange: true,
-            contentStyle: contentStyle
-        )
-        .id(resetID)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder

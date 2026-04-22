@@ -65,9 +65,9 @@ enum ManifestInlineEditorImplementation: String, CaseIterable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         else {
-            return .swiftUITextEditor
+            return .appKitTextView
         }
 
-        return ManifestInlineEditorImplementation(rawValue: envValue) ?? .swiftUITextEditor
+        return ManifestInlineEditorImplementation(rawValue: envValue) ?? .appKitTextView
     }
 }
