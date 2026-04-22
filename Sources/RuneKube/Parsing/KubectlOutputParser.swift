@@ -450,8 +450,8 @@ public struct KubectlOutputParser {
         let items = try KubectlListJSON.decodeLenientListItems(
             KubeJobItem.self,
             from: raw,
-            invalidJSONMessage: "jobs JSON kunde inte tolkas",
-            invalidStructureMessage: "jobs: förväntade JSON-objekt med items"
+            invalidJSONMessage: "jobs JSON could not be parsed",
+            invalidStructureMessage: "jobs: expected JSON object with items"
         )
         return items
             .map { item in
@@ -485,8 +485,8 @@ public struct KubectlOutputParser {
         let items = try KubectlListJSON.decodeLenientListItems(
             KubeCronJobItem.self,
             from: raw,
-            invalidJSONMessage: "cronjobs JSON kunde inte tolkas",
-            invalidStructureMessage: "cronjobs: förväntade JSON-objekt med items"
+            invalidJSONMessage: "cronjobs JSON could not be parsed",
+            invalidStructureMessage: "cronjobs: expected JSON object with items"
         )
         return items
             .map { cron in

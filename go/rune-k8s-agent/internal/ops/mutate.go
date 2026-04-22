@@ -157,10 +157,10 @@ func ApplyYAML(ctx context.Context, contextName, namespace string, yamlBytes []b
 		obj := &unstructured.Unstructured{Object: raw}
 		gvk := obj.GroupVersionKind()
 		if gvk.Kind == "" || gvk.Version == "" {
-			return fmt.Errorf("manifest saknar apiVersion/kind")
+			return fmt.Errorf("manifest is missing apiVersion/kind")
 		}
 		if obj.GetName() == "" {
-			return fmt.Errorf("manifest för %s saknar metadata.name", gvk.Kind)
+			return fmt.Errorf("manifest for %s is missing metadata.name", gvk.Kind)
 		}
 		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 		if err != nil {
@@ -174,7 +174,7 @@ func ApplyYAML(ctx context.Context, contextName, namespace string, yamlBytes []b
 				obj.SetNamespace(targetNS)
 			}
 			if targetNS == "" {
-				return fmt.Errorf("manifest %s/%s kräver namespace", gvk.Kind, obj.GetName())
+				return fmt.Errorf("manifest %s/%s requires a namespace", gvk.Kind, obj.GetName())
 			}
 			res = dyn.Resource(mapping.Resource).Namespace(targetNS)
 		} else {

@@ -11,6 +11,23 @@ import XCTest
 
 @MainActor
 final class RuneSmokeTests: XCTestCase {
+    nonisolated(unsafe) private var originalDiagnosticsLogging: Any?
+
+    override func setUp() {
+        super.setUp()
+        originalDiagnosticsLogging = UserDefaults.standard.object(forKey: RuneSettingsKeys.diagnosticsLogging)
+        UserDefaults.standard.set(false, forKey: RuneSettingsKeys.diagnosticsLogging)
+    }
+
+    override func tearDown() {
+        if let originalDiagnosticsLogging {
+            UserDefaults.standard.set(originalDiagnosticsLogging, forKey: RuneSettingsKeys.diagnosticsLogging)
+        } else {
+            UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.diagnosticsLogging)
+        }
+        super.tearDown()
+    }
+
     func testKubeConfigDiscovererUsesKubeconfigAndDefaultPath() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rune-discovery-\(UUID().uuidString)", isDirectory: true)
         let kubeDirectory = root.appendingPathComponent(".kube", isDirectory: true)
@@ -65,6 +82,28 @@ final class RuneSmokeTests: XCTestCase {
         let viewModel = makeViewModel(
             runner: runner,
             bookmarkManager: BookmarkManager(store: FailingSaveBookmarkStore()),
+            kubeConfigDiscoverer: StaticKubeConfigDiscoverer(urls: [kubeconfigURL])
+        )
+
+        viewModel.bootstrap()
+
+        try await waitUntil {
+            !viewModel.state.contexts.isEmpty
+        }
+
+        XCTAssertEqual(viewModel.state.kubeConfigSources.count, 1)
+        XCTAssertEqual(viewModel.state.contexts.first?.name, "prod-main")
+    }
+
+    func testBootstrapFallsBackToDirectDiscoveredSourcesWhenBookmarkLoadFails() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let viewModel = makeViewModel(
+            runner: runner,
+            bookmarkManager: BookmarkManager(store: FailingLoadBookmarkStore()),
             kubeConfigDiscoverer: StaticKubeConfigDiscoverer(urls: [kubeconfigURL])
         )
 
@@ -580,7 +619,7 @@ final class RuneSmokeTests: XCTestCase {
 
         XCTAssertEqual(viewModel.state.pods.count, 2)
         XCTAssertEqual(viewModel.state.pods.first?.name, "api-0")
-        XCTAssertTrue(viewModel.state.lastError?.contains("Delvis laddning") == true)
+        XCTAssertTrue(viewModel.state.lastError?.contains("Partial load") == true)
         XCTAssertTrue(viewModel.state.lastError?.contains("services") == true)
     }
 
@@ -611,20 +650,20 @@ final class RuneSmokeTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         var script = baseScript(builder: builder)
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
-            stdout: "latticezone\n",
+            stdout: "lattice-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
-            stdout: "deltazone",
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "lattice-zone"))] = CommandResult(
+            stdout: "delta-zone",
             stderr: "",
             exitCode: 0
         )
-        script.removeValue(forKey: key(["kubectl"] + builder.namespaceListArguments(context: "latticezone")))
+        script.removeValue(forKey: key(["kubectl"] + builder.namespaceListArguments(context: "lattice-zone")))
 
         let runner = ScriptedCommandRunner(script: script)
         let namespacePersistence = InMemoryNamespaceListPersistenceStore(
-            values: ["latticezone": ["echozone", "deltazone", "default"]]
+            values: ["lattice-zone": ["echo-zone", "delta-zone", "default"]]
         )
         let viewModel = makeViewModel(
             runner: runner,
@@ -634,9 +673,9 @@ final class RuneSmokeTests: XCTestCase {
         viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
         try await viewModel.reloadContexts()
 
-        XCTAssertEqual(viewModel.state.selectedNamespace, "deltazone")
+        XCTAssertEqual(viewModel.state.selectedNamespace, "delta-zone")
         XCTAssertTrue(viewModel.state.namespaces.isEmpty)
-        XCTAssertFalse(viewModel.namespaceOptions.contains("echozone"))
+        XCTAssertFalse(viewModel.namespaceOptions.contains("echo-zone"))
     }
 
     func testContextSwitchPrefersContextDefaultWhenNamespaceListUnavailable() async throws {
@@ -651,19 +690,19 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
         script[key(["kubectl"] + builder.contextNamespaceArguments(context: "qa-main"))] = CommandResult(
-            stdout: "deltazone",
+            stdout: "delta-zone",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
-            stdout: "qa-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "delta-zone"))] = CommandResult(
+            stdout: "delta-pod-0   Running\n",
             stderr: "",
             exitCode: 0
         )
 
         let runner = ScriptedCommandRunner(script: script)
         let preferences = InMemoryContextPreferencesStore(
-            preferredNamespaces: ["qa-main": "foxtrotzone"]
+            preferredNamespaces: ["qa-main": "foxtrot-zone"]
         )
         let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
 
@@ -673,19 +712,19 @@ final class RuneSmokeTests: XCTestCase {
 
         try await waitUntil {
             viewModel.state.selectedContext?.name == "qa-main"
-                && viewModel.state.selectedNamespace == "deltazone"
+                && viewModel.state.selectedNamespace == "delta-zone"
         }
 
         let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
             context: "qa-main",
-            namespace: "foxtrotzone"
+            namespace: "foxtrot-zone"
         )
         let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
         XCTAssertFalse(usedStaleNamespace)
 
         let usedContextDefaultArgs = ["kubectl"] + builder.podStatusListArguments(
             context: "qa-main",
-            namespace: "deltazone"
+            namespace: "delta-zone"
         )
         let usedContextDefaultNamespace = await runner.didRun(arguments: usedContextDefaultArgs)
         XCTAssertTrue(usedContextDefaultNamespace)
@@ -698,29 +737,29 @@ final class RuneSmokeTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         var script = baseScript(builder: builder)
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
-            stdout: "latticezone\n",
+            stdout: "lattice-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
-            stdout: "deltazone",
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "lattice-zone"))] = CommandResult(
+            stdout: "delta-zone",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.namespaceListArguments(context: "latticezone"))] = CommandResult(
-            stdout: "default\ndeltazone\nechozone\n",
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "lattice-zone"))] = CommandResult(
+            stdout: "default\ndelta-zone\necho-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "latticezone", namespace: "deltazone"))] = CommandResult(
-            stdout: "article-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "lattice-zone", namespace: "delta-zone"))] = CommandResult(
+            stdout: "delta-pod-0   Running\n",
             stderr: "",
             exitCode: 0
         )
 
         let runner = ScriptedCommandRunner(script: script)
         let preferences = InMemoryContextPreferencesStore(
-            preferredNamespaces: ["latticezone": "echozone"]
+            preferredNamespaces: ["lattice-zone": "echo-zone"]
         )
         let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
 
@@ -728,19 +767,19 @@ final class RuneSmokeTests: XCTestCase {
         try await viewModel.reloadContexts()
 
         try await waitUntil {
-            viewModel.state.selectedContext?.name == "latticezone"
-                && viewModel.state.selectedNamespace == "deltazone"
+            viewModel.state.selectedContext?.name == "lattice-zone"
+                && viewModel.state.selectedNamespace == "delta-zone"
         }
 
         let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
-            context: "latticezone",
-            namespace: "echozone"
+            context: "lattice-zone",
+            namespace: "echo-zone"
         )
         let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
         XCTAssertFalse(usedStaleNamespace)
 
-        XCTAssertEqual(viewModel.namespaceOptions.first, "deltazone")
-        XCTAssertTrue(viewModel.namespaceOptions.contains("echozone"))
+        XCTAssertEqual(viewModel.namespaceOptions.first, "delta-zone")
+        XCTAssertTrue(viewModel.namespaceOptions.contains("echo-zone"))
     }
 
     func testContextSwitchPrefersContextDefaultOverSavedNamespaceWhenNamespacesLoad() async throws {
@@ -755,24 +794,24 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
         script[key(["kubectl"] + builder.contextNamespaceArguments(context: "qa-main"))] = CommandResult(
-            stdout: "deltazone",
+            stdout: "delta-zone",
             stderr: "",
             exitCode: 0
         )
         script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
-            stdout: "default\ndeltazone\nfoxtrotzone\n",
+            stdout: "default\ndelta-zone\nfoxtrot-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
-            stdout: "qa-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "delta-zone"))] = CommandResult(
+            stdout: "delta-pod-0   Running\n",
             stderr: "",
             exitCode: 0
         )
 
         let runner = ScriptedCommandRunner(script: script)
         let preferences = InMemoryContextPreferencesStore(
-            preferredNamespaces: ["qa-main": "foxtrotzone"]
+            preferredNamespaces: ["qa-main": "foxtrot-zone"]
         )
         let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
 
@@ -782,12 +821,12 @@ final class RuneSmokeTests: XCTestCase {
 
         try await waitUntil {
             viewModel.state.selectedContext?.name == "qa-main"
-                && viewModel.state.selectedNamespace == "deltazone"
+                && viewModel.state.selectedNamespace == "delta-zone"
         }
 
         let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
             context: "qa-main",
-            namespace: "foxtrotzone"
+            namespace: "foxtrot-zone"
         )
         let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
         XCTAssertFalse(usedStaleNamespace)
@@ -810,19 +849,19 @@ final class RuneSmokeTests: XCTestCase {
             exitCode: 0
         )
         script[key(["kubectl"] + builder.namespaceListArguments(context: "qa-main"))] = CommandResult(
-            stdout: "default\ndeltazone\nfoxtrotzone\n",
+            stdout: "default\ndelta-zone\nfoxtrot-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "deltazone"))] = CommandResult(
-            stdout: "qa-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "qa-main", namespace: "delta-zone"))] = CommandResult(
+            stdout: "delta-pod-0   Running\n",
             stderr: "",
             exitCode: 0
         )
 
         let runner = ScriptedCommandRunner(script: script)
         let preferences = InMemoryContextPreferencesStore(
-            preferredNamespaces: ["qa-main": "foxtrotzone"]
+            preferredNamespaces: ["qa-main": "foxtrot-zone"]
         )
         let viewModel = makeViewModel(runner: runner, contextPreferences: preferences)
 
@@ -832,12 +871,12 @@ final class RuneSmokeTests: XCTestCase {
 
         try await waitUntil {
             viewModel.state.selectedContext?.name == "qa-main"
-                && viewModel.state.selectedNamespace == "deltazone"
+                && viewModel.state.selectedNamespace == "delta-zone"
         }
 
         let staleNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
             context: "qa-main",
-            namespace: "foxtrotzone"
+            namespace: "foxtrot-zone"
         )
         let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
         XCTAssertFalse(usedStaleNamespace)
@@ -850,22 +889,22 @@ final class RuneSmokeTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         var script = baseScript(builder: builder)
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
-            stdout: "prod-main\nlatticezone\n",
+            stdout: "prod-main\nvector-delta-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "latticezone"))] = CommandResult(
-            stdout: "echozone",
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vector-delta-zone"))] = CommandResult(
+            stdout: "echo-zone",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.namespaceListArguments(context: "latticezone"))] = CommandResult(
-            stdout: "default\ndeltazone\nechozone\n",
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "vector-delta-zone"))] = CommandResult(
+            stdout: "default\ndelta-zone\necho-zone\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "latticezone", namespace: "deltazone"))] = CommandResult(
-            stdout: "article-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vector-delta-zone", namespace: "delta-zone"))] = CommandResult(
+            stdout: "delta-pod-0   Running\n",
             stderr: "",
             exitCode: 0
         )
@@ -875,16 +914,16 @@ final class RuneSmokeTests: XCTestCase {
 
         viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
         try await viewModel.reloadContexts()
-        viewModel.setContext(KubeContext(name: "latticezone"))
+        viewModel.setContext(KubeContext(name: "vector-delta-zone"))
 
         try await waitUntil {
-            viewModel.state.selectedContext?.name == "latticezone"
-                && viewModel.state.selectedNamespace == "deltazone"
+            viewModel.state.selectedContext?.name == "vector-delta-zone"
+                && viewModel.state.selectedNamespace == "delta-zone"
         }
 
         let wrongNamespaceArgs = ["kubectl"] + builder.podStatusListArguments(
-            context: "latticezone",
-            namespace: "echozone"
+            context: "vector-delta-zone",
+            namespace: "echo-zone"
         )
         let usedWrongNamespace = await runner.didRun(arguments: wrongNamespaceArgs)
         XCTAssertFalse(usedWrongNamespace)
@@ -1167,50 +1206,50 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertEqual(viewModel.state.selectedService?.name, "api-svc")
     }
 
-    func testCommandPaletteNamespaceSwitchWorksInCinderzoneContext() async throws {
+    func testCommandPaletteNamespaceSwitchWorksInSyntheticContext() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
 
         let builder = KubectlCommandBuilder()
         var script = baseScript(builder: builder)
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
-            stdout: "vectorprod\n",
+            stdout: "vector-prod\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vectorprod"))] = CommandResult(
-            stdout: "cert-manager",
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vector-prod"))] = CommandResult(
+            stdout: "gamma-hub",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.namespaceListArguments(context: "vectorprod"))] = CommandResult(
-            stdout: "cert-manager\ncinderzone\ndefault\n",
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "vector-prod"))] = CommandResult(
+            stdout: "gamma-hub\ncinder-zone\ndefault\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
-            stdout: "cert-manager-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vector-prod", namespace: "gamma-hub"))] = CommandResult(
+            stdout: "gamma-hub-0   Running\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
-            stdout: "cinderzone-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vector-prod", namespace: "cinder-zone"))] = CommandResult(
+            stdout: "cinder-node-0   Running\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+        script[key(["kubectl"] + builder.podListArguments(context: "vector-prod", namespace: "gamma-hub"))] = CommandResult(
             stdout: """
             {"items":[
-            {"metadata":{"name":"cert-manager-0","namespace":"cert-manager","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            {"metadata":{"name":"gamma-hub-0","namespace":"gamma-hub","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
             ]}
             """,
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+        script[key(["kubectl"] + builder.podListArguments(context: "vector-prod", namespace: "cinder-zone"))] = CommandResult(
             stdout: """
             {"items":[
-            {"metadata":{"name":"cinderzone-api-0","namespace":"cinderzone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            {"metadata":{"name":"cinder-node-0","namespace":"cinder-zone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
             ]}
             """,
             stderr: "",
@@ -1224,37 +1263,37 @@ final class RuneSmokeTests: XCTestCase {
         try await viewModel.reloadContexts()
 
         try await waitUntil {
-            viewModel.state.selectedContext?.name == "vectorprod"
-                && viewModel.state.selectedNamespace == "cert-manager"
+            viewModel.state.selectedContext?.name == "vector-prod"
+                && viewModel.state.selectedNamespace == "gamma-hub"
         }
 
         viewModel.setSection(.workloads)
         viewModel.setWorkloadKind(.pod)
 
         let namespaceRows = viewModel.commandPaletteItems(query: ":ns")
-        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cert-manager" }))
-        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinderzone" }))
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "gamma-hub" }))
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinder-zone" }))
 
-        guard let cinderzoneItem = namespaceRows.first(where: { $0.title == "cinderzone" }) else {
-            XCTFail("Expected cinderzone namespace row in command palette")
+        guard let targetItem = namespaceRows.first(where: { $0.title == "cinder-zone" }) else {
+            XCTFail("Expected synthetic namespace row in command palette")
             return
         }
 
-        viewModel.executeCommandPaletteItem(cinderzoneItem)
+        viewModel.executeCommandPaletteItem(targetItem)
 
         try await waitUntil {
-            viewModel.state.selectedNamespace == "cinderzone"
+            viewModel.state.selectedNamespace == "cinder-zone"
         }
 
-        let cinderzoneArgs = ["kubectl"] + builder.podListArguments(
-            context: "vectorprod",
-            namespace: "cinderzone"
+        let targetArgs = ["kubectl"] + builder.podListArguments(
+            context: "vector-prod",
+            namespace: "cinder-zone"
         )
         try await waitUntil {
-            await runner.didRun(arguments: cinderzoneArgs)
+            await runner.didRun(arguments: targetArgs)
         }
-        let calledCinderzoneNamespace = await runner.didRun(arguments: cinderzoneArgs)
-        XCTAssertTrue(calledCinderzoneNamespace)
+        let calledTargetNamespace = await runner.didRun(arguments: targetArgs)
+        XCTAssertTrue(calledTargetNamespace)
         try await waitUntil { !viewModel.state.isLoading }
     }
 
@@ -1265,43 +1304,43 @@ final class RuneSmokeTests: XCTestCase {
         let builder = KubectlCommandBuilder()
         var script = baseScript(builder: builder)
         script[key(["kubectl"] + builder.contextListArguments())] = CommandResult(
-            stdout: "prod-main\nvectorprod\n",
+            stdout: "prod-main\nvector-prod\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vectorprod"))] = CommandResult(
-            stdout: "cert-manager",
+        script[key(["kubectl"] + builder.contextNamespaceArguments(context: "vector-prod"))] = CommandResult(
+            stdout: "gamma-hub",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.namespaceListArguments(context: "vectorprod"))] = CommandResult(
-            stdout: "cert-manager\ncinderzone\ndefault\n",
+        script[key(["kubectl"] + builder.namespaceListArguments(context: "vector-prod"))] = CommandResult(
+            stdout: "gamma-hub\ncinder-zone\ndefault\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
-            stdout: "cert-manager-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vector-prod", namespace: "gamma-hub"))] = CommandResult(
+            stdout: "gamma-hub-0   Running\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podStatusListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
-            stdout: "cinderzone-api-0   Running\n",
+        script[key(["kubectl"] + builder.podStatusListArguments(context: "vector-prod", namespace: "cinder-zone"))] = CommandResult(
+            stdout: "cinder-node-0   Running\n",
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cert-manager"))] = CommandResult(
+        script[key(["kubectl"] + builder.podListArguments(context: "vector-prod", namespace: "gamma-hub"))] = CommandResult(
             stdout: """
             {"items":[
-            {"metadata":{"name":"cert-manager-0","namespace":"cert-manager","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            {"metadata":{"name":"gamma-hub-0","namespace":"gamma-hub","creationTimestamp":"2026-04-16T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
             ]}
             """,
             stderr: "",
             exitCode: 0
         )
-        script[key(["kubectl"] + builder.podListArguments(context: "vectorprod", namespace: "cinderzone"))] = CommandResult(
+        script[key(["kubectl"] + builder.podListArguments(context: "vector-prod", namespace: "cinder-zone"))] = CommandResult(
             stdout: """
             {"items":[
-            {"metadata":{"name":"cinderzone-api-0","namespace":"cinderzone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
+            {"metadata":{"name":"cinder-node-0","namespace":"cinder-zone","creationTimestamp":"2026-04-16T10:01:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":0}]}}
             ]}
             """,
             stderr: "",
@@ -1314,11 +1353,11 @@ final class RuneSmokeTests: XCTestCase {
         viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
         try await viewModel.reloadContexts()
 
-        viewModel.executeCommandPaletteQuery(":ctx vectorprod")
+        viewModel.executeCommandPaletteQuery(":ctx vector-prod")
 
         try await waitUntil {
-            viewModel.state.selectedContext?.name == "vectorprod"
-                && viewModel.state.selectedNamespace == "cert-manager"
+            viewModel.state.selectedContext?.name == "vector-prod"
+                && viewModel.state.selectedNamespace == "gamma-hub"
         }
 
         viewModel.setSection(.workloads)
@@ -1326,23 +1365,23 @@ final class RuneSmokeTests: XCTestCase {
 
         let namespaceRows = viewModel.commandPaletteItems(query: ":ns")
         XCTAssertFalse(namespaceRows.contains(where: { $0.title == "platform" }))
-        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinderzone" }))
+        XCTAssertTrue(namespaceRows.contains(where: { $0.title == "cinder-zone" }))
 
-        viewModel.executeCommandPaletteQuery(":ns cinderzone")
+        viewModel.executeCommandPaletteQuery(":ns cinder-zone")
 
         try await waitUntil {
-            viewModel.state.selectedNamespace == "cinderzone"
+            viewModel.state.selectedNamespace == "cinder-zone"
         }
 
-        let cinderzoneArgs = ["kubectl"] + builder.podListArguments(
-            context: "vectorprod",
-            namespace: "cinderzone"
+        let targetArgs = ["kubectl"] + builder.podListArguments(
+            context: "vector-prod",
+            namespace: "cinder-zone"
         )
         try await waitUntil {
-            await runner.didRun(arguments: cinderzoneArgs)
+            await runner.didRun(arguments: targetArgs)
         }
-        let calledCinderzoneNamespace = await runner.didRun(arguments: cinderzoneArgs)
-        XCTAssertTrue(calledCinderzoneNamespace)
+        let calledTargetNamespace = await runner.didRun(arguments: targetArgs)
+        XCTAssertTrue(calledTargetNamespace)
         try await waitUntil { !viewModel.state.isLoading }
     }
 
@@ -1943,6 +1982,14 @@ private final class FailingSaveBookmarkStore: BookmarkStore {
     func saveRecords(_ records: [BookmarkRecord]) throws {
         throw NSError(domain: "RuneTests", code: 17, userInfo: [NSLocalizedDescriptionKey: "save failed"])
     }
+}
+
+private final class FailingLoadBookmarkStore: BookmarkStore {
+    func loadRecords() throws -> [BookmarkRecord] {
+        throw NSError(domain: "RuneTests", code: 18, userInfo: [NSLocalizedDescriptionKey: "load failed"])
+    }
+
+    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private final class NoopPicker: KubeConfigPicking {

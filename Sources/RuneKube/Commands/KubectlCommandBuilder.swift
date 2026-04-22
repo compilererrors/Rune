@@ -446,7 +446,8 @@ public struct KubectlCommandBuilder {
         container: String?,
         filter: LogTimeFilter,
         previous: Bool,
-        follow: Bool
+        follow: Bool,
+        profile: LogQueryProfile = .pod
     ) -> [String] {
         // Client-side ceiling so the apiserver does not hang indefinitely (process runner also enforces a timeout).
         var args: [String] = [
@@ -462,22 +463,22 @@ public struct KubectlCommandBuilder {
             args += ["-c", container]
         }
 
+        let query = filter.resolvedLogQuery(profile: profile)
+
         switch filter {
         case .all:
-            // Plain `kubectl logs` feel: bounded tail (full stream is often huge / times out).
-            args.append("--tail=200")
+            args.append("--tail=\(query.tailLines)")
         case let .tailLines(lines):
             args.append("--tail=\(max(1, lines))")
         case .lastMinutes, .lastHours, .lastDays, .since:
-            if let since = filter.kubectlSinceArgument {
-                if filter.usesSinceTime {
+            if let since = query.since {
+                if query.usesSinceTime {
                     args += ["--since-time", since]
                 } else {
                     args += ["--since", since]
                 }
             }
-            // Cap bytes returned when using a time window (avoids multi-minute transfers).
-            args.append("--tail=5000")
+            args.append("--tail=\(query.tailLines)")
         }
 
         if previous {

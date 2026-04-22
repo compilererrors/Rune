@@ -93,7 +93,7 @@ func resolveServicePod(ctx context.Context, clientset *kubernetes.Clientset, nam
 		return "", err
 	}
 	if len(service.Spec.Selector) == 0 {
-		return "", fmt.Errorf("service %s saknar selector", serviceName)
+		return "", fmt.Errorf("service %s is missing a selector", serviceName)
 	}
 	selectorParts := make([]string, 0, len(service.Spec.Selector))
 	for key, value := range service.Spec.Selector {
@@ -113,7 +113,7 @@ func resolveServicePod(ctx context.Context, clientset *kubernetes.Clientset, nam
 		return "", err
 	}
 	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("inga pods hittades för service %s", serviceName)
+		return "", fmt.Errorf("no pods found for service %s", serviceName)
 	}
 	// Prefer Running pod, otherwise first available.
 	for _, pod := range pods.Items {

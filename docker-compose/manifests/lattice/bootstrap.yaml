@@ -1,0 +1,739 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: delta-zone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: echo-zone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foxtrot-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: delta-runner
+  namespace: delta-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: echo-runner
+  namespace: echo-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foxtrot-runner
+  namespace: foxtrot-zone
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: delta-grid
+  namespace: delta-zone
+data:
+  FEATURE_FLAG: "true"
+  GRID_MODE: "delta"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: echo-grid
+  namespace: echo-zone
+data:
+  FEATURE_FLAG: "true"
+  GRID_MODE: "echo"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: foxtrot-grid
+  namespace: foxtrot-zone
+data:
+  FEATURE_FLAG: "false"
+  GRID_MODE: "foxtrot"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: delta-seal
+  namespace: delta-zone
+type: Opaque
+stringData:
+  token: delta-secret-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: echo-seal
+  namespace: echo-zone
+type: Opaque
+stringData:
+  token: echo-secret-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: foxtrot-seal
+  namespace: foxtrot-zone
+type: Opaque
+stringData:
+  token: foxtrot-secret-token
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: delta-default-deny
+  namespace: delta-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: echo-default-deny
+  namespace: echo-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: foxtrot-default-deny
+  namespace: foxtrot-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: delta-reader
+  namespace: delta-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: delta-reader-binding
+  namespace: delta-zone
+subjects:
+  - kind: ServiceAccount
+    name: delta-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: delta-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: echo-reader
+  namespace: echo-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: echo-reader-binding
+  namespace: echo-zone
+subjects:
+  - kind: ServiceAccount
+    name: echo-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: echo-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foxtrot-reader
+  namespace: foxtrot-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foxtrot-reader-binding
+  namespace: foxtrot-zone
+subjects:
+  - kind: ServiceAccount
+    name: foxtrot-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foxtrot-reader
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aurora-signal-weaver
+  namespace: delta-zone
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: aurora-signal-weaver
+  template:
+    metadata:
+      labels:
+        app: aurora-signal-weaver
+        tier: api
+    spec:
+      containers:
+        - name: aurora-signal-weaver
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "aurora-signal-weaver heartbeat"; sleep 16; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aurora-signal-weaver
+  namespace: delta-zone
+spec:
+  selector:
+    app: aurora-signal-weaver
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebula-vector-engine
+  namespace: delta-zone
+spec:
+  replicas: 7
+  selector:
+    matchLabels:
+      app: nebula-vector-engine
+  template:
+    metadata:
+      labels:
+        app: nebula-vector-engine
+        tier: worker
+    spec:
+      containers:
+        - name: nebula-vector-engine
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "nebula-vector-engine rebuild"; sleep 17; done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ember-vault-cipher
+  namespace: delta-zone
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ember-vault-cipher
+  template:
+    metadata:
+      labels:
+        app: ember-vault-cipher
+        tier: edge
+    spec:
+      containers:
+        - name: ember-vault-cipher
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "ember-vault-cipher relay"; sleep 18; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ember-vault-cipher
+  namespace: delta-zone
+spec:
+  selector:
+    app: ember-vault-cipher
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: delta-vault-core
+  namespace: delta-zone
+spec:
+  clusterIP: None
+  selector:
+    app: delta-vault-core
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: delta-vault-core
+  namespace: delta-zone
+spec:
+  serviceName: delta-vault-core
+  replicas: 3
+  selector:
+    matchLabels:
+      app: delta-vault-core
+  template:
+    metadata:
+      labels:
+        app: delta-vault-core
+    spec:
+      containers:
+        - name: delta-vault-core
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "delta-vault-core snapshot $(hostname)"; sleep 22; done
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 512Mi
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: delta-node-shadow
+  namespace: delta-zone
+spec:
+  selector:
+    matchLabels:
+      app: delta-node-shadow
+  template:
+    metadata:
+      labels:
+        app: delta-node-shadow
+    spec:
+      containers:
+        - name: delta-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "delta-node-shadow on $(hostname)"; sleep 32; done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: midnight-echo-once
+  namespace: delta-zone
+spec:
+  completions: 4
+  parallelism: 4
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: midnight-echo-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "midnight echo pass" && sleep 5
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gamma-spline-rollup
+  namespace: delta-zone
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: gamma-spline-rollup
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "gamma spline rollup"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ember-vault-cipher
+  namespace: delta-zone
+spec:
+  rules:
+    - host: ember-vault-cipher.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ember-vault-cipher
+                port:
+                  number: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aurora-signal-weaver
+  namespace: delta-zone
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aurora-signal-weaver
+  minReplicas: 3
+  maxReplicas: 14
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-beacon
+  namespace: echo-zone
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: echo-beacon
+  template:
+    metadata:
+      labels:
+        app: echo-beacon
+        tier: api
+    spec:
+      containers:
+        - name: echo-beacon
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "echo-beacon pulse"; sleep 18; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-beacon
+  namespace: echo-zone
+spec:
+  selector:
+    app: echo-beacon
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hollow-suggester
+  namespace: echo-zone
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: hollow-suggester
+  template:
+    metadata:
+      labels:
+        app: hollow-suggester
+        tier: worker
+    spec:
+      containers:
+        - name: hollow-suggester
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "hollow-suggester rebuild"; sleep 20; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-vault-core
+  namespace: echo-zone
+spec:
+  clusterIP: None
+  selector:
+    app: echo-vault-core
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: echo-vault-core
+  namespace: echo-zone
+spec:
+  serviceName: echo-vault-core
+  replicas: 2
+  selector:
+    matchLabels:
+      app: echo-vault-core
+  template:
+    metadata:
+      labels:
+        app: echo-vault-core
+    spec:
+      containers:
+        - name: echo-vault-core
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "echo-vault-core persist $(hostname)"; sleep 24; done
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 256Mi
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: echo-node-shadow
+  namespace: echo-zone
+spec:
+  selector:
+    matchLabels:
+      app: echo-node-shadow
+  template:
+    metadata:
+      labels:
+        app: echo-node-shadow
+    spec:
+      containers:
+        - name: echo-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "echo-node-shadow on $(hostname)"; sleep 36; done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: echo-index-once
+  namespace: echo-zone
+spec:
+  completions: 3
+  parallelism: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: echo-index-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "echo index" && sleep 5
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-beacon
+  namespace: echo-zone
+spec:
+  rules:
+    - host: echo-beacon.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: echo-beacon
+                port:
+                  number: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foxtrot-orchestrator
+  namespace: foxtrot-zone
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: foxtrot-orchestrator
+  template:
+    metadata:
+      labels:
+        app: foxtrot-orchestrator
+        tier: api
+    spec:
+      containers:
+        - name: foxtrot-orchestrator
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "foxtrot-orchestrator route"; sleep 19; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: foxtrot-orchestrator
+  namespace: foxtrot-zone
+spec:
+  selector:
+    app: foxtrot-orchestrator
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foxtrot-signal
+  namespace: foxtrot-zone
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: foxtrot-signal
+  template:
+    metadata:
+      labels:
+        app: foxtrot-signal
+        tier: worker
+    spec:
+      containers:
+        - name: foxtrot-signal
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "foxtrot-signal emit"; sleep 21; done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: foxtrot-node-shadow
+  namespace: foxtrot-zone
+spec:
+  selector:
+    matchLabels:
+      app: foxtrot-node-shadow
+  template:
+    metadata:
+      labels:
+        app: foxtrot-node-shadow
+    spec:
+      containers:
+        - name: foxtrot-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "foxtrot-node-shadow on $(hostname)"; sleep 38; done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nightly-knot-once
+  namespace: foxtrot-zone
+spec:
+  completions: 2
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: nightly-knot-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "nightly knot pass" && sleep 5
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-knot-loop
+  namespace: foxtrot-zone
+spec:
+  schedule: "*/25 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: nightly-knot-loop
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "nightly knot loop"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: delta-replay-loop
+  namespace: foxtrot-zone
+spec:
+  schedule: "*/35 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: delta-replay-loop
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "delta replay loop"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: foxtrot-orchestrator
+  namespace: foxtrot-zone
+spec:
+  rules:
+    - host: foxtrot-orchestrator.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: foxtrot-orchestrator
+                port:
+                  number: 8080

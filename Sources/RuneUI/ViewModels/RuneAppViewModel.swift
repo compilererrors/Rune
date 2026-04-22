@@ -1205,162 +1205,162 @@ public final class RuneAppViewModel: ObservableObject {
 
         switch kind {
         case "pod":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
             if let pod = state.pods.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectPod(pod, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "deployment":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.deployment, trackHistory: false, triggerReload: false)
             if let deployment = state.deployments.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.deployment, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectDeployment(deployment, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "statefulset":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.statefulSet, trackHistory: false, triggerReload: false)
             if let resource = state.statefulSets.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.statefulSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectStatefulSet(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "daemonset":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.daemonSet, trackHistory: false, triggerReload: false)
             if let resource = state.daemonSets.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.daemonSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectDaemonSet(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "job":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.job, trackHistory: false, triggerReload: false)
             if let resource = state.jobs.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.job, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectJob(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "cronjob":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
             if let resource = state.cronJobs.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectCronJob(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "replicaset":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
             if let resource = state.replicaSets.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectReplicaSet(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "service":
-            setSection(.networking, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.service, trackHistory: false, triggerReload: false)
             if let service = state.services.first(where: { $0.name == name }) {
+                setSection(.networking, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.service, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectService(service, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "ingress":
-            setSection(.networking, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
             if let resource = state.ingresses.first(where: { $0.name == name }) {
+                setSection(.networking, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectIngress(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "configmap":
-            setSection(.config, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
             if let resource = state.configMaps.first(where: { $0.name == name }) {
+                setSection(.config, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectConfigMap(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "secret":
-            setSection(.config, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.secret, trackHistory: false, triggerReload: false)
             if let resource = state.secrets.first(where: { $0.name == name }) {
+                setSection(.config, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.secret, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectSecret(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "node":
-            setSection(.storage, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.node, trackHistory: false, triggerReload: false)
             if let resource = state.nodes.first(where: { $0.name == name }) {
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.node, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectNode(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolumeclaim":
-            setSection(.storage, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
             if let resource = state.persistentVolumeClaims.first(where: { $0.name == name }) {
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectPersistentVolumeClaim(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolume":
-            setSection(.storage, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
             if let resource = state.persistentVolumes.first(where: { $0.name == name }) {
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectPersistentVolume(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "storageclass":
-            setSection(.storage, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
             if let resource = state.storageClasses.first(where: { $0.name == name }) {
+                setSection(.storage, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectStorageClass(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "horizontalpodautoscaler":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
             if let resource = state.horizontalPodAutoscalers.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectHorizontalPodAutoscaler(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "networkpolicy":
-            setSection(.networking, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
             if let resource = state.networkPolicies.first(where: { $0.name == name }) {
+                setSection(.networking, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectNetworkPolicy(resource, trackHistory: true)
             } else {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "":
-            setSection(.workloads, trackHistory: false, triggerReload: false)
-            setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
             if let pod = state.pods.first(where: { $0.name == name }) {
+                setSection(.workloads, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
                 selectPod(pod, trackHistory: true)
             } else {
@@ -3121,7 +3121,7 @@ public final class RuneAppViewModel: ObservableObject {
             state.clearError()
         } else {
             let warningText = warnings.joined(separator: " | ")
-            state.setErrorMessage("Delvis laddning: \(warningText)")
+            state.setErrorMessage("Partial load: \(warningText)")
             diagnostics.log("loadResourceSnapshot partial warnings: \(warningText)")
             diagnostics.trace("snapshot", "partial load warnings: \(warningText)")
         }
@@ -3383,7 +3383,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func resolvedKubeConfigSources(fallbackURLs: [URL]) throws -> [KubeConfigSource] {
-        let bookmarked = try bookmarkManager.loadKubeConfigSources()
+        let bookmarked: [KubeConfigSource]
+        do {
+            bookmarked = try bookmarkManager.loadKubeConfigSources()
+        } catch {
+            diagnostics.log("bookmark load failed, falling back to direct kubeconfig paths: \(error.localizedDescription)")
+            bookmarked = []
+        }
         let fallback = fallbackURLs.map(KubeConfigSource.init(url:))
 
         var merged: [String: KubeConfigSource] = [:]
@@ -6265,7 +6271,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         if let activeQuote {
-            throw RuneError.invalidInput(message: "saknar avslutande citationstecken \(activeQuote).")
+            throw RuneError.invalidInput(message: "missing closing quote \(activeQuote).")
         }
 
         if !current.isEmpty {
@@ -6273,7 +6279,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         guard !tokens.isEmpty else {
-            throw RuneError.invalidInput(message: "exec-kommandot kunde inte tolkas.")
+            throw RuneError.invalidInput(message: "the exec command could not be parsed.")
         }
 
         return tokens

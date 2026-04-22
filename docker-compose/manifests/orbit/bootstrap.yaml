@@ -1,0 +1,741 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alpha-zone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bravo-zone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: charlie-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orbit-runner
+  namespace: alpha-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bravo-runner
+  namespace: bravo-zone
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: charlie-runner
+  namespace: charlie-zone
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orbit-grid
+  namespace: alpha-zone
+data:
+  FEATURE_FLAG: "true"
+  LOG_STYLE: "orbit"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bravo-grid
+  namespace: bravo-zone
+data:
+  FEATURE_FLAG: "false"
+  LOG_STYLE: "bravo"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: charlie-routing
+  namespace: charlie-zone
+data:
+  FEATURE_FLAG: "true"
+  LOG_STYLE: "charlie"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orbit-seal
+  namespace: alpha-zone
+type: Opaque
+stringData:
+  token: orbit-secret-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bravo-seal
+  namespace: bravo-zone
+type: Opaque
+stringData:
+  token: bravo-secret-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: charlie-seal
+  namespace: charlie-zone
+type: Opaque
+stringData:
+  token: charlie-secret-token
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alpha-default-deny
+  namespace: alpha-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bravo-default-deny
+  namespace: bravo-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: charlie-default-deny
+  namespace: charlie-zone
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: alpha-reader
+  namespace: alpha-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alpha-reader-binding
+  namespace: alpha-zone
+subjects:
+  - kind: ServiceAccount
+    name: orbit-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: alpha-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bravo-reader
+  namespace: bravo-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bravo-reader-binding
+  namespace: bravo-zone
+subjects:
+  - kind: ServiceAccount
+    name: bravo-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bravo-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: charlie-reader
+  namespace: charlie-zone
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: charlie-reader-binding
+  namespace: charlie-zone
+subjects:
+  - kind: ServiceAccount
+    name: charlie-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: charlie-reader
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orbit-lens
+  namespace: alpha-zone
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: orbit-lens
+  template:
+    metadata:
+      labels:
+        app: orbit-lens
+        tier: frontend
+    spec:
+      serviceAccountName: orbit-runner
+      containers:
+        - name: orbit-lens
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              while true; do
+                echo "orbit-lens heartbeat $(date -u +%H:%M:%S)"
+                sleep 20
+              done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbit-lens
+  namespace: alpha-zone
+spec:
+  selector:
+    app: orbit-lens
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ember-gate
+  namespace: alpha-zone
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: ember-gate
+  template:
+    metadata:
+      labels:
+        app: ember-gate
+        tier: worker
+    spec:
+      containers:
+        - name: ember-gate
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              while true; do
+                echo "ember-gate pulse $(date -u +%H:%M:%S)"
+                sleep 25
+              done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbit-vault
+  namespace: alpha-zone
+spec:
+  clusterIP: None
+  selector:
+    app: orbit-vault
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: orbit-vault
+  namespace: alpha-zone
+spec:
+  serviceName: orbit-vault
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orbit-vault
+  template:
+    metadata:
+      labels:
+        app: orbit-vault
+    spec:
+      containers:
+        - name: orbit-vault
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              while true; do
+                echo "orbit-vault checkpoint $(hostname)"
+                sleep 30
+              done
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 256Mi
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alpha-node-shadow
+  namespace: alpha-zone
+spec:
+  selector:
+    matchLabels:
+      app: alpha-node-shadow
+  template:
+    metadata:
+      labels:
+        app: alpha-node-shadow
+    spec:
+      containers:
+        - name: alpha-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              while true; do
+                echo "alpha-node-shadow on $(hostname)"
+                sleep 45
+              done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orbit-smoke-once
+  namespace: alpha-zone
+spec:
+  completions: 3
+  parallelism: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: orbit-smoke-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "orbit smoke pass" && sleep 5
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: orbit-sweep-cycle
+  namespace: alpha-zone
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: orbit-sweep-cycle
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "orbit sweep cycle"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orbit-lens
+  namespace: alpha-zone
+spec:
+  rules:
+    - host: orbit-lens.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orbit-lens
+                port:
+                  number: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orbit-lens
+  namespace: alpha-zone
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orbit-lens
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cinder-pulse
+  namespace: bravo-zone
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: cinder-pulse
+  template:
+    metadata:
+      labels:
+        app: cinder-pulse
+        tier: api
+    spec:
+      containers:
+        - name: cinder-pulse
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "cinder-pulse sync"; sleep 18; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cinder-pulse
+  namespace: bravo-zone
+spec:
+  selector:
+    app: cinder-pulse
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velvet-fold
+  namespace: bravo-zone
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: velvet-fold
+  template:
+    metadata:
+      labels:
+        app: velvet-fold
+        tier: worker
+    spec:
+      containers:
+        - name: velvet-fold
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "velvet-fold fold"; sleep 23; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bravo-ledger
+  namespace: bravo-zone
+spec:
+  clusterIP: None
+  selector:
+    app: bravo-ledger
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bravo-ledger
+  namespace: bravo-zone
+spec:
+  serviceName: bravo-ledger
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bravo-ledger
+  template:
+    metadata:
+      labels:
+        app: bravo-ledger
+    spec:
+      containers:
+        - name: bravo-ledger
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "bravo-ledger record"; sleep 26; done
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 128Mi
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: bravo-node-shadow
+  namespace: bravo-zone
+spec:
+  selector:
+    matchLabels:
+      app: bravo-node-shadow
+  template:
+    metadata:
+      labels:
+        app: bravo-node-shadow
+    spec:
+      containers:
+        - name: bravo-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "bravo-node-shadow on $(hostname)"; sleep 40; done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bravo-snapshot-once
+  namespace: bravo-zone
+spec:
+  completions: 2
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bravo-snapshot-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "bravo snapshot" && sleep 5
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: velvet-scrub-loop
+  namespace: bravo-zone
+spec:
+  schedule: "*/20 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: velvet-scrub-loop
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "velvet scrub loop"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cinder-pulse
+  namespace: bravo-zone
+spec:
+  rules:
+    - host: cinder-pulse.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cinder-pulse
+                port:
+                  number: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cinder-pulse
+  namespace: bravo-zone
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cinder-pulse
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charlie-gate
+  namespace: charlie-zone
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: charlie-gate
+  template:
+    metadata:
+      labels:
+        app: charlie-gate
+        tier: api
+    spec:
+      containers:
+        - name: charlie-gate
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "charlie-gate route"; sleep 21; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: charlie-gate
+  namespace: charlie-zone
+spec:
+  selector:
+    app: charlie-gate
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delta-scan
+  namespace: charlie-zone
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: delta-scan
+  template:
+    metadata:
+      labels:
+        app: delta-scan
+        tier: worker
+    spec:
+      containers:
+        - name: delta-scan
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "delta-scan report"; sleep 19; done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: charlie-node-shadow
+  namespace: charlie-zone
+spec:
+  selector:
+    matchLabels:
+      app: charlie-node-shadow
+  template:
+    metadata:
+      labels:
+        app: charlie-node-shadow
+    spec:
+      containers:
+        - name: charlie-node-shadow
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - while true; do echo "charlie-node-shadow on $(hostname)"; sleep 35; done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: delta-audit-once
+  namespace: charlie-zone
+spec:
+  completions: 2
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: delta-audit-once
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - echo "delta audit" && sleep 5
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: delta-rotate-loop
+  namespace: charlie-zone
+spec:
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: delta-rotate-loop
+              image: busybox:1.36
+              command: ["/bin/sh", "-ec"]
+              args:
+                - echo "delta rotate loop"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: charlie-gate
+  namespace: charlie-zone
+spec:
+  rules:
+    - host: charlie-gate.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: charlie-gate
+                port:
+                  number: 8080

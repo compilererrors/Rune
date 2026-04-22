@@ -9,7 +9,7 @@ final class KubectlTests: XCTestCase {
                 executable: "/usr/bin/env",
                 arguments: ["kubectl", "config", "get-contexts", "-o", "name"]
             ): .success(CommandResult(
-                stdout: "orbitprod\norbitqa\n",
+                stdout: "orbit-prod\norbit-qa\n",
                 stderr: "",
                 exitCode: 0
             ))
@@ -21,7 +21,7 @@ final class KubectlTests: XCTestCase {
         let didRunContextList = await runner.didRun(arguments: ["kubectl", "config", "get-contexts", "-o", "name"])
         let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
 
-        XCTAssertEqual(contexts.map(\.name), ["orbitprod", "orbitqa"])
+        XCTAssertEqual(contexts.map(\.name), ["orbit-prod", "orbit-qa"])
         XCTAssertTrue(didRunContextList)
         XCTAssertFalse(didRunNormalizedConfig)
     }
@@ -30,9 +30,9 @@ final class KubectlTests: XCTestCase {
         let runner = ScriptedCommandRunner(script: [
             CommandKey(
                 executable: "/usr/bin/env",
-                arguments: ["kubectl", "--context", "orbitprod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
+                arguments: ["kubectl", "--context", "orbit-prod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"]
             ): .success(CommandResult(
-                stdout: "alphazone\nkube-system\n",
+                stdout: "alpha-zone\nkube-system\n",
                 stderr: "",
                 exitCode: 0
             ))
@@ -40,11 +40,11 @@ final class KubectlTests: XCTestCase {
         let client = makeClient(runner: runner)
         let sources = try makeKubeConfigSources()
 
-        let namespaces = try await client.listNamespaces(from: sources, context: KubeContext(name: "orbitprod"))
-        let didRunNamespaceList = await runner.didRun(arguments: ["kubectl", "--context", "orbitprod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"])
+        let namespaces = try await client.listNamespaces(from: sources, context: KubeContext(name: "orbit-prod"))
+        let didRunNamespaceList = await runner.didRun(arguments: ["kubectl", "--context", "orbit-prod", "--request-timeout=90s", "get", "namespaces", "-o", "custom-columns=NAME:.metadata.name", "--no-headers"])
         let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
 
-        XCTAssertEqual(namespaces, ["alphazone", "kube-system"])
+        XCTAssertEqual(namespaces, ["alpha-zone", "kube-system"])
         XCTAssertTrue(didRunNamespaceList)
         XCTAssertFalse(didRunNormalizedConfig)
     }
@@ -53,9 +53,9 @@ final class KubectlTests: XCTestCase {
         let runner = ScriptedCommandRunner(script: [
             CommandKey(
                 executable: "/usr/bin/env",
-                arguments: ["kubectl", "config", "view", "--minify", "--context", "orbitprod", "-o", "jsonpath={..namespace}"]
+                arguments: ["kubectl", "config", "view", "--minify", "--context", "orbit-prod", "-o", "jsonpath={..namespace}"]
             ): .success(CommandResult(
-                stdout: "alphazone",
+                stdout: "alpha-zone",
                 stderr: "",
                 exitCode: 0
             ))
@@ -63,11 +63,11 @@ final class KubectlTests: XCTestCase {
         let client = makeClient(runner: runner)
         let sources = try makeKubeConfigSources()
 
-        let namespace = try await client.contextNamespace(from: sources, context: KubeContext(name: "orbitprod"))
-        let didRunContextNamespace = await runner.didRun(arguments: ["kubectl", "config", "view", "--minify", "--context", "orbitprod", "-o", "jsonpath={..namespace}"])
+        let namespace = try await client.contextNamespace(from: sources, context: KubeContext(name: "orbit-prod"))
+        let didRunContextNamespace = await runner.didRun(arguments: ["kubectl", "config", "view", "--minify", "--context", "orbit-prod", "-o", "jsonpath={..namespace}"])
         let didRunNormalizedConfig = await runner.didRun(arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"])
 
-        XCTAssertEqual(namespace, "alphazone")
+        XCTAssertEqual(namespace, "alpha-zone")
         XCTAssertTrue(didRunContextNamespace)
         XCTAssertFalse(didRunNormalizedConfig)
     }
@@ -325,8 +325,232 @@ final class KubectlTests: XCTestCase {
         XCTAssertFalse(args.contains("--since-time"))
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("--timestamps"))
-        XCTAssertTrue(args.contains("--tail=5000"))
+        XCTAssertTrue(args.contains("--tail=2000"))
         XCTAssertTrue(args.contains("--request-timeout"))
+    }
+
+    func testUnifiedLogsArgumentsWithRelativeFilterUseSmallerTailCap() {
+        let builder = KubectlCommandBuilder()
+
+        let args = builder.podLogsArguments(
+            context: "dev",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: false,
+            follow: false,
+            profile: .unifiedPerPod
+        )
+
+        XCTAssertTrue(args.contains("--since"))
+        XCTAssertTrue(args.contains("--tail=400"))
+    }
+
+    func testAgentPodLogsWithRelativeFilterUseTrimmedTailCap() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["logs", "--context", "dev", "--namespace", "default", "--pod", "api-1", "--since", "15m", "--tail", "2000"]
+            ): .success(CommandResult(stdout: "line\n", stderr: "", exitCode: 0))
+        ])
+
+        let stdout = try await RuneK8sAgentOperationsClient.podLogs(
+            executablePath: agentPath,
+            runner: runner,
+            environment: ["KUBECONFIG": "/tmp/rune-tests-config"],
+            contextName: "dev",
+            namespace: "default",
+            podName: "api-1",
+            filter: .lastMinutes(15),
+            previous: false,
+            timeout: 5
+        )
+
+        XCTAssertEqual(stdout, "line\n")
+    }
+
+    func testUnifiedServiceLogsPrefersMergedAgentLogFetch() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "selector", "service",
+                    "--context", "prod",
+                    "--namespace", "default",
+                    "--name", "api"
+                ]
+            ): .success(CommandResult(stdout: #"{"app":"api"}"#, stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "logs", "selector",
+                    "--context", "prod",
+                    "--namespace", "default",
+                    "--label-selector", "app=api",
+                    "--tail", "400",
+                    "--max-pods", "8",
+                    "--concurrency", "3",
+                    "--since", "15m"
+                ]
+            ): .success(CommandResult(stdout: #"{"podNames":["api-0","api-1"],"mergedText":"[api-0] first\n[api-1] second"}"#, stderr: "", exitCode: 0))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let logs = try await client.unifiedLogsForService(
+            from: sources,
+            context: KubeContext(name: "prod"),
+            namespace: "default",
+            service: ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"),
+            filter: .lastMinutes(15),
+            previous: false
+        )
+
+        XCTAssertEqual(logs.podNames, ["api-0", "api-1"])
+        XCTAssertEqual(logs.mergedText, "[api-0] first\n[api-1] second")
+        let ranSelectorPods = await runner.didRun(arguments: ["selector", "pods", "--context", "prod", "--namespace", "default", "--label-selector", "app=api"])
+        XCTAssertFalse(ranSelectorPods)
+    }
+
+    func testPodLogsFallsBackToKubectlWhenAgentReturnsEmptyOutput() async throws {
+        let agentPath = try makeExecutableFile()
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["logs", "--context", "prod", "--namespace", "default", "--pod", "api-0", "--tail", "200"]
+            ): .success(CommandResult(stdout: "", stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl"] + builder.podLogsArguments(
+                    context: "prod",
+                    namespace: "default",
+                    podName: "api-0",
+                    container: nil,
+                    filter: .tailLines(200),
+                    previous: false,
+                    follow: false
+                )
+            ): .success(CommandResult(stdout: "hello from kubectl\n", stderr: "", exitCode: 0))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let logs = try await client.podLogs(
+            from: sources,
+            context: KubeContext(name: "prod"),
+            namespace: "default",
+            podName: "api-0",
+            filter: .tailLines(200),
+            previous: false
+        )
+
+        XCTAssertEqual(logs, "hello from kubectl\n")
+    }
+
+    func testUnifiedServiceLogsFallsBackWhenMergedAgentOutputIsEmpty() async throws {
+        let agentPath = try makeExecutableFile()
+        let builder = KubectlCommandBuilder()
+        let podsJSON = """
+        {"items":[
+          {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2024-06-01T12:00:00Z"},"status":{"phase":"Running","containerStatuses":[]}},
+          {"metadata":{"name":"api-1","namespace":"default","creationTimestamp":"2024-06-01T12:01:00Z"},"status":{"phase":"Running","containerStatuses":[]}}
+        ]}
+        """
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "selector", "service",
+                    "--context", "prod",
+                    "--namespace", "default",
+                    "--name", "api"
+                ]
+            ): .success(CommandResult(stdout: #"{"app":"api"}"#, stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "logs", "selector",
+                    "--context", "prod",
+                    "--namespace", "default",
+                    "--label-selector", "app=api",
+                    "--tail", "200",
+                    "--max-pods", "8",
+                    "--concurrency", "3"
+                ]
+            ): .success(CommandResult(stdout: #"{"podNames":["api-0","api-1"],"mergedText":""}"#, stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "selector", "pods",
+                    "--context", "prod",
+                    "--namespace", "default",
+                    "--label-selector", "app=api"
+                ]
+            ): .failure(RuneError.commandFailed(command: "rune-k8s-agent selector pods", message: "simulated fallback")),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl"] + builder.podsByLabelSelectorArguments(context: "prod", namespace: "default", selector: "app=api")
+            ): .success(CommandResult(stdout: podsJSON, stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl"] + builder.podLogsArguments(
+                    context: "prod",
+                    namespace: "default",
+                    podName: "api-0",
+                    container: nil,
+                    filter: .tailLines(200),
+                    previous: false,
+                    follow: false,
+                    profile: .unifiedPerPod
+                )
+            ): .success(CommandResult(stdout: "2024-06-01T12:00:00Z first\n", stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl"] + builder.podLogsArguments(
+                    context: "prod",
+                    namespace: "default",
+                    podName: "api-1",
+                    container: nil,
+                    filter: .tailLines(200),
+                    previous: false,
+                    follow: false,
+                    profile: .unifiedPerPod
+                )
+            ): .success(CommandResult(stdout: "2024-06-01T12:00:01Z second\n", stderr: "", exitCode: 0))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let logs = try await client.unifiedLogsForService(
+            from: sources,
+            context: KubeContext(name: "prod"),
+            namespace: "default",
+            service: ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"),
+            filter: .tailLines(200),
+            previous: false
+        )
+
+        XCTAssertTrue(logs.mergedText.contains("[api-0] 2024-06-01T12:00:00Z first"))
+        XCTAssertTrue(logs.mergedText.contains("[api-1] 2024-06-01T12:00:01Z second"))
     }
 
     func testLogsArgumentsRecentLinesUsesTailOnly() {
@@ -655,6 +879,17 @@ final class KubectlTests: XCTestCase {
             try? FileManager.default.removeItem(at: url)
         }
         return [KubeConfigSource(url: url)]
+    }
+
+    private func makeExecutableFile(file: StaticString = #filePath, line: UInt = #line) throws -> String {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let created = FileManager.default.createFile(atPath: url.path, contents: Data("#!/bin/sh\n".utf8), attributes: nil)
+        XCTAssertTrue(created, file: file, line: line)
+        XCTAssertNoThrow(try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path), file: file, line: line)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return url.path
     }
 }
 

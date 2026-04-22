@@ -93,7 +93,7 @@ func RolloutUndoDeployment(ctx context.Context, contextName, namespace, deployme
 		revisionToTemplate[revision] = rs
 	}
 	if len(revisionToTemplate) == 0 {
-		return fmt.Errorf("ingen rollout-historik hittades för deployment %s", deploymentName)
+		return fmt.Errorf("no rollout history found for deployment %s", deploymentName)
 	}
 
 	var targetRevision int
@@ -123,7 +123,7 @@ func RolloutUndoDeployment(ctx context.Context, contextName, namespace, deployme
 
 	targetRS, ok := revisionToTemplate[targetRevision]
 	if !ok {
-		return fmt.Errorf("revision %d hittades inte för deployment %s", targetRevision, deploymentName)
+		return fmt.Errorf("revision %d was not found for deployment %s", targetRevision, deploymentName)
 	}
 
 	deployment.Spec.Template = *targetRS.Spec.Template.DeepCopy()

@@ -42,7 +42,7 @@ public final class HelmClient: HelmReleaseService, @unchecked Sendable {
         do {
             return try parser.parseReleases(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "helm release-listan kunde inte tolkas")
+            throw RuneError.parseError(message: "helm release list could not be parsed")
         }
     }
 
@@ -89,7 +89,7 @@ public final class HelmClient: HelmReleaseService, @unchecked Sendable {
         do {
             return try parser.parseHistory(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "helm history kunde inte tolkas")
+            throw RuneError.parseError(message: "helm history could not be parsed")
         }
     }
 

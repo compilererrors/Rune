@@ -19,7 +19,7 @@ public final class SavePanelExporter: FileExporting {
 
         let result = panel.runModal()
         guard result == .OK, let destination = panel.url else {
-            throw NSError(domain: "RuneExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "Användaren avbröt sparandet."])
+            throw NSError(domain: "RuneExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "The user cancelled the save operation."])
         }
 
         try data.write(to: destination)
