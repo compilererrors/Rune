@@ -71,6 +71,11 @@ struct AppKitManifestTextView: NSViewRepresentable {
                 textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
             }
         }
+
+        // Recompute document geometry even when the text is unchanged. Inspector tabs can
+        // reuse the same backing text while the available viewport height changes, and the
+        // scroll range must track that new size.
+        textView.refreshLayout()
     }
 }
 
@@ -87,6 +92,14 @@ private final class PlainManifestTextView: NSTextView {
     private var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
 
     override var isOpaque: Bool { false }
+
+    override func drawBackground(in rect: NSRect) {
+        NSColor.clear.setFill()
+        rect.fill()
+        guard contentStyle == .yaml else { return }
+        drawIndentGuides(in: rect)
+        drawTabMarkers(in: rect)
+    }
 
     func configure(isEditable: Bool, contentStyle: AppKitManifestTextView.ContentStyle) {
         self.isEditable = isEditable
@@ -158,10 +171,13 @@ private final class PlainManifestTextView: NSTextView {
 
         if contentStyle == .yaml, storage.length > 0 {
             applyYAMLHighlighting(in: storage, fullRange: fullRange)
+            applyYAMLDiagnostics(in: storage)
         }
         storage.endEditing()
 
         updateDocumentSize()
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
     }
 
     override func didChangeText() {
@@ -171,6 +187,11 @@ private final class PlainManifestTextView: NSTextView {
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
+        updateDocumentSize()
+    }
+
+    override func layout() {
+        super.layout()
         updateDocumentSize()
     }
 
@@ -204,6 +225,12 @@ private final class PlainManifestTextView: NSTextView {
                 guard let match else { return }
                 storage.addAttributes([.foregroundColor: color], range: match.range)
             }
+        }
+    }
+
+    private func applyYAMLDiagnostics(in storage: NSTextStorage) {
+        for diagnostic in yamlDiagnostics(in: storage.string) {
+            storage.addAttributes(diagnostic.attributes, range: diagnostic.range)
         }
     }
 
@@ -311,6 +338,68 @@ private final class PlainManifestTextView: NSTextView {
 
         return nil
     }
+
+    private func drawIndentGuides(in rect: NSRect) {
+        guard let layoutManager, let textContainer else { return }
+        guard let visibleRange = visibleCharacterRange else { return }
+
+        let guideColor = ManifestPalette.indentGuide
+        let path = NSBezierPath()
+        let indentWidth = widthOfSingleSpace()
+        let insetX = textContainerInset.width
+        let nsString = string as NSString
+
+        nsString.enumerateSubstrings(in: visibleRange, options: [.byLines, .substringNotRequired]) { _, substringRange, _, _ in
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: substringRange, actualCharacterRange: nil)
+            let usedRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            let line = nsString.substring(with: substringRange)
+            let leadingColumns = indentationColumns(in: line)
+            guard leadingColumns >= 2 else { return }
+
+            let levelCount = leadingColumns / 2
+            for level in 1...levelCount {
+                let x = insetX + CGFloat(level) * indentWidth - indentWidth / 2
+                path.move(to: NSPoint(x: x, y: usedRect.minY + 1))
+                path.line(to: NSPoint(x: x, y: usedRect.maxY - 1))
+            }
+        }
+
+        guideColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    private func drawTabMarkers(in rect: NSRect) {
+        guard let layoutManager, let textContainer else { return }
+        guard let visibleRange = visibleCharacterRange else { return }
+
+        let nsString = string as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: Self.baseFont,
+            .foregroundColor: ManifestPalette.tabMarker
+        ]
+        let marker = NSAttributedString(string: "\u{21E5}", attributes: attributes)
+
+        for index in visibleRange.location..<(visibleRange.location + visibleRange.length) {
+            guard nsString.character(at: index) == 9 else { continue }
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: NSRange(location: index, length: 1), actualCharacterRange: nil)
+            let glyphRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            marker.draw(at: NSPoint(x: glyphRect.minX + 1, y: glyphRect.minY))
+        }
+    }
+
+    private var visibleCharacterRange: NSRange? {
+        guard let layoutManager, let textContainer, let scrollView = enclosingScrollView else { return nil }
+        let visibleRect = scrollView.contentView.bounds
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+    }
+
+    private func widthOfSingleSpace() -> CGFloat {
+        let sample = " " as NSString
+        let size = sample.size(withAttributes: [.font: Self.baseFont])
+        return max(8, ceil(size.width))
+    }
 }
 
 private struct ManifestPalette {
@@ -321,4 +410,172 @@ private struct ManifestPalette {
     static let comment = NSColor.secondaryLabelColor
     static let directive = NSColor.systemPink
     static let anchor = NSColor.systemTeal
+    static let indentGuide = NSColor.separatorColor.withAlphaComponent(0.28)
+    static let tabMarker = NSColor.systemRed.withAlphaComponent(0.85)
+    static let errorUnderline = NSColor.systemRed
+    static let errorBackground = NSColor.systemRed.withAlphaComponent(0.12)
+    static let warningUnderline = NSColor.systemOrange
+    static let warningBackground = NSColor.systemOrange.withAlphaComponent(0.1)
+}
+
+private struct YAMLDiagnostic {
+    enum Severity {
+        case error
+        case warning
+    }
+
+    let range: NSRange
+    let severity: Severity
+
+    var attributes: [NSAttributedString.Key: Any] {
+        switch severity {
+        case .error:
+            return [
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: ManifestPalette.errorUnderline,
+                .backgroundColor: ManifestPalette.errorBackground
+            ]
+        case .warning:
+            return [
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: ManifestPalette.warningUnderline,
+                .backgroundColor: ManifestPalette.warningBackground
+            ]
+        }
+    }
+}
+
+private func yamlDiagnostics(in source: String) -> [YAMLDiagnostic] {
+    var diagnostics: [YAMLDiagnostic] = []
+
+    source.enumerateSubstrings(in: source.startIndex..<source.endIndex, options: .byLines) { substring, lineRange, _, _ in
+        guard let substring else { return }
+        let absoluteRange = NSRange(lineRange, in: source)
+
+        for (offset, character) in substring.enumerated() where character == "\t" {
+            diagnostics.append(
+                YAMLDiagnostic(
+                    range: NSRange(location: absoluteRange.location + offset, length: 1),
+                    severity: .error
+                )
+            )
+        }
+
+        if let problemRange = unmatchedQuoteRange(in: substring) {
+            diagnostics.append(
+                YAMLDiagnostic(
+                    range: NSRange(location: absoluteRange.location + problemRange.location, length: problemRange.length),
+                    severity: .error
+                )
+            )
+        }
+    }
+
+    diagnostics.append(contentsOf: unmatchedFlowDelimiterDiagnostics(in: source))
+    return diagnostics
+}
+
+private func indentationColumns(in line: String) -> Int {
+    var columns = 0
+    for character in line {
+        switch character {
+        case " ":
+            columns += 1
+        case "\t":
+            columns += 2
+        default:
+            return columns
+        }
+    }
+    return columns
+}
+
+private func unmatchedQuoteRange(in line: String) -> NSRange? {
+    var inSingleQuotes = false
+    var inDoubleQuotes = false
+    var escaped = false
+    var singleStart: Int?
+    var doubleStart: Int?
+
+    for (offset, character) in line.enumerated() {
+        if escaped {
+            escaped = false
+            continue
+        }
+
+        switch character {
+        case "\\" where inDoubleQuotes:
+            escaped = true
+        case "'" where !inDoubleQuotes:
+            inSingleQuotes.toggle()
+            singleStart = inSingleQuotes ? offset : nil
+        case "\"" where !inSingleQuotes:
+            inDoubleQuotes.toggle()
+            doubleStart = inDoubleQuotes ? offset : nil
+        case "#" where !inSingleQuotes && !inDoubleQuotes:
+            return nil
+        default:
+            break
+        }
+    }
+
+    if let singleStart {
+        return NSRange(location: singleStart, length: max(1, line.count - singleStart))
+    }
+    if let doubleStart {
+        return NSRange(location: doubleStart, length: max(1, line.count - doubleStart))
+    }
+    return nil
+}
+
+private func unmatchedFlowDelimiterDiagnostics(in source: String) -> [YAMLDiagnostic] {
+    struct StackItem {
+        let character: Character
+        let offset: Int
+    }
+
+    var stack: [StackItem] = []
+    var diagnostics: [YAMLDiagnostic] = []
+    var inSingleQuotes = false
+    var inDoubleQuotes = false
+    var escaped = false
+
+    for (offset, character) in source.enumerated() {
+        if escaped {
+            escaped = false
+            continue
+        }
+
+        switch character {
+        case "\\" where inDoubleQuotes:
+            escaped = true
+        case "'" where !inDoubleQuotes:
+            inSingleQuotes.toggle()
+        case "\"" where !inSingleQuotes:
+            inDoubleQuotes.toggle()
+        case "[" , "{":
+            guard !inSingleQuotes && !inDoubleQuotes else { continue }
+            stack.append(StackItem(character: character, offset: offset))
+        case "]", "}":
+            guard !inSingleQuotes && !inDoubleQuotes else { continue }
+            guard let last = stack.last else {
+                diagnostics.append(YAMLDiagnostic(range: NSRange(location: offset, length: 1), severity: .error))
+                continue
+            }
+            let expected: Character = character == "]" ? "[" : "{"
+            if last.character == expected {
+                stack.removeLast()
+            } else {
+                diagnostics.append(YAMLDiagnostic(range: NSRange(location: offset, length: 1), severity: .error))
+            }
+        default:
+            break
+        }
+    }
+
+    for item in stack {
+        diagnostics.append(YAMLDiagnostic(range: NSRange(location: item.offset, length: 1), severity: .error))
+    }
+
+    return diagnostics
 }
