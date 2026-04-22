@@ -2484,7 +2484,8 @@ public struct RuneRootView: View {
             case .readOnlyScroll:
                 readOnlyTextContent(
                     yamlDisplayText,
-                    resetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+                    resetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)",
+                    contentStyle: .yaml
                 )
             case .swiftUITextEditor:
                 TextEditor(text: binding)
@@ -2492,7 +2493,7 @@ public struct RuneRootView: View {
                     .scrollContentBackground(.hidden)
                     .padding(6)
             case .appKitTextView:
-                AppKitManifestTextView(text: binding, isEditable: true)
+                AppKitManifestTextView(text: binding, isEditable: true, contentStyle: .yaml)
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2513,7 +2514,8 @@ public struct RuneRootView: View {
         readOnlyTextSurface(
             describeDisplayText,
             minHeight: 280,
-            resetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+            resetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)",
+            contentStyle: .plainText
         )
     }
 
@@ -3129,8 +3131,13 @@ public struct RuneRootView: View {
         }
     }
 
-    private func readOnlyTextSurface(_ text: String, minHeight: CGFloat, resetID: String) -> some View {
-        readOnlyTextContent(text, resetID: resetID)
+    private func readOnlyTextSurface(
+        _ text: String,
+        minHeight: CGFloat,
+        resetID: String,
+        contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    ) -> some View {
+        readOnlyTextContent(text, resetID: resetID, contentStyle: contentStyle)
             .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background {
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -3144,11 +3151,16 @@ public struct RuneRootView: View {
             .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func readOnlyTextContent(_ text: String, resetID: String) -> some View {
+    private func readOnlyTextContent(
+        _ text: String,
+        resetID: String,
+        contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    ) -> some View {
         AppKitManifestTextView(
             text: .constant(text),
             isEditable: false,
-            resetScrollOnExternalChange: true
+            resetScrollOnExternalChange: true,
+            contentStyle: contentStyle
         )
         .id(resetID)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
