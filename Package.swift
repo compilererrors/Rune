@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "RuneApp", targets: ["RuneApp"]),
+        .executable(name: "RuneFakeK8s", targets: ["RuneFakeK8s"]),
         .library(name: "RuneCore", targets: ["RuneCore"]),
         .library(name: "RuneUI", targets: ["RuneUI"]),
         .library(name: "RuneKube", targets: ["RuneKube"]),
@@ -22,6 +23,9 @@ let package = Package(
         .executableTarget(
             name: "RuneApp",
             dependencies: ["RuneUI"]
+        ),
+        .executableTarget(
+            name: "RuneFakeK8s"
         ),
         .target(name: "RuneCore"),
         .target(

@@ -1,0 +1,214 @@
+name: rune-fake-k8s
+
+services:
+  orbit-k3s:
+    image: rancher/k3s:v1.28.5-k3s1
+    container_name: rune-fake-orbit-k3s
+    privileged: true
+    cgroup: host
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    tmpfs:
+      - /run
+      - /var/run
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+          /bin/k3s server \
+            --disable=traefik \
+            --disable=servicelb \
+            --tls-san=127.0.0.1 \
+            --kubelet-arg=cgroup-driver=cgroupfs \
+            --kubelet-arg=fail-swap-on=false \
+            --write-kubeconfig=/output/orbit-internal.yaml \
+            --write-kubeconfig-mode=644 &
+          pid="$$!"
+          until [ -s /output/orbit-internal.yaml ]; do
+            sleep 1
+          done
+          sed \
+            -e 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' \
+            -e 's/name: default/name: fake-orbit-mesh/g' \
+            -e 's/cluster: default/cluster: fake-orbit-mesh/' \
+            -e 's/user: default/user: fake-orbit-mesh/' \
+            -e 's/current-context: default/current-context: fake-orbit-mesh/' \
+            /output/orbit-internal.yaml > /output/orbit-host.yaml
+          until kubectl --kubeconfig /output/orbit-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
+            sleep 1
+          done
+          cat <<'EOF' | kubectl --kubeconfig /output/orbit-internal.yaml apply -f -
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: host-admin
+            namespace: kube-system
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: host-admin-cluster-admin
+          subjects:
+            - kind: ServiceAccount
+              name: host-admin
+              namespace: kube-system
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          EOF
+          HOST_TOKEN="$$(kubectl --kubeconfig /output/orbit-internal.yaml create token host-admin -n kube-system --duration=720h)"
+          kubectl config set-cluster fake-orbit-mesh \
+            --server=https://127.0.0.1:16443 \
+            --insecure-skip-tls-verify=true \
+            --kubeconfig=/output/orbit-host.yaml >/dev/null
+          kubectl config set-credentials fake-orbit-mesh \
+            --token="$$HOST_TOKEN" \
+            --kubeconfig=/output/orbit-host.yaml >/dev/null
+          kubectl config unset clusters.fake-orbit-mesh.certificate-authority-data \
+            --kubeconfig=/output/orbit-host.yaml >/dev/null 2>&1 || true
+          kubectl config unset users.fake-orbit-mesh.client-certificate-data \
+            --kubeconfig=/output/orbit-host.yaml >/dev/null 2>&1 || true
+          kubectl config unset users.fake-orbit-mesh.client-key-data \
+            --kubeconfig=/output/orbit-host.yaml >/dev/null 2>&1 || true
+          wait "$$pid"
+    ports:
+      - "127.0.0.1:16443:6443"
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - orbit-k3s-data:/var/lib/rancher/k3s
+      - ./generated:/output
+    environment:
+      K3S_TOKEN: rune-fake-orbit-token
+
+  orbit-seed:
+    image: rancher/k3s:v1.28.5-k3s1
+    container_name: rune-fake-orbit-seed
+    depends_on:
+      - orbit-k3s
+    network_mode: service:orbit-k3s
+    entrypoint:
+      - /bin/sh
+      - -ec
+    volumes:
+      - ./generated:/output
+      - ./manifests/orbit:/manifests:ro
+    command:
+      - |
+          until kubectl --kubeconfig /output/orbit-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
+            sleep 2
+          done
+          until kubectl --kubeconfig /output/orbit-internal.yaml apply -f /manifests/bootstrap.yaml; do
+            sleep 4
+          done
+          touch /output/orbit-seeded.ok
+
+  lattice-k3s:
+    image: rancher/k3s:v1.28.5-k3s1
+    container_name: rune-fake-lattice-k3s
+    privileged: true
+    cgroup: host
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    tmpfs:
+      - /run
+      - /var/run
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+          /bin/k3s server \
+            --disable=traefik \
+            --disable=servicelb \
+            --tls-san=127.0.0.1 \
+            --kubelet-arg=cgroup-driver=cgroupfs \
+            --kubelet-arg=fail-swap-on=false \
+            --write-kubeconfig=/output/lattice-internal.yaml \
+            --write-kubeconfig-mode=644 &
+          pid="$$!"
+          until [ -s /output/lattice-internal.yaml ]; do
+            sleep 1
+          done
+          sed \
+            -e 's#https://127.0.0.1:6443#https://127.0.0.1:17443#' \
+            -e 's/name: default/name: fake-lattice-spark/g' \
+            -e 's/cluster: default/cluster: fake-lattice-spark/' \
+            -e 's/user: default/user: fake-lattice-spark/' \
+            -e 's/current-context: default/current-context: fake-lattice-spark/' \
+            /output/lattice-internal.yaml > /output/lattice-host.yaml
+          until kubectl --kubeconfig /output/lattice-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
+            sleep 1
+          done
+          cat <<'EOF' | kubectl --kubeconfig /output/lattice-internal.yaml apply -f -
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: host-admin
+            namespace: kube-system
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: host-admin-cluster-admin
+          subjects:
+            - kind: ServiceAccount
+              name: host-admin
+              namespace: kube-system
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          EOF
+          HOST_TOKEN="$$(kubectl --kubeconfig /output/lattice-internal.yaml create token host-admin -n kube-system --duration=720h)"
+          kubectl config set-cluster fake-lattice-spark \
+            --server=https://127.0.0.1:17443 \
+            --insecure-skip-tls-verify=true \
+            --kubeconfig=/output/lattice-host.yaml >/dev/null
+          kubectl config set-credentials fake-lattice-spark \
+            --token="$$HOST_TOKEN" \
+            --kubeconfig=/output/lattice-host.yaml >/dev/null
+          kubectl config unset clusters.fake-lattice-spark.certificate-authority-data \
+            --kubeconfig=/output/lattice-host.yaml >/dev/null 2>&1 || true
+          kubectl config unset users.fake-lattice-spark.client-certificate-data \
+            --kubeconfig=/output/lattice-host.yaml >/dev/null 2>&1 || true
+          kubectl config unset users.fake-lattice-spark.client-key-data \
+            --kubeconfig=/output/lattice-host.yaml >/dev/null 2>&1 || true
+          wait "$$pid"
+    ports:
+      - "127.0.0.1:17443:6443"
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - lattice-k3s-data:/var/lib/rancher/k3s
+      - ./generated:/output
+    environment:
+      K3S_TOKEN: rune-fake-lattice-token
+
+  lattice-seed:
+    image: rancher/k3s:v1.28.5-k3s1
+    container_name: rune-fake-lattice-seed
+    depends_on:
+      - lattice-k3s
+    network_mode: service:lattice-k3s
+    entrypoint:
+      - /bin/sh
+      - -ec
+    volumes:
+      - ./generated:/output
+      - ./manifests/lattice:/manifests:ro
+    command:
+      - |
+          until kubectl --kubeconfig /output/lattice-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
+            sleep 2
+          done
+          until kubectl --kubeconfig /output/lattice-internal.yaml apply -f /manifests/bootstrap.yaml; do
+            sleep 4
+          done
+          touch /output/lattice-seeded.ok
+
+volumes:
+  orbit-k3s-data:
+  lattice-k3s-data:

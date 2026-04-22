@@ -10,5 +10,17 @@ dist/
 # Go helper binary (bygg med: cd go/rune-k8s-agent && go build -o rune-k8s-agent ./cmd/rune-k8s-agent)
 go/rune-k8s-agent/rune-k8s-agent
 
-# Genereras lokalt av fake-k3s (innehåller cert) — ska inte finnas på main.
+# Generated locally by fake-k3s (contains certificates) and should never be committed to main.
 assets/readme/kubeconfig.fake-cluster.yaml
+
+# Local fake-k8s runtime state, wrappers, kubeconfig, and shell env exports.
+.rune-fake-k8s/
+
+# Generated test reports / local CI exports.
+rune-smoke-swift-testing.xml
+
+# Environment files should stay local; commit examples instead.
+.env
+.env.*
+!.env.example
+!**/.env.example

@@ -3,6 +3,11 @@ import RuneCore
 
 /// Operation-focused wrapper over `rune-k8s-agent` (logs/top/exec/mutations/rollout/port-forward).
 enum RuneK8sAgentOperationsClient {
+    private struct UnifiedLogsResponse: Decodable {
+        let podNames: [String]
+        let mergedText: String
+    }
+
     private struct NodeTopPercentRow: Decodable {
         let cpuPercent: Int?
         let memoryPercent: Int?
@@ -36,7 +41,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent top nodes"
         )
-        let row = try decodeJSON(NodeTopPercentRow.self, from: stdout, parseError: "rune-k8s-agent top nodes JSON kunde inte tolkas")
+        let row = try decodeJSON(NodeTopPercentRow.self, from: stdout, parseError: "rune-k8s-agent top nodes JSON could not be parsed")
         return (row.cpuPercent, row.memoryPercent)
     }
 
@@ -56,7 +61,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent top pods"
         )
-        let rows = try decodeJSON([PodTopRow].self, from: stdout, parseError: "rune-k8s-agent top pods JSON kunde inte tolkas")
+        let rows = try decodeJSON([PodTopRow].self, from: stdout, parseError: "rune-k8s-agent top pods JSON could not be parsed")
         return Dictionary(uniqueKeysWithValues: rows.map { ($0.name, (cpu: $0.cpu, memory: $0.memory)) })
     }
 
@@ -75,7 +80,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent top pods --all-namespaces"
         )
-        let rows = try decodeJSON([PodTopRow].self, from: stdout, parseError: "rune-k8s-agent top pods all-namespaces JSON kunde inte tolkas")
+        let rows = try decodeJSON([PodTopRow].self, from: stdout, parseError: "rune-k8s-agent top pods all-namespaces JSON could not be parsed")
         var out: [String: (cpu: String, memory: String)] = [:]
         out.reserveCapacity(rows.count)
         for row in rows {
@@ -94,8 +99,10 @@ enum RuneK8sAgentOperationsClient {
         podName: String,
         filter: LogTimeFilter,
         previous: Bool,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        profile: LogQueryProfile = .pod
     ) async throws -> String {
+        let query = filter.resolvedLogQuery(profile: profile)
         var args: [String] = [
             "logs",
             "--context", contextName,
@@ -105,18 +112,18 @@ enum RuneK8sAgentOperationsClient {
 
         switch filter {
         case .all:
-            args += ["--tail", "200"]
+            args += ["--tail", String(query.tailLines)]
         case let .tailLines(lines):
             args += ["--tail", String(max(1, lines))]
         case .lastMinutes, .lastHours, .lastDays, .since:
-            if let since = filter.kubectlSinceArgument {
-                if filter.usesSinceTime {
+            if let since = query.since {
+                if query.usesSinceTime {
                     args += ["--since-time", since]
                 } else {
                     args += ["--since", since]
                 }
             }
-            args += ["--tail", "5000"]
+            args += ["--tail", String(query.tailLines)]
         }
 
         if previous {
@@ -131,6 +138,58 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent logs"
         )
+    }
+
+    static func unifiedLogsBySelector(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        selector: String,
+        filter: LogTimeFilter,
+        previous: Bool,
+        maxPods: Int,
+        concurrency: Int,
+        timeout: TimeInterval
+    ) async throws -> (podNames: [String], mergedText: String) {
+        let query = filter.resolvedLogQuery(profile: .unifiedPerPod)
+        var args: [String] = [
+            "logs", "selector",
+            "--context", contextName,
+            "--namespace", namespace,
+            "--label-selector", selector,
+            "--tail", String(query.tailLines),
+            "--max-pods", String(max(1, maxPods)),
+            "--concurrency", String(max(1, concurrency))
+        ]
+
+        if let since = query.since {
+            if query.usesSinceTime {
+                args += ["--since-time", since]
+            } else {
+                args += ["--since", since]
+            }
+        }
+
+        if previous {
+            args.append("--previous")
+        }
+
+        let stdout = try await runAgentCommand(
+            executablePath: executablePath,
+            runner: runner,
+            environment: environment,
+            arguments: args,
+            timeout: timeout,
+            commandName: "rune-k8s-agent logs selector"
+        )
+        let response = try decodeJSON(
+            UnifiedLogsResponse.self,
+            from: stdout,
+            parseError: "rune-k8s-agent logs selector JSON could not be parsed"
+        )
+        return (response.podNames, response.mergedText)
     }
 
     static func serviceSelector(
@@ -155,7 +214,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent selector service"
         )
-        return try decodeJSON([String: String].self, from: stdout, parseError: "rune-k8s-agent service selector JSON kunde inte tolkas")
+        return try decodeJSON([String: String].self, from: stdout, parseError: "rune-k8s-agent service selector JSON could not be parsed")
     }
 
     static func deploymentSelector(
@@ -180,7 +239,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent selector deployment"
         )
-        return try decodeJSON([String: String].self, from: stdout, parseError: "rune-k8s-agent deployment selector JSON kunde inte tolkas")
+        return try decodeJSON([String: String].self, from: stdout, parseError: "rune-k8s-agent deployment selector JSON could not be parsed")
     }
 
     static func podsBySelector(
@@ -205,7 +264,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent selector pods"
         )
-        return try decodeJSON([PodSummary].self, from: stdout, parseError: "rune-k8s-agent selector pods JSON kunde inte tolkas")
+        return try decodeJSON([PodSummary].self, from: stdout, parseError: "rune-k8s-agent selector pods JSON could not be parsed")
     }
 
     static func execInPod(
@@ -239,7 +298,7 @@ enum RuneK8sAgentOperationsClient {
             timeout: timeout,
             commandName: "rune-k8s-agent exec"
         )
-        let decoded = try decodeJSON(AgentExecResult.self, from: stdout, parseError: "rune-k8s-agent exec JSON kunde inte tolkas")
+        let decoded = try decodeJSON(AgentExecResult.self, from: stdout, parseError: "rune-k8s-agent exec JSON could not be parsed")
         return PodExecResult(
             podName: podName,
             namespace: namespace,

@@ -116,6 +116,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent list <pods|services|ingresses|configmaps|events|secrets|roles|rolebindings|networkpolicies|horizontalpodautoscalers|persistentvolumeclaims|nodes|persistentvolumes|storageclasses|clusterroles|clusterrolebindings|jobs|cronjobs|daemonsets|statefulsets|deployments|replicasets> --context NAME [--namespace NS]")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent top <nodes|pods> --context NAME [--namespace NS|--all-namespaces]")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent logs --context NAME --namespace NS --pod POD [--container C] [--tail N] [--since 5m] [--since-time RFC3339] [--previous]")
+	fmt.Fprintln(os.Stderr, "  rune-k8s-agent logs selector --context NAME --namespace NS --label-selector key=value,... [--tail N] [--since 5m] [--since-time RFC3339] [--previous] [--max-pods N] [--concurrency N]")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent selector <service|deployment> --context NAME --namespace NS --name NAME")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent selector pods --context NAME --namespace NS --label-selector key=value,...")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent exec --context NAME --namespace NS --pod POD [--container C] -- <command...>")
@@ -335,26 +336,35 @@ func runTop(args []string) error {
 }
 
 func runLogs(args []string) error {
+	isSelectorMode := len(args) > 0 && args[0] == "selector"
+	parseArgs := args
+	if isSelectorMode {
+		parseArgs = args[1:]
+	}
+
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	var contextName, namespace, podName, container, since, sinceTime string
-	var tail int
+	var contextName, namespace, podName, container, since, sinceTime, labelSelector string
+	var tail, maxPods, concurrency int
 	var previous, follow bool
 	fs.StringVar(&contextName, "context", "", "kubeconfig context name")
 	fs.StringVar(&namespace, "namespace", "", "namespace")
 	fs.StringVar(&podName, "pod", "", "pod name")
 	fs.StringVar(&container, "container", "", "container name")
+	fs.StringVar(&labelSelector, "label-selector", "", "label selector")
 	fs.StringVar(&since, "since", "", "duration, e.g. 5m")
 	fs.StringVar(&sinceTime, "since-time", "", "RFC3339 timestamp")
 	fs.IntVar(&tail, "tail", 0, "tail lines")
+	fs.IntVar(&maxPods, "max-pods", 8, "maximum pods for unified logs")
+	fs.IntVar(&concurrency, "concurrency", 3, "concurrent pod log fetches")
 	fs.BoolVar(&previous, "previous", false, "previous container")
 	fs.BoolVar(&follow, "follow", false, "follow logs")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(parseArgs); err != nil {
 		return err
 	}
-	if contextName == "" || namespace == "" || podName == "" {
-		return fmt.Errorf("--context, --namespace and --pod are required")
+	if contextName == "" || namespace == "" {
+		return fmt.Errorf("--context and --namespace are required")
 	}
-	ctx := context.Background()
+
 	opts := ops.PodLogsOptions{
 		Container:  container,
 		Previous:   previous,
@@ -379,6 +389,27 @@ func runLogs(args []string) error {
 		}
 		t := metav1.NewTime(parsed)
 		opts.SinceTime = &t
+	}
+
+	ctx := context.Background()
+	if isSelectorMode {
+		if strings.TrimSpace(labelSelector) == "" {
+			return fmt.Errorf("--label-selector is required for logs selector")
+		}
+		unified, err := ops.UnifiedLogsBySelector(ctx, contextName, namespace, ops.UnifiedLogsOptions{
+			LabelSelector: labelSelector,
+			MaxPods:       maxPods,
+			Concurrency:   concurrency,
+			PodLogs:       opts,
+		})
+		if err != nil {
+			return err
+		}
+		return writeJSON(unified)
+	}
+
+	if podName == "" {
+		return fmt.Errorf("--pod is required")
 	}
 	return ops.PodLogs(ctx, contextName, namespace, podName, opts, os.Stdout)
 }

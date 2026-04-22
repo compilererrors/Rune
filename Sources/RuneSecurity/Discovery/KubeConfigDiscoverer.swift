@@ -5,6 +5,7 @@ public protocol KubeConfigDiscovering {
 }
 
 public struct KubeConfigDiscoverer: KubeConfigDiscovering {
+    private static let disableDefaultConfigDiscoveryVariable = "RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY"
     private let environmentProvider: () -> [String: String]
     private let homeDirectoryProvider: () -> URL
     private let fileExists: (String) -> Bool
@@ -30,11 +31,13 @@ public struct KubeConfigDiscoverer: KubeConfigDiscovering {
             }
         }
 
-        let homeDirectory = homeDirectoryProvider()
-        let defaultConfig = homeDirectory
-            .appendingPathComponent(".kube", isDirectory: true)
-            .appendingPathComponent("config", isDirectory: false)
-        candidates.append(defaultConfig)
+        if environment[Self.disableDefaultConfigDiscoveryVariable] != "1" {
+            let homeDirectory = homeDirectoryProvider()
+            let defaultConfig = homeDirectory
+                .appendingPathComponent(".kube", isDirectory: true)
+                .appendingPathComponent("config", isDirectory: false)
+            candidates.append(defaultConfig)
+        }
 
         var uniqueByPath: [String: URL] = [:]
         for candidate in candidates {

@@ -33,6 +33,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let unifiedLogsMaxConcurrentPodFetches: Int = 3
     /// Keep per-pod log fetch short so one slow pod does not block the whole merged view.
     private let unifiedLogsPerPodTimeout: TimeInterval = 8
+    /// One merged backend call can use a slightly larger budget than the per-pod fallback.
+    private let unifiedLogsAggregateTimeout: TimeInterval = 20
     /// Selector/pod-discovery for unified logs should fail fast; stale workloads should not block the inspector for minutes.
     private let unifiedLogsSelectorTimeout: TimeInterval = 12
 
@@ -527,7 +529,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseServices(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "services JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "services JSON could not be parsed")
         }
     }
 
@@ -568,7 +570,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseServices(namespace: "", from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "services JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "services JSON could not be parsed")
         }
     }
 
@@ -611,7 +613,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseStatefulSets(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "statefulsets JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "statefulsets JSON could not be parsed")
         }
     }
 
@@ -654,7 +656,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseDaemonSets(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "daemonsets JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "daemonsets JSON could not be parsed")
         }
     }
 
@@ -697,7 +699,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseJobs(namespace: namespace, from: fallback.stdout)
         } catch {
-            throw RuneError.parseError(message: "jobs kunde inte tolkas")
+            throw RuneError.parseError(message: "jobs could not be parsed")
         }
     }
 
@@ -740,7 +742,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseCronJobs(namespace: namespace, from: fallback.stdout)
         } catch {
-            throw RuneError.parseError(message: "cronjobs kunde inte tolkas")
+            throw RuneError.parseError(message: "cronjobs could not be parsed")
         }
     }
 
@@ -783,7 +785,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseReplicaSets(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "replicasets JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "replicasets JSON could not be parsed")
         }
     }
 
@@ -826,7 +828,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parsePersistentVolumeClaims(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "PVC JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "PVC JSON could not be parsed")
         }
     }
 
@@ -867,7 +869,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parsePersistentVolumes(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "PV JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "PV JSON could not be parsed")
         }
     }
 
@@ -908,7 +910,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseStorageClasses(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "StorageClass JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "StorageClass JSON could not be parsed")
         }
     }
 
@@ -951,7 +953,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseHorizontalPodAutoscalers(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "HPA JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "HPA JSON could not be parsed")
         }
     }
 
@@ -994,7 +996,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseNetworkPolicies(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "NetworkPolicy JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "NetworkPolicy JSON could not be parsed")
         }
     }
 
@@ -1037,7 +1039,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseIngresses(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "ingresses JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "ingresses JSON could not be parsed")
         }
     }
 
@@ -1078,7 +1080,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseIngresses(namespace: "", from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "ingresses JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "ingresses JSON could not be parsed")
         }
     }
 
@@ -1121,7 +1123,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseConfigMaps(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "configmaps JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "configmaps JSON could not be parsed")
         }
     }
 
@@ -1162,7 +1164,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseConfigMaps(namespace: "", from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "configmaps JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "configmaps JSON could not be parsed")
         }
     }
 
@@ -1205,7 +1207,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseSecrets(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "secrets JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "secrets JSON could not be parsed")
         }
     }
 
@@ -1246,7 +1248,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseNodes(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "nodes JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "nodes JSON could not be parsed")
         }
     }
 
@@ -1290,7 +1292,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseEvents(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "events JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "events JSON could not be parsed")
         }
     }
 
@@ -1332,7 +1334,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseEvents(from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "events JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "events JSON could not be parsed")
         }
     }
 
@@ -1375,7 +1377,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseRoles(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "roles JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "roles JSON could not be parsed")
         }
     }
 
@@ -1418,7 +1420,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         do {
             return try parser.parseRoleBindings(namespace: namespace, from: result.stdout)
         } catch {
-            throw RuneError.parseError(message: "rolebindings JSON kunde inte tolkas")
+            throw RuneError.parseError(message: "rolebindings JSON could not be parsed")
         }
     }
 
@@ -2059,7 +2061,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             podName: podName,
             filter: filter,
             previous: previous,
-            timeoutOverride: nil
+            timeoutOverride: nil,
+            profile: .pod
         )
     }
 
@@ -2070,13 +2073,14 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         podName: String,
         filter: LogTimeFilter,
         previous: Bool,
-        timeoutOverride: TimeInterval?
+        timeoutOverride: TimeInterval?,
+        profile: LogQueryProfile = .pod
     ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
         let timeoutBudget = timeoutOverride ?? logFetchTimeout(for: filter)
         if let agent = resolvedK8sAgentPath() {
             do {
-                return try await RuneK8sAgentOperationsClient.podLogs(
+                let logs = try await RuneK8sAgentOperationsClient.podLogs(
                     executablePath: agent,
                     runner: runner,
                     environment: env,
@@ -2085,8 +2089,12 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     podName: podName,
                     filter: filter,
                     previous: previous,
-                    timeout: timeoutBudget
+                    timeout: timeoutBudget,
+                    profile: profile
                 )
+                if !logs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return logs
+                }
             } catch {
                 try rethrowCancellationIfNeeded(error)
                 if previous, isMissingPreviousLogsError(error) {
@@ -2102,9 +2110,12 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             podName: podName,
             filter: filter,
             previous: previous,
-            timeout: timeoutBudget
+            timeout: timeoutBudget,
+            profile: profile
         ) {
-            return logs
+            if !logs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return logs
+            }
         }
 
         let arguments = builder.podLogsArguments(
@@ -2114,7 +2125,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
             container: nil,
             filter: filter,
             previous: previous,
-            follow: false
+            follow: false,
+            profile: profile
         )
 
         // Fail fast: short first attempt surfaces wedged API servers quickly; second attempt uses the full budget.
@@ -2178,7 +2190,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     do {
                         selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
                     } catch {
-                        throw RuneError.parseError(message: "service selector kunde inte tolkas")
+                        throw RuneError.parseError(message: "service selector could not be parsed")
                     }
                 }
             }
@@ -2199,19 +2211,50 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 do {
                     selectorMap = try parser.parseServiceSelector(from: serviceJSON.stdout)
                 } catch {
-                    throw RuneError.parseError(message: "service selector kunde inte tolkas")
+                    throw RuneError.parseError(message: "service selector could not be parsed")
                 }
             }
         }
 
         guard !selectorMap.isEmpty else {
-            throw RuneError.parseError(message: "Service \(service.name) saknar selector och kan inte användas för unified logs")
+            throw RuneError.parseError(message: "Service \(service.name) is missing a selector and cannot be used for unified logs")
         }
 
         let selector = selectorMap
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
+
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let unified = try await RuneK8sAgentOperationsClient.unifiedLogsBySelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    selector: selector,
+                    filter: filter,
+                    previous: previous,
+                    maxPods: unifiedLogsMaxPods,
+                    concurrency: unifiedLogsMaxConcurrentPodFetches,
+                    timeout: unifiedLogsAggregateTimeout
+                )
+                if unified.podNames.isEmpty {
+                    return UnifiedServiceLogs(service: service, podNames: [], mergedText: "No pods found for service selector: \(selector)")
+                }
+                if !unified.mergedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return UnifiedServiceLogs(
+                        service: service,
+                        podNames: unified.podNames,
+                        mergedText: unified.mergedText
+                    )
+                }
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with per-pod fallback.
+            }
+        }
 
         let pods: [PodSummary]
         if let agent = resolvedK8sAgentPath() {
@@ -2351,7 +2394,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                     do {
                         selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
                     } catch {
-                        throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+                        throw RuneError.parseError(message: "deployment selector could not be parsed")
                     }
                 }
             }
@@ -2373,19 +2416,50 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 do {
                     selectorMap = try parser.parseDeploymentSelector(from: deploymentJSON.stdout)
                 } catch {
-                    throw RuneError.parseError(message: "deployment selector kunde inte tolkas")
+                    throw RuneError.parseError(message: "deployment selector could not be parsed")
                 }
             }
         }
 
         guard !selectorMap.isEmpty else {
-            throw RuneError.parseError(message: "Deployment \(deployment.name) saknar matchLabels-selector och kan inte användas för unified logs")
+            throw RuneError.parseError(message: "Deployment \(deployment.name) is missing a matchLabels selector and cannot be used for unified logs")
         }
 
         let selector = selectorMap
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
+
+        if let agent = resolvedK8sAgentPath() {
+            do {
+                let unified = try await RuneK8sAgentOperationsClient.unifiedLogsBySelector(
+                    executablePath: agent,
+                    runner: runner,
+                    environment: env,
+                    contextName: context.name,
+                    namespace: namespace,
+                    selector: selector,
+                    filter: filter,
+                    previous: previous,
+                    maxPods: unifiedLogsMaxPods,
+                    concurrency: unifiedLogsMaxConcurrentPodFetches,
+                    timeout: unifiedLogsAggregateTimeout
+                )
+                if unified.podNames.isEmpty {
+                    return UnifiedDeploymentLogs(deployment: deployment, podNames: [], mergedText: "No pods found for deployment selector: \(selector)")
+                }
+                if !unified.mergedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return UnifiedDeploymentLogs(
+                        deployment: deployment,
+                        podNames: unified.podNames,
+                        mergedText: unified.mergedText
+                    )
+                }
+            } catch {
+                try rethrowCancellationIfNeeded(error)
+                // Continue with per-pod fallback.
+            }
+        }
 
         let pods: [PodSummary]
         if let agent = resolvedK8sAgentPath() {
@@ -2521,7 +2595,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                             podName: pod.name,
                             filter: filter,
                             previous: previous,
-                            timeoutOverride: self.unifiedLogsPerPodTimeout
+                            timeoutOverride: self.unifiedLogsPerPodTimeout,
+                            profile: .unifiedPerPod
                         )
                         return self.taggedLines(from: logs, podName: pod.name)
                     } catch {
@@ -2548,7 +2623,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                                 podName: pod.name,
                                 filter: filter,
                                 previous: previous,
-                                timeoutOverride: self.unifiedLogsPerPodTimeout
+                                timeoutOverride: self.unifiedLogsPerPodTimeout,
+                                profile: .unifiedPerPod
                             )
                             return self.taggedLines(from: logs, podName: pod.name)
                         } catch {
@@ -3279,7 +3355,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         podName: String,
         filter: LogTimeFilter,
         previous: Bool,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        profile: LogQueryProfile = .pod
     ) async throws -> String? {
         do {
             return try await restClient.podLogs(
@@ -3289,7 +3366,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
                 podName: podName,
                 filter: filter,
                 previous: previous,
-                timeout: timeout
+                timeout: timeout,
+                profile: profile
             )
         } catch {
             try rethrowCancellationIfNeeded(error)

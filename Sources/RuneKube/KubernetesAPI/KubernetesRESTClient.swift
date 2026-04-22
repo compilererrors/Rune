@@ -55,7 +55,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 resource: resource,
                 options: options
             ) else {
-                throw RuneError.invalidInput(message: "REST path saknas för resource \(resource)")
+                throw RuneError.invalidInput(message: "REST path is missing for resource \(resource)")
             }
             return try await rawRequest(
                 environment: environment,
@@ -69,7 +69,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         guard let path = KubernetesRESTPath.collectionPath(resource: resource, namespace: nil) else {
-            throw RuneError.invalidInput(message: "REST path saknas för resource \(resource)")
+            throw RuneError.invalidInput(message: "REST path is missing for resource \(resource)")
         }
         return try await rawRequest(
             environment: environment,
@@ -140,22 +140,24 @@ final class KubernetesRESTClient: @unchecked Sendable {
         podName: String,
         filter: LogTimeFilter,
         previous: Bool,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        profile: LogQueryProfile = .pod
     ) async throws -> String {
+        let query = filter.resolvedLogQuery(profile: profile)
         var items: [URLQueryItem] = []
         switch filter {
         case .all:
-            items.append(URLQueryItem(name: "tailLines", value: "200"))
+            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
         case let .tailLines(lines):
             items.append(URLQueryItem(name: "tailLines", value: String(max(1, lines))))
         case .lastMinutes, .lastHours, .lastDays:
-            if let since = filter.kubectlSinceArgument {
+            if let since = query.since {
                 items.append(URLQueryItem(name: "sinceSeconds", value: String(max(1, parseDurationSeconds(from: since)))))
             }
-            items.append(URLQueryItem(name: "tailLines", value: "5000"))
+            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
         case let .since(date):
             items.append(URLQueryItem(name: "sinceTime", value: ISO8601DateFormatter().string(from: date)))
-            items.append(URLQueryItem(name: "tailLines", value: "5000"))
+            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
         }
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))
@@ -382,7 +384,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             name: name,
             subresource: subresource
         ) else {
-            throw RuneError.invalidInput(message: "REST path saknas för \(kind.rawValue)")
+            throw RuneError.invalidInput(message: "REST path is missing for \(kind.rawValue)")
         }
         return path
     }
@@ -508,15 +510,15 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private func resolvedContext(environment: [String: String], contextName: String) async throws -> ResolvedRESTContext {
         let config = try await normalizedConfig(environment: environment)
         guard let namedContext = config.contexts.first(where: { $0.name == contextName }) else {
-            throw RuneError.invalidInput(message: "Kubernetes context \(contextName) saknas i kubeconfig")
+            throw RuneError.invalidInput(message: "Kubernetes context \(contextName) is missing from kubeconfig")
         }
         guard let namedCluster = config.clusters.first(where: { $0.name == namedContext.context.cluster }) else {
-            throw RuneError.invalidInput(message: "Cluster \(namedContext.context.cluster) saknas i kubeconfig")
+            throw RuneError.invalidInput(message: "Cluster \(namedContext.context.cluster) is missing from kubeconfig")
         }
         let namedUser = config.users.first(where: { $0.name == namedContext.context.user })
 
         guard let serverURL = URL(string: namedCluster.cluster.server) else {
-            throw RuneError.invalidInput(message: "Ogiltig Kubernetes server-URL för context \(contextName)")
+            throw RuneError.invalidInput(message: "Invalid Kubernetes server URL for context \(contextName)")
         }
 
         let authentication = try await resolveAuthentication(user: namedUser?.user, environment: environment)
@@ -560,7 +562,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         if user.clientCertificateData != nil || user.clientKeyData != nil {
-            throw RuneError.invalidInput(message: "Client certificate auth stöds inte ännu i Rune REST-transporten")
+            throw RuneError.invalidInput(message: "Client certificate auth is not supported yet in the Rune REST transport")
         }
 
         return .none

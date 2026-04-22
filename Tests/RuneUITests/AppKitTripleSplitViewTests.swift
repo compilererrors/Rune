@@ -1,6 +1,7 @@
 import XCTest
 @testable import RuneUI
 
+@MainActor
 final class AppKitTripleSplitViewTests: XCTestCase {
     func testWidthStateIgnoresStaleParentValuesAfterUserResize() {
         var state = AppKitTripleSplitWidthState()
@@ -45,4 +46,5 @@ final class AppKitTripleSplitViewTests: XCTestCase {
         XCTAssertFalse(state.shouldApplyOnLayout(containerWidth: 1440))
         XCTAssertTrue(state.shouldApplyOnLayout(containerWidth: 1280))
     }
+
 }

@@ -34,7 +34,7 @@ enum RuneK8sAgentWorkloadClient {
             timeout: timeout,
             commandName: "rune-k8s-agent contexts"
         )
-        let names: [String] = try decodeJSON([String].self, from: stdout, parseError: "rune-k8s-agent contexts JSON kunde inte tolkas")
+        let names: [String] = try decodeJSON([String].self, from: stdout, parseError: "rune-k8s-agent contexts JSON could not be parsed")
         return names.map(KubeContext.init(name:))
     }
 
@@ -53,7 +53,7 @@ enum RuneK8sAgentWorkloadClient {
             timeout: timeout,
             commandName: "rune-k8s-agent namespaces"
         )
-        return try decodeJSON([String].self, from: stdout, parseError: "rune-k8s-agent namespaces JSON kunde inte tolkas")
+        return try decodeJSON([String].self, from: stdout, parseError: "rune-k8s-agent namespaces JSON could not be parsed")
     }
 
     static func contextNamespace(
@@ -77,7 +77,7 @@ enum RuneK8sAgentWorkloadClient {
         let row = try decodeJSON(
             ContextNamespaceRow.self,
             from: stdout,
-            parseError: "rune-k8s-agent context-namespace JSON kunde inte tolkas"
+            parseError: "rune-k8s-agent context-namespace JSON could not be parsed"
         )
         let trimmed = row.namespace.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -113,7 +113,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        let rows = try decodeJSON([AgentPodSummary].self, from: stdout, parseError: "rune-k8s-agent pods JSON kunde inte tolkas")
+        let rows = try decodeJSON([AgentPodSummary].self, from: stdout, parseError: "rune-k8s-agent pods JSON could not be parsed")
         return rows.map { row in
             PodSummary(
                 name: row.name,
@@ -161,7 +161,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        let rows = try decodeJSON([AgentPodSummary].self, from: stdout, parseError: "rune-k8s-agent pods JSON kunde inte tolkas")
+        let rows = try decodeJSON([AgentPodSummary].self, from: stdout, parseError: "rune-k8s-agent pods JSON could not be parsed")
         return rows.map { row in
             PodSummary(
                 name: row.name,
@@ -198,7 +198,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ServiceSummary].self, from: stdout, parseError: "rune-k8s-agent services JSON kunde inte tolkas")
+        return try decodeJSON([ServiceSummary].self, from: stdout, parseError: "rune-k8s-agent services JSON could not be parsed")
     }
 
     static func listServicesAllNamespaces(
@@ -216,7 +216,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ServiceSummary].self, from: stdout, parseError: "rune-k8s-agent services JSON kunde inte tolkas")
+        return try decodeJSON([ServiceSummary].self, from: stdout, parseError: "rune-k8s-agent services JSON could not be parsed")
     }
 
     static func listIngresses(
@@ -236,7 +236,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent ingresses JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent ingresses JSON could not be parsed")
     }
 
     static func listIngressesAllNamespaces(
@@ -254,7 +254,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent ingresses JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent ingresses JSON could not be parsed")
     }
 
     static func listConfigMaps(
@@ -274,7 +274,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent configmaps JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent configmaps JSON could not be parsed")
     }
 
     static func listConfigMapsAllNamespaces(
@@ -292,7 +292,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent configmaps JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent configmaps JSON could not be parsed")
     }
 
     static func listSecrets(
@@ -312,7 +312,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent secrets JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent secrets JSON could not be parsed")
     }
 
     static func listRoles(
@@ -332,7 +332,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent roles JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent roles JSON could not be parsed")
     }
 
     static func listRoleBindings(
@@ -352,7 +352,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent rolebindings JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent rolebindings JSON could not be parsed")
     }
 
     static func listPersistentVolumeClaims(
@@ -372,7 +372,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent persistentvolumeclaims JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent persistentvolumeclaims JSON could not be parsed")
     }
 
     static func listHorizontalPodAutoscalers(
@@ -392,7 +392,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent horizontalpodautoscalers JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent horizontalpodautoscalers JSON could not be parsed")
     }
 
     static func listNetworkPolicies(
@@ -412,7 +412,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent networkpolicies JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent networkpolicies JSON could not be parsed")
     }
 
     static func listNodes(
@@ -430,7 +430,7 @@ enum RuneK8sAgentWorkloadClient {
             timeout: timeout,
             commandName: "rune-k8s-agent list nodes"
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent nodes JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent nodes JSON could not be parsed")
     }
 
     static func listPersistentVolumes(
@@ -448,7 +448,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent persistentvolumes JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent persistentvolumes JSON could not be parsed")
     }
 
     static func listStorageClasses(
@@ -466,7 +466,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent storageclasses JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent storageclasses JSON could not be parsed")
     }
 
     static func listClusterRoles(
@@ -484,7 +484,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent clusterroles JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent clusterroles JSON could not be parsed")
     }
 
     static func listClusterRoleBindings(
@@ -502,7 +502,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent clusterrolebindings JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent clusterrolebindings JSON could not be parsed")
     }
 
     static func listEvents(
@@ -522,7 +522,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([EventSummary].self, from: stdout, parseError: "rune-k8s-agent events JSON kunde inte tolkas")
+        return try decodeJSON([EventSummary].self, from: stdout, parseError: "rune-k8s-agent events JSON could not be parsed")
     }
 
     static func listEventsAllNamespaces(
@@ -540,7 +540,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([EventSummary].self, from: stdout, parseError: "rune-k8s-agent events JSON kunde inte tolkas")
+        return try decodeJSON([EventSummary].self, from: stdout, parseError: "rune-k8s-agent events JSON could not be parsed")
     }
 
     static func listJobs(
@@ -560,7 +560,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON could not be parsed")
     }
 
     static func listCronJobs(
@@ -580,7 +580,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON could not be parsed")
     }
 
     static func listDaemonSets(
@@ -600,7 +600,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON could not be parsed")
     }
 
     static func listStatefulSets(
@@ -620,7 +620,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON could not be parsed")
     }
 
     static func listDeployments(
@@ -640,7 +640,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([DeploymentSummary].self, from: stdout, parseError: "rune-k8s-agent deployments JSON kunde inte tolkas")
+        return try decodeJSON([DeploymentSummary].self, from: stdout, parseError: "rune-k8s-agent deployments JSON could not be parsed")
     }
 
     static func listDeploymentsAllNamespaces(
@@ -658,7 +658,7 @@ enum RuneK8sAgentWorkloadClient {
             contextName: contextName,
             timeout: timeout
         )
-        return try decodeJSON([DeploymentSummary].self, from: stdout, parseError: "rune-k8s-agent deployments JSON kunde inte tolkas")
+        return try decodeJSON([DeploymentSummary].self, from: stdout, parseError: "rune-k8s-agent deployments JSON could not be parsed")
     }
 
     static func listReplicaSets(
@@ -678,7 +678,7 @@ enum RuneK8sAgentWorkloadClient {
             namespace: namespace,
             timeout: timeout
         )
-        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON kunde inte tolkas")
+        return try decodeJSON([ClusterResourceSummary].self, from: stdout, parseError: "rune-k8s-agent JSON could not be parsed")
     }
 
     private static func runListCommand(

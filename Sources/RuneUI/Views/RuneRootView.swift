@@ -108,6 +108,15 @@ private enum RuneRootLayoutDebug {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     static let liveScenarioNamespace = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_NAMESPACE"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let liveScenarioPodDwellNanoseconds: UInt64 = {
+        guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_POD_DWELL_MS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let milliseconds = UInt64(rawValue),
+              milliseconds > 0 else {
+            return 3_500_000_000
+        }
+        return milliseconds * 1_000_000
+    }()
 
     static func log(
         _ snapshot: RuneRootLayoutSnapshot,
@@ -303,14 +312,16 @@ private enum RuneRootTextInputFocus: Hashable {
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
-    @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
-    @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
 
     private let onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?
     private let debugDisableBootstrap: Bool
     private let forcedShellVariant: RuneRootShellVariant?
     private let forcedManifestInlineEditorImplementation: ManifestInlineEditorImplementation?
+    private let forcedInitialSidebarWidth: Double?
+    private let forcedInitialDetailWidth: Double?
 
+    @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
+    @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
@@ -355,13 +366,17 @@ public struct RuneRootView: View {
         initialGenericResourceManifestTab: GenericResourceManifestTab = .describe,
         shellVariant: RuneRootShellVariant? = nil,
         manifestInlineEditorImplementation: ManifestInlineEditorImplementation? = nil,
-        initialYAMLInlineEditing: Bool = false
+        initialYAMLInlineEditing: Bool = false,
+        initialSidebarWidthOverride: Double? = nil,
+        initialDetailWidthOverride: Double? = nil
     ) {
         self.viewModel = viewModel
         self.onLayoutSnapshotChange = onLayoutSnapshotChange
         self.debugDisableBootstrap = debugDisableBootstrap
         self.forcedShellVariant = shellVariant
         self.forcedManifestInlineEditorImplementation = manifestInlineEditorImplementation
+        self.forcedInitialSidebarWidth = initialSidebarWidthOverride
+        self.forcedInitialDetailWidth = initialDetailWidthOverride
         _podInspectorTab = State(initialValue: initialPodInspectorTab)
         _serviceInspectorTab = State(initialValue: initialServiceInspectorTab)
         _deploymentInspectorTab = State(initialValue: initialDeploymentInspectorTab)
@@ -376,20 +391,14 @@ public struct RuneRootView: View {
                 .frame(width: 0, height: 0)
             keyboardNavigationBridge
 
-            if resolvedShellVariant == .navigationSplitView {
-                GeometryReader { geometry in
-                    let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
-                    let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
+            GeometryReader { geometry in
+                let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
+                let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
 
-                    configuredMainSplitContainer
-                        .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
-                        .offset(y: resolvedTopInset)
-                        .clipped()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-            } else {
                 configuredMainSplitContainer
-                    .padding(.top, RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset))
+                    .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
+                    .offset(y: resolvedTopInset)
+                    .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
@@ -617,7 +626,9 @@ public struct RuneRootView: View {
             return
         }
 
-        try? await Task.sleep(nanoseconds: 900_000_000)
+        let dwellNanoseconds = liveDebugScenarioDwellNanoseconds(for: step)
+        RuneRootLayoutDebug.logScenario(step, status: "settling", detail: "dwellMs=\(dwellNanoseconds / 1_000_000)")
+        try? await Task.sleep(nanoseconds: dwellNanoseconds)
 
         if let snapshot = lastLayoutSnapshot {
             RuneRootLayoutDebug.logScenario(
@@ -627,6 +638,15 @@ public struct RuneRootView: View {
             )
         } else {
             RuneRootLayoutDebug.logScenario(step, status: "snapshot-missing")
+        }
+    }
+
+    private func liveDebugScenarioDwellNanoseconds(for step: RuneRootLiveDebugScenarioStep) -> UInt64 {
+        switch step {
+        case .workloadPodOverview, .workloadPodYAML, .workloadPodDescribe:
+            return RuneRootLayoutDebug.liveScenarioPodDwellNanoseconds
+        default:
+            return 900_000_000
         }
     }
 
@@ -820,6 +840,7 @@ public struct RuneRootView: View {
                     persistDetailWidthIfNeeded(width)
                 }
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1354,6 +1375,7 @@ public struct RuneRootView: View {
                 .runePanelCard()
             }
         }
+        .id("overview")
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -1507,6 +1529,7 @@ public struct RuneRootView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
                 }
+                .id("networking:service")
 
             case .ingress:
                 genericResourceList(viewModel.visibleIngresses, selection: viewModel.state.selectedIngress, action: viewModel.selectIngress)
@@ -2459,13 +2482,10 @@ public struct RuneRootView: View {
         Group {
             switch activeImplementation {
             case .readOnlyScroll:
-                ScrollView([.horizontal, .vertical]) {
-                    Text(yamlDisplayText)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .textSelection(.enabled)
-                        .padding(10)
-                }
+                readOnlyTextContent(
+                    yamlDisplayText,
+                    resetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+                )
             case .swiftUITextEditor:
                 TextEditor(text: binding)
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
@@ -2490,24 +2510,11 @@ public struct RuneRootView: View {
 
     /// Read-only describe output Rune loaded from the cluster (no local editing).
     private var describeOutputReadOnlySurface: some View {
-        ScrollView([.horizontal, .vertical]) {
-            Text(describeDisplayText)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .textSelection(.enabled)
-                .padding(10)
-        }
-        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(.thinMaterial)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-        .frame(minHeight: 280, maxHeight: .infinity, alignment: .topLeading)
+        readOnlyTextSurface(
+            describeDisplayText,
+            minHeight: 280,
+            resetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+        )
     }
 
     private func yamlManifestSheetActionBar() -> some View {
@@ -2722,12 +2729,12 @@ public struct RuneRootView: View {
             }
 
             ScrollView {
-                Text(text.isEmpty ? emptyText : text)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                readOnlyTextContent(
+                    text.isEmpty ? emptyText : text,
+                    resetID: "export:\(emptyText):\((text.isEmpty ? emptyText : text).count)"
+                )
+                .padding(10)
+                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
             }
         }
     }
@@ -2807,7 +2814,11 @@ public struct RuneRootView: View {
                 } else if viewModel.state.podLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     podLogsEmptyPlaceholder()
                 } else {
-                    logTextScrollContent(viewModel.state.podLogs)
+                    readOnlyTextContent(
+                        viewModel.state.podLogs,
+                        resetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
+                    )
+                    .padding(10)
                 }
             }
             .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
@@ -2839,7 +2850,11 @@ public struct RuneRootView: View {
                 } else if viewModel.state.unifiedServiceLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     unifiedLogsEmptyPlaceholder()
                 } else {
-                    logTextScrollContent(viewModel.state.unifiedServiceLogs)
+                    readOnlyTextContent(
+                        viewModel.state.unifiedServiceLogs,
+                        resetID: "unifiedlogs:\(viewModel.state.selectedService?.name ?? viewModel.state.selectedDeployment?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
+                    )
+                    .padding(10)
                 }
             }
             .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
@@ -2892,12 +2907,12 @@ public struct RuneRootView: View {
                         .foregroundStyle(.secondary)
 
                     ScrollView {
-                        Text(execOutputText(for: result))
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .padding(10)
-                            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                        readOnlyTextContent(
+                            execOutputText(for: result),
+                            resetID: "exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
+                        )
+                        .padding(10)
+                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                     }
                 }
             } else {
@@ -2988,12 +3003,12 @@ public struct RuneRootView: View {
                             .foregroundStyle(.secondary)
 
                         ScrollView {
-                            Text(execOutputText(for: result))
-                                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                                .padding(10)
-                                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                            readOnlyTextContent(
+                                execOutputText(for: result),
+                                resetID: "terminal-exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
+                            )
+                            .padding(10)
+                            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                         }
                         .frame(minHeight: 180)
                     } else {
@@ -3005,6 +3020,7 @@ public struct RuneRootView: View {
                 .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
             }
         }
+        .id("terminal")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -3107,10 +3123,35 @@ public struct RuneRootView: View {
             .padding(.vertical, 2)
         }
         .padding(.horizontal, 2)
-        .id(genericResourceListIdentity(resources))
+        .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName):\(genericResourceListIdentity(resources))")
         .transaction { transaction in
             transaction.animation = nil
         }
+    }
+
+    private func readOnlyTextSurface(_ text: String, minHeight: CGFloat, resetID: String) -> some View {
+        readOnlyTextContent(text, resetID: resetID)
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                    .fill(.thinMaterial)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+            .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func readOnlyTextContent(_ text: String, resetID: String) -> some View {
+        AppKitManifestTextView(
+            text: .constant(text),
+            isEditable: false,
+            resetScrollOnExternalChange: true
+        )
+        .id(resetID)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -3886,11 +3927,11 @@ public struct RuneRootView: View {
     }
 
     private var resolvedSidebarWidth: CGFloat {
-        clampedSidebarWidth(CGFloat(persistedSidebarWidth))
+        clampedSidebarWidth(CGFloat(forcedInitialSidebarWidth ?? persistedSidebarWidth))
     }
 
     private var resolvedDetailWidth: CGFloat {
-        clampedDetailWidth(CGFloat(persistedDetailWidth))
+        clampedDetailWidth(CGFloat(forcedInitialDetailWidth ?? persistedDetailWidth))
     }
 
     private func clampedSidebarWidth(_ width: CGFloat) -> CGFloat {
@@ -3915,6 +3956,7 @@ public struct RuneRootView: View {
         let clamped = clampedSidebarWidth(width)
         if abs(clamped - CGFloat(persistedSidebarWidth)) >= 1 {
             persistedSidebarWidth = Double(clamped)
+            UserDefaults.standard.set(persistedSidebarWidth, forKey: RuneSettingsKeys.layoutSidebarWidth)
         }
     }
 
@@ -3922,6 +3964,7 @@ public struct RuneRootView: View {
         let clamped = clampedDetailWidth(width)
         if abs(clamped - CGFloat(persistedDetailWidth)) >= 1 {
             persistedDetailWidth = Double(clamped)
+            UserDefaults.standard.set(persistedDetailWidth, forKey: RuneSettingsKeys.layoutDetailWidth)
         }
     }
 

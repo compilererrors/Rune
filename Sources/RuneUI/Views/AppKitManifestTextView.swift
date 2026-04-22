@@ -4,6 +4,7 @@ import SwiftUI
 struct AppKitManifestTextView: NSViewRepresentable {
     @Binding var text: String
     var isEditable: Bool
+    var resetScrollOnExternalChange = false
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AppKitManifestTextView
@@ -59,6 +60,10 @@ struct AppKitManifestTextView: NSViewRepresentable {
             context.coordinator.isUpdatingFromSwiftUI = true
             textView.setStringKeepingSelection(text)
             context.coordinator.isUpdatingFromSwiftUI = false
+
+            if resetScrollOnExternalChange {
+                textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+            }
         }
     }
 }
