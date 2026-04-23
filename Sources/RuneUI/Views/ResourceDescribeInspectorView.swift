@@ -31,11 +31,10 @@ struct ResourceDescribeInspectorPane: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            InspectorReadOnlyTextSurface(
+            DescribeTextSurface(
                 text: describeText,
                 minHeight: 280,
-                resetID: readOnlyResetID,
-                contentStyle: .plainText
+                resetID: readOnlyResetID
             )
 
             Text("The pane above is describe output from the cluster. To update the cluster, open YAML manifest (or the YAML tab), edit, then Apply.")

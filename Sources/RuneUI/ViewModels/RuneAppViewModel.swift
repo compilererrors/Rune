@@ -24,7 +24,7 @@ public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
     case last6Hours
     case last24Hours
     case last7Days
-    /// High line cap; still bounded to limit payload size and timeouts.
+    /// Equivalent to plain `kubectl logs`: no tail or time filter.
     case largeTail
     case customOne
     case customTwo
@@ -40,7 +40,7 @@ public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
         case .last6Hours: return "Last 6h"
         case .last24Hours: return "Last 24h"
         case .last7Days: return "Last 7d"
-        case .largeTail: return "Large tail (10k)"
+        case .largeTail: return "All logs"
         case .customOne:
             return UserDefaults.standard.runeCustomLogPresetConfig(slot: .one).title(slot: .one)
         case .customTwo:
@@ -57,7 +57,7 @@ public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
         case .last6Hours: return .lastHours(6)
         case .last24Hours: return .lastHours(24)
         case .last7Days: return .lastDays(7)
-        case .largeTail: return .tailLines(10_000)
+        case .largeTail: return .all
         case .customOne:
             return UserDefaults.standard.runeCustomLogPresetConfig(slot: .one).filter
         case .customTwo:
@@ -365,6 +365,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var latestSnapshotRequestID = UUID()
     private var latestResourceDetailsRequestID = UUID()
     private var latestLogsReloadRequestID = UUID()
+    private var latestYAMLValidationRequestID = UUID()
     private var navigationHistory: [NavigationCheckpoint] = []
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
@@ -373,7 +374,9 @@ public final class RuneAppViewModel: ObservableObject {
     private var navigateFromEventFetchAttempts = 0
     private var scheduledRefreshTask: Task<Void, Never>?
     private var resourceDetailsTask: Task<Void, Never>?
+    private var scheduledLogsReloadTask: Task<Void, Never>?
     private var logsReloadTask: Task<Void, Never>?
+    private var yamlValidationTask: Task<Void, Never>?
     private var pendingForcedNamespaceRefresh = false
     /// Set during context switch with no explicit namespace so first metadata refresh can override stale carry-over namespace.
     private var pendingNamespaceRevalidationContextName: String?
@@ -391,6 +394,10 @@ public final class RuneAppViewModel: ObservableObject {
     private var recentContextNames: [String] = []
 
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
+    /// Coalesces rapid log preset toggles while still cancelling any in-flight fetch immediately.
+    private let logsReloadDebounceNanoseconds: UInt64 = 180_000_000
+    /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
+    private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
     /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.
     private let namespaceMetadataTTL: TimeInterval = 120
     /// Maximum age of `overviewSnapshotCache` entries before refresh is preferred over warm paths.
@@ -452,14 +459,20 @@ public final class RuneAppViewModel: ObservableObject {
         $selectedLogPreset
             .dropFirst()
             .sink { [weak self] _ in
-                self?.reloadLogsForSelection()
+                self?.scheduleLogsReloadForSelection()
             }
             .store(in: &cancellables)
 
         $includePreviousLogs
             .dropFirst()
             .sink { [weak self] _ in
-                self?.reloadLogsForSelection()
+                self?.scheduleLogsReloadForSelection()
+            }
+            .store(in: &cancellables)
+
+        state.$resourceYAML
+            .sink { [weak self] _ in
+                self?.scheduleResourceYAMLValidation()
             }
             .store(in: &cancellables)
 
@@ -933,7 +946,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func setSection(_ section: RuneSection, trackHistory: Bool, triggerReload: Bool) {
-        logsReloadTask?.cancel()
+        cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         state.selectedSection = section
         diagnostics.log("setSection -> \(section.rawValue)")
@@ -1062,7 +1075,7 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
         overviewPrefetchTask?.cancel()
         contextOverviewPrefetchTask?.cancel()
-        logsReloadTask?.cancel()
+        cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         let previousContextName = state.selectedContext?.name
         state.selectedContext = context
@@ -1119,7 +1132,7 @@ public final class RuneAppViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         diagnostics.log("setNamespace -> \(trimmed)")
-        logsReloadTask?.cancel()
+        cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         pendingNamespaceRevalidationContextName = nil
         state.selectedNamespace = trimmed
@@ -1682,18 +1695,53 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func reloadLogsForSelection() {
+        scheduledLogsReloadTask?.cancel()
+        startLogsReloadForSelection()
+    }
+
+    private func scheduleLogsReloadForSelection() {
         resourceDetailsTask?.cancel()
-        logsReloadTask?.cancel()
         let requestID = UUID()
         latestLogsReloadRequestID = requestID
+        scheduledLogsReloadTask?.cancel()
+        logsReloadTask?.cancel()
+
+        let debounce = logsReloadDebounceNanoseconds
+        scheduledLogsReloadTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: debounce)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.startLogsReloadForSelection(requestID: requestID)
+        }
+    }
+
+    private func startLogsReloadForSelection(requestID requestedRequestID: UUID? = nil) {
+        resourceDetailsTask?.cancel()
+        logsReloadTask?.cancel()
+        scheduledLogsReloadTask?.cancel()
+        let requestID = requestedRequestID ?? UUID()
+        latestLogsReloadRequestID = requestID
+
+        guard let context = state.selectedContext else { return }
+
+        let sources = state.kubeConfigSources
+        let namespace = state.selectedNamespace
+        let kind = state.selectedWorkloadKind
+        let filter = selectedLogPreset.filter
+        let previous = includePreviousLogs
+        let pod = state.selectedPod
+        let service = state.selectedService
+        let deployment = state.selectedDeployment
 
         logsReloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let context = self.state.selectedContext else { return }
-                switch self.state.selectedWorkloadKind {
+                switch kind {
                 case .pod:
-                    guard let pod = self.state.selectedPod else { return }
+                    guard let pod else { return }
                     self.state.setPodLogs("")
                     self.state.isLoadingLogs = true
                     defer {
@@ -1702,17 +1750,17 @@ public final class RuneAppViewModel: ObservableObject {
                         }
                     }
                     let logs = try await self.kubeClient.podLogs(
-                        from: self.state.kubeConfigSources,
+                        from: sources,
                         context: context,
-                        namespace: self.state.selectedNamespace,
+                        namespace: namespace,
                         podName: pod.name,
-                        filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        filter: filter,
+                        previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
                     self.state.setPodLogs(logs)
                 case .service:
-                    guard let service = self.state.selectedService else { return }
+                    guard let service else { return }
                     self.state.clearUnifiedServiceLogs()
                     self.state.isLoadingLogs = true
                     defer {
@@ -1721,17 +1769,17 @@ public final class RuneAppViewModel: ObservableObject {
                         }
                     }
                     let unified = try await self.kubeClient.unifiedLogsForService(
-                        from: self.state.kubeConfigSources,
+                        from: sources,
                         context: context,
-                        namespace: self.state.selectedNamespace,
+                        namespace: namespace,
                         service: service,
-                        filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        filter: filter,
+                        previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
                     self.state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
                 case .deployment:
-                    guard let deployment = self.state.selectedDeployment else { return }
+                    guard let deployment else { return }
                     self.state.clearUnifiedServiceLogs()
                     self.state.isLoadingLogs = true
                     defer {
@@ -1740,12 +1788,12 @@ public final class RuneAppViewModel: ObservableObject {
                         }
                     }
                     let unified = try await self.kubeClient.unifiedLogsForDeployment(
-                        from: self.state.kubeConfigSources,
+                        from: sources,
                         context: context,
-                        namespace: self.state.selectedNamespace,
+                        namespace: namespace,
                         deployment: deployment,
-                        filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        filter: filter,
+                        previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
                     self.state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
@@ -1836,6 +1884,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     /// Discards edits in the YAML editor and restores the last manifest loaded from the cluster.
     public func revertResourceYAMLDraft() {
+        yamlValidationTask?.cancel()
         state.revertResourceYAMLToClusterSnapshot()
     }
 
@@ -3472,6 +3521,13 @@ public final class RuneAppViewModel: ObservableObject {
         latestResourceDetailsRequestID == requestID
     }
 
+    private func cancelPendingLogReload() {
+        scheduledLogsReloadTask?.cancel()
+        scheduledLogsReloadTask = nil
+        logsReloadTask?.cancel()
+        latestLogsReloadRequestID = UUID()
+    }
+
     private func isCurrentLogsReloadRequest(_ requestID: UUID) -> Bool {
         latestLogsReloadRequestID == requestID
     }
@@ -4114,6 +4170,87 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func scheduleResourceYAMLValidation() {
+        yamlValidationTask?.cancel()
+
+        let yaml = state.resourceYAML
+        let localIssues = YAMLLanguageService.analyze(yaml).validationIssues
+        state.setResourceYAMLValidationIssues(localIssues)
+
+        let trimmed = yaml.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let context = state.selectedContext,
+              let resource = currentWritableResource()
+        else {
+            state.finishResourceYAMLValidation()
+            return
+        }
+
+        guard !localIssues.contains(where: { $0.severity == .error }) else {
+            state.finishResourceYAMLValidation()
+            return
+        }
+
+        let kubeConfigSources = state.kubeConfigSources
+        let namespace = state.selectedNamespace
+        let requestID = UUID()
+        latestYAMLValidationRequestID = requestID
+        state.beginResourceYAMLValidation()
+
+        yamlValidationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                try await Task.sleep(nanoseconds: self.yamlValidationDebounceNanoseconds)
+            } catch {
+                return
+            }
+
+            let remoteIssues: [YAMLValidationIssue]
+            do {
+                remoteIssues = try await self.kubeClient.validateResourceYAML(
+                    from: kubeConfigSources,
+                    context: context,
+                    namespace: namespace,
+                    yaml: yaml
+                )
+            } catch {
+                if error is CancellationError {
+                    return
+                }
+
+                remoteIssues = [
+                    YAMLValidationIssue(
+                        source: .transport,
+                        severity: .warning,
+                        message: error.localizedDescription
+                    )
+                ]
+            }
+
+            guard !Task.isCancelled else { return }
+            guard self.latestYAMLValidationRequestID == requestID else { return }
+            guard let currentResource = self.currentWritableResource() else { return }
+            guard self.state.resourceYAML == yaml,
+                  self.state.selectedContext == context,
+                  self.state.selectedNamespace == namespace,
+                  currentResource == resource
+            else {
+                return
+            }
+
+            self.state.setResourceYAMLValidationIssues(Self.deduplicatedYAMLValidationIssues(localIssues + remoteIssues))
+            self.state.finishResourceYAMLValidation()
+        }
+    }
+
+    private static func deduplicatedYAMLValidationIssues(_ issues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
+        var seen: Set<String> = []
+        return issues.filter { issue in
+            seen.insert(issue.id).inserted
+        }
+    }
+
     private func currentDeletableResource() -> (KubeResourceKind, String)? {
         currentWritableResource()
     }
@@ -4719,7 +4856,7 @@ public final class RuneAppViewModel: ObservableObject {
         overviewPrefetchTask?.cancel()
         contextOverviewPrefetchTask?.cancel()
         scheduledRefreshTask?.cancel()
-        logsReloadTask?.cancel()
+        cancelPendingLogReload()
         resourceDetailsTask?.cancel()
 
         store.clearAll()

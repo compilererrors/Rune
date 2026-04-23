@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RuneCore
 
 struct AppKitManifestTextView: NSViewRepresentable {
     enum ContentStyle: Sendable {
@@ -11,6 +12,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     var isEditable: Bool
     var resetScrollOnExternalChange = false
     var contentStyle: ContentStyle = .plainText
+    var externalValidationIssues: [YAMLValidationIssue] = []
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AppKitManifestTextView
@@ -25,7 +27,6 @@ struct AppKitManifestTextView: NSViewRepresentable {
                   let textView = notification.object as? PlainManifestTextView
             else { return }
 
-            textView.refreshLayout()
             parent.text = textView.string
         }
     }
@@ -48,7 +49,11 @@ struct AppKitManifestTextView: NSViewRepresentable {
         scrollView.verticalScrollElasticity = .allowed
 
         let textView = PlainManifestTextView(frame: .zero)
-        textView.configure(isEditable: isEditable, contentStyle: contentStyle)
+        textView.configure(
+            isEditable: isEditable,
+            contentStyle: contentStyle,
+            externalValidationIssues: externalValidationIssues
+        )
         textView.delegate = context.coordinator
         textView.setStringKeepingSelection(text)
 
@@ -60,7 +65,11 @@ struct AppKitManifestTextView: NSViewRepresentable {
         context.coordinator.parent = self
 
         guard let textView = scrollView.documentView as? PlainManifestTextView else { return }
-        textView.configure(isEditable: isEditable, contentStyle: contentStyle)
+        textView.configure(
+            isEditable: isEditable,
+            contentStyle: contentStyle,
+            externalValidationIssues: externalValidationIssues
+        )
 
         if textView.string != text {
             context.coordinator.isUpdatingFromSwiftUI = true
@@ -72,24 +81,16 @@ struct AppKitManifestTextView: NSViewRepresentable {
             }
         }
 
-        // Recompute document geometry even when the text is unchanged. Inspector tabs can
-        // reuse the same backing text while the available viewport height changes, and the
-        // scroll range must track that new size.
-        textView.refreshLayout()
+        // Keep scroll/document geometry in sync even when the text itself is unchanged.
+        textView.refreshViewportGeometry()
     }
 }
 
 private final class PlainManifestTextView: NSTextView {
     private static let baseFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    private static let yamlHighlightPatterns: [(NSRegularExpression, NSColor)] = [
-        (try! NSRegularExpression(pattern: #"(?m)^[ ]*---[ ]*$|^[ ]*\.\.\.[ ]*$"#), ManifestPalette.directive),
-        (try! NSRegularExpression(pattern: #"(?m)(^|[\s\[\{:,])(&|[*])[A-Za-z0-9_.-]+"#), ManifestPalette.anchor),
-        (try! NSRegularExpression(pattern: #"(?m)(^|[\s:\[-])(true|false|yes|no|on|off|null|~)(?=$|[\s,\]\}#])"#, options: [.caseInsensitive]), ManifestPalette.boolean),
-        (try! NSRegularExpression(pattern: #"(?m)(^|[\s:\[-])[-+]?[0-9]+(\.[0-9]+)?(?=$|[\s,\]\}#])"#), ManifestPalette.number),
-        (try! NSRegularExpression(pattern: #""([^"\\]|\\.)*"|'([^'\\]|\\.)*'"#), ManifestPalette.string)
-    ]
 
     private var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    private var externalValidationIssues: [YAMLValidationIssue] = []
 
     override var isOpaque: Bool { false }
 
@@ -101,9 +102,16 @@ private final class PlainManifestTextView: NSTextView {
         drawTabMarkers(in: rect)
     }
 
-    func configure(isEditable: Bool, contentStyle: AppKitManifestTextView.ContentStyle) {
+    func configure(
+        isEditable: Bool,
+        contentStyle: AppKitManifestTextView.ContentStyle,
+        externalValidationIssues: [YAMLValidationIssue]
+    ) {
+        let styleChanged = self.contentStyle != contentStyle
+        let issuesChanged = self.externalValidationIssues != externalValidationIssues
         self.isEditable = isEditable
         self.contentStyle = contentStyle
+        self.externalValidationIssues = externalValidationIssues
         isSelectable = true
         isRichText = false
         importsGraphics = false
@@ -147,7 +155,11 @@ private final class PlainManifestTextView: NSTextView {
             container.lineFragmentPadding = 0
         }
 
-        refreshLayout()
+        if styleChanged || issuesChanged {
+            refreshLayout()
+        } else {
+            refreshViewportGeometry()
+        }
     }
 
     func setStringKeepingSelection(_ newValue: String) {
@@ -170,8 +182,12 @@ private final class PlainManifestTextView: NSTextView {
         ], range: fullRange)
 
         if contentStyle == .yaml, storage.length > 0 {
-            applyYAMLHighlighting(in: storage, fullRange: fullRange)
-            applyYAMLDiagnostics(in: storage)
+            let analysis = YAMLLanguageService.analyze(storage.string)
+            applyYAMLHighlighting(in: storage, fullRange: fullRange, analysis: analysis)
+            applyYAMLDiagnostics(
+                in: storage,
+                issues: analysis.validationIssues + externalValidationIssues.filter { $0.source != .syntax }
+            )
         }
         storage.endEditing()
 
@@ -180,9 +196,34 @@ private final class PlainManifestTextView: NSTextView {
         needsDisplay = true
     }
 
+    func refreshViewportGeometry() {
+        updateDocumentSize()
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+    }
+
     override func didChangeText() {
         super.didChangeText()
         refreshLayout()
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        guard isEditable, contentStyle == .yaml else {
+            super.insertNewline(sender)
+            return
+        }
+
+        let nsString = string as NSString
+        let selection = selectedRange()
+        guard selection.length == 0 else {
+            super.insertNewline(sender)
+            return
+        }
+
+        let lineRange = nsString.lineRange(for: selection)
+        let currentLine = nsString.substring(with: trimmedLineRange(lineRange, in: nsString))
+        let indentation = YAMLLanguageService.suggestedIndentation(after: currentLine)
+        insertText("\n" + indentation, replacementRange: selection)
     }
 
     override func viewDidEndLiveResize() {
@@ -215,128 +256,20 @@ private final class PlainManifestTextView: NSTextView {
         }
     }
 
-    private func applyYAMLHighlighting(in storage: NSTextStorage, fullRange: NSRange) {
-        let source = storage.string
-        applyYAMLKeyHighlighting(in: source, storage: storage)
-        applyYAMLCommentHighlighting(in: source, storage: storage)
-
-        for (pattern, color) in Self.yamlHighlightPatterns {
-            pattern.enumerateMatches(in: source, range: fullRange) { match, _, _ in
-                guard let match else { return }
-                storage.addAttributes([.foregroundColor: color], range: match.range)
-            }
-        }
-    }
-
-    private func applyYAMLDiagnostics(in storage: NSTextStorage) {
-        for diagnostic in yamlDiagnostics(in: storage.string) {
-            storage.addAttributes(diagnostic.attributes, range: diagnostic.range)
-        }
-    }
-
-    private func applyYAMLKeyHighlighting(in source: String, storage: NSTextStorage) {
-        let nsSource = source as NSString
-        let lines = nsSource.components(separatedBy: .newlines)
-        var location = 0
-
-        for line in lines {
-            defer { location += nsSource.substring(with: NSRange(location: location, length: line.utf16.count)).utf16.count + 1 }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
-            guard let colonOffset = yamlKeyColonOffset(in: line) else { continue }
-
-            let keyText = String(line.prefix(colonOffset))
-            let leadingTrimmedKey = keyText.trimmingCharacters(in: .whitespaces)
-            guard !leadingTrimmedKey.isEmpty else { continue }
-
-            let keyStartInLine = keyText.distance(from: keyText.startIndex, to: keyText.firstIndex(where: { !$0.isWhitespace }) ?? keyText.startIndex)
-            let keyLength = max(0, colonOffset - keyStartInLine)
-            guard keyLength > 0 else { continue }
-
+    private func applyYAMLHighlighting(in storage: NSTextStorage, fullRange: NSRange, analysis: YAMLTextAnalysis) {
+        for span in analysis.highlights where NSMaxRange(span.range) <= NSMaxRange(fullRange) {
             storage.addAttributes(
-                [.foregroundColor: ManifestPalette.key],
-                range: NSRange(location: location + keyStartInLine, length: keyLength)
+                [.foregroundColor: ManifestPalette.color(for: span.kind)],
+                range: span.range
             )
         }
     }
 
-    private func applyYAMLCommentHighlighting(in source: String, storage: NSTextStorage) {
-        let nsSource = source as NSString
-        let lines = nsSource.components(separatedBy: .newlines)
-        var location = 0
-
-        for line in lines {
-            defer { location += nsSource.substring(with: NSRange(location: location, length: line.utf16.count)).utf16.count + 1 }
-            guard let commentOffset = yamlCommentOffset(in: line) else { continue }
-            let commentLength = line.utf16.count - commentOffset
-            guard commentLength > 0 else { continue }
-
-            storage.addAttributes(
-                [.foregroundColor: ManifestPalette.comment],
-                range: NSRange(location: location + commentOffset, length: commentLength)
-            )
+    private func applyYAMLDiagnostics(in storage: NSTextStorage, issues: [YAMLValidationIssue]) {
+        for issue in issues {
+            guard let range = issue.range?.nsRange else { continue }
+            storage.addAttributes(issue.attributes, range: range)
         }
-    }
-
-    private func yamlKeyColonOffset(in line: String) -> Int? {
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-        var escaped = false
-
-        for (offset, character) in line.enumerated() {
-            if escaped {
-                escaped = false
-                continue
-            }
-
-            switch character {
-            case "\\" where inDoubleQuotes:
-                escaped = true
-            case "'" where !inDoubleQuotes:
-                inSingleQuotes.toggle()
-            case "\"" where !inSingleQuotes:
-                inDoubleQuotes.toggle()
-            case ":" where !inSingleQuotes && !inDoubleQuotes:
-                let nextIndex = line.index(after: line.index(line.startIndex, offsetBy: offset))
-                if nextIndex == line.endIndex || line[nextIndex].isWhitespace {
-                    return offset
-                }
-            case "#" where !inSingleQuotes && !inDoubleQuotes:
-                return nil
-            default:
-                break
-            }
-        }
-
-        return nil
-    }
-
-    private func yamlCommentOffset(in line: String) -> Int? {
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-        var escaped = false
-
-        for (offset, character) in line.enumerated() {
-            if escaped {
-                escaped = false
-                continue
-            }
-
-            switch character {
-            case "\\" where inDoubleQuotes:
-                escaped = true
-            case "'" where !inDoubleQuotes:
-                inSingleQuotes.toggle()
-            case "\"" where !inSingleQuotes:
-                inDoubleQuotes.toggle()
-            case "#" where !inSingleQuotes && !inDoubleQuotes:
-                return offset
-            default:
-                break
-            }
-        }
-
-        return nil
     }
 
     private func drawIndentGuides(in rect: NSRect) {
@@ -400,6 +333,19 @@ private final class PlainManifestTextView: NSTextView {
         let size = sample.size(withAttributes: [.font: Self.baseFont])
         return max(8, ceil(size.width))
     }
+
+    private func trimmedLineRange(_ lineRange: NSRange, in nsString: NSString) -> NSRange {
+        var length = lineRange.length
+        while length > 0 {
+            let character = nsString.character(at: lineRange.location + length - 1)
+            if character == 10 || character == 13 {
+                length -= 1
+            } else {
+                break
+            }
+        }
+        return NSRange(location: lineRange.location, length: length)
+    }
 }
 
 private struct ManifestPalette {
@@ -416,17 +362,28 @@ private struct ManifestPalette {
     static let errorBackground = NSColor.systemRed.withAlphaComponent(0.12)
     static let warningUnderline = NSColor.systemOrange
     static let warningBackground = NSColor.systemOrange.withAlphaComponent(0.1)
+
+    static func color(for kind: YAMLHighlightKind) -> NSColor {
+        switch kind {
+        case .key:
+            return key
+        case .string:
+            return string
+        case .number:
+            return number
+        case .boolean:
+            return boolean
+        case .comment:
+            return comment
+        case .directive:
+            return directive
+        case .anchor, .alias:
+            return anchor
+        }
+    }
 }
 
-private struct YAMLDiagnostic {
-    enum Severity {
-        case error
-        case warning
-    }
-
-    let range: NSRange
-    let severity: Severity
-
+extension YAMLValidationIssue {
     var attributes: [NSAttributedString.Key: Any] {
         switch severity {
         case .error:
@@ -445,36 +402,6 @@ private struct YAMLDiagnostic {
     }
 }
 
-private func yamlDiagnostics(in source: String) -> [YAMLDiagnostic] {
-    var diagnostics: [YAMLDiagnostic] = []
-
-    source.enumerateSubstrings(in: source.startIndex..<source.endIndex, options: .byLines) { substring, lineRange, _, _ in
-        guard let substring else { return }
-        let absoluteRange = NSRange(lineRange, in: source)
-
-        for (offset, character) in substring.enumerated() where character == "\t" {
-            diagnostics.append(
-                YAMLDiagnostic(
-                    range: NSRange(location: absoluteRange.location + offset, length: 1),
-                    severity: .error
-                )
-            )
-        }
-
-        if let problemRange = unmatchedQuoteRange(in: substring) {
-            diagnostics.append(
-                YAMLDiagnostic(
-                    range: NSRange(location: absoluteRange.location + problemRange.location, length: problemRange.length),
-                    severity: .error
-                )
-            )
-        }
-    }
-
-    diagnostics.append(contentsOf: unmatchedFlowDelimiterDiagnostics(in: source))
-    return diagnostics
-}
-
 private func indentationColumns(in line: String) -> Int {
     var columns = 0
     for character in line {
@@ -488,94 +415,4 @@ private func indentationColumns(in line: String) -> Int {
         }
     }
     return columns
-}
-
-private func unmatchedQuoteRange(in line: String) -> NSRange? {
-    var inSingleQuotes = false
-    var inDoubleQuotes = false
-    var escaped = false
-    var singleStart: Int?
-    var doubleStart: Int?
-
-    for (offset, character) in line.enumerated() {
-        if escaped {
-            escaped = false
-            continue
-        }
-
-        switch character {
-        case "\\" where inDoubleQuotes:
-            escaped = true
-        case "'" where !inDoubleQuotes:
-            inSingleQuotes.toggle()
-            singleStart = inSingleQuotes ? offset : nil
-        case "\"" where !inSingleQuotes:
-            inDoubleQuotes.toggle()
-            doubleStart = inDoubleQuotes ? offset : nil
-        case "#" where !inSingleQuotes && !inDoubleQuotes:
-            return nil
-        default:
-            break
-        }
-    }
-
-    if let singleStart {
-        return NSRange(location: singleStart, length: max(1, line.count - singleStart))
-    }
-    if let doubleStart {
-        return NSRange(location: doubleStart, length: max(1, line.count - doubleStart))
-    }
-    return nil
-}
-
-private func unmatchedFlowDelimiterDiagnostics(in source: String) -> [YAMLDiagnostic] {
-    struct StackItem {
-        let character: Character
-        let offset: Int
-    }
-
-    var stack: [StackItem] = []
-    var diagnostics: [YAMLDiagnostic] = []
-    var inSingleQuotes = false
-    var inDoubleQuotes = false
-    var escaped = false
-
-    for (offset, character) in source.enumerated() {
-        if escaped {
-            escaped = false
-            continue
-        }
-
-        switch character {
-        case "\\" where inDoubleQuotes:
-            escaped = true
-        case "'" where !inDoubleQuotes:
-            inSingleQuotes.toggle()
-        case "\"" where !inSingleQuotes:
-            inDoubleQuotes.toggle()
-        case "[" , "{":
-            guard !inSingleQuotes && !inDoubleQuotes else { continue }
-            stack.append(StackItem(character: character, offset: offset))
-        case "]", "}":
-            guard !inSingleQuotes && !inDoubleQuotes else { continue }
-            guard let last = stack.last else {
-                diagnostics.append(YAMLDiagnostic(range: NSRange(location: offset, length: 1), severity: .error))
-                continue
-            }
-            let expected: Character = character == "]" ? "[" : "{"
-            if last.character == expected {
-                stack.removeLast()
-            } else {
-                diagnostics.append(YAMLDiagnostic(range: NSRange(location: offset, length: 1), severity: .error))
-            }
-        default:
-            break
-        }
-    }
-
-    for item in stack {
-        diagnostics.append(YAMLDiagnostic(range: NSRange(location: item.offset, length: 1), severity: .error))
-    }
-
-    return diagnostics
 }

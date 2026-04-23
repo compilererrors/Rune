@@ -147,17 +147,21 @@ final class KubernetesRESTClient: @unchecked Sendable {
         var items: [URLQueryItem] = []
         switch filter {
         case .all:
-            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
+            break
         case let .tailLines(lines):
             items.append(URLQueryItem(name: "tailLines", value: String(max(1, lines))))
         case .lastMinutes, .lastHours, .lastDays:
             if let since = query.since {
                 items.append(URLQueryItem(name: "sinceSeconds", value: String(max(1, parseDurationSeconds(from: since)))))
             }
-            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
+            if let tailLines = query.tailLines {
+                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
+            }
         case let .since(date):
             items.append(URLQueryItem(name: "sinceTime", value: ISO8601DateFormatter().string(from: date)))
-            items.append(URLQueryItem(name: "tailLines", value: String(query.tailLines)))
+            if let tailLines = query.tailLines {
+                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
+            }
         }
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))

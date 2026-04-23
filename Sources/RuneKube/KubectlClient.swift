@@ -3,7 +3,7 @@ import RuneCore
 import RuneDiagnostics
 import RuneSecurity
 
-public final class KubectlClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ResourceWriteService, @unchecked Sendable {
+public final class KubectlClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ManifestValidationService, ResourceWriteService, @unchecked Sendable {
     private let runner: CommandRunning
     private let longRunningRunner: LongRunningCommandRunning
     private let parser: KubectlOutputParser
@@ -37,6 +37,8 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let unifiedLogsAggregateTimeout: TimeInterval = 20
     /// Selector/pod-discovery for unified logs should fail fast; stale workloads should not block the inspector for minutes.
     private let unifiedLogsSelectorTimeout: TimeInterval = 12
+    /// Validation should feel near-live while still giving the API server room on slower clusters.
+    private let manifestValidationTimeout: TimeInterval = 20
 
     public init(
         runner: CommandRunning = ProcessCommandRunner(),
@@ -3081,6 +3083,58 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         )
     }
 
+    public func validateResourceYAML(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        yaml: String
+    ) async throws -> [YAMLValidationIssue] {
+        let trimmed = yaml.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let env = try kubeconfigEnvironment(from: sources)
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("rune-validate-\(UUID().uuidString).yaml")
+
+        try yaml.write(to: tempURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let result: CommandResult
+        do {
+            result = try await runKubectlCapturingFailure(
+                arguments: builder.validateFileArguments(
+                    context: context.name,
+                    namespace: namespace,
+                    filePath: tempURL.path
+                ),
+                environment: env,
+                timeout: manifestValidationTimeout
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            return [Self.transportValidationIssue(from: error)]
+        }
+
+        guard result.exitCode != 0 else { return [] }
+
+        let output = [result.stderr, result.stdout]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+
+        let issues = Self.parseValidationIssues(from: output, yaml: yaml)
+        if !issues.isEmpty {
+            return issues
+        }
+
+        return [
+            YAMLValidationIssue(
+                source: .kubernetes,
+                severity: .error,
+                message: Self.normalizeValidationMessage(output)
+            )
+        ]
+    }
+
     public func patchCronJobSuspend(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -3197,6 +3251,38 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         )
     }
 
+    private func runKubectlCapturingFailure(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval? = nil
+    ) async throws -> CommandResult {
+        let effectiveTimeout = timeout ?? commandTimeout
+        let useQuickThenRetry = timeout == nil && effectiveTimeout > quickKubectlAttemptTimeout
+
+        if useQuickThenRetry {
+            do {
+                return try await runKubectlOnceCapturingFailure(
+                    arguments: arguments,
+                    environment: environment,
+                    timeout: quickKubectlAttemptTimeout
+                )
+            } catch {
+                guard isProcessTimeoutError(error) else { throw error }
+                return try await runKubectlOnceCapturingFailure(
+                    arguments: arguments,
+                    environment: environment,
+                    timeout: max(effectiveTimeout, retryTimeoutAfterQuickFailure)
+                )
+            }
+        }
+
+        return try await runKubectlOnceCapturingFailure(
+            arguments: arguments,
+            environment: environment,
+            timeout: effectiveTimeout
+        )
+    }
+
     private func runKubectlOnce(
         arguments: [String],
         environment: [String: String],
@@ -3218,6 +3304,28 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         VerboseKubeTrace.append(
             "kubectl",
             "ok ms=\(ms) stdoutBytes=\(result.stdout.utf8.count) stderrBytes=\(result.stderr.utf8.count) kubeconfig=\(VerboseKubeTrace.kubeconfigSummary(environment))"
+        )
+
+        return result
+    }
+
+    private func runKubectlOnceCapturingFailure(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> CommandResult {
+        let started = Date()
+        let result = try await runner.run(
+            executable: kubectlPath,
+            arguments: ["kubectl"] + arguments,
+            environment: environment,
+            timeout: timeout
+        )
+
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        VerboseKubeTrace.append(
+            "kubectl",
+            "exit=\(result.exitCode) ms=\(ms) stdoutBytes=\(result.stdout.utf8.count) stderrBytes=\(result.stderr.utf8.count) kubeconfig=\(VerboseKubeTrace.kubeconfigSummary(environment))"
         )
 
         return result
@@ -3652,6 +3760,179 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         timeout: TimeInterval? = nil
     ) async -> CommandResult? {
         try? await runKubectl(arguments: arguments, environment: environment, timeout: timeout)
+    }
+
+    static func parseValidationIssues(from output: String, yaml: String) -> [YAMLValidationIssue] {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        if isLikelyTransportValidationOutput(trimmed) {
+            return [
+                YAMLValidationIssue(
+                    source: .transport,
+                    severity: .warning,
+                    message: normalizeValidationMessage(trimmed)
+                )
+            ]
+        }
+
+        var issues = parseLineScopedValidationIssues(from: trimmed, yaml: yaml)
+        issues.append(contentsOf: parseKubernetesValidationIssues(from: trimmed))
+
+        if !issues.isEmpty {
+            return deduplicatedValidationIssues(issues)
+        }
+
+        if trimmed.contains("is invalid:") || trimmed.contains("error validating data") {
+            return [
+                YAMLValidationIssue(
+                    source: .kubernetes,
+                    severity: .error,
+                    message: normalizeValidationMessage(trimmed)
+                )
+            ]
+        }
+
+        return []
+    }
+
+    private static func parseLineScopedValidationIssues(from output: String, yaml: String) -> [YAMLValidationIssue] {
+        let pattern = #"yaml:\s*line\s+(\d+)(?:,\s*column\s+(\d+))?:\s*([^\n]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsOutput = output as NSString
+        let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
+
+        return matches.compactMap { match in
+            guard match.numberOfRanges >= 4 else { return nil }
+            guard let lineValue = Int(nsOutput.substring(with: match.range(at: 1))) else { return nil }
+
+            let columnValue: Int? = {
+                let range = match.range(at: 2)
+                guard range.location != NSNotFound else { return nil }
+                return Int(nsOutput.substring(with: range))
+            }()
+
+            let message = nsOutput.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = validationRange(in: yaml, line: lineValue)
+            return YAMLValidationIssue(
+                source: .syntax,
+                severity: .error,
+                message: message,
+                line: lineValue,
+                column: columnValue,
+                range: range
+            )
+        }
+    }
+
+    private static func parseKubernetesValidationIssues(from output: String) -> [YAMLValidationIssue] {
+        let pattern = #"ValidationError\(([^)]+)\):\s*([^;\n\]]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsOutput = output as NSString
+        let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
+
+        if !matches.isEmpty {
+            return matches.map { match in
+                let path = nsOutput.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let detail = nsOutput.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return YAMLValidationIssue(
+                    source: .kubernetes,
+                    severity: .error,
+                    message: "\(path): \(detail)"
+                )
+            }
+        }
+
+        if let invalidRange = output.range(of: "is invalid:") {
+            let message = String(output[invalidRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else { return [] }
+            return [
+                YAMLValidationIssue(
+                    source: .kubernetes,
+                    severity: .error,
+                    message: message
+                )
+            ]
+        }
+
+        return []
+    }
+
+    private static func validationRange(in yaml: String, line: Int) -> YAMLValidationRange? {
+        guard line > 0 else { return nil }
+        let nsYAML = yaml as NSString
+        var currentLine = 1
+        var location = 0
+
+        while location <= nsYAML.length {
+            let lineRange = nsYAML.lineRange(for: NSRange(location: location, length: 0))
+            if currentLine == line {
+                return YAMLValidationRange(location: lineRange.location, length: max(1, lineRange.length))
+            }
+
+            let nextLocation = NSMaxRange(lineRange)
+            guard nextLocation > location else { break }
+            currentLine += 1
+            location = nextLocation
+            if location == nsYAML.length {
+                break
+            }
+        }
+
+        return nil
+    }
+
+    private static func normalizeValidationMessage(_ output: String) -> String {
+        var message = output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let range = message.range(of: #"error parsing .*?: error converting YAML to JSON: "#, options: .regularExpression) {
+            message.removeSubrange(range)
+        }
+
+        if let range = message.range(of: #"error: error validating \".*?\": error validating data: "#, options: .regularExpression) {
+            message.removeSubrange(range)
+        }
+
+        message = message.replacingOccurrences(
+            of: #"; if you choose to ignore these errors, turn validation off with --validate=false"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        return message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func transportValidationIssue(from error: Error) -> YAMLValidationIssue {
+        let message: String
+        if case let RuneError.commandFailed(_, detail) = error {
+            message = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            message = error.localizedDescription
+        }
+
+        return YAMLValidationIssue(
+            source: .transport,
+            severity: .warning,
+            message: normalizeValidationMessage(message)
+        )
+    }
+
+    private static func isLikelyTransportValidationOutput(_ output: String) -> Bool {
+        let lowered = output.lowercased()
+        return lowered.contains("unable to connect to the server")
+            || lowered.contains("timed out")
+            || lowered.contains("connection refused")
+            || lowered.contains("i/o timeout")
+            || lowered.contains("tls handshake timeout")
+            || lowered.contains("no configuration has been provided")
+            || lowered.contains("the connection to the server")
+    }
+
+    private static func deduplicatedValidationIssues(_ issues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
+        var seen: Set<String> = []
+        return issues.filter { issue in
+            seen.insert(issue.id).inserted
+        }
     }
 
     private static func mergePodSummariesPreservingMetrics(base: [PodSummary], detail: [PodSummary]) -> [PodSummary] {

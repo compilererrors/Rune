@@ -51,4 +51,44 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertNotEqual(age, "—")
         XCTAssertFalse(age.isEmpty)
     }
+
+    @MainActor
+    func testUpdatingResourceYAMLDraftClearsValidationIssues() {
+        let state = RuneAppState()
+        state.setResourceYAML("kind: Pod\n")
+        state.setResourceYAMLValidationIssues([
+            YAMLValidationIssue(
+                source: .syntax,
+                severity: .error,
+                message: "Tabs are not allowed in YAML indentation."
+            )
+        ])
+        state.beginResourceYAMLValidation()
+
+        state.updateResourceYAMLDraft("kind: Pod\nmetadata:\n")
+
+        XCTAssertTrue(state.resourceYAMLValidationIssues.isEmpty)
+        XCTAssertFalse(state.isValidatingResourceYAML)
+    }
+
+    @MainActor
+    func testRevertResourceYAMLToClusterSnapshotClearsValidationIssues() {
+        let state = RuneAppState()
+        state.setResourceYAML("kind: Pod\n")
+        state.updateResourceYAMLDraft("kind:\tPod\n")
+        state.setResourceYAMLValidationIssues([
+            YAMLValidationIssue(
+                source: .syntax,
+                severity: .error,
+                message: "Tabs are not allowed in YAML indentation."
+            )
+        ])
+        state.beginResourceYAMLValidation()
+
+        state.revertResourceYAMLToClusterSnapshot()
+
+        XCTAssertEqual(state.resourceYAML, state.resourceYAMLBaseline)
+        XCTAssertTrue(state.resourceYAMLValidationIssues.isEmpty)
+        XCTAssertFalse(state.isValidatingResourceYAML)
+    }
 }

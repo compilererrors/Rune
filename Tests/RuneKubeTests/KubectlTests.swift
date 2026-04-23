@@ -371,6 +371,30 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(stdout, "line\n")
     }
 
+    func testAgentPodLogsAllLogsOmitsTailAndSince() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["logs", "--context", "dev", "--namespace", "default", "--pod", "api-1"]
+            ): .success(CommandResult(stdout: "all logs\n", stderr: "", exitCode: 0))
+        ])
+
+        let stdout = try await RuneK8sAgentOperationsClient.podLogs(
+            executablePath: agentPath,
+            runner: runner,
+            environment: ["KUBECONFIG": "/tmp/rune-tests-config"],
+            contextName: "dev",
+            namespace: "default",
+            podName: "api-1",
+            filter: .all,
+            previous: false,
+            timeout: 5
+        )
+
+        XCTAssertEqual(stdout, "all logs\n")
+    }
+
     func testUnifiedServiceLogsPrefersMergedAgentLogFetch() async throws {
         let agentPath = try makeExecutableFile()
         let runner = ScriptedCommandRunner(script: [
@@ -569,6 +593,24 @@ final class KubectlTests: XCTestCase {
         XCTAssertFalse(args.contains("--since"))
     }
 
+    func testLogsArgumentsAllLogsMatchesPlainKubectlLogsShape() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podLogsArguments(
+            context: "dev",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            filter: .all,
+            previous: false,
+            follow: false
+        )
+
+        XCTAssertFalse(args.contains { $0.hasPrefix("--tail") })
+        XCTAssertFalse(args.contains("--since"))
+        XCTAssertFalse(args.contains("--since-time"))
+        XCTAssertTrue(args.contains("--timestamps"))
+    }
+
     func testPodParsingLegacyText() {
         let parser = KubectlOutputParser()
         let raw = "api-6f99fdcc7f-7sm5x Running\nworker-86fdd44558-cv95w Pending\n"
@@ -756,6 +798,65 @@ final class KubectlTests: XCTestCase {
         )
 
         XCTAssertEqual(args, ["--context", "dev", "exec", "api-1", "-n", "default", "--", "printenv", "HOSTNAME"])
+    }
+
+    func testValidateFileArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.validateFileArguments(
+            context: "dev",
+            namespace: "default",
+            filePath: "/tmp/resource.yaml"
+        )
+
+        XCTAssertEqual(
+            args,
+            ["--context", "dev", "apply", "--dry-run=server", "--validate=true", "-n", "default", "-f", "/tmp/resource.yaml"]
+        )
+    }
+
+    func testParseValidationIssuesMapsYAMLLineErrorsToSyntaxIssues() {
+        let output = """
+        error parsing /tmp/rune.yaml: error converting YAML to JSON: yaml: line 3: did not find expected key
+        """
+        let yaml = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: api
+        """
+
+        let issues = KubectlClient.parseValidationIssues(from: output, yaml: yaml)
+
+        XCTAssertEqual(issues.count, 1)
+        XCTAssertEqual(issues.first?.source, .syntax)
+        XCTAssertEqual(issues.first?.line, 3)
+        XCTAssertEqual(issues.first?.message, "did not find expected key")
+        XCTAssertEqual(issues.first?.range.map { (yaml as NSString).substring(with: $0.nsRange) }, "metadata:\n")
+    }
+
+    func testParseValidationIssuesMapsKubernetesSchemaFailures() {
+        let output = """
+        error: error validating "/tmp/rune.yaml": error validating data: [ValidationError(Deployment.spec.template.spec.containers[0].image): required value]; if you choose to ignore these errors, turn validation off with --validate=false
+        """
+
+        let issues = KubectlClient.parseValidationIssues(from: output, yaml: "kind: Deployment\n")
+
+        XCTAssertEqual(issues.count, 1)
+        XCTAssertEqual(issues.first?.source, .kubernetes)
+        XCTAssertEqual(
+            issues.first?.message,
+            "Deployment.spec.template.spec.containers[0].image: required value"
+        )
+    }
+
+    func testParseValidationIssuesMapsTransportFailuresToWarnings() {
+        let output = "Unable to connect to the server: dial tcp 127.0.0.1:6443: connect: connection refused"
+
+        let issues = KubectlClient.parseValidationIssues(from: output, yaml: "kind: Pod\n")
+
+        XCTAssertEqual(issues.count, 1)
+        XCTAssertEqual(issues.first?.source, .transport)
+        XCTAssertEqual(issues.first?.severity, .warning)
     }
 
     func testParseDeployments() throws {
