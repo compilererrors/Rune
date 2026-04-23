@@ -147,7 +147,9 @@ final class KubernetesRESTClient: @unchecked Sendable {
         var items: [URLQueryItem] = []
         switch filter {
         case .all:
-            break
+            if let tailLines = query.tailLines {
+                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
+            }
         case let .tailLines(lines):
             items.append(URLQueryItem(name: "tailLines", value: String(max(1, lines))))
         case .lastMinutes, .lastHours, .lastDays:

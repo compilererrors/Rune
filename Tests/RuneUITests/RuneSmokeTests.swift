@@ -1030,7 +1030,7 @@ final class RuneSmokeTests: XCTestCase {
 
         let deploymentJSONArgs = ["kubectl"] + builder.deploymentJSONArguments(context: "prod-main", namespace: "default", deploymentName: "api")
         let calledDeploymentJSON = await runner.didRun(arguments: deploymentJSONArgs)
-        XCTAssertTrue(calledDeploymentJSON)
+        XCTAssertFalse(calledDeploymentJSON)
     }
 
     func testProductionGuardScaleSmokeFlow() async throws {
@@ -1670,13 +1670,13 @@ final class RuneSmokeTests: XCTestCase {
         )
 
         script[key(["kubectl"] + builder.deploymentListArguments(context: "prod-main", namespace: "default"))] = CommandResult(
-            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\"},\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":2}}]}",
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\"},\"spec\":{\"replicas\":3,\"selector\":{\"matchLabels\":{\"app\":\"api\"}}},\"status\":{\"readyReplicas\":2}}]}",
             stderr: "",
             exitCode: 0
         )
 
         script[key(["kubectl"] + builder.deploymentListAllNamespacesArguments(context: "prod-main"))] = CommandResult(
-            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\",\"namespace\":\"default\"},\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":2}},{\"metadata\":{\"name\":\"worker\",\"namespace\":\"platform\"},\"spec\":{\"replicas\":1},\"status\":{\"readyReplicas\":1}}]}",
+            stdout: "{\"items\":[{\"metadata\":{\"name\":\"api\",\"namespace\":\"default\"},\"spec\":{\"replicas\":3,\"selector\":{\"matchLabels\":{\"app\":\"api\"}}},\"status\":{\"readyReplicas\":2}},{\"metadata\":{\"name\":\"worker\",\"namespace\":\"platform\"},\"spec\":{\"replicas\":1},\"status\":{\"readyReplicas\":1}}]}",
             stderr: "",
             exitCode: 0
         )

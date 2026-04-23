@@ -20,17 +20,10 @@ extension LogTimeFilter {
         case let .tailLines(lines):
             return ResolvedLogQuery(since: nil, usesSinceTime: false, tailLines: max(1, lines))
         case .lastMinutes, .lastHours, .lastDays, .since:
-            let cappedTail: Int
-            switch profile {
-            case .pod:
-                cappedTail = 2_000
-            case .unifiedPerPod:
-                cappedTail = 400
-            }
             return ResolvedLogQuery(
                 since: kubectlSinceArgument,
                 usesSinceTime: usesSinceTime,
-                tailLines: cappedTail
+                tailLines: nil
             )
         }
     }

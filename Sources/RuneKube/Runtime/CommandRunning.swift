@@ -89,6 +89,21 @@ public final class ProcessCommandRunner: CommandRunning {
                 let stderrPipe = Pipe()
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
+                let stdoutBuffer = ProcessOutputBuffer()
+                let stderrBuffer = ProcessOutputBuffer()
+
+                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if !data.isEmpty {
+                        stdoutBuffer.append(data)
+                    }
+                }
+                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if !data.isEmpty {
+                        stderrBuffer.append(data)
+                    }
+                }
 
                 if let timeoutValue {
                     let timeoutItem = DispatchWorkItem {
@@ -121,12 +136,18 @@ public final class ProcessCommandRunner: CommandRunning {
 
                 process.terminationHandler = { process in
                     state.cancelTimeoutItem()
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    stdoutBuffer.append(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    stderrBuffer.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    let stdoutData = stdoutBuffer.data()
+                    let stderrData = stderrBuffer.data()
                     if state.hasAlreadyResumed() {
                         return
                     }
 
-                    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
                     let duration = Date().timeIntervalSince(started)
 
                     if state.takeTerminatedByCancellation() {
@@ -172,6 +193,8 @@ public final class ProcessCommandRunner: CommandRunning {
                     try process.run()
                 } catch {
                     state.cancelTimeoutItem()
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
                     commandLogger.error("Failed to start command: \(command, privacy: .public) :: \(error.localizedDescription, privacy: .public)")
                     mirrorCommandNSLog("Failed to start command: \(command) :: \(error.localizedDescription)")
                     K8sWireTrace.logKubectlCompletion(
@@ -264,6 +287,25 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
         }
 
         return ProcessCommandHandle(process: process)
+    }
+}
+
+private final class ProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+
+    func data() -> Data {
+        lock.lock()
+        let value = storage
+        lock.unlock()
+        return value
     }
 }
 
