@@ -1134,8 +1134,10 @@ public struct RuneRootView: View {
                         .help(context.name)
                 }
 
-                contextUsageBadge(label: "CPU", value: contextUsageValue(viewModel.state.overviewClusterCPUPercent))
-                contextUsageBadge(label: "MEM", value: contextUsageValue(viewModel.state.overviewClusterMemoryPercent))
+                if viewModel.state.selectedSection != .terminal {
+                    contextUsageBadge(label: "CPU", value: contextUsageValue(viewModel.state.overviewClusterCPUPercent))
+                    contextUsageBadge(label: "MEM", value: contextUsageValue(viewModel.state.overviewClusterMemoryPercent))
+                }
 
                 if viewModel.state.isReadOnlyMode {
                     Label("Read-only", systemImage: "lock.fill")
@@ -2763,7 +2765,10 @@ public struct RuneRootView: View {
         ResourceTerminalDetailsView(
             session: viewModel.state.terminalSession,
             selectedPod: viewModel.state.selectedPod,
-            portForwardSessions: viewModel.state.portForwardSessions
+            portForwardSessions: viewModel.state.portForwardSessions,
+            onFillCommand: { command in
+                viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
+            }
         )
     }
 

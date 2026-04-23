@@ -37,9 +37,10 @@ struct ResourceTerminalWorkspaceView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                terminalCard
                 portForwardCard
+                terminalCard
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .id("terminal")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -86,7 +87,7 @@ struct ResourceTerminalWorkspaceView: View {
 
             TerminalTranscriptSurface(
                 text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : transcriptPlaceholder,
-                minHeight: 320,
+                minHeight: 420,
                 resetID: "terminal:\(session?.id ?? "empty")"
             )
 
@@ -111,6 +112,7 @@ struct ResourceTerminalWorkspaceView: View {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
                 .fill(.regularMaterial)
         )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var portForwardCard: some View {
@@ -138,6 +140,7 @@ struct ResourceTerminalWorkspaceView: View {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
                 .fill(.regularMaterial)
         )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func terminalStatusBadge(_ status: PodTerminalSessionStatus) -> some View {
@@ -172,6 +175,16 @@ struct ResourceTerminalDetailsView: View {
     let session: PodTerminalSession?
     let selectedPod: PodSummary?
     let portForwardSessions: [PortForwardSession]
+    let onFillCommand: (String) -> Void
+
+    private let commonCommands = [
+        "pwd",
+        "printenv | sort",
+        "ls -la",
+        "cat /etc/os-release",
+        "df -h",
+        "ps -ef"
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -207,8 +220,47 @@ struct ResourceTerminalDetailsView: View {
                     .font(.subheadline.weight(.medium))
             }
 
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Common Commands")
+                    .font(.headline)
+
+                ForEach(commonCommands, id: \.self) { command in
+                    Button {
+                        onFillCommand(command)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(command)
+                                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "arrow.down.to.line.compact")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Insert into terminal prompt")
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Notes")
+                    .font(.headline)
+                Text("CPU/MEM chips in the top header are cluster-level overview metrics, not pod-shell metrics.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Use the command buttons to prefill the prompt, then edit before sending if needed.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
