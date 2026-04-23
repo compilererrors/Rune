@@ -227,19 +227,24 @@ struct ResourceTerminalDetailsView: View {
                     .font(.headline)
 
                 ForEach(commonCommands, id: \.self) { command in
-                    Button {
-                        onFillCommand(command)
-                    } label: {
-                        HStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            onFillCommand(command)
+                        } label: {
                             Text(command)
                                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Image(systemName: "arrow.down.to.line.compact")
-                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            onFillCommand(command)
+                        } label: {
+                            Image(systemName: "paperplane")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Insert into terminal prompt")
                     }
-                    .buttonStyle(.bordered)
-                    .help("Insert into terminal prompt")
                 }
             }
 
