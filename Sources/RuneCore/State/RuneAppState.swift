@@ -76,6 +76,8 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var resourceYAML: String = ""
     /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
+    @Published public private(set) var resourceYAMLValidationIssues: [YAMLValidationIssue] = []
+    @Published public private(set) var isValidatingResourceYAML = false
     /// Read-only describe output Rune fetched for the selected resource (not user-editable).
     @Published public private(set) var resourceDescribe: String = ""
     @Published public private(set) var lastResourceYAMLError: String?
@@ -431,17 +433,35 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
         resourceYAMLBaseline = yaml
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
         lastResourceYAMLError = nil
     }
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
     public func updateResourceYAMLDraft(_ yaml: String) {
         resourceYAML = yaml
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
     }
 
     /// Discards local edits and restores the last loaded cluster YAML.
     public func revertResourceYAMLToClusterSnapshot() {
         resourceYAML = resourceYAMLBaseline
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
+    }
+
+    public func beginResourceYAMLValidation() {
+        isValidatingResourceYAML = true
+    }
+
+    public func setResourceYAMLValidationIssues(_ issues: [YAMLValidationIssue]) {
+        resourceYAMLValidationIssues = issues
+    }
+
+    public func finishResourceYAMLValidation() {
+        isValidatingResourceYAML = false
     }
 
     public var resourceYAMLHasUnsavedEdits: Bool {
@@ -456,6 +476,8 @@ public final class RuneAppState: ObservableObject {
     public func beginResourceDetailLoad() {
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
         resourceDescribe = ""
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil
@@ -470,6 +492,8 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAMLError(_ message: String?) {
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
         lastResourceYAMLError = message
     }
 
@@ -520,6 +544,8 @@ public final class RuneAppState: ObservableObject {
         unifiedServiceLogPods = []
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
         resourceDescribe = ""
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil

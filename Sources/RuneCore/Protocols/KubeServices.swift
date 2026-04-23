@@ -177,6 +177,15 @@ public protocol ManifestService: Sendable {
     ) async throws -> String
 }
 
+public protocol ManifestValidationService: Sendable {
+    func validateResourceYAML(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        yaml: String
+    ) async throws -> [YAMLValidationIssue]
+}
+
 public protocol ResourceWriteService: Sendable {
     func deleteResource(
         from sources: [KubeConfigSource],

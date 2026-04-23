@@ -467,7 +467,7 @@ public struct KubectlCommandBuilder {
 
         switch filter {
         case .all:
-            args.append("--tail=\(query.tailLines)")
+            break
         case let .tailLines(lines):
             args.append("--tail=\(max(1, lines))")
         case .lastMinutes, .lastHours, .lastDays, .since:
@@ -478,7 +478,9 @@ public struct KubectlCommandBuilder {
                     args += ["--since", since]
                 }
             }
-            args.append("--tail=\(query.tailLines)")
+            if let tailLines = query.tailLines {
+                args.append("--tail=\(tailLines)")
+            }
         }
 
         if previous {
@@ -671,6 +673,17 @@ public struct KubectlCommandBuilder {
         [
             "--context", context,
             "apply",
+            "-n", namespace,
+            "-f", filePath
+        ]
+    }
+
+    public func validateFileArguments(context: String, namespace: String, filePath: String) -> [String] {
+        [
+            "--context", context,
+            "apply",
+            "--dry-run=server",
+            "--validate=true",
             "-n", namespace,
             "-f", filePath
         ]

@@ -112,7 +112,7 @@ enum RuneK8sAgentOperationsClient {
 
         switch filter {
         case .all:
-            args += ["--tail", String(query.tailLines)]
+            break
         case let .tailLines(lines):
             args += ["--tail", String(max(1, lines))]
         case .lastMinutes, .lastHours, .lastDays, .since:
@@ -123,7 +123,9 @@ enum RuneK8sAgentOperationsClient {
                     args += ["--since", since]
                 }
             }
-            args += ["--tail", String(query.tailLines)]
+            if let tailLines = query.tailLines {
+                args += ["--tail", String(tailLines)]
+            }
         }
 
         if previous {
@@ -158,8 +160,14 @@ enum RuneK8sAgentOperationsClient {
             "logs", "selector",
             "--context", contextName,
             "--namespace", namespace,
-            "--label-selector", selector,
-            "--tail", String(query.tailLines),
+            "--label-selector", selector
+        ]
+
+        if let tailLines = query.tailLines {
+            args += ["--tail", String(tailLines)]
+        }
+
+        args += [
             "--max-pods", String(max(1, maxPods)),
             "--concurrency", String(max(1, concurrency))
         ]

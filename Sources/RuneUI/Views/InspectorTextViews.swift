@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RuneCore
 
 struct InspectorTextSurface<Content: View>: View {
     let minHeight: CGFloat
@@ -25,13 +26,15 @@ struct InspectorReadOnlyTextView: View {
     let text: String
     let resetID: String
     var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    var externalValidationIssues: [YAMLValidationIssue] = []
 
     var body: some View {
         AppKitManifestTextView(
             text: .constant(text),
             isEditable: false,
             resetScrollOnExternalChange: true,
-            contentStyle: contentStyle
+            contentStyle: contentStyle,
+            externalValidationIssues: externalValidationIssues
         )
         .id(resetID)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -51,6 +54,32 @@ struct InspectorReadOnlyTextSurface: View {
                 resetID: resetID,
                 contentStyle: contentStyle
             )
+        }
+    }
+}
+
+struct InspectorPlainTextScrollSurface: View {
+    let text: String
+    let minHeight: CGFloat
+    let resetID: String
+
+    var body: some View {
+        InspectorTextSurface(minHeight: minHeight) {
+            GeometryReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    Text(text)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(
+                            minWidth: max(0, proxy.size.width - 20),
+                            minHeight: max(0, proxy.size.height - 20),
+                            alignment: .topLeading
+                        )
+                        .padding(10)
+                }
+                .id("\(resetID):\(text.count)")
+            }
         }
     }
 }

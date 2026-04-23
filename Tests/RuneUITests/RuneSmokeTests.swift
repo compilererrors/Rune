@@ -207,6 +207,64 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertNil(viewModel.state.lastError)
     }
 
+    func testChangingLogPresetCancelsInFlightFetchAndCommitsOnlyLatestLogs() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let slowArgs = ["kubectl"] + builder.podLogsArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            filter: .lastMinutes(5),
+            previous: false,
+            follow: false
+        )
+        let latestArgs = ["kubectl"] + builder.podLogsArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            filter: .lastMinutes(15),
+            previous: false,
+            follow: false
+        )
+        let runner = CancellableLogCommandRunner(
+            script: baseScript(builder: builder),
+            slowLogArguments: slowArgs,
+            latestLogArguments: latestArgs
+        )
+        let viewModel = makeViewModel(runner: runner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let pod = viewModel.state.pods.first(where: { $0.name == "api-0" }) else {
+            XCTFail("Expected api-0 pod")
+            return
+        }
+
+        viewModel.setWorkloadKind(.pod)
+        viewModel.selectPod(pod)
+        viewModel.selectedLogPreset = .last5Minutes
+
+        try await waitUntil {
+            await runner.didStartSlowLogFetch()
+        }
+
+        viewModel.selectedLogPreset = .last15Minutes
+
+        try await waitUntil(timeout: 3.0) {
+            await runner.didCancelSlowLogFetch()
+                && viewModel.state.podLogs.contains("latest 15m logs")
+        }
+
+        let didRunLatestFetch = await runner.didRun(arguments: latestArgs)
+        XCTAssertFalse(viewModel.state.podLogs.contains("stale 5m logs"))
+        XCTAssertTrue(didRunLatestFetch)
+    }
+
     func testAdditionalResourceTypesLoadIntoState() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -1505,7 +1563,7 @@ final class RuneSmokeTests: XCTestCase {
     }
 
     private func makeViewModel(
-        runner: ScriptedCommandRunner,
+        runner: any CommandRunning,
         bookmarkManager: BookmarkManager = BookmarkManager(store: InMemoryBookmarkStore()),
         kubeConfigDiscoverer: KubeConfigDiscovering = StaticKubeConfigDiscoverer(urls: []),
         exporter: FileExporting = NoopExporter(),
@@ -1955,6 +2013,68 @@ private actor ScriptedCommandRunner: CommandRunning {
         }
 
         return result
+    }
+
+    func didRun(arguments: [String]) -> Bool {
+        calls.contains(where: { $0.arguments == arguments })
+    }
+}
+
+private actor CancellableLogCommandRunner: CommandRunning {
+    private let script: [CommandKey: CommandResult]
+    private let slowLogArguments: [String]
+    private let latestLogArguments: [String]
+    private var calls: [CommandKey] = []
+    private var slowLogStarted = false
+    private var slowLogCancelled = false
+
+    init(
+        script: [CommandKey: CommandResult],
+        slowLogArguments: [String],
+        latestLogArguments: [String]
+    ) {
+        self.script = script
+        self.slowLogArguments = slowLogArguments
+        self.latestLogArguments = latestLogArguments
+    }
+
+    func run(
+        executable: String,
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval?
+    ) async throws -> CommandResult {
+        let key = CommandKey(executable: executable, arguments: arguments)
+        calls.append(key)
+
+        if arguments == slowLogArguments {
+            slowLogStarted = true
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return CommandResult(stdout: "stale 5m logs", stderr: "", exitCode: 0)
+            } catch {
+                slowLogCancelled = true
+                throw CancellationError()
+            }
+        }
+
+        if arguments == latestLogArguments {
+            return CommandResult(stdout: "latest 15m logs", stderr: "", exitCode: 0)
+        }
+
+        guard let result = script[key] else {
+            throw RuneError.commandFailed(command: "missing scripted command", message: arguments.joined(separator: " "))
+        }
+
+        return result
+    }
+
+    func didStartSlowLogFetch() -> Bool {
+        slowLogStarted
+    }
+
+    func didCancelSlowLogFetch() -> Bool {
+        slowLogCancelled
     }
 
     func didRun(arguments: [String]) -> Bool {

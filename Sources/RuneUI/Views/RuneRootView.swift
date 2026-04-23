@@ -2029,10 +2029,17 @@ public struct RuneRootView: View {
                             podOverviewSection(pod: pod)
 
                         case .logs:
-                            VStack(alignment: .leading, spacing: 10) {
-                                logsToolbar
-                                podLogsOutputScroll()
-                            }
+                            PodLogsInspectorPane(
+                                selectedLogPreset: $viewModel.selectedLogPreset,
+                                includePreviousLogs: $viewModel.includePreviousLogs,
+                                isLoadingLogs: viewModel.state.isLoadingLogs,
+                                isLoadingResources: viewModel.state.isLoading,
+                                errorMessage: viewModel.state.lastLogFetchError,
+                                logText: viewModel.state.podLogs,
+                                readOnlyResetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
+                                onReload: { viewModel.reloadLogsForSelection() },
+                                onSave: { viewModel.saveCurrentLogs() }
+                            )
 
                         case .exec:
                             execPane(for: pod)
@@ -2083,17 +2090,18 @@ public struct RuneRootView: View {
                             deploymentOverviewSection(deployment: deployment)
 
                         case .unifiedLogs:
-                            VStack(alignment: .leading, spacing: 10) {
-                                logsToolbar
-
-                                if !viewModel.state.unifiedServiceLogPods.isEmpty {
-                                    Text("Pods: " + viewModel.state.unifiedServiceLogPods.joined(separator: ", "))
-                                        .font(.footnote.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                unifiedLogsOutputScroll()
-                            }
+                            UnifiedResourceLogsInspectorPane(
+                                selectedLogPreset: $viewModel.selectedLogPreset,
+                                includePreviousLogs: $viewModel.includePreviousLogs,
+                                isLoadingLogs: viewModel.state.isLoadingLogs,
+                                isLoadingResources: viewModel.state.isLoading,
+                                errorMessage: viewModel.state.lastLogFetchError,
+                                podNames: viewModel.state.unifiedServiceLogPods,
+                                logText: viewModel.state.unifiedServiceLogs,
+                                readOnlyResetID: "unifiedlogs:\(viewModel.state.selectedDeployment?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
+                                onReload: { viewModel.reloadLogsForSelection() },
+                                onSave: { viewModel.saveCurrentLogs() }
+                            )
 
                         case .rollout:
                             VStack(alignment: .leading, spacing: 10) {
@@ -2197,17 +2205,18 @@ public struct RuneRootView: View {
                             }
 
                         case .unifiedLogs:
-                            VStack(alignment: .leading, spacing: 10) {
-                                logsToolbar
-
-                                if !viewModel.state.unifiedServiceLogPods.isEmpty {
-                                    Text("Pods: " + viewModel.state.unifiedServiceLogPods.joined(separator: ", "))
-                                        .font(.footnote.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                unifiedLogsOutputScroll()
-                            }
+                            UnifiedResourceLogsInspectorPane(
+                                selectedLogPreset: $viewModel.selectedLogPreset,
+                                includePreviousLogs: $viewModel.includePreviousLogs,
+                                isLoadingLogs: viewModel.state.isLoadingLogs,
+                                isLoadingResources: viewModel.state.isLoading,
+                                errorMessage: viewModel.state.lastLogFetchError,
+                                podNames: viewModel.state.unifiedServiceLogPods,
+                                logText: viewModel.state.unifiedServiceLogs,
+                                readOnlyResetID: "unifiedlogs:\(viewModel.state.selectedService?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
+                                onReload: { viewModel.reloadLogsForSelection() },
+                                onSave: { viewModel.saveCurrentLogs() }
+                            )
 
                         case .portForward:
                             portForwardPane(targetKind: .service, targetName: service.name)
@@ -2480,6 +2489,8 @@ public struct RuneRootView: View {
             yamlFooterText: yamlFooterText,
             canApplyMutations: viewModel.canApplyClusterMutations,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
+            validationIssues: viewModel.state.resourceYAMLValidationIssues,
+            isValidating: viewModel.state.isValidatingResourceYAML,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
             onImport: { viewModel.importResourceYAMLFromFile() },
@@ -2497,6 +2508,8 @@ public struct RuneRootView: View {
             baseline: viewModel.state.resourceYAMLBaseline,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
             canApplyMutations: viewModel.canApplyClusterMutations,
+            validationIssues: viewModel.state.resourceYAMLValidationIssues,
+            isValidating: viewModel.state.isValidatingResourceYAML,
             isInlineEditing: $yamlManifestIsEditing,
             inlineEditorImplementation: resolvedManifestInlineEditorImplementation,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
@@ -2550,142 +2563,6 @@ public struct RuneRootView: View {
                 .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
             }
         }
-    }
-
-    private var logsToolbar: some View {
-        HStack {
-            Picker("Log window", selection: $viewModel.selectedLogPreset) {
-                ForEach(PodLogPreset.allCases) { preset in
-                    Text(preset.title).tag(preset)
-                }
-            }
-            .frame(maxWidth: 220)
-
-            Toggle("Previous", isOn: $viewModel.includePreviousLogs)
-
-            Spacer()
-
-            Button("Reload") {
-                viewModel.reloadLogsForSelection()
-            }
-
-            Button("Save Logs") {
-                viewModel.saveCurrentLogs()
-            }
-        }
-    }
-
-    // MARK: - Log panes (pod + unified workloads)
-
-    /// Shown while a log stream request is in flight (`isLoadingLogs` or global `isLoading`).
-    private func logLoadingPlaceholder() -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Loading logs…")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-    }
-
-    /// Error banner when the log stream failed (timeout or non-zero exit from the log fetch).
-    private func logFetchErrorView(message: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Could not load logs")
-                .font(.body.weight(.semibold))
-            Text(message)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("Retry") {
-                viewModel.reloadLogsForSelection()
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-    }
-
-    private func logTextScrollContent(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
-            .padding(10)
-    }
-
-    /// Single-pod Logs tab: loading spinner, error, empty state, or lines.
-    private func podLogsOutputScroll() -> some View {
-        ScrollView {
-            Group {
-                if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
-                    logLoadingPlaceholder()
-                } else if let err = viewModel.state.lastLogFetchError {
-                    logFetchErrorView(message: err)
-                } else if viewModel.state.podLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    podLogsEmptyPlaceholder()
-                } else {
-                    InspectorReadOnlyTextView(
-                        text: viewModel.state.podLogs,
-                        resetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
-                    )
-                    .padding(10)
-                }
-            }
-            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-        }
-    }
-
-    private func podLogsEmptyPlaceholder() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("No log output")
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text("The pod may be idle, or the current filter returned no lines.")
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-    }
-
-    /// Deployment / Service unified logs: loading, error, empty, or merged lines.
-    private func unifiedLogsOutputScroll() -> some View {
-        ScrollView {
-            Group {
-                if viewModel.state.isLoadingLogs || viewModel.state.isLoading {
-                    logLoadingPlaceholder()
-                } else if let err = viewModel.state.lastLogFetchError {
-                    logFetchErrorView(message: err)
-                } else if viewModel.state.unifiedServiceLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    unifiedLogsEmptyPlaceholder()
-                } else {
-                    InspectorReadOnlyTextView(
-                        text: viewModel.state.unifiedServiceLogs,
-                        resetID: "unifiedlogs:\(viewModel.state.selectedService?.name ?? viewModel.state.selectedDeployment?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)"
-                    )
-                    .padding(10)
-                }
-            }
-            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-        }
-    }
-
-    private func unifiedLogsEmptyPlaceholder() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("No log output")
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text("No lines were returned for the selected pods and the current filter. Pods may be idle or produce no output for this time window.")
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
     }
 
     private func execPane(for pod: PodSummary) -> some View {
