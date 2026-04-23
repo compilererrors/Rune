@@ -1594,7 +1594,8 @@ final class RuneSmokeTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
 
         XCTAssertEqual(viewModel.terminalSessionInput, "printenv | sort")
-        XCTAssertFalse(await longRunningRunner.didWrite(text: "printenv | sort\n", arguments: terminalArgs))
+        let didWriteSuggestedCommand = longRunningRunner.didWrite(text: "printenv | sort\n", arguments: terminalArgs)
+        XCTAssertFalse(didWriteSuggestedCommand)
     }
 
     func testPortForwardSmokeFlow() async throws {
