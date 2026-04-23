@@ -561,6 +561,28 @@ public struct KubectlCommandBuilder {
         return args
     }
 
+    public func podInteractiveShellArguments(
+        context: String,
+        namespace: String,
+        podName: String,
+        container: String?,
+        shellCommand: [String]
+    ) -> [String] {
+        var args: [String] = [
+            "--context", context,
+            "exec", "-i", podName,
+            "-n", namespace
+        ]
+
+        if let container, !container.isEmpty {
+            args += ["-c", container]
+        }
+
+        args.append("--")
+        args += shellCommand
+        return args
+    }
+
     public func serviceJSONArguments(context: String, namespace: String, serviceName: String) -> [String] {
         [
             "--context", context,

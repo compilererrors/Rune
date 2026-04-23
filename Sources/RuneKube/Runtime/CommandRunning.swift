@@ -47,6 +47,13 @@ public extension CommandRunning {
 public protocol RunningCommandControlling: AnyObject, Sendable {
     var id: UUID { get }
     func terminate()
+    func writeToStdin(_ data: Data) throws
+}
+
+public extension RunningCommandControlling {
+    func writeToStdin(_ text: String) throws {
+        try writeToStdin(Data(text.utf8))
+    }
 }
 
 public protocol LongRunningCommandRunning: Sendable {
@@ -249,8 +256,10 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        let stdinPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        process.standardInput = stdinPipe
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -286,7 +295,7 @@ public final class ProcessLongRunningCommandRunner: LongRunningCommandRunning {
             throw RuneError.commandFailed(command: executable, message: error.localizedDescription)
         }
 
-        return ProcessCommandHandle(process: process)
+        return ProcessCommandHandle(process: process, stdinHandle: stdinPipe.fileHandleForWriting)
     }
 }
 
@@ -421,14 +430,23 @@ public final class ProcessCommandHandle: RunningCommandControlling, @unchecked S
     public let id = UUID()
 
     private let process: Process
+    private let stdinHandle: FileHandle
 
-    public init(process: Process) {
+    public init(process: Process, stdinHandle: FileHandle) {
         self.process = process
+        self.stdinHandle = stdinHandle
     }
 
     public func terminate() {
         if process.isRunning {
             process.terminate()
         }
+    }
+
+    public func writeToStdin(_ data: Data) throws {
+        guard process.isRunning else {
+            throw RuneError.commandFailed(command: "process stdin", message: "Process is not running")
+        }
+        try stdinHandle.write(contentsOf: data)
     }
 }

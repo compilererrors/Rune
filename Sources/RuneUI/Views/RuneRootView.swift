@@ -421,6 +421,16 @@ public struct RuneRootView: View {
         .onChange(of: viewModel.state.selectedWorkloadKind) { _, _ in
             advanceLayoutGeneration()
         }
+        .onChange(of: viewModel.isSidebarVisible) { _, isVisible in
+            if !isVisible, keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts {
+                keyboardPaneFocus = .content
+            }
+        }
+        .onChange(of: viewModel.isDetailPaneVisible) { _, isVisible in
+            if !isVisible, keyboardPaneFocus == .detail {
+                keyboardPaneFocus = .content
+            }
+        }
         .onPreferenceChange(RuneRootPaneWidthPreferenceKey.self) { paneWidths in
             persistPaneWidthsIfNeeded(paneWidths)
         }
@@ -467,6 +477,20 @@ public struct RuneRootView: View {
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        viewModel.toggleSidebarVisibility()
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help(viewModel.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+
+                    Button {
+                        viewModel.toggleDetailPaneVisibility()
+                    } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                    .help(viewModel.isDetailPaneVisible ? "Hide Inspector" : "Show Inspector")
+
                     Button {
                         openSettingsWindow()
                     } label: {
@@ -771,75 +795,130 @@ public struct RuneRootView: View {
     /// Three-column workspace — shell can be tested under both native `NavigationSplitView` and AppKit-backed split behavior.
     @ViewBuilder
     private var mainSplitContainer: some View {
-        switch resolvedShellVariant {
-        case .navigationSplitView:
-            NavigationSplitView {
-                sidebar
-                    .runeAppKitFrameReporter("sidebar")
-                    .background(RuneRootPaneWidthReporter(kind: .sidebar))
-                    .overlay(alignment: .trailing) {
-                        splitColumnResizeHandle
-                            .offset(x: 7)
-                    }
-                    .navigationSplitViewColumnWidth(
-                        min: RuneUILayoutMetrics.splitSidebarMinWidth,
-                        ideal: resolvedSidebarWidth,
-                        max: RuneUILayoutMetrics.splitSidebarMaxWidth
-                    )
-            } content: {
-                contentPane
-                    .runeAppKitFrameReporter("content")
-                    .overlay(alignment: .trailing) {
-                        splitColumnResizeHandle
-                            .offset(x: 7)
-                    }
-                    .navigationSplitViewColumnWidth(
-                        min: RuneUILayoutMetrics.splitContentColumnMinWidth,
-                        ideal: 760,
-                        max: RuneUILayoutMetrics.splitContentColumnMaxWidth
-                    )
-            } detail: {
-                detailPane
-                    .runeAppKitFrameReporter("detail")
-                    .background(RuneRootPaneWidthReporter(kind: .detail))
-                    .navigationSplitViewColumnWidth(
-                        min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                        ideal: resolvedDetailWidth,
-                        max: RuneUILayoutMetrics.splitDetailColumnMaxWidth
-                    )
-            }
-            .navigationSplitViewStyle(.balanced)
-        case .appKitSplitView:
-            AppKitTripleSplitView(
-                sidebar: AnyView(
+        if !viewModel.isSidebarVisible || !viewModel.isDetailPaneVisible {
+            compactPanelSplitContainer
+        } else {
+            switch resolvedShellVariant {
+            case .navigationSplitView:
+                NavigationSplitView {
                     sidebar
                         .runeAppKitFrameReporter("sidebar")
+                        .background(RuneRootPaneWidthReporter(kind: .sidebar))
                         .overlay(alignment: .trailing) {
                             splitColumnResizeHandle
                                 .offset(x: 7)
                         }
-                ),
-                content: AnyView(
+                        .navigationSplitViewColumnWidth(
+                            min: RuneUILayoutMetrics.splitSidebarMinWidth,
+                            ideal: resolvedSidebarWidth,
+                            max: RuneUILayoutMetrics.splitSidebarMaxWidth
+                        )
+                } content: {
                     contentPane
                         .runeAppKitFrameReporter("content")
                         .overlay(alignment: .trailing) {
                             splitColumnResizeHandle
                                 .offset(x: 7)
                         }
-                ),
-                detail: AnyView(
+                        .navigationSplitViewColumnWidth(
+                            min: RuneUILayoutMetrics.splitContentColumnMinWidth,
+                            ideal: 760,
+                            max: RuneUILayoutMetrics.splitContentColumnMaxWidth
+                        )
+                } detail: {
                     detailPane
                         .runeAppKitFrameReporter("detail")
-                ),
-                sidebarWidth: resolvedSidebarWidth,
-                detailWidth: resolvedDetailWidth,
-                onSidebarWidthChange: { width in
-                    persistSidebarWidthIfNeeded(width)
-                },
-                onDetailWidthChange: { width in
-                    persistDetailWidthIfNeeded(width)
+                        .background(RuneRootPaneWidthReporter(kind: .detail))
+                        .navigationSplitViewColumnWidth(
+                            min: RuneUILayoutMetrics.splitDetailColumnMinWidth,
+                            ideal: resolvedDetailWidth,
+                            max: RuneUILayoutMetrics.splitDetailColumnMaxWidth
+                        )
                 }
-            )
+                .navigationSplitViewStyle(.balanced)
+            case .appKitSplitView:
+                AppKitTripleSplitView(
+                    sidebar: AnyView(
+                        sidebar
+                            .runeAppKitFrameReporter("sidebar")
+                            .overlay(alignment: .trailing) {
+                                splitColumnResizeHandle
+                                    .offset(x: 7)
+                            }
+                    ),
+                    content: AnyView(
+                        contentPane
+                            .runeAppKitFrameReporter("content")
+                            .overlay(alignment: .trailing) {
+                                splitColumnResizeHandle
+                                    .offset(x: 7)
+                            }
+                    ),
+                    detail: AnyView(
+                        detailPane
+                            .runeAppKitFrameReporter("detail")
+                    ),
+                    sidebarWidth: resolvedSidebarWidth,
+                    detailWidth: resolvedDetailWidth,
+                    onSidebarWidthChange: { width in
+                        persistSidebarWidthIfNeeded(width)
+                    },
+                    onDetailWidthChange: { width in
+                        persistDetailWidthIfNeeded(width)
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var compactPanelSplitContainer: some View {
+        if !viewModel.isSidebarVisible && !viewModel.isDetailPaneVisible {
+            contentPane
+                .runeAppKitFrameReporter("content")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            HSplitView {
+                if viewModel.isSidebarVisible {
+                    sidebar
+                        .runeAppKitFrameReporter("sidebar")
+                        .background(RuneRootPaneWidthReporter(kind: .sidebar))
+                        .overlay(alignment: .trailing) {
+                            splitColumnResizeHandle
+                                .offset(x: 7)
+                        }
+                        .frame(
+                            minWidth: RuneUILayoutMetrics.splitSidebarMinWidth,
+                            idealWidth: resolvedSidebarWidth,
+                            maxWidth: RuneUILayoutMetrics.splitSidebarMaxWidth,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                }
+
+                contentPane
+                    .runeAppKitFrameReporter("content")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.splitContentColumnMinWidth,
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .topLeading
+                    )
+
+                if viewModel.isDetailPaneVisible {
+                    detailPane
+                        .runeAppKitFrameReporter("detail")
+                        .background(RuneRootPaneWidthReporter(kind: .detail))
+                        .frame(
+                            minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
+                            idealWidth: resolvedDetailWidth,
+                            maxWidth: RuneUILayoutMetrics.splitDetailColumnMaxWidth,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
@@ -2576,6 +2655,11 @@ public struct RuneRootView: View {
                 }
                 .disabled(viewModel.state.isExecutingCommand || !viewModel.canApplyClusterMutations)
 
+                Button("Open Terminal") {
+                    viewModel.startTerminalSession(for: pod)
+                }
+                .disabled(!viewModel.canApplyClusterMutations)
+
                 if viewModel.state.isExecutingCommand {
                     ProgressView()
                         .controlSize(.small)
@@ -2596,14 +2680,11 @@ public struct RuneRootView: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    ScrollView {
-                        InspectorReadOnlyTextView(
-                            text: execOutputText(for: result),
-                            resetID: "exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
-                        )
-                        .padding(10)
-                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                    }
+                    InspectorReadOnlyTextSurface(
+                        text: execOutputText(for: result),
+                        minHeight: 220,
+                        resetID: "exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
+                    )
                 }
             } else {
                 Text("Run a command to see stdout/stderr here.")
@@ -2665,75 +2746,25 @@ public struct RuneRootView: View {
     }
 
     private var terminalPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Active Port Forwards")
-                        .font(.headline)
-
-                    if viewModel.state.portForwardSessions.isEmpty {
-                        Text("No port-forward sessions started yet.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(viewModel.state.portForwardSessions) { session in
-                            portForwardSessionRow(session)
-                        }
-                    }
-                }
-                .padding(12)
-                .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Last Exec Result")
-                        .font(.headline)
-
-                    if let result = viewModel.state.lastExecResult {
-                        Text("\(result.podName) • \(result.command.joined(separator: " "))")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        ScrollView {
-                            InspectorReadOnlyTextView(
-                                text: execOutputText(for: result),
-                                resetID: "terminal-exec:\(result.podName):\(result.command.joined(separator: " ")):\(result.exitCode)"
-                            )
-                            .padding(10)
-                            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                        }
-                        .frame(minHeight: 180)
-                    } else {
-                        Text("No exec command has been run yet.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(12)
-                .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
-            }
-        }
-        .id("terminal")
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        ResourceTerminalWorkspaceView(
+            session: viewModel.state.terminalSession,
+            selectedPod: viewModel.state.selectedPod,
+            portForwardSessions: viewModel.state.portForwardSessions,
+            canApplyMutations: viewModel.canApplyClusterMutations,
+            terminalInput: $viewModel.terminalSessionInput,
+            onStartSession: { viewModel.startTerminalSessionInSelectedPod() },
+            onSend: { viewModel.sendTerminalSessionInput() },
+            onDisconnect: { viewModel.stopTerminalSession() },
+            onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
+        )
     }
 
     private var terminalDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Terminal")
-                .font(.title2.weight(.bold))
-
-            Text("Use pod exec for one-shot commands and port-forward sessions for local tunneling.")
-                .foregroundStyle(.secondary)
-
-            if let result = viewModel.state.lastExecResult {
-                Label("Last exec: \(result.podName)", systemImage: "terminal")
-                    .font(.subheadline.weight(.medium))
-            }
-
-            if let active = viewModel.state.portForwardSessions.first(where: { $0.status == .active || $0.status == .starting }) {
-                Label("\(active.resourceLabel) \(active.localPort):\(active.remotePort)", systemImage: "point.3.connected.trianglepath.dotted")
-                    .font(.subheadline.weight(.medium))
-            }
-
-            Spacer()
-        }
+        ResourceTerminalDetailsView(
+            session: viewModel.state.terminalSession,
+            selectedPod: viewModel.state.selectedPod,
+            portForwardSessions: viewModel.state.portForwardSessions
+        )
     }
 
     private func portForwardSessionRow(_ session: PortForwardSession) -> some View {
@@ -2907,22 +2938,22 @@ public struct RuneRootView: View {
         guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
         if textInputFocus != nil {
             textInputFocus = nil
-            keyboardPaneFocus = keyboardPaneFocus.advanced(forward: true)
+            keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: true)
             return
         }
         guard !keyboardNavigationSuspended else { return }
-        keyboardPaneFocus = keyboardPaneFocus.advanced(forward: true)
+        keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: true)
     }
 
     private func focusPreviousKeyboardPane() {
         guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
         if textInputFocus != nil {
             textInputFocus = nil
-            keyboardPaneFocus = keyboardPaneFocus.advanced(forward: false)
+            keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: false)
             return
         }
         guard !keyboardNavigationSuspended else { return }
-        keyboardPaneFocus = keyboardPaneFocus.advanced(forward: false)
+        keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: false)
     }
 
     private func moveKeyboardSelection(_ direction: MoveCommandDirection) {
@@ -2947,12 +2978,35 @@ public struct RuneRootView: View {
         case .content:
             if viewModel.state.selectedSection == .overview {
                 openSelectedOverviewCard()
-            } else {
+            } else if viewModel.isDetailPaneVisible {
                 keyboardPaneFocus = .detail
             }
         case .detail:
             break
         }
+    }
+
+    private var availableKeyboardPanes: [RuneRootKeyboardPane] {
+        var panes: [RuneRootKeyboardPane] = []
+        if viewModel.isSidebarVisible {
+            panes += [.sidebarSections, .sidebarContexts]
+        }
+        panes.append(.content)
+        if viewModel.isDetailPaneVisible {
+            panes.append(.detail)
+        }
+        return panes
+    }
+
+    private func advancedKeyboardPane(from current: RuneRootKeyboardPane, forward: Bool) -> RuneRootKeyboardPane {
+        let panes = availableKeyboardPanes
+        guard let index = panes.firstIndex(of: current) else {
+            return panes.first ?? .content
+        }
+        if forward {
+            return panes[(index + 1) % panes.count]
+        }
+        return panes[(index + panes.count - 1) % panes.count]
     }
 
     private func moveSectionSelection(_ direction: MoveCommandDirection) {
