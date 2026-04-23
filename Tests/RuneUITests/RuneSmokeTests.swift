@@ -1488,6 +1488,7 @@ final class RuneSmokeTests: XCTestCase {
 
         XCTAssertNotNil(viewModel.pendingWriteAction)
         XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("PRODUCTION CONTEXT"))
+        let initialSection = viewModel.state.selectedSection
 
         viewModel.confirmPendingWriteAction()
 
@@ -1505,7 +1506,55 @@ final class RuneSmokeTests: XCTestCase {
 
         XCTAssertEqual(viewModel.state.lastExecResult?.podName, "api-0")
         XCTAssertTrue(viewModel.state.lastExecResult?.stdout.contains("api-0") == true)
+        XCTAssertEqual(viewModel.state.selectedSection, initialSection)
+    }
+
+    func testTerminalSessionSmokeFlow() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let longRunningRunner = ScriptedLongRunningCommandRunner()
+        let viewModel = makeViewModel(runner: runner, longRunningRunner: longRunningRunner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let pod = viewModel.state.pods.first(where: { $0.name == "api-0" }) else {
+            XCTFail("Expected pod api-0")
+            return
+        }
+
+        viewModel.setWorkloadKind(.pod)
+        viewModel.selectPod(pod)
+        viewModel.startTerminalSessionInSelectedPod()
+
+        let terminalArgs = ["kubectl"] + builder.podInteractiveShellArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            shellCommand: ["sh"]
+        )
+
+        try await waitUntil {
+            longRunningRunner.didStart(arguments: terminalArgs)
+        }
+
         XCTAssertEqual(viewModel.state.selectedSection, .terminal)
+        XCTAssertEqual(viewModel.state.terminalSession?.status, .connected)
+
+        viewModel.terminalSessionInput = "pwd"
+        viewModel.sendTerminalSessionInput()
+
+        try await waitUntil {
+            longRunningRunner.didWrite(text: "pwd\n", arguments: terminalArgs)
+        }
+
+        try await waitUntil {
+            viewModel.state.terminalSession?.transcript.contains("/workspace\n") == true
+        }
     }
 
     func testPortForwardSmokeFlow() async throws {
@@ -2129,6 +2178,7 @@ private final class NoopExporter: FileExporting {
 private final class ScriptedLongRunningCommandRunner: LongRunningCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var startedArguments: [[String]] = []
+    private var writtenInputs: [([String], String)] = []
 
     func start(
         executable: String,
@@ -2142,10 +2192,35 @@ private final class ScriptedLongRunningCommandRunner: LongRunningCommandRunning,
         startedArguments.append(arguments)
         lock.unlock()
 
-        onStderr("Forwarding from 127.0.0.1:8080 -> 80\n")
-        return ScriptedRunningCommandHandle {
-            onTermination(0)
+        if arguments.contains("port-forward") {
+            onStderr("Forwarding from 127.0.0.1:8080 -> 80\n")
+            return ScriptedRunningCommandHandle(onTerminate: {
+                onTermination(0)
+            })
         }
+
+        return ScriptedRunningCommandHandle(
+            onWrite: { [weak self] data in
+                let text = String(decoding: data, as: UTF8.self)
+                self?.lock.lock()
+                self?.writtenInputs.append((arguments, text))
+                self?.lock.unlock()
+
+                switch text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                case "pwd":
+                    onStdout("/workspace\n")
+                case "printenv HOSTNAME":
+                    onStdout("api-0\n")
+                case "exit":
+                    onTermination(0)
+                default:
+                    onStdout("ok\n")
+                }
+            },
+            onTerminate: {
+                onTermination(0)
+            }
+        )
     }
 
     func didStart(arguments: [String]) -> Bool {
@@ -2153,15 +2228,26 @@ private final class ScriptedLongRunningCommandRunner: LongRunningCommandRunning,
         defer { lock.unlock() }
         return startedArguments.contains(arguments)
     }
+
+    func didWrite(text: String, arguments: [String]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return writtenInputs.contains(where: { $0.0 == arguments && $0.1 == text })
+    }
 }
 
 private final class ScriptedRunningCommandHandle: RunningCommandControlling, @unchecked Sendable {
     let id = UUID()
+    private let onWrite: @Sendable (Data) -> Void
     private let onTerminate: @Sendable () -> Void
     private let lock = NSLock()
     private var hasTerminated = false
 
-    init(onTerminate: @escaping @Sendable () -> Void) {
+    init(
+        onWrite: @escaping @Sendable (Data) -> Void = { _ in },
+        onTerminate: @escaping @Sendable () -> Void
+    ) {
+        self.onWrite = onWrite
         self.onTerminate = onTerminate
     }
 
@@ -2174,6 +2260,10 @@ private final class ScriptedRunningCommandHandle: RunningCommandControlling, @un
         if shouldTerminate {
             onTerminate()
         }
+    }
+
+    func writeToStdin(_ data: Data) throws {
+        onWrite(data)
     }
 }
 

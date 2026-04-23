@@ -518,6 +518,55 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(logs, "hello from kubectl\n")
     }
 
+    func testExecInPodPrefersKubectlBeforeAgent() async throws {
+        let agentPath = try makeExecutableFile()
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl"] + builder.podExecArguments(
+                    context: "prod",
+                    namespace: "default",
+                    podName: "api-0",
+                    container: nil,
+                    command: ["printenv"]
+                )
+            ): .success(CommandResult(stdout: "PATH=/usr/bin\n", stderr: "", exitCode: 0)),
+            CommandKey(
+                executable: agentPath,
+                arguments: ["exec", "--context", "prod", "--namespace", "default", "--pod", "api-0", "--", "printenv"]
+            ): .success(CommandResult(stdout: #"{"stdout":"","stderr":"","exitCode":0}"#, stderr: "", exitCode: 0))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let result = try await client.execInPod(
+            from: sources,
+            context: KubeContext(name: "prod"),
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            command: ["printenv"]
+        )
+
+        XCTAssertEqual(result.stdout, "PATH=/usr/bin\n")
+        let didRunKubectl = await runner.didRun(arguments: ["kubectl"] + builder.podExecArguments(
+            context: "prod",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            command: ["printenv"]
+        ))
+        let didRunAgent = await runner.didRun(arguments: ["exec", "--context", "prod", "--namespace", "default", "--pod", "api-0", "--", "printenv"])
+        XCTAssertTrue(didRunKubectl)
+        XCTAssertFalse(didRunAgent)
+    }
+
     func testUnifiedServiceLogsFallsBackWhenMergedAgentOutputIsEmpty() async throws {
         let agentPath = try makeExecutableFile()
         let builder = KubectlCommandBuilder()
@@ -851,6 +900,19 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(args, ["--context", "dev", "exec", "api-1", "-n", "default", "--", "printenv", "HOSTNAME"])
     }
 
+    func testPodInteractiveShellArguments() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podInteractiveShellArguments(
+            context: "dev",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            shellCommand: ["sh"]
+        )
+
+        XCTAssertEqual(args, ["--context", "dev", "exec", "-i", "api-1", "-n", "default", "--", "sh"])
+    }
+
     func testValidateFileArguments() {
         let builder = KubectlCommandBuilder()
         let args = builder.validateFileArguments(
@@ -1111,4 +1173,6 @@ private final class DummyRunningCommandController: RunningCommandControlling, @u
     let id = UUID()
 
     func terminate() {}
+
+    func writeToStdin(_ data: Data) throws {}
 }

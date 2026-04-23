@@ -339,11 +339,14 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var pendingWriteAction: PendingWriteAction?
     @Published public var scaleReplicaInput: Int = 1
     @Published public var execCommandInput: String = "printenv"
+    @Published public var terminalSessionInput: String = ""
     @Published public var portForwardLocalPortInput: String = "8080"
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
     @Published public var helmRollbackRevisionInput: String = ""
+    @Published public var isSidebarVisible: Bool = true
+    @Published public var isDetailPaneVisible: Bool = true
     @Published public private(set) var canNavigateBack = false
     @Published public private(set) var canNavigateForward = false
 
@@ -359,6 +362,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
     private let namespaceListPersistence: NamespaceListPersisting
     private let diagnostics: DiagnosticsRecorder
+    private let terminalShellCommand = ["sh"]
 
     private var cancellables: Set<AnyCancellable> = []
     private var hasBootstrapped = false
@@ -1045,6 +1049,14 @@ public final class RuneAppViewModel: ObservableObject {
         state.isReadOnlyMode = value
     }
 
+    public func toggleSidebarVisibility() {
+        isSidebarVisible.toggle()
+    }
+
+    public func toggleDetailPaneVisibility() {
+        isDetailPaneVisible.toggle()
+    }
+
     public func setHelmAllNamespaces(_ value: Bool) {
         state.isHelmAllNamespaces = value
 
@@ -1075,6 +1087,7 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
         overviewPrefetchTask?.cancel()
         contextOverviewPrefetchTask?.cancel()
+        stopTerminalSession(resetState: true)
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         let previousContextName = state.selectedContext?.name
@@ -1132,6 +1145,7 @@ public final class RuneAppViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         diagnostics.log("setNamespace -> \(trimmed)")
+        stopTerminalSession(resetState: true)
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         pendingNamespaceRevalidationContextName = nil
@@ -2060,6 +2074,114 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func startTerminalSessionInSelectedPod() {
+        guard let pod = state.selectedPod else { return }
+        startTerminalSession(for: pod)
+    }
+
+    public func startTerminalSession(for pod: PodSummary) {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        guard let context = state.selectedContext else { return }
+        if state.terminalSession != nil {
+            stopTerminalSession(resetState: true)
+        }
+
+        let namespace = state.selectedNamespace
+        let sessionID = UUID().uuidString
+        state.setTerminalSession(
+            PodTerminalSession(
+                id: sessionID,
+                contextName: context.name,
+                namespace: namespace,
+                podName: pod.name,
+                shell: terminalShellCommand.joined(separator: " "),
+                transcript: "",
+                status: .connecting
+            )
+        )
+        terminalSessionInput = ""
+        state.selectedSection = .terminal
+
+        Task {
+            do {
+                try await kubeClient.startPodTerminalSession(
+                    id: sessionID,
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: namespace,
+                    podName: pod.name,
+                    container: nil,
+                    shellCommand: terminalShellCommand,
+                    onOutput: { [weak self] chunk in
+                        Task { @MainActor [weak self] in
+                            self?.state.appendTerminalSessionOutput(id: sessionID, text: chunk)
+                        }
+                    },
+                    onTermination: { [weak self] exitCode in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            let status: PodTerminalSessionStatus = exitCode == 0 ? .disconnected : .failed
+                            self.state.updateTerminalSessionStatus(id: sessionID, status: status, exitCode: exitCode)
+                            self.state.appendTerminalSessionOutput(
+                                id: sessionID,
+                                text: "\n[rune] Session ended (exit \(exitCode)).\n"
+                            )
+                        }
+                    }
+                )
+                state.updateTerminalSessionStatus(id: sessionID, status: .connected)
+                state.appendTerminalSessionOutput(
+                    id: sessionID,
+                    text: "[rune] Connected to \(pod.name) in \(namespace).\n"
+                )
+            } catch {
+                state.updateTerminalSessionStatus(id: sessionID, status: .failed)
+                state.appendTerminalSessionOutput(
+                    id: sessionID,
+                    text: "[rune] Failed to start terminal session: \(error.localizedDescription)\n"
+                )
+                state.setError(error)
+            }
+        }
+    }
+
+    public func sendTerminalSessionInput() {
+        guard let session = state.terminalSession else { return }
+        let command = terminalSessionInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return }
+        terminalSessionInput = ""
+        state.appendTerminalSessionCommandEcho(id: session.id, command: command)
+
+        Task {
+            do {
+                try await kubeClient.writeToPodTerminalSession(id: session.id, text: command + "\n")
+            } catch {
+                state.setError(error)
+            }
+        }
+    }
+
+    public func stopTerminalSession(resetState: Bool = false) {
+        guard let session = state.terminalSession else { return }
+        let sessionID = session.id
+        terminalSessionInput = ""
+        if resetState {
+            state.setTerminalSession(nil)
+        } else {
+            state.updateTerminalSessionStatus(id: sessionID, status: .disconnected, exitCode: session.lastExitCode)
+        }
+        Task {
+            await kubeClient.stopPodTerminalSession(id: sessionID)
+        }
+    }
+
+    public func clearTerminalSessionTranscript() {
+        state.clearTerminalSessionTranscript()
+    }
+
     public func requestRollbackSelectedHelmRelease() {
         guard writeActionsEnabled else {
             state.setError(RuneError.readOnlyMode)
@@ -2200,7 +2322,6 @@ public final class RuneAppViewModel: ObservableObject {
                         command: command
                     )
                     state.setLastExecResult(result)
-                    state.selectedSection = .terminal
                     return
                 case let .helmRollback(releaseName, namespace, revision):
                     try await helmClient.rollbackRelease(

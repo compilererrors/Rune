@@ -462,6 +462,44 @@ public struct PodExecResult: Codable, Sendable, Equatable {
     }
 }
 
+public enum PodTerminalSessionStatus: String, Codable, Sendable {
+    case connecting
+    case connected
+    case disconnected
+    case failed
+}
+
+public struct PodTerminalSession: Identifiable, Hashable, Codable, Sendable {
+    public let id: String
+    public let contextName: String
+    public let namespace: String
+    public let podName: String
+    public let shell: String
+    public let transcript: String
+    public let status: PodTerminalSessionStatus
+    public let lastExitCode: Int32?
+
+    public init(
+        id: String,
+        contextName: String,
+        namespace: String,
+        podName: String,
+        shell: String,
+        transcript: String = "",
+        status: PodTerminalSessionStatus,
+        lastExitCode: Int32? = nil
+    ) {
+        self.id = id
+        self.contextName = contextName
+        self.namespace = namespace
+        self.podName = podName
+        self.shell = shell
+        self.transcript = transcript
+        self.status = status
+        self.lastExitCode = lastExitCode
+    }
+}
+
 public enum PortForwardTargetKind: String, Codable, Sendable, Identifiable {
     case pod
     case service

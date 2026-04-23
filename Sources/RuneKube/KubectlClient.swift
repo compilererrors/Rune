@@ -15,6 +15,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
+    private let terminalSessionRegistry = TerminalSessionRegistry()
 
     /// First attempt when using default process timeout; a second attempt uses `retryTimeoutAfterQuickFailure`.
     private let quickKubectlAttemptTimeout: TimeInterval = 12
@@ -2700,43 +2701,89 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         command: [String]
     ) async throws -> PodExecResult {
         let env = try kubeconfigEnvironment(from: sources)
-        if let agent = resolvedK8sAgentPath() {
-            do {
-                return try await RuneK8sAgentOperationsClient.execInPod(
-                    executablePath: agent,
-                    runner: runner,
-                    environment: env,
-                    contextName: context.name,
+        do {
+            let result = try await runKubectl(
+                arguments: builder.podExecArguments(
+                    context: context.name,
                     namespace: namespace,
                     podName: podName,
                     container: container,
-                    command: command,
-                    timeout: 90
-                )
-            } catch {
-                try rethrowCancellationIfNeeded(error)
-                // Continue with kubectl fallback.
+                    command: command
+                ),
+                environment: env
+            )
+
+            return PodExecResult(
+                podName: podName,
+                namespace: namespace,
+                command: command,
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exitCode: result.exitCode
+            )
+        } catch {
+            try rethrowCancellationIfNeeded(error)
+            guard let agent = resolvedK8sAgentPath() else {
+                throw error
             }
+            return try await RuneK8sAgentOperationsClient.execInPod(
+                executablePath: agent,
+                runner: runner,
+                environment: env,
+                contextName: context.name,
+                namespace: namespace,
+                podName: podName,
+                container: container,
+                command: command,
+                timeout: 90
+            )
         }
-        let result = try await runKubectl(
-            arguments: builder.podExecArguments(
+    }
+
+    public func startPodTerminalSession(
+        id sessionID: String,
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        container: String?,
+        shellCommand: [String],
+        onOutput: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        let handle = try longRunningRunner.start(
+            executable: kubectlPath,
+            arguments: ["kubectl"] + builder.podInteractiveShellArguments(
                 context: context.name,
                 namespace: namespace,
                 podName: podName,
                 container: container,
-                command: command
+                shellCommand: shellCommand
             ),
-            environment: env
+            environment: env,
+            onStdout: onOutput,
+            onStderr: onOutput,
+            onTermination: { [terminalSessionRegistry] exitCode in
+                Task {
+                    _ = await terminalSessionRegistry.remove(id: sessionID)
+                    onTermination(exitCode)
+                }
+            }
         )
+        await terminalSessionRegistry.insert(handle: handle, id: sessionID)
+    }
 
-        return PodExecResult(
-            podName: podName,
-            namespace: namespace,
-            command: command,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            exitCode: result.exitCode
-        )
+    public func writeToPodTerminalSession(id: String, text: String) async throws {
+        guard let handle = await terminalSessionRegistry.handle(id: id) else {
+            throw RuneError.commandFailed(command: "terminal session", message: "No active terminal session")
+        }
+        try handle.writeToStdin(text)
+    }
+
+    public func stopPodTerminalSession(id: String) async {
+        let handle = await terminalSessionRegistry.remove(id: id)
+        handle?.terminate()
     }
 
     public func deleteResource(
@@ -4018,6 +4065,22 @@ private actor PortForwardRegistry {
 
     func insert(handle: any RunningCommandControlling, id: String) {
         handles[id] = handle
+    }
+
+    func remove(id: String) -> (any RunningCommandControlling)? {
+        handles.removeValue(forKey: id)
+    }
+}
+
+private actor TerminalSessionRegistry {
+    private var handles: [String: any RunningCommandControlling] = [:]
+
+    func insert(handle: any RunningCommandControlling, id: String) {
+        handles[id] = handle
+    }
+
+    func handle(id: String) -> (any RunningCommandControlling)? {
+        handles[id]
     }
 
     func remove(id: String) -> (any RunningCommandControlling)? {

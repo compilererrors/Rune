@@ -84,6 +84,18 @@ struct RuneApplication: App {
                     .keyboardShortcut(KeyEquivalent(section.commandShortcut), modifiers: .command)
                 }
             }
+
+            CommandMenu("View") {
+                Button(viewModel.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
+                    viewModel.toggleSidebarVisibility()
+                }
+                .keyboardShortcut("b", modifiers: .command)
+
+                Button(viewModel.isDetailPaneVisible ? "Hide Inspector" : "Show Inspector") {
+                    viewModel.toggleDetailPaneVisibility()
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+            }
         }
     }
 }

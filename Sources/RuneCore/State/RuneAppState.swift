@@ -87,6 +87,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var helmManifest: String = ""
     @Published public private(set) var helmHistory: [HelmReleaseRevision] = []
     @Published public private(set) var lastExecResult: PodExecResult?
+    @Published public private(set) var terminalSession: PodTerminalSession?
     @Published public private(set) var portForwardSessions: [PortForwardSession] = []
 
     @Published public var contextSearchQuery: String = ""
@@ -520,6 +521,60 @@ public final class RuneAppState: ObservableObject {
 
     public func setLastExecResult(_ result: PodExecResult?) {
         lastExecResult = result
+    }
+
+    public func setTerminalSession(_ session: PodTerminalSession?) {
+        terminalSession = session
+    }
+
+    public func appendTerminalSessionOutput(id: String, text: String) {
+        guard var session = terminalSession, session.id == id, !text.isEmpty else { return }
+        session = PodTerminalSession(
+            id: session.id,
+            contextName: session.contextName,
+            namespace: session.namespace,
+            podName: session.podName,
+            shell: session.shell,
+            transcript: session.transcript + text,
+            status: session.status,
+            lastExitCode: session.lastExitCode
+        )
+        terminalSession = session
+    }
+
+    public func appendTerminalSessionCommandEcho(id: String, command: String) {
+        let rendered = "$ \(command)\n"
+        appendTerminalSessionOutput(id: id, text: rendered)
+    }
+
+    public func updateTerminalSessionStatus(id: String, status: PodTerminalSessionStatus, exitCode: Int32? = nil) {
+        guard var session = terminalSession, session.id == id else { return }
+        session = PodTerminalSession(
+            id: session.id,
+            contextName: session.contextName,
+            namespace: session.namespace,
+            podName: session.podName,
+            shell: session.shell,
+            transcript: session.transcript,
+            status: status,
+            lastExitCode: exitCode ?? session.lastExitCode
+        )
+        terminalSession = session
+    }
+
+    public func clearTerminalSessionTranscript() {
+        guard var session = terminalSession else { return }
+        session = PodTerminalSession(
+            id: session.id,
+            contextName: session.contextName,
+            namespace: session.namespace,
+            podName: session.podName,
+            shell: session.shell,
+            transcript: "",
+            status: session.status,
+            lastExitCode: session.lastExitCode
+        )
+        terminalSession = session
     }
 
     public func setPortForwardSessions(_ sessions: [PortForwardSession]) {
