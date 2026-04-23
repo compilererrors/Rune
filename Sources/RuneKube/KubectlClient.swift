@@ -2366,7 +2366,9 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         let env = try kubeconfigEnvironment(from: sources)
 
         let selectorMap: [String: String]
-        if let agent = resolvedK8sAgentPath() {
+        if let cachedSelector = deployment.selector, !cachedSelector.isEmpty {
+            selectorMap = cachedSelector
+        } else if let agent = resolvedK8sAgentPath() {
             do {
                 selectorMap = try await RuneK8sAgentOperationsClient.deploymentSelector(
                     executablePath: agent,

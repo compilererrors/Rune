@@ -284,7 +284,8 @@ public struct KubectlOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     readyReplicas: item.status.readyReplicas ?? 0,
-                    desiredReplicas: item.spec.replicas ?? 0
+                    desiredReplicas: item.spec.replicas ?? 0,
+                    selector: item.spec.selector?.matchLabels
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

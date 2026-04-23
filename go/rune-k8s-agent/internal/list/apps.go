@@ -41,6 +41,7 @@ func Deployments(ctx context.Context, contextName, namespace string) ([]output.D
 			Namespace:       ns,
 			ReadyReplicas:   int(ready),
 			DesiredReplicas: int(desired),
+			Selector:        d.Spec.Selector.MatchLabels,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

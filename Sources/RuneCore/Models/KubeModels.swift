@@ -256,12 +256,20 @@ public struct DeploymentSummary: Identifiable, Hashable, Codable, Sendable {
     public let namespace: String
     public let readyReplicas: Int
     public let desiredReplicas: Int
+    public let selector: [String: String]?
 
-    public init(name: String, namespace: String, readyReplicas: Int, desiredReplicas: Int) {
+    public init(
+        name: String,
+        namespace: String,
+        readyReplicas: Int,
+        desiredReplicas: Int,
+        selector: [String: String]? = nil
+    ) {
         self.name = name
         self.namespace = namespace
         self.readyReplicas = readyReplicas
         self.desiredReplicas = desiredReplicas
+        self.selector = selector
     }
 
     public var id: String { "\(namespace)/\(name)" }

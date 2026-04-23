@@ -467,7 +467,9 @@ public struct KubectlCommandBuilder {
 
         switch filter {
         case .all:
-            break
+            if let tailLines = query.tailLines {
+                args.append("--tail=\(tailLines)")
+            }
         case let .tailLines(lines):
             args.append("--tail=\(max(1, lines))")
         case .lastMinutes, .lastHours, .lastDays, .since:

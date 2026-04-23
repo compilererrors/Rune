@@ -112,7 +112,9 @@ enum RuneK8sAgentOperationsClient {
 
         switch filter {
         case .all:
-            break
+            if let tailLines = query.tailLines {
+                args += ["--tail", String(tailLines)]
+            }
         case let .tailLines(lines):
             args += ["--tail", String(max(1, lines))]
         case .lastMinutes, .lastHours, .lastDays, .since:

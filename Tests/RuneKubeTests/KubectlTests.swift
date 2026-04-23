@@ -325,7 +325,7 @@ final class KubectlTests: XCTestCase {
         XCTAssertFalse(args.contains("--since-time"))
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("--timestamps"))
-        XCTAssertTrue(args.contains("--tail=2000"))
+        XCTAssertFalse(args.contains { $0.hasPrefix("--tail") })
         XCTAssertTrue(args.contains("--request-timeout"))
     }
 
@@ -344,7 +344,7 @@ final class KubectlTests: XCTestCase {
         )
 
         XCTAssertTrue(args.contains("--since"))
-        XCTAssertTrue(args.contains("--tail=400"))
+        XCTAssertFalse(args.contains { $0.hasPrefix("--tail") })
     }
 
     func testAgentPodLogsWithRelativeFilterUseTrimmedTailCap() async throws {
@@ -352,7 +352,7 @@ final class KubectlTests: XCTestCase {
         let runner = ScriptedCommandRunner(script: [
             CommandKey(
                 executable: agentPath,
-                arguments: ["logs", "--context", "dev", "--namespace", "default", "--pod", "api-1", "--since", "15m", "--tail", "2000"]
+                arguments: ["logs", "--context", "dev", "--namespace", "default", "--pod", "api-1", "--since", "15m"]
             ): .success(CommandResult(stdout: "line\n", stderr: "", exitCode: 0))
         ])
 
@@ -395,6 +395,40 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(stdout, "all logs\n")
     }
 
+    func testAgentUnifiedLogsAllLogsOmitsTailAndSince() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: [
+                    "logs", "selector",
+                    "--context", "dev",
+                    "--namespace", "default",
+                    "--label-selector", "app=api",
+                    "--max-pods", "8",
+                    "--concurrency", "3"
+                ]
+            ): .success(CommandResult(stdout: #"{"podNames":["api-1"],"mergedText":"[api-1] logs"}"#, stderr: "", exitCode: 0))
+        ])
+
+        let unified = try await RuneK8sAgentOperationsClient.unifiedLogsBySelector(
+            executablePath: agentPath,
+            runner: runner,
+            environment: ["KUBECONFIG": "/tmp/rune-tests-config"],
+            contextName: "dev",
+            namespace: "default",
+            selector: "app=api",
+            filter: .all,
+            previous: false,
+            maxPods: 8,
+            concurrency: 3,
+            timeout: 5
+        )
+
+        XCTAssertEqual(unified.podNames, ["api-1"])
+        XCTAssertEqual(unified.mergedText, "[api-1] logs")
+    }
+
     func testUnifiedServiceLogsPrefersMergedAgentLogFetch() async throws {
         let agentPath = try makeExecutableFile()
         let runner = ScriptedCommandRunner(script: [
@@ -414,7 +448,6 @@ final class KubectlTests: XCTestCase {
                     "--context", "prod",
                     "--namespace", "default",
                     "--label-selector", "app=api",
-                    "--tail", "400",
                     "--max-pods", "8",
                     "--concurrency", "3",
                     "--since", "15m"
@@ -609,6 +642,24 @@ final class KubectlTests: XCTestCase {
         XCTAssertFalse(args.contains("--since"))
         XCTAssertFalse(args.contains("--since-time"))
         XCTAssertTrue(args.contains("--timestamps"))
+    }
+
+    func testUnifiedLogsArgumentsAllLogsMatchesPlainKubectlLogsShape() {
+        let builder = KubectlCommandBuilder()
+        let args = builder.podLogsArguments(
+            context: "dev",
+            namespace: "default",
+            podName: "api-1",
+            container: nil,
+            filter: .all,
+            previous: false,
+            follow: false,
+            profile: .unifiedPerPod
+        )
+
+        XCTAssertFalse(args.contains { $0.hasPrefix("--tail") })
+        XCTAssertFalse(args.contains("--since"))
+        XCTAssertFalse(args.contains("--since-time"))
     }
 
     func testPodParsingLegacyText() {
@@ -863,7 +914,7 @@ final class KubectlTests: XCTestCase {
         let parser = KubectlOutputParser()
         let raw = """
         {"items":[
-          {"metadata":{"name":"api"},"spec":{"replicas":3},"status":{"readyReplicas":2}},
+          {"metadata":{"name":"api"},"spec":{"replicas":3,"selector":{"matchLabels":{"app":"api"}}},"status":{"readyReplicas":2}},
           {"metadata":{"name":"worker"},"spec":{"replicas":1},"status":{"readyReplicas":1}}
         ]}
         """
@@ -873,6 +924,7 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(deployments.count, 2)
         XCTAssertEqual(deployments.first?.name, "api")
         XCTAssertEqual(deployments.first?.replicaText, "2/3")
+        XCTAssertEqual(deployments.first?.selector, ["app": "api"])
     }
 
     func testParseDeploymentsTableFallback() {

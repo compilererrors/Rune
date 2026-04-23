@@ -104,4 +104,3 @@ public struct RuneCustomLogPresetConfig: Equatable, Sendable {
         }
     }
 }
-
