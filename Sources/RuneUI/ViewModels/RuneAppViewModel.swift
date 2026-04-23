@@ -2164,6 +2164,15 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func applySuggestedTerminalCommand(_ command: String, sendImmediately: Bool = false) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        terminalSessionInput = trimmed
+        if sendImmediately {
+            sendTerminalSessionInput()
+        }
+    }
+
     public func stopTerminalSession(resetState: Bool = false) {
         guard let session = state.terminalSession else { return }
         let sessionID = session.id

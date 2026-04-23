@@ -1557,6 +1557,46 @@ final class RuneSmokeTests: XCTestCase {
         }
     }
 
+    func testSuggestedTerminalCommandOnlyFillsPromptUntilUserSends() async throws {
+        let kubeconfigURL = try makeTempKubeconfigFile()
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+
+        let builder = KubectlCommandBuilder()
+        let runner = ScriptedCommandRunner(script: baseScript(builder: builder))
+        let longRunningRunner = ScriptedLongRunningCommandRunner()
+        let viewModel = makeViewModel(runner: runner, longRunningRunner: longRunningRunner)
+
+        viewModel.state.setSources([KubeConfigSource(url: kubeconfigURL)])
+        try await viewModel.reloadContexts()
+
+        guard let pod = viewModel.state.pods.first(where: { $0.name == "api-0" }) else {
+            XCTFail("Expected pod api-0")
+            return
+        }
+
+        viewModel.setWorkloadKind(.pod)
+        viewModel.selectPod(pod)
+        viewModel.startTerminalSessionInSelectedPod()
+
+        let terminalArgs = ["kubectl"] + builder.podInteractiveShellArguments(
+            context: "prod-main",
+            namespace: "default",
+            podName: "api-0",
+            container: nil,
+            shellCommand: ["sh"]
+        )
+
+        try await waitUntil {
+            longRunningRunner.didStart(arguments: terminalArgs)
+        }
+
+        viewModel.applySuggestedTerminalCommand("printenv | sort")
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(viewModel.terminalSessionInput, "printenv | sort")
+        XCTAssertFalse(await longRunningRunner.didWrite(text: "printenv | sort\n", arguments: terminalArgs))
+    }
+
     func testPortForwardSmokeFlow() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
