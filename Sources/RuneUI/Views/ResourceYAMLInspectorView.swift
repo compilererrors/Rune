@@ -8,6 +8,7 @@ struct ResourceYAMLEditorSurface: View {
     let inlineEditing: Bool
     let implementation: ManifestInlineEditorImplementation
     let validationIssues: [YAMLValidationIssue]
+    let navigationRequest: YAMLTextNavigationRequest?
 
     var body: some View {
         let activeImplementation = inlineEditing ? implementation : .readOnlyScroll
@@ -20,7 +21,8 @@ struct ResourceYAMLEditorSurface: View {
                         text: displayText,
                         resetID: readOnlyResetID,
                         contentStyle: .yaml,
-                        externalValidationIssues: validationIssues
+                        externalValidationIssues: validationIssues,
+                        navigationRequest: navigationRequest
                     )
                 case .swiftUITextEditor:
                     TextEditor(text: $text)
@@ -32,7 +34,8 @@ struct ResourceYAMLEditorSurface: View {
                         text: $text,
                         isEditable: true,
                         contentStyle: .yaml,
-                        externalValidationIssues: validationIssues
+                        externalValidationIssues: validationIssues,
+                        navigationRequest: navigationRequest
                     )
                 }
             }
@@ -58,8 +61,15 @@ struct ResourceYAMLInspectorPane: View {
     let onImport: () -> Void
     let onExport: () -> Void
     let readOnlyResetID: String
+    @State private var issueNavigationRequest: YAMLTextNavigationRequest?
+    @State private var issueNavigationSequence = 0
 
     var body: some View {
+        let presentedIssues = YAMLIssuePresentation.presentedIssues(
+            text: yamlText,
+            externalIssues: validationIssues
+        )
+
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 if hasUnsavedEdits {
@@ -114,8 +124,9 @@ struct ResourceYAMLInspectorPane: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             YAMLValidationSummaryView(
-                issues: validationIssues,
-                isValidating: isValidating
+                issues: presentedIssues,
+                isValidating: isValidating,
+                onSelectIssue: navigateToIssue
             )
 
             ResourceYAMLEditorSurface(
@@ -124,7 +135,8 @@ struct ResourceYAMLInspectorPane: View {
                 readOnlyResetID: readOnlyResetID,
                 inlineEditing: isInlineEditing,
                 implementation: inlineEditorImplementation,
-                validationIssues: validationIssues
+                validationIssues: presentedIssues,
+                navigationRequest: issueNavigationRequest
             )
 
             if yamlText.isEmpty {
@@ -137,6 +149,14 @@ struct ResourceYAMLInspectorPane: View {
         .onChange(of: baseline) { _, _ in
             isInlineEditing = false
         }
+    }
+
+    private func navigateToIssue(_ issue: YAMLValidationIssue) {
+        if inlineEditorImplementation.supportsInlineEditing {
+            isInlineEditing = true
+        }
+        issueNavigationSequence += 1
+        issueNavigationRequest = YAMLTextNavigationRequest(issue: issue, sequence: issueNavigationSequence)
     }
 }
 
@@ -153,8 +173,15 @@ struct ResourceYAMLEditorSheetView: View {
     let onImport: () -> Void
     let onExport: () -> Void
     let onClose: () -> Void
+    @State private var issueNavigationRequest: YAMLTextNavigationRequest?
+    @State private var issueNavigationSequence = 0
 
     var body: some View {
+        let presentedIssues = YAMLIssuePresentation.presentedIssues(
+            text: yamlText,
+            externalIssues: validationIssues
+        )
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -192,8 +219,9 @@ struct ResourceYAMLEditorSheetView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             YAMLValidationSummaryView(
-                issues: validationIssues,
-                isValidating: isValidating
+                issues: presentedIssues,
+                isValidating: isValidating,
+                onSelectIssue: navigateToIssue
             )
 
             ResourceYAMLEditorSurface(
@@ -202,7 +230,8 @@ struct ResourceYAMLEditorSheetView: View {
                 readOnlyResetID: "yaml-sheet:\(resourceReference)",
                 inlineEditing: true,
                 implementation: .appKitTextView,
-                validationIssues: validationIssues
+                validationIssues: presentedIssues,
+                navigationRequest: issueNavigationRequest
             )
 
             if yamlText.isEmpty {
@@ -221,11 +250,17 @@ struct ResourceYAMLEditorSheetView: View {
         .frame(minWidth: 760, minHeight: 560)
         .background(.regularMaterial)
     }
+
+    private func navigateToIssue(_ issue: YAMLValidationIssue) {
+        issueNavigationSequence += 1
+        issueNavigationRequest = YAMLTextNavigationRequest(issue: issue, sequence: issueNavigationSequence)
+    }
 }
 
 private struct YAMLValidationSummaryView: View {
     let issues: [YAMLValidationIssue]
     let isValidating: Bool
+    let onSelectIssue: (YAMLValidationIssue) -> Void
     private let maxVisibleIssues = 6
     @State private var isExpanded = false
 
@@ -246,55 +281,45 @@ private struct YAMLValidationSummaryView: View {
     }
 
     var body: some View {
-        if isValidating || !issues.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    if !issues.isEmpty {
-                        isExpanded.toggle()
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if !issues.isEmpty {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    HStack(spacing: 5) {
+                        statusLight(color: .red, isActive: errorCount > 0)
+                        statusLight(color: .orange, isActive: warningCount > 0)
+                        statusLight(color: .green, isActive: !isValidating && issues.isEmpty)
                     }
-                } label: {
-                    HStack(spacing: 8) {
-                        HStack(spacing: 6) {
-                            if errorCount > 0 {
-                                issueBadge(
-                                    systemName: "xmark.circle.fill",
-                                    text: "\(errorCount)",
-                                    color: .red
-                                )
-                            }
 
-                            if warningCount > 0 {
-                                issueBadge(
-                                    systemName: "exclamationmark.triangle.fill",
-                                    text: "\(warningCount)",
-                                    color: .orange
-                                )
-                            }
+                    Text(summaryTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
 
-                            if isValidating {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
+                    Spacer(minLength: 0)
 
-                        Text(summaryTitle)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                    if isValidating {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
 
-                        Spacer(minLength: 0)
-
-                        if !issues.isEmpty {
-                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
+                    if !issues.isEmpty {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                .buttonStyle(.plain)
+            }
+            .buttonStyle(.plain)
 
-                if isExpanded {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(visibleIssues) { issue in
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(visibleIssues) { issue in
+                        Button {
+                            onSelectIssue(issue)
+                        } label: {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: symbolName(for: issue))
                                     .font(.caption)
@@ -309,25 +334,37 @@ private struct YAMLValidationSummaryView: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
+
+                                Spacer(minLength: 0)
                             }
                         }
-
-                        if issues.count > maxVisibleIssues {
-                            Text("\(issues.count - maxVisibleIssues) more issues not shown")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .help("Jump to this YAML problem")
                     }
-                    .padding(.top, 2)
+
+                    if issues.count > maxVisibleIssues {
+                        Text("\(issues.count - maxVisibleIssues) more issues not shown")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.top, 2)
             }
-            .padding(.horizontal, 2)
-            .onChange(of: issueSignature) { _, _ in
-                if issues.isEmpty {
-                    isExpanded = false
-                } else if isExpanded {
-                    isExpanded = true
-                }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+        }
+        .onChange(of: issueSignature) { _, _ in
+            if issues.isEmpty {
+                isExpanded = false
             }
         }
     }
@@ -346,14 +383,7 @@ private struct YAMLValidationSummaryView: View {
         if warningCount > 0 {
             return warningCount == 1 ? "1 validation warning" : "\(warningCount) validation warnings"
         }
-        return "Validating YAML against Kubernetes…"
-    }
-
-    private var summaryColor: Color {
-        if issues.contains(where: { $0.severity == .error }) {
-            return .red
-        }
-        return .orange
+        return "No YAML problems"
     }
 
     private func symbolName(for issue: YAMLValidationIssue) -> String {
@@ -377,16 +407,24 @@ private struct YAMLValidationSummaryView: View {
         }
     }
 
-    private func issueBadge(systemName: String, text: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: systemName)
-                .font(.caption2)
-            Text(text)
-                .font(.caption2.weight(.semibold))
+    private func statusLight(color: Color, isActive: Bool) -> some View {
+        Circle()
+            .fill(color.opacity(isActive ? 0.95 : 0.2))
+            .overlay {
+                Circle()
+                    .strokeBorder(color.opacity(isActive ? 0.35 : 0.16), lineWidth: 1)
+            }
+            .frame(width: 9, height: 9)
+    }
+}
+
+private enum YAMLIssuePresentation {
+    static func presentedIssues(text: String, externalIssues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
+        let localIssues = YAMLLanguageService.analyze(text).validationIssues
+        let remoteIssues = externalIssues.filter { $0.source != .syntax }
+        var seen: Set<String> = []
+        return (localIssues + remoteIssues).filter { issue in
+            seen.insert(issue.id).inserted
         }
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(color.opacity(0.10), in: Capsule())
     }
 }

@@ -18,6 +18,7 @@ assets/readme/kubeconfig.fake-cluster.yaml
 
 # Generated test reports / local CI exports.
 rune-smoke-swift-testing.xml
+test-reports/
 
 # Environment files should stay local; commit examples instead.
 .env

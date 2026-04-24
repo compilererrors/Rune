@@ -355,6 +355,8 @@ metadata:
   namespace: alpha-zone
 spec:
   schedule: "*/15 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:
@@ -556,6 +558,8 @@ metadata:
   namespace: bravo-zone
 spec:
   schedule: "*/20 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:
@@ -710,6 +714,8 @@ metadata:
   namespace: charlie-zone
 spec:
   schedule: "*/30 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:

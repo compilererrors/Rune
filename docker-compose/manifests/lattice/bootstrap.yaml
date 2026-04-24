@@ -373,6 +373,8 @@ metadata:
   namespace: delta-zone
 spec:
   schedule: "*/10 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:
@@ -689,6 +691,8 @@ metadata:
   namespace: foxtrot-zone
 spec:
   schedule: "*/25 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:
@@ -708,6 +712,8 @@ metadata:
   namespace: foxtrot-zone
 spec:
   schedule: "*/35 * * * *"
+  successfulJobsHistoryLimit: 50
+  failedJobsHistoryLimit: 20
   jobTemplate:
     spec:
       template:
