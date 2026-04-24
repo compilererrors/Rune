@@ -5,6 +5,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${RUNE_FAKE_K8S_STATE:-$ROOT_DIR/.rune-fake-k8s}"
 
 build_fake_k8s() {
+  if [[ -n "${RUNE_FAKE_K8S_BINARY:-}" ]]; then
+    if [[ ! -x "$RUNE_FAKE_K8S_BINARY" ]]; then
+      echo "RUNE_FAKE_K8S_BINARY is not executable: $RUNE_FAKE_K8S_BINARY" >&2
+      exit 1
+    fi
+    printf '%s\n' "$RUNE_FAKE_K8S_BINARY"
+    return
+  fi
+
   swift build --product RuneFakeK8s >/dev/null
   local bin_dir
   bin_dir="$(swift build --show-bin-path)"

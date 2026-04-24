@@ -24,38 +24,30 @@ struct YAMLTextAnalysis {
 
 enum YAMLLanguageService {
     static func analyze(_ source: String) -> YAMLTextAnalysis {
-        let nsSource = source as NSString
-        var highlights: [YAMLHighlightSpan] = []
-        var validationIssues: [YAMLValidationIssue] = []
+        cache.analysis(for: source)
+    }
 
-        nsSource.enumerateSubstrings(
-            in: NSRange(location: 0, length: nsSource.length),
-            options: [.byLines, .substringNotRequired]
-        ) { _, substringRange, _, _ in
-            let line = nsSource.substring(with: substringRange)
-            analyzeLine(
-                line,
-                source: source,
-                absoluteLocation: substringRange.location,
-                highlights: &highlights,
-                validationIssues: &validationIssues
-            )
-        }
-
-        validationIssues.append(contentsOf: unmatchedFlowDelimiterDiagnostics(in: source))
-        return YAMLTextAnalysis(highlights: highlights, validationIssues: validationIssues)
+    static func softTabWhitespace(forColumn column: Int, indentWidth: Int = 2) -> String {
+        let width = max(1, indentWidth)
+        let remainder = column % width
+        let count = remainder == 0 ? width : width - remainder
+        return String(repeating: " ", count: count)
     }
 
     static func suggestedIndentation(after line: String) -> String {
-        let currentIndentation = String(line.prefix { $0.isWhitespace })
-        let content = lineContentWithoutComment(line).trimmingCharacters(in: .whitespaces)
-        guard !content.isEmpty else { return currentIndentation }
-
-        if content == "-" {
-            return currentIndentation + "  "
+        let nsLine = line as NSString
+        let indentation = leadingWhitespace(in: nsLine)
+        let contentEnd = commentStart(in: nsLine) ?? nsLine.length
+        let first = firstNonWhitespace(in: nsLine, from: 0, to: contentEnd)
+        guard first < contentEnd else {
+            return nsLine.substring(with: NSRange(location: 0, length: indentation))
         }
 
-        if content.hasSuffix(":") || content.hasSuffix("|") || content.hasSuffix(">") {
+        let content = nsLine.substring(with: NSRange(location: first, length: contentEnd - first))
+            .trimmingCharacters(in: .whitespaces)
+        let currentIndentation = nsLine.substring(with: NSRange(location: 0, length: indentation))
+
+        if content == "-" || content.hasSuffix(":") || content.hasSuffix("|") || content.hasSuffix(">") {
             return currentIndentation + "  "
         }
 
@@ -69,423 +61,36 @@ enum YAMLLanguageService {
         return currentIndentation
     }
 
-    private static func analyzeLine(
-        _ line: String,
-        source: String,
-        absoluteLocation: Int,
-        highlights: inout [YAMLHighlightSpan],
-        validationIssues: inout [YAMLValidationIssue]
-    ) {
-        let scalars = Array(line)
-        let sourceLine = lineNumber(for: absoluteLocation, in: source)
+    private static let cache = YAMLAnalysisCache()
 
-        for (offset, character) in scalars.enumerated() where character == "\t" {
-            validationIssues.append(
-                YAMLValidationIssue(
-                    source: .syntax,
-                    severity: .error,
-                    message: "Tabs are not allowed in YAML indentation.",
-                    line: sourceLine,
-                    column: offset + 1,
-                    range: YAMLValidationRange(location: absoluteLocation + offset, length: 1)
-                )
-            )
+    fileprivate static func analyzeUncached(_ source: String) -> YAMLTextAnalysis {
+        let model = YAMLDocumentModel(source: source)
+        let highlights = model.tokens.map {
+            YAMLHighlightSpan(range: $0.range, kind: YAMLHighlightKind(tokenKind: $0.kind))
         }
-
-        if let directiveRange = directiveRange(in: line) {
-            highlights.append(
-                YAMLHighlightSpan(
-                    range: NSRange(location: absoluteLocation + directiveRange.location, length: directiveRange.length),
-                    kind: .directive
-                )
-            )
-        }
-
-        if let keyRange = mappingKeyRange(in: line) {
-            highlights.append(
-                YAMLHighlightSpan(
-                    range: NSRange(location: absoluteLocation + keyRange.location, length: keyRange.length),
-                    kind: .key
-                )
-            )
-        }
-
-        var index = 0
-        while index < scalars.count {
-            let character = scalars[index]
-
-            if character == "#" {
-                highlights.append(
-                    YAMLHighlightSpan(
-                        range: NSRange(location: absoluteLocation + index, length: scalars.count - index),
-                        kind: .comment
-                    )
-                )
-                break
-            }
-
-            if character == "\"" {
-                let stringRange = consumeDoubleQuotedString(in: scalars, from: index)
-                highlights.append(
-                    YAMLHighlightSpan(
-                        range: NSRange(location: absoluteLocation + stringRange.location, length: stringRange.length),
-                        kind: .string
-                    )
-                )
-
-                if !stringRange.isClosed {
-                    validationIssues.append(
-                        YAMLValidationIssue(
-                            source: .syntax,
-                            severity: .error,
-                            message: "Unclosed double-quoted string.",
-                            line: sourceLine,
-                            column: stringRange.location + 1,
-                            range: YAMLValidationRange(
-                                location: absoluteLocation + stringRange.location,
-                                length: stringRange.length
-                            )
-                        )
-                    )
-                }
-
-                index = stringRange.location + stringRange.length
-                continue
-            }
-
-            if character == "'" {
-                let stringRange = consumeSingleQuotedString(in: scalars, from: index)
-                highlights.append(
-                    YAMLHighlightSpan(
-                        range: NSRange(location: absoluteLocation + stringRange.location, length: stringRange.length),
-                        kind: .string
-                    )
-                )
-
-                if !stringRange.isClosed {
-                    validationIssues.append(
-                        YAMLValidationIssue(
-                            source: .syntax,
-                            severity: .error,
-                            message: "Unclosed single-quoted string.",
-                            line: sourceLine,
-                            column: stringRange.location + 1,
-                            range: YAMLValidationRange(
-                                location: absoluteLocation + stringRange.location,
-                                length: stringRange.length
-                            )
-                        )
-                    )
-                }
-
-                index = stringRange.location + stringRange.length
-                continue
-            }
-
-            if (character == "&" || character == "*"),
-               hasScalarBoundary(before: scalars, at: index) {
-                let nameRange = consumeAnchorName(in: scalars, from: index + 1)
-                if nameRange.length > 0 {
-                    highlights.append(
-                        YAMLHighlightSpan(
-                            range: NSRange(location: absoluteLocation + index, length: 1 + nameRange.length),
-                            kind: character == "&" ? .anchor : .alias
-                        )
-                    )
-                    index = nameRange.location + nameRange.length
-                    continue
-                }
-            }
-
-            if isScalarStart(character),
-               hasScalarBoundary(before: scalars, at: index) {
-                let scalarRange = consumePlainScalar(in: scalars, from: index)
-                let scalarText = String(scalars[scalarRange.location..<(scalarRange.location + scalarRange.length)])
-
-                if isBooleanScalar(scalarText) {
-                    highlights.append(
-                        YAMLHighlightSpan(
-                            range: NSRange(location: absoluteLocation + scalarRange.location, length: scalarRange.length),
-                            kind: .boolean
-                        )
-                    )
-                } else if isNumberScalar(scalarText) {
-                    highlights.append(
-                        YAMLHighlightSpan(
-                            range: NSRange(location: absoluteLocation + scalarRange.location, length: scalarRange.length),
-                            kind: .number
-                        )
-                    )
-                }
-
-                index = scalarRange.location + scalarRange.length
-                continue
-            }
-
-            index += 1
-        }
+        let issues = deduplicated(model.diagnostics + flowDelimiterDiagnostics(in: source))
+        return YAMLTextAnalysis(highlights: highlights, validationIssues: issues)
     }
 
-    private static func directiveRange(in line: String) -> NSRange? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return nil }
-
-        let leadingWhitespace = line.prefix { $0.isWhitespace }.count
-        if trimmed.hasPrefix("---") || trimmed.hasPrefix("...") {
-            return NSRange(location: leadingWhitespace, length: min(3, trimmed.count))
-        }
-
-        if trimmed.hasPrefix("%") {
-            let length = lineContentWithoutComment(line).count - leadingWhitespace
-            guard length > 0 else { return nil }
-            return NSRange(location: leadingWhitespace, length: length)
-        }
-
-        return nil
-    }
-
-    private static func mappingKeyRange(in line: String) -> NSRange? {
-        let scalars = Array(line)
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-        var escaped = false
-
-        for index in scalars.indices {
-            let character = scalars[index]
-
-            if escaped {
-                escaped = false
-                continue
-            }
-
-            switch character {
-            case "\\" where inDoubleQuotes:
-                escaped = true
-            case "'" where !inDoubleQuotes:
-                if inSingleQuotes, index + 1 < scalars.count, scalars[index + 1] == "'" {
-                    continue
-                }
-                inSingleQuotes.toggle()
-            case "\"" where !inSingleQuotes:
-                inDoubleQuotes.toggle()
-            case "#" where !inSingleQuotes && !inDoubleQuotes:
-                return nil
-            case ":" where !inSingleQuotes && !inDoubleQuotes:
-                let nextIndex = index + 1
-                guard nextIndex >= scalars.count || scalars[nextIndex].isWhitespace else { continue }
-
-                var start = 0
-                while start < index, scalars[start].isWhitespace {
-                    start += 1
-                }
-
-                if start < index, scalars[start] == "-", start + 1 < index, scalars[start + 1].isWhitespace {
-                    start += 2
-                    while start < index, scalars[start].isWhitespace {
-                        start += 1
-                    }
-                }
-
-                if start < index, scalars[start] == "?", start + 1 < index, scalars[start + 1].isWhitespace {
-                    start += 2
-                    while start < index, scalars[start].isWhitespace {
-                        start += 1
-                    }
-                }
-
-                var end = index
-                while end > start, scalars[end - 1].isWhitespace {
-                    end -= 1
-                }
-
-                guard end > start else { return nil }
-                return NSRange(location: start, length: end - start)
-            default:
-                break
-            }
-        }
-
-        return nil
-    }
-
-    private static func lineContentWithoutComment(_ line: String) -> String {
-        let scalars = Array(line)
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-        var escaped = false
-
-        for index in scalars.indices {
-            let character = scalars[index]
-
-            if escaped {
-                escaped = false
-                continue
-            }
-
-            switch character {
-            case "\\" where inDoubleQuotes:
-                escaped = true
-            case "'" where !inDoubleQuotes:
-                if inSingleQuotes, index + 1 < scalars.count, scalars[index + 1] == "'" {
-                    continue
-                }
-                inSingleQuotes.toggle()
-            case "\"" where !inSingleQuotes:
-                inDoubleQuotes.toggle()
-            case "#" where !inSingleQuotes && !inDoubleQuotes:
-                return String(scalars[..<index])
-            default:
-                break
-            }
-        }
-
-        return line
-    }
-
-    private static func consumeDoubleQuotedString(in scalars: [Character], from start: Int) -> ConsumedRange {
-        var index = start + 1
-        var escaped = false
-
-        while index < scalars.count {
-            let character = scalars[index]
-            if escaped {
-                escaped = false
-                index += 1
-                continue
-            }
-
-            if character == "\\" {
-                escaped = true
-                index += 1
-                continue
-            }
-
-            if character == "\"" {
-                return ConsumedRange(location: start, length: index - start + 1, isClosed: true)
-            }
-
-            index += 1
-        }
-
-        return ConsumedRange(location: start, length: scalars.count - start, isClosed: false)
-    }
-
-    private static func consumeSingleQuotedString(in scalars: [Character], from start: Int) -> ConsumedRange {
-        var index = start + 1
-
-        while index < scalars.count {
-            if scalars[index] == "'" {
-                if index + 1 < scalars.count, scalars[index + 1] == "'" {
-                    index += 2
-                    continue
-                }
-                return ConsumedRange(location: start, length: index - start + 1, isClosed: true)
-            }
-
-            index += 1
-        }
-
-        return ConsumedRange(location: start, length: scalars.count - start, isClosed: false)
-    }
-
-    private static func consumeAnchorName(in scalars: [Character], from start: Int) -> NSRange {
-        var index = start
-        while index < scalars.count, isAnchorCharacter(scalars[index]) {
-            index += 1
-        }
-        return NSRange(location: start, length: index - start)
-    }
-
-    private static func consumePlainScalar(in scalars: [Character], from start: Int) -> NSRange {
-        var index = start
-        while index < scalars.count {
-            let character = scalars[index]
-            if character.isWhitespace || "#:,[]{}".contains(character) {
-                break
-            }
-            index += 1
-        }
-        return NSRange(location: start, length: index - start)
-    }
-
-    private static func hasScalarBoundary(before scalars: [Character], at index: Int) -> Bool {
-        guard index > 0 else { return true }
-        let previous = scalars[index - 1]
-        return previous.isWhitespace || "[:,[{".contains(previous)
-    }
-
-    private static func isScalarStart(_ character: Character) -> Bool {
-        !character.isWhitespace && !"#:&*,'\"[]{}".contains(character)
-    }
-
-    private static func isAnchorCharacter(_ character: Character) -> Bool {
-        isLetter(character) || isDigit(character) || character == "_" || character == "-" || character == "."
-    }
-
-    private static func isBooleanScalar(_ text: String) -> Bool {
-        switch text.lowercased() {
-        case "true", "false", "yes", "no", "on", "off", "null", "~":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func isNumberScalar(_ text: String) -> Bool {
-        guard !text.isEmpty else { return false }
-        var scalars = Array(text)
-        if scalars.first == "+" || scalars.first == "-" {
-            scalars.removeFirst()
-        }
-        guard !scalars.isEmpty else { return false }
-
-        var hasDigit = false
-        var hasDecimalSeparator = false
-
-        for character in scalars {
-            if isDigit(character) {
-                hasDigit = true
-                continue
-            }
-
-            if character == ".", !hasDecimalSeparator {
-                hasDecimalSeparator = true
-                continue
-            }
-
-            return false
-        }
-
-        return hasDigit
-    }
-
-    private static func isLetter(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy { CharacterSet.letters.contains($0) }
-    }
-
-    private static func isDigit(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
-    }
-
-    private static func unmatchedFlowDelimiterDiagnostics(in source: String) -> [YAMLValidationIssue] {
+    private static func flowDelimiterDiagnostics(in source: String) -> [YAMLValidationIssue] {
         struct StackItem {
-            let character: Character
+            let character: unichar
             let offset: Int
         }
 
+        let nsSource = source as NSString
         var stack: [StackItem] = []
-        var validationIssues: [YAMLValidationIssue] = []
-        let scalars = Array(source)
+        var issues: [YAMLValidationIssue] = []
         var inSingleQuotes = false
         var inDoubleQuotes = false
         var escaped = false
         var inComment = false
 
-        for index in scalars.indices {
-            let character = scalars[index]
+        for index in 0..<nsSource.length {
+            let character = nsSource.character(at: index)
 
             if inComment {
-                if character == "\n" {
+                if character == YAMLServiceCharacter.newline || character == YAMLServiceCharacter.carriageReturn {
                     inComment = false
                 }
                 continue
@@ -496,76 +101,75 @@ enum YAMLLanguageService {
                 continue
             }
 
-            switch character {
-            case "\\" where inDoubleQuotes:
+            if character == YAMLServiceCharacter.backslash && inDoubleQuotes {
                 escaped = true
-            case "'" where !inDoubleQuotes:
-                if inSingleQuotes, index + 1 < scalars.count, scalars[index + 1] == "'" {
+                continue
+            }
+
+            if character == YAMLServiceCharacter.singleQuote && !inDoubleQuotes {
+                if inSingleQuotes,
+                   index + 1 < nsSource.length,
+                   nsSource.character(at: index + 1) == YAMLServiceCharacter.singleQuote {
                     continue
                 }
                 inSingleQuotes.toggle()
-            case "\"" where !inSingleQuotes:
+                continue
+            }
+
+            if character == YAMLServiceCharacter.doubleQuote && !inSingleQuotes {
                 inDoubleQuotes.toggle()
-            case "#" where !inSingleQuotes && !inDoubleQuotes:
+                continue
+            }
+
+            if character == YAMLServiceCharacter.hash && !inSingleQuotes && !inDoubleQuotes {
                 inComment = true
-            case "[", "{":
-                guard !inSingleQuotes && !inDoubleQuotes else { continue }
+                continue
+            }
+
+            guard !inSingleQuotes, !inDoubleQuotes else { continue }
+
+            if character == YAMLServiceCharacter.leftBracket || character == YAMLServiceCharacter.leftBrace {
                 stack.append(StackItem(character: character, offset: index))
-            case "]", "}":
-                guard !inSingleQuotes && !inDoubleQuotes else { continue }
+                continue
+            }
+
+            if character == YAMLServiceCharacter.rightBracket || character == YAMLServiceCharacter.rightBrace {
                 guard let last = stack.last else {
-                    validationIssues.append(
-                        issueForDelimiter(
-                            source: source,
-                            offset: index,
-                            message: "Unexpected closing '\(character)'."
-                        )
-                    )
+                    issues.append(delimiterIssue(source: source, offset: index, message: "Unexpected closing '\(String(Character(UnicodeScalar(character)!)))'."))
                     continue
                 }
-                let expected: Character = character == "]" ? "[" : "{"
+
+                let expected = character == YAMLServiceCharacter.rightBracket
+                    ? YAMLServiceCharacter.leftBracket
+                    : YAMLServiceCharacter.leftBrace
                 if last.character == expected {
                     stack.removeLast()
                 } else {
-                    validationIssues.append(
-                        issueForDelimiter(
-                            source: source,
-                            offset: index,
-                            message: "Mismatched closing '\(character)'."
-                        )
-                    )
+                    issues.append(delimiterIssue(source: source, offset: index, message: "Mismatched closing '\(String(Character(UnicodeScalar(character)!)))'."))
                 }
-            default:
-                break
             }
         }
 
         for item in stack {
-            validationIssues.append(
-                issueForDelimiter(
+            issues.append(
+                delimiterIssue(
                     source: source,
                     offset: item.offset,
-                    message: "Unclosed '\(item.character)' flow collection."
+                    message: "Unclosed '\(String(Character(UnicodeScalar(item.character)!)))' flow collection."
                 )
             )
         }
 
-        return validationIssues
+        return issues
     }
 
-    private static func issueForDelimiter(
-        source: String,
-        offset: Int,
-        message: String
-    ) -> YAMLValidationIssue {
-        let line = lineNumber(for: offset, in: source)
-        let column = columnNumber(for: offset, in: source)
-        return YAMLValidationIssue(
+    private static func delimiterIssue(source: String, offset: Int, message: String) -> YAMLValidationIssue {
+        YAMLValidationIssue(
             source: .syntax,
             severity: .error,
             message: message,
-            line: line,
-            column: column,
+            line: lineNumber(for: offset, in: source),
+            column: columnNumber(for: offset, in: source),
             range: YAMLValidationRange(location: offset, length: 1)
         )
     }
@@ -587,10 +191,118 @@ enum YAMLLanguageService {
         let lineRange = nsSource.lineRange(for: NSRange(location: boundedOffset, length: 0))
         return boundedOffset - lineRange.location + 1
     }
+
+    private static func deduplicated(_ issues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
+        var seen: Set<String> = []
+        return issues.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func leadingWhitespace(in line: NSString) -> Int {
+        firstNonWhitespace(in: line, from: 0, to: line.length)
+    }
+
+    private static func firstNonWhitespace(in line: NSString, from start: Int, to end: Int) -> Int {
+        var index = start
+        while index < end {
+            let character = line.character(at: index)
+            guard character == YAMLServiceCharacter.space || character == YAMLServiceCharacter.tab else { break }
+            index += 1
+        }
+        return index
+    }
+
+    private static func commentStart(in line: NSString) -> Int? {
+        var inSingleQuotes = false
+        var inDoubleQuotes = false
+        var escaped = false
+
+        for index in 0..<line.length {
+            let character = line.character(at: index)
+            if escaped {
+                escaped = false
+                continue
+            }
+            if character == YAMLServiceCharacter.backslash && inDoubleQuotes {
+                escaped = true
+                continue
+            }
+            if character == YAMLServiceCharacter.singleQuote && !inDoubleQuotes {
+                inSingleQuotes.toggle()
+                continue
+            }
+            if character == YAMLServiceCharacter.doubleQuote && !inSingleQuotes {
+                inDoubleQuotes.toggle()
+                continue
+            }
+            if character == YAMLServiceCharacter.hash && !inSingleQuotes && !inDoubleQuotes {
+                if index == 0 || line.character(at: index - 1) == YAMLServiceCharacter.space || line.character(at: index - 1) == YAMLServiceCharacter.tab {
+                    return index
+                }
+            }
+        }
+
+        return nil
+    }
 }
 
-private struct ConsumedRange {
-    let location: Int
-    let length: Int
-    let isClosed: Bool
+private extension YAMLHighlightKind {
+    init(tokenKind: YAMLSyntaxTokenKind) {
+        switch tokenKind {
+        case .key:
+            self = .key
+        case .string:
+            self = .string
+        case .number:
+            self = .number
+        case .boolean:
+            self = .boolean
+        case .comment:
+            self = .comment
+        case .directive:
+            self = .directive
+        case .anchor:
+            self = .anchor
+        case .alias:
+            self = .alias
+        }
+    }
+}
+
+private final class YAMLAnalysisCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedSource: String?
+    private var cachedAnalysis: YAMLTextAnalysis?
+
+    func analysis(for source: String) -> YAMLTextAnalysis {
+        lock.lock()
+        if cachedSource == source, let cachedAnalysis {
+            lock.unlock()
+            return cachedAnalysis
+        }
+        lock.unlock()
+
+        let analysis = YAMLLanguageService.analyzeUncached(source)
+
+        lock.lock()
+        cachedSource = source
+        cachedAnalysis = analysis
+        lock.unlock()
+
+        return analysis
+    }
+}
+
+private enum YAMLServiceCharacter {
+    static let tab: unichar = 9
+    static let newline: unichar = 10
+    static let carriageReturn: unichar = 13
+    static let space: unichar = 32
+    static let hash: unichar = 35
+    static let doubleQuote: unichar = 34
+    static let singleQuote: unichar = 39
+    static let backslash: unichar = 92
+    static let leftBracket: unichar = 91
+    static let rightBracket: unichar = 93
+    static let leftBrace: unichar = 123
+    static let rightBrace: unichar = 125
 }

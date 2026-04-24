@@ -50,6 +50,26 @@ That produces:
 
 - `docker-compose/generated/rune-fake-kubeconfig.yaml`
 
+## Integration Test Report
+
+Run the local-only integration suite and produce both a human-readable Markdown report and a machine-readable JSON report:
+
+```bash
+scripts/run-local-k8s-integration-report.sh
+```
+
+The report runner resets only the local `rune-fake-k8s` Docker Compose project by default, starts both fake clusters, merges the generated localhost kubeconfig, and runs the guarded integration tests. The Docker Compose suite includes read checks plus reversible writes for manifest apply/update/delete, CronJob suspend/create Job, deployment scale, rollout restart, pod delete, port-forward start/stop, exec, and logs. Reports are written under:
+
+- `test-reports/local-k8s-integration/<run-id>/report.md`
+- `test-reports/local-k8s-integration/<run-id>/report.json`
+
+Useful switches:
+
+```bash
+RUNE_SKIP_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh
+RUNE_RESET_DOCKER_FAKE_K8S=0 scripts/run-local-k8s-integration-report.sh
+```
+
 ## Stop and clean up
 
 ```bash

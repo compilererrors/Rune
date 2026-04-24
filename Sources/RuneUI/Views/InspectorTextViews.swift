@@ -27,6 +27,7 @@ struct InspectorReadOnlyTextView: View {
     let resetID: String
     var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
     var externalValidationIssues: [YAMLValidationIssue] = []
+    var navigationRequest: YAMLTextNavigationRequest?
 
     var body: some View {
         AppKitManifestTextView(
@@ -34,7 +35,8 @@ struct InspectorReadOnlyTextView: View {
             isEditable: false,
             resetScrollOnExternalChange: true,
             contentStyle: contentStyle,
-            externalValidationIssues: externalValidationIssues
+            externalValidationIssues: externalValidationIssues,
+            navigationRequest: navigationRequest
         )
         .id(resetID)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

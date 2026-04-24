@@ -2759,6 +2759,7 @@ public struct RuneRootView: View {
             onDisconnect: { viewModel.stopTerminalSession() },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
         )
+        .id("terminal")
     }
 
     private var terminalDetails: some View {
