@@ -863,7 +863,7 @@ final class RuneSmokeTests: XCTestCase {
         let usedStaleNamespace = await runner.didRun(arguments: staleNamespaceArgs)
         XCTAssertFalse(usedStaleNamespace)
 
-        XCTAssertEqual(viewModel.namespaceOptions.first, "delta-zone")
+        XCTAssertEqual(viewModel.namespaceOptions, ["default", "delta-zone", "echo-zone"])
         XCTAssertTrue(viewModel.namespaceOptions.contains("echo-zone"))
     }
 
