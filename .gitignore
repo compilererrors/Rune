@@ -7,9 +7,6 @@
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
 
-# Go helper binary (bygg med: cd go/rune-k8s-agent && go build -o rune-k8s-agent ./cmd/rune-k8s-agent)
-go/rune-k8s-agent/rune-k8s-agent
-
 # Generated locally by fake-k3s (contains certificates) and should never be committed to main.
 assets/readme/kubeconfig.fake-cluster.yaml
 

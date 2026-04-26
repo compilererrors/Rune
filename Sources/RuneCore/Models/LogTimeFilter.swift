@@ -8,7 +8,7 @@ public enum LogTimeFilter: Equatable, Codable, Sendable {
     case lastDays(Int)
     case since(Date)
 
-    public var kubectlSinceArgument: String? {
+    public var kubernetesSinceArgument: String? {
         switch self {
         case .all, .tailLines:
             return nil
@@ -23,7 +23,7 @@ public enum LogTimeFilter: Equatable, Codable, Sendable {
         }
     }
 
-    public var kubectlTailArgument: String? {
+    public var kubernetesTailArgument: String? {
         switch self {
         case let .tailLines(lines):
             return String(max(1, lines))

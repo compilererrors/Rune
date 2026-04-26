@@ -179,7 +179,7 @@ public enum KubernetesRESTPath {
         }
     }
 
-    /// Cheap list probe: `limit=1` so `metadata.remainingItemCount` can imply total size (see ``KubectlListJSON/collectionListTotal(from:)``).
+    /// Cheap list probe: `limit=1` so `metadata.remainingItemCount` can imply total size (see ``KubernetesListJSON/collectionListTotal(from:)``).
     public static func namespacedCollectionMetadataProbe(namespace: String, resource: String) -> String? {
         guard let base = namespacedCollectionPath(namespace: namespace, resource: resource) else { return nil }
         return KubernetesListOptions.metadataProbeLimitOne().appendingPercentEncoded(to: base)

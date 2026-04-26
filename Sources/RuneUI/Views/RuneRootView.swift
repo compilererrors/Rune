@@ -172,7 +172,7 @@ private enum RuneRootLayoutDebug {
             shellVariant.debugLabel,
             inlineEditorImplementation.debugLabel,
             snapshot.section.rawValue,
-            snapshot.workloadKind.kubectlName,
+            snapshot.workloadKind.kubernetesResourceName,
             snapshot.measuredWindowTopInset.map { String(format: "%.1f", $0) } ?? "nil",
             snapshot.resolvedWindowTopInset,
             snapshot.contentMinX ?? -1,
@@ -2787,7 +2787,7 @@ public struct RuneRootView: View {
         case .networkPolicy:
             return viewModel.state.selectedNetworkPolicy.map { "networkpolicy \($0.name)" } ?? "the selected NetworkPolicy"
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-            return viewModel.state.selectedRBACResource.map { "\($0.kind.kubectlName) \($0.name)" } ?? "the selected RBAC resource"
+            return viewModel.state.selectedRBACResource.map { "\($0.kind.kubernetesResourceName) \($0.name)" } ?? "the selected RBAC resource"
         case .event:
             return "the selected event"
         }
@@ -2878,7 +2878,7 @@ public struct RuneRootView: View {
             onRevert: { viewModel.revertResourceYAMLDraft() },
             onImport: { viewModel.importResourceYAMLFromFile() },
             onExport: { viewModel.saveCurrentResourceYAML() },
-            readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+            readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
         )
     }
 
@@ -2902,7 +2902,7 @@ public struct RuneRootView: View {
             yamlText: viewModel.state.resourceYAML,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onOpenYAMLEditor: { openYAMLEditorSheet() },
-            readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName)"
+            readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
         )
     }
 
@@ -3163,7 +3163,7 @@ public struct RuneRootView: View {
             .padding(.vertical, 2)
         }
         .padding(.horizontal, 2)
-        .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubectlName):\(genericResourceListIdentity(resources))")
+        .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\(genericResourceListIdentity(resources))")
         .transaction { transaction in
             transaction.animation = nil
         }

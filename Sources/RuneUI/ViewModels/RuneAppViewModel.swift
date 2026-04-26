@@ -5,7 +5,6 @@ import RuneCore
 import UniformTypeIdentifiers
 import RuneDiagnostics
 import RuneExport
-import RuneHelm
 import RuneKube
 import RuneSecurity
 import RuneStore
@@ -24,7 +23,7 @@ public enum PodLogPreset: String, CaseIterable, Identifiable, Sendable {
     case last6Hours
     case last24Hours
     case last7Days
-    /// Equivalent to plain `kubectl logs`: no tail or time filter.
+    /// Equivalent to plain Kubernetes pod logs: no tail or time filter.
     case largeTail
     case customOne
     case customTwo
@@ -80,7 +79,7 @@ public enum PendingWriteAction: Sendable {
         case let .delete(kind, _):
             return "Do you want to delete this \(kind.singularTypeName)?"
         case let .apply(kind, name, _):
-            return "Apply YAML for \(kind.kubectlName) \(name)?"
+            return "Apply YAML for \(kind.kubernetesResourceName) \(name)?"
         case let .scale(deploymentName, replicas):
             return "Scale deployment \(deploymentName) to \(replicas)?"
         case let .rolloutRestart(deploymentName):
@@ -350,7 +349,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var canNavigateBack = false
     @Published public private(set) var canNavigateForward = false
 
-    private let kubeClient: KubectlClient
+    private let kubeClient: KubernetesClient
     private let helmClient: any HelmReleaseService
     private let bookmarkManager: BookmarkManager
     private let picker: KubeConfigPicking
@@ -425,8 +424,8 @@ public final class RuneAppViewModel: ObservableObject {
 
     public init(
         state: RuneAppState = RuneAppState(),
-        kubeClient: KubectlClient = KubectlClient(),
-        helmClient: any HelmReleaseService = HelmClient(),
+        kubeClient: KubernetesClient = KubernetesClient(),
+        helmClient: any HelmReleaseService = UnavailableHelmReleaseService(),
         bookmarkManager: BookmarkManager = BookmarkManager(store: UserDefaultsBookmarkStore()),
         picker: KubeConfigPicking = OpenPanelKubeConfigPicker(),
         kubeConfigDiscoverer: KubeConfigDiscovering = KubeConfigDiscoverer(),
@@ -1871,7 +1870,7 @@ public final class RuneAppViewModel: ObservableObject {
 
             _ = try exporter.save(
                 data: Data(state.resourceYAML.utf8),
-                suggestedName: "\(kind.kubectlName)-\(name)-\(timestamp).yaml",
+                suggestedName: "\(kind.kubernetesResourceName)-\(name)-\(timestamp).yaml",
                 allowedFileTypes: ["yaml", "yml"]
             )
         } catch {
@@ -6514,7 +6513,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func selectedResourceKindLabel() -> String? {
         switch state.selectedSection {
         case .workloads, .networking, .config, .storage, .rbac:
-            return currentWritableResource()?.0.kubectlName
+            return currentWritableResource()?.0.kubernetesResourceName
         case .events:
             return state.selectedEvent == nil ? nil : "event"
         case .helm:

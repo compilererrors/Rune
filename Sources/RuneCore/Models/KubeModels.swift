@@ -107,7 +107,7 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         }
     }
 
-    public var kubectlName: String {
+    public var kubernetesResourceName: String {
         switch self {
         case .pod: return "pod"
         case .deployment: return "deployment"
@@ -514,7 +514,7 @@ public enum PortForwardTargetKind: String, Codable, Sendable, Identifiable {
 
     public var id: String { rawValue }
 
-    public var kubectlResourceName: String {
+    public var kubernetesResourcePathName: String {
         switch self {
         case .pod: return "pod"
         case .service: return "service"
@@ -573,6 +573,6 @@ public struct PortForwardSession: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var resourceLabel: String {
-        "\(targetKind.kubectlResourceName)/\(targetName)"
+        "\(targetKind.kubernetesResourcePathName)/\(targetName)"
     }
 }
