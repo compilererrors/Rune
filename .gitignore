@@ -20,6 +20,13 @@ assets/readme/kubeconfig.fake-cluster.yaml
 rune-smoke-swift-testing.xml
 test-reports/
 
+# Full UI smoke screenshot runs are local review artifacts. Curated README
+# screenshots should live under assets/screenshot/readme/.
+assets/screenshot/ui/
+
+# Local App Store / Apple Developer screenshot exports.
+assets/appledev/
+
 # Environment files should stay local; commit examples instead.
 .env
 .env.*

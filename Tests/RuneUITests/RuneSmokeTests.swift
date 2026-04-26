@@ -49,6 +49,33 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertEqual(paths, [defaultConfig.path, envConfig.path].sorted())
     }
 
+    func testKubeConfigDiscovererIsolatedKubeconfigIgnoresDefaultAndKubeconfig() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rune-discovery-\(UUID().uuidString)", isDirectory: true)
+        let kubeDirectory = root.appendingPathComponent(".kube", isDirectory: true)
+        let isolatedConfig = root.appendingPathComponent("isolated-config.yaml")
+        let envConfig = root.appendingPathComponent("env-config.yaml")
+        let defaultConfig = kubeDirectory.appendingPathComponent("config")
+
+        try FileManager.default.createDirectory(at: kubeDirectory, withIntermediateDirectories: true, attributes: nil)
+        try "apiVersion: v1\n".write(to: isolatedConfig, atomically: true, encoding: .utf8)
+        try "apiVersion: v1\n".write(to: envConfig, atomically: true, encoding: .utf8)
+        try "apiVersion: v1\n".write(to: defaultConfig, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let discoverer = KubeConfigDiscoverer(
+            environmentProvider: {
+                [
+                    "RUNE_ISOLATED_KUBECONFIG": isolatedConfig.path,
+                    "KUBECONFIG": envConfig.path
+                ]
+            },
+            homeDirectoryProvider: { root },
+            fileExists: { path in FileManager.default.fileExists(atPath: path) }
+        )
+
+        XCTAssertEqual(discoverer.discoverCandidateFiles().map(\.path), [isolatedConfig.path])
+    }
+
     func testBootstrapAutoLoadsDiscoveredKubeconfig() async throws {
         let kubeconfigURL = try makeTempKubeconfigFile()
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }

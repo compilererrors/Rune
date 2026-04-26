@@ -91,6 +91,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
 private final class PlainManifestTextView: NSTextView {
     private static let baseFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private static let yamlIndentWidth = 2
+    private static let largeDocumentRenderPadding = 8_000
 
     private var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
     private var externalValidationIssues: [YAMLValidationIssue] = []
@@ -195,15 +196,20 @@ private final class PlainManifestTextView: NSTextView {
         guard let storage = textStorage else { return }
 
         let fullRange = NSRange(location: 0, length: storage.length)
+        let source = storage.string
+        let usesViewportAnalysis = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
+        let styleRange = usesViewportAnalysis ? yamlViewportAnalysisRange(in: source) : fullRange
         storage.beginEditing()
         storage.setAttributes([
             .font: Self.baseFont,
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: Self.yamlParagraphStyle(font: Self.baseFont)
-        ], range: fullRange)
+        ], range: styleRange)
 
         if contentStyle == .yaml, storage.length > 0 {
-            let analysis = YAMLLanguageService.analyze(storage.string)
+            let analysis = usesViewportAnalysis
+                ? YAMLLanguageService.analyzeFragment(source, range: styleRange)
+                : YAMLLanguageService.analyze(source)
             let issues = deduplicatedIssues(
                 analysis.validationIssues + externalValidationIssues.filter { $0.source != .syntax }
             )
@@ -218,6 +224,19 @@ private final class PlainManifestTextView: NSTextView {
         updateDocumentSize()
         invalidateIntrinsicContentSize()
         needsDisplay = true
+    }
+
+    private func yamlViewportAnalysisRange(in source: String) -> NSRange {
+        let nsSource = source as NSString
+        guard nsSource.length > 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+
+        let visible = visibleCharacterRange ?? NSRange(location: 0, length: min(nsSource.length, Self.largeDocumentRenderPadding))
+        let paddedLocation = max(0, visible.location - Self.largeDocumentRenderPadding)
+        let paddedEnd = min(nsSource.length, NSMaxRange(visible) + Self.largeDocumentRenderPadding)
+        let padded = NSRange(location: paddedLocation, length: max(0, paddedEnd - paddedLocation))
+        return nsSource.lineRange(for: padded)
     }
 
     func refreshViewportGeometry() {

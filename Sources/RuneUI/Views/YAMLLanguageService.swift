@@ -23,8 +23,61 @@ struct YAMLTextAnalysis {
 }
 
 enum YAMLLanguageService {
+    /// Full analysis is cheap for normal Kubernetes manifests. Above this size the editor should
+    /// render the visible area first and let debounced validation catch up outside the keystroke path.
+    static let interactiveFullAnalysisCharacterLimit = 90_000
+    static let interactiveFullAnalysisLineLimit = 2_500
+
     static func analyze(_ source: String) -> YAMLTextAnalysis {
         cache.analysis(for: source)
+    }
+
+    static func prefersViewportAnalysis(_ source: String) -> Bool {
+        if source.utf16.count > interactiveFullAnalysisCharacterLimit {
+            return true
+        }
+
+        var lineCount = 1
+        for character in source where character == "\n" {
+            lineCount += 1
+            if lineCount > interactiveFullAnalysisLineLimit {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    static func analyzeFragment(_ source: String, range requestedRange: NSRange) -> YAMLTextAnalysis {
+        let nsSource = source as NSString
+        guard nsSource.length > 0 else {
+            return YAMLTextAnalysis(highlights: [], validationIssues: [])
+        }
+
+        let boundedRange = NSIntersectionRange(
+            requestedRange,
+            NSRange(location: 0, length: nsSource.length)
+        )
+        guard boundedRange.length > 0 else {
+            return YAMLTextAnalysis(highlights: [], validationIssues: [])
+        }
+
+        let lineAlignedRange = nsSource.lineRange(for: boundedRange)
+        let fragment = nsSource.substring(with: lineAlignedRange)
+        let lineOffset = max(0, lineNumber(for: lineAlignedRange.location, in: source) - 1)
+        let analysis = analyzeUncached(fragment)
+
+        return YAMLTextAnalysis(
+            highlights: analysis.highlights.map {
+                YAMLHighlightSpan(
+                    range: NSRange(location: $0.range.location + lineAlignedRange.location, length: $0.range.length),
+                    kind: $0.kind
+                )
+            },
+            validationIssues: analysis.validationIssues.map {
+                shiftedIssue($0, locationOffset: lineAlignedRange.location, lineOffset: lineOffset)
+            }
+        )
     }
 
     static func softTabWhitespace(forColumn column: Int, indentWidth: Int = 2) -> String {
@@ -195,6 +248,24 @@ enum YAMLLanguageService {
     private static func deduplicated(_ issues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
         var seen: Set<String> = []
         return issues.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func shiftedIssue(
+        _ issue: YAMLValidationIssue,
+        locationOffset: Int,
+        lineOffset: Int
+    ) -> YAMLValidationIssue {
+        let shiftedRange = issue.range.map {
+            YAMLValidationRange(location: $0.location + locationOffset, length: $0.length)
+        }
+        return YAMLValidationIssue(
+            source: issue.source,
+            severity: issue.severity,
+            message: issue.message,
+            line: issue.line.map { $0 + lineOffset },
+            column: issue.column,
+            range: shiftedRange
+        )
     }
 
     private static func leadingWhitespace(in line: NSString) -> Int {

@@ -616,7 +616,8 @@ public struct KubectlOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     type: item.spec.type ?? "ClusterIP",
-                    clusterIP: item.spec.clusterIP ?? "-"
+                    clusterIP: item.spec.clusterIP ?? "-",
+                    selector: item.spec.selector
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
