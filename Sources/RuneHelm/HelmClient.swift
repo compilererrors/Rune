@@ -7,7 +7,7 @@ public final class HelmClient: HelmReleaseService, @unchecked Sendable {
     private let runner: CommandRunning
     private let parser: HelmOutputParser
     private let builder: HelmCommandBuilder
-    private let helmPath: String
+    private let helmPath: String?
     private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
 
@@ -15,7 +15,7 @@ public final class HelmClient: HelmReleaseService, @unchecked Sendable {
         runner: CommandRunning = ProcessCommandRunner(),
         parser: HelmOutputParser = HelmOutputParser(),
         builder: HelmCommandBuilder = HelmCommandBuilder(),
-        helmPath: String = "/usr/bin/env",
+        helmPath: String? = HelmToolLocator.resolve(),
         commandTimeout: TimeInterval = 30,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
@@ -108,9 +108,17 @@ public final class HelmClient: HelmReleaseService, @unchecked Sendable {
     }
 
     private func runHelm(arguments: [String], environment: [String: String]) async throws -> CommandResult {
+        guard let helmPath else {
+            throw RuneError.commandFailed(
+                command: "helm \(arguments.joined(separator: " "))",
+                message: "Helm is not bundled with this app build."
+            )
+        }
+
+        let processArguments = helmPath == "/usr/bin/env" ? ["helm"] + arguments : arguments
         let result = try await runner.run(
             executable: helmPath,
-            arguments: ["helm"] + arguments,
+            arguments: processArguments,
             environment: environment,
             timeout: commandTimeout
         )

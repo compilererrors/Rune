@@ -88,7 +88,11 @@ final class KubectlTests: XCTestCase {
                 arguments: ["kubectl", "config", "view", "--raw", "--flatten", "-o", "json"]
             ): .failure(RuneError.commandFailed(command: "kubectl config view", message: "Timed out after 2 seconds"))
         ])
-        let client = KubernetesRESTClient(runner: runner, kubectlPath: "/usr/bin/env")
+        let client = KubernetesRESTClient(
+            runner: runner,
+            kubectlPath: "/usr/bin/env",
+            allowsKubectlConfigView: true
+        )
         let environment = ["KUBECONFIG": "/tmp/rune-tests-config"]
 
         do {

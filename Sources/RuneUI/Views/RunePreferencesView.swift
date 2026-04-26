@@ -159,7 +159,7 @@ public struct RunePreferencesView: View {
             subtitle: "k9s-inspired action keys for the selected resource or release."
         ) {
             settingsSection("Defaults") {
-                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `d`, `l`, `s`, and `Shift-F` follow k9s conventions; YAML and Helm-specific actions are Rune mappings built around the same workflow.")
+                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `d`, `l`, `s`, and `Shift-F` follow k9s conventions; YAML, Helm, and history actions are Rune mappings built around the same workflow.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -185,14 +185,24 @@ public struct RunePreferencesView: View {
 
                             Spacer(minLength: 12)
 
-                            Toggle("Shift", isOn: shortcutShiftBinding(for: action))
-                                .toggleStyle(.switch)
-                                .labelsHidden()
+                            Toggle("⌘", isOn: shortcutCommandBinding(for: action))
+                                .toggleStyle(.button)
+                                .controlSize(.small)
+                                .help("Require Command for this action")
+
+                            Toggle("⌥", isOn: shortcutOptionBinding(for: action))
+                                .toggleStyle(.button)
+                                .controlSize(.small)
+                                .help("Require Option for this action")
+
+                            Toggle("⇧", isOn: shortcutShiftBinding(for: action))
+                                .toggleStyle(.button)
+                                .controlSize(.small)
                                 .help("Require Shift for this action")
 
                             Picker("Key", selection: shortcutKeyBinding(for: action)) {
                                 ForEach(Self.availableShortcutKeys, id: \.self) { key in
-                                    Text(key.uppercased()).tag(key)
+                                    Text(Self.displayShortcutKey(key)).tag(key)
                                 }
                             }
                             .frame(width: 96)
@@ -502,7 +512,44 @@ public struct RunePreferencesView: View {
             get: { shortcut(for: action).key },
             set: { newValue in
                 updateShortcut(for: action) { current in
-                    RuneKeyboardShortcut(key: newValue, requiresShift: current.requiresShift) ?? current
+                    RuneKeyboardShortcut(
+                        key: newValue,
+                        requiresShift: current.requiresShift,
+                        requiresCommand: current.requiresCommand,
+                        requiresOption: current.requiresOption
+                    ) ?? current
+                }
+            }
+        )
+    }
+
+    private func shortcutCommandBinding(for action: RuneKeyBindingAction) -> Binding<Bool> {
+        Binding(
+            get: { shortcut(for: action).requiresCommand },
+            set: { newValue in
+                updateShortcut(for: action) { current in
+                    RuneKeyboardShortcut(
+                        key: current.key,
+                        requiresShift: current.requiresShift,
+                        requiresCommand: newValue,
+                        requiresOption: current.requiresOption
+                    ) ?? current
+                }
+            }
+        )
+    }
+
+    private func shortcutOptionBinding(for action: RuneKeyBindingAction) -> Binding<Bool> {
+        Binding(
+            get: { shortcut(for: action).requiresOption },
+            set: { newValue in
+                updateShortcut(for: action) { current in
+                    RuneKeyboardShortcut(
+                        key: current.key,
+                        requiresShift: current.requiresShift,
+                        requiresCommand: current.requiresCommand,
+                        requiresOption: newValue
+                    ) ?? current
                 }
             }
         )
@@ -513,7 +560,12 @@ public struct RunePreferencesView: View {
             get: { shortcut(for: action).requiresShift },
             set: { newValue in
                 updateShortcut(for: action) { current in
-                    RuneKeyboardShortcut(key: current.key, requiresShift: newValue) ?? current
+                    RuneKeyboardShortcut(
+                        key: current.key,
+                        requiresShift: newValue,
+                        requiresCommand: current.requiresCommand,
+                        requiresOption: current.requiresOption
+                    ) ?? current
                 }
             }
         )
@@ -541,7 +593,11 @@ public struct RunePreferencesView: View {
     }
 
     private static var availableShortcutKeys: [String] {
-        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init)
+        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["[", "]"]
+    }
+
+    private static func displayShortcutKey(_ key: String) -> String {
+        key.rangeOfCharacter(from: .alphanumerics) != nil ? key.uppercased() : key
     }
 
     private static func loadKeyBindingShortcuts() -> [RuneKeyBindingAction: RuneKeyboardShortcut] {

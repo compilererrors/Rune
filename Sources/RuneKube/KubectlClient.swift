@@ -9,6 +9,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
     private let parser: KubectlOutputParser
     private let builder: KubectlCommandBuilder
     private let kubectlPath: String
+    private let allowsKubectlFallbacks: Bool
     private let restClient: KubernetesRESTClient
     /// Optional path to `rune-k8s-agent` (Go + client-go). When nil, ``RuneK8sAgentLocator`` is used.
     private let k8sAgentPath: String?
@@ -49,6 +50,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         kubectlPath: String = "/usr/bin/env",
         k8sAgentPath: String? = nil,
         commandTimeout: TimeInterval = 30,
+        allowsKubectlFallbacks: Bool = RuneRuntimeDependencyPolicy.allowsKubectlFallbacks,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
         self.runner = runner
@@ -56,7 +58,12 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         self.parser = parser
         self.builder = builder
         self.kubectlPath = kubectlPath
-        self.restClient = KubernetesRESTClient(runner: runner, kubectlPath: kubectlPath)
+        self.allowsKubectlFallbacks = allowsKubectlFallbacks
+        self.restClient = KubernetesRESTClient(
+            runner: runner,
+            kubectlPath: kubectlPath,
+            allowsKubectlConfigView: allowsKubectlFallbacks
+        )
         self.k8sAgentPath = k8sAgentPath
         self.commandTimeout = commandTimeout
         self.access = access
@@ -3398,6 +3405,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         environment: [String: String],
         timeout: TimeInterval? = nil
     ) async throws -> CommandResult {
+        try ensureKubectlFallbackAllowed(arguments: arguments)
         let effectiveTimeout = timeout ?? commandTimeout
         let useQuickThenRetry = timeout == nil && effectiveTimeout > quickKubectlAttemptTimeout
 
@@ -3430,6 +3438,7 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         environment: [String: String],
         timeout: TimeInterval? = nil
     ) async throws -> CommandResult {
+        try ensureKubectlFallbackAllowed(arguments: arguments)
         let effectiveTimeout = timeout ?? commandTimeout
         let useQuickThenRetry = timeout == nil && effectiveTimeout > quickKubectlAttemptTimeout
 
@@ -3934,6 +3943,15 @@ public final class KubectlClient: ContextListingService, NamespaceListingService
         timeout: TimeInterval? = nil
     ) async -> CommandResult? {
         try? await runKubectl(arguments: arguments, environment: environment, timeout: timeout)
+    }
+
+    private func ensureKubectlFallbackAllowed(arguments: [String]) throws {
+        guard allowsKubectlFallbacks else {
+            throw RuneError.commandFailed(
+                command: "kubectl \(arguments.joined(separator: " "))",
+                message: "External kubectl fallback is disabled for this build."
+            )
+        }
     }
 
     static func parseValidationIssues(from output: String, yaml: String) -> [YAMLValidationIssue] {
