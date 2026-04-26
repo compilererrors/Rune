@@ -14,20 +14,16 @@ enum IconAssetError: Error {
 
 struct IconAssetGenerator {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    /// Source: copy of `assets/.old/20260417_105141/rune_assets_clean/wheel.png` → `assets/rune_icon_wheel.png` (full wheel, not clipped).
     let logoPath = "assets/rune_icon_wheel.png"
     let iconsetPath = "assets/rune_app_iconset_wheel.iconset"
     let icnsPath = "assets/rune_wheel.icns"
 
     private let logoCanvasSize = 1024
     private let iconCanvasSize = 1024
-    /// After alpha-tighten, fit the mark into this inset inside 1024² (0 = max size before master pass).
     private let logoPadding: CGFloat = 0
-    /// Distance from canvas edge to the white plate (low = near full-bleed “FileZilla-style” fill).
     private let iconPlateInset: CGFloat = 0
-    /// 1.0 = logo uses the full *inner* fit rect (below). >1.0 grows past the plate rect (still clipped to rounded plate).
+    /// Scale applied to the logo before clipping it to the icon plate.
     private let iconLogoScale: CGFloat = 1.10
-    /// Inset vs plate corner radius before aspect-fit; tune between ~0.035 (bolder) and ~0.07 (safer from clip).
     private let iconLogoFitCornerFraction: CGFloat = 0.017
 
     func run() throws {

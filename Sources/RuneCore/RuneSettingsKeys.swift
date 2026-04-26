@@ -26,9 +26,6 @@ public enum RuneSettingsKeys {
     public static let keyBindingYAML = "rune.settings.keybindings.yaml"
     public static let keyBindingPortForward = "rune.settings.keybindings.portForward"
     public static let keyBindingRollout = "rune.settings.keybindings.rollout"
-    public static let keyBindingHelmValues = "rune.settings.keybindings.helmValues"
-    public static let keyBindingHelmManifest = "rune.settings.keybindings.helmManifest"
-    public static let keyBindingHelmHistory = "rune.settings.keybindings.helmHistory"
     /// Persisted sidebar width in the 3-column shell.
     public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
     /// Persisted detail/inspector width in the 3-column shell.
@@ -56,9 +53,6 @@ public enum RuneSettingsKeys {
             keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,
             keyBindingPortForward: RuneKeyBindingAction.portForward.defaultShortcut.storageValue,
             keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
-            keyBindingHelmValues: RuneKeyBindingAction.helmValues.defaultShortcut.storageValue,
-            keyBindingHelmManifest: RuneKeyBindingAction.helmManifest.defaultShortcut.storageValue,
-            keyBindingHelmHistory: RuneKeyBindingAction.helmHistory.defaultShortcut.storageValue,
             layoutSidebarWidth: 280.0,
             layoutDetailWidth: 440.0
         ])

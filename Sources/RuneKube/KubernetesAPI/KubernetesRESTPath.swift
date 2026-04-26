@@ -4,7 +4,7 @@ import RuneCore
 // MARK: - Kubernetes REST helpers (Rune-owned; matches upstream API path layout)
 
 /// Query parameters for Kubernetes **list** calls (`limit`, pagination, selectors). Same names as the API query keys.
-/// Rune issues these paths via the raw GET helper on ``KubectlCommandBuilder`` today; the same paths would work for a future in-process transport.
+/// Rune uses these paths directly through its owned REST client.
 public struct KubernetesListOptions: Sendable, Hashable {
     public var limit: Int?
     public var continueToken: String?

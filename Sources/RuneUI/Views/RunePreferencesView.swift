@@ -159,7 +159,7 @@ public struct RunePreferencesView: View {
             subtitle: "k9s-inspired action keys for the selected resource or release."
         ) {
             settingsSection("Defaults") {
-                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `d`, `l`, `s`, and `Shift-F` follow k9s conventions; YAML, Helm, and history actions are Rune mappings built around the same workflow.")
+                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `d`, `l`, `s`, and `Shift-F` follow k9s conventions; YAML and history actions are Rune mappings built around the same workflow.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

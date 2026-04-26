@@ -72,7 +72,6 @@ public enum PendingWriteAction: Sendable {
     case rolloutRestart(deploymentName: String)
     case rolloutUndo(deploymentName: String, revision: Int?)
     case exec(podName: String, command: [String])
-    case helmRollback(releaseName: String, namespace: String, revision: Int)
 
     var title: String {
         switch self {
@@ -91,8 +90,6 @@ public enum PendingWriteAction: Sendable {
             return "Rollback deployment \(deploymentName) to previous revision?"
         case let .exec(podName, command):
             return "Run command in pod \(podName)? (\(command.joined(separator: " ")))"
-        case let .helmRollback(releaseName, namespace, revision):
-            return "Rollback Helm release \(releaseName) in \(namespace) to revision \(revision)?"
         }
     }
 
@@ -110,8 +107,6 @@ public enum PendingWriteAction: Sendable {
             return "Deployment rollout will be reverted to an earlier revision."
         case .exec:
             return "This runs a command inside the selected pod."
-        case .helmRollback:
-            return "The selected Helm release will be rolled back immediately."
         }
     }
 
@@ -123,14 +118,13 @@ public enum PendingWriteAction: Sendable {
         case .rolloutRestart: return "Restart"
         case .rolloutUndo: return "Rollback"
         case .exec: return "Run"
-        case .helmRollback: return "Rollback"
         }
     }
 
     var isDestructive: Bool {
         switch self {
         case .delete: return true
-        case .apply, .scale, .rolloutRestart, .rolloutUndo, .exec, .helmRollback: return false
+        case .apply, .scale, .rolloutRestart, .rolloutUndo, .exec: return false
         }
     }
 }
@@ -202,7 +196,6 @@ private struct NavigationCheckpoint: Equatable, Sendable {
     let selectedConfigMapName: String?
     let selectedSecretName: String?
     let selectedNodeName: String?
-    let selectedHelmReleaseID: String?
     let selectedRBACResourceID: String?
 }
 
@@ -343,14 +336,12 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
-    @Published public var helmRollbackRevisionInput: String = ""
     @Published public var isSidebarVisible: Bool = true
     @Published public var isDetailPaneVisible: Bool = true
     @Published public private(set) var canNavigateBack = false
     @Published public private(set) var canNavigateForward = false
 
     private let kubeClient: KubernetesClient
-    private let helmClient: any HelmReleaseService
     private let bookmarkManager: BookmarkManager
     private let picker: KubeConfigPicking
     private let kubeConfigDiscoverer: KubeConfigDiscovering
@@ -425,7 +416,6 @@ public final class RuneAppViewModel: ObservableObject {
     public init(
         state: RuneAppState = RuneAppState(),
         kubeClient: KubernetesClient = KubernetesClient(),
-        helmClient: any HelmReleaseService = UnavailableHelmReleaseService(),
         bookmarkManager: BookmarkManager = BookmarkManager(store: UserDefaultsBookmarkStore()),
         picker: KubeConfigPicking = OpenPanelKubeConfigPicker(),
         kubeConfigDiscoverer: KubeConfigDiscovering = KubeConfigDiscoverer(),
@@ -439,7 +429,6 @@ public final class RuneAppViewModel: ObservableObject {
     ) {
         self.state = state
         self.kubeClient = kubeClient
-        self.helmClient = helmClient
         self.bookmarkManager = bookmarkManager
         self.picker = picker
         self.kubeConfigDiscoverer = kubeConfigDiscoverer
@@ -663,15 +652,15 @@ public final class RuneAppViewModel: ObservableObject {
         filtered(state.nodes) { summaryText(for: $0) }
     }
 
-    public var visibleHelmReleases: [HelmReleaseSummary] {
-        filtered(state.helmReleases) {
-            "\($0.name) \($0.namespace) \($0.status) \($0.chart) \($0.appVersion)"
-        }
-    }
-
     public var visibleEvents: [EventSummary] {
         filtered(state.events) { event in
             "\(event.type) \(event.reason) \(event.objectName) \(event.message)"
+        }
+    }
+
+    public var visibleHelmReleases: [HelmReleaseSummary] {
+        filtered(state.helmReleases) { release in
+            "\(release.name) \(release.namespace) \(release.status) \(release.chart) \(release.appVersion)"
         }
     }
 
@@ -750,7 +739,6 @@ public final class RuneAppViewModel: ObservableObject {
                     state.setConfigMaps([])
                     state.setSecrets([])
                     state.setNodes([])
-                    state.setHelmReleases([])
                     state.setEvents([])
                     state.setOverviewSnapshot(
                         pods: [],
@@ -943,20 +931,11 @@ public final class RuneAppViewModel: ObservableObject {
             state.selectedWorkloadKind = .persistentVolumeClaim
         case .rbac where !rbacKinds.contains(state.selectedWorkloadKind):
             state.selectedWorkloadKind = .role
-        case .helm:
-            guard let context = state.selectedContext else { break }
-            Task {
-                do {
-                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
-                } catch {
-                    state.setError(error)
-                }
-            }
         default:
             break
         }
 
-        if triggerReload, section != .helm {
+        if triggerReload {
             let forceNamespaceRefresh = state.selectedContext.map { store.namespaces(context: $0).isEmpty } ?? false
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: forceNamespaceRefresh, debounced: false)
         }
@@ -1107,7 +1086,6 @@ public final class RuneAppViewModel: ObservableObject {
         }
         // Apply store-backed lists directly so we avoid flashing an empty table before cached rows appear.
         applyCachedSnapshot(context: context, namespace: state.selectedNamespace)
-        state.setHelmReleases([])
 
         if triggerReload {
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: true, debounced: false)
@@ -1439,6 +1417,18 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func selectHelmRelease(_ release: HelmReleaseSummary?) {
+        selectHelmRelease(release, trackHistory: true)
+    }
+
+    private func selectHelmRelease(_ release: HelmReleaseSummary?, trackHistory: Bool) {
+        state.setSelectedHelmRelease(release)
+        loadHelmDetailsForCurrentSelection()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
     public func selectStatefulSet(_ resource: ClusterResourceSummary?) {
         selectStatefulSet(resource, trackHistory: true)
     }
@@ -1678,18 +1668,6 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    public func selectHelmRelease(_ release: HelmReleaseSummary?) {
-        selectHelmRelease(release, trackHistory: true)
-    }
-
-    private func selectHelmRelease(_ release: HelmReleaseSummary?, trackHistory: Bool) {
-        state.setSelectedHelmRelease(release)
-        loadHelmDetailsForCurrentSelection()
-        if trackHistory {
-            recordNavigationCheckpoint()
-        }
-    }
-
     public func reloadLogsForSelection() {
         scheduledLogsReloadTask?.cancel()
         startLogsReloadForSelection()
@@ -1863,6 +1841,51 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func saveCurrentHelmValues() {
+        do {
+            guard let release = state.selectedHelmRelease, !state.helmValues.isEmpty else { return }
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            _ = try exporter.save(
+                data: Data(state.helmValues.utf8),
+                suggestedName: "helm-\(release.name)-values-\(timestamp).yaml",
+                allowedFileTypes: ["yaml", "yml"]
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    public func saveCurrentHelmManifest() {
+        do {
+            guard let release = state.selectedHelmRelease, !state.helmManifest.isEmpty else { return }
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            _ = try exporter.save(
+                data: Data(state.helmManifest.utf8),
+                suggestedName: "helm-\(release.name)-manifest-\(timestamp).yaml",
+                allowedFileTypes: ["yaml", "yml"]
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    public func saveCurrentHelmHistory() {
+        do {
+            guard let release = state.selectedHelmRelease, !state.helmHistory.isEmpty else { return }
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            let payload = state.helmHistory.map { entry in
+                "Revision \(entry.revision)\nStatus: \(entry.status)\nUpdated: \(entry.updated)\nChart: \(entry.chart)\nApp Version: \(entry.appVersion)\n\(entry.description)"
+            }.joined(separator: "\n\n")
+            _ = try exporter.save(
+                data: Data(payload.utf8),
+                suggestedName: "helm-\(release.name)-history-\(timestamp).txt",
+                allowedFileTypes: ["txt", "log"]
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
     public func saveCurrentResourceYAML() {
         do {
             guard let (kind, name) = currentWritableResource(), !state.resourceYAML.isEmpty else { return }
@@ -1911,54 +1934,6 @@ public final class RuneAppViewModel: ObservableObject {
             _ = try exporter.save(
                 data: Data(state.deploymentRolloutHistory.utf8),
                 suggestedName: "deployment-\(deployment.name)-rollout-history-\(timestamp).txt",
-                allowedFileTypes: ["txt", "log"]
-            )
-        } catch {
-            state.setError(error)
-        }
-    }
-
-    public func saveCurrentHelmValues() {
-        do {
-            guard let release = state.selectedHelmRelease, !state.helmValues.isEmpty else { return }
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
-            _ = try exporter.save(
-                data: Data(state.helmValues.utf8),
-                suggestedName: "helm-\(release.name)-values-\(timestamp).yaml",
-                allowedFileTypes: ["yaml", "yml"]
-            )
-        } catch {
-            state.setError(error)
-        }
-    }
-
-    public func saveCurrentHelmManifest() {
-        do {
-            guard let release = state.selectedHelmRelease, !state.helmManifest.isEmpty else { return }
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
-            _ = try exporter.save(
-                data: Data(state.helmManifest.utf8),
-                suggestedName: "helm-\(release.name)-manifest-\(timestamp).yaml",
-                allowedFileTypes: ["yaml", "yml"]
-            )
-        } catch {
-            state.setError(error)
-        }
-    }
-
-    public func saveCurrentHelmHistory() {
-        do {
-            guard let release = state.selectedHelmRelease, !state.helmHistory.isEmpty else { return }
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-            let payload = state.helmHistory.map { entry in
-                "Revision \(entry.revision)\nStatus: \(entry.status)\nUpdated: \(entry.updated)\nChart: \(entry.chart)\nApp Version: \(entry.appVersion)\n\(entry.description)"
-            }.joined(separator: "\n\n")
-
-            _ = try exporter.save(
-                data: Data(payload.utf8),
-                suggestedName: "helm-\(release.name)-history-\(timestamp).txt",
                 allowedFileTypes: ["txt", "log"]
             )
         } catch {
@@ -2173,23 +2148,6 @@ public final class RuneAppViewModel: ObservableObject {
         state.clearTerminalSessionTranscript()
     }
 
-    public func requestRollbackSelectedHelmRelease() {
-        guard writeActionsEnabled else {
-            state.setError(RuneError.readOnlyMode)
-            return
-        }
-        guard let release = state.selectedHelmRelease else { return }
-
-        do {
-            guard let revision = try parseOptionalRevisionInput(helmRollbackRevisionInput) else {
-                throw RuneError.invalidInput(message: "Helm rollback requires a revision number.")
-            }
-            pendingWriteAction = .helmRollback(releaseName: release.name, namespace: release.namespace, revision: revision)
-        } catch {
-            state.setError(error)
-        }
-    }
-
     public func startPortForwardForSelection() {
         let target: (PortForwardTargetKind, String)
         switch state.selectedWorkloadKind {
@@ -2318,19 +2276,6 @@ public final class RuneAppViewModel: ObservableObject {
                         command: command
                     )
                     state.setLastExecResult(result)
-                    return
-                case let .helmRollback(releaseName, namespace, revision):
-                    try await helmClient.rollbackRelease(
-                        from: state.kubeConfigSources,
-                        context: context,
-                        namespace: namespace,
-                        releaseName: releaseName,
-                        revision: revision
-                    )
-                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
-                    if let selected = state.selectedHelmRelease {
-                        selectHelmRelease(selected)
-                    }
                     return
                 }
 
@@ -3531,68 +3476,6 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    private func loadHelmReleases(context: KubeContext, namespace: String) async throws {
-        state.isLoading = true
-        defer { state.isLoading = false }
-
-        let releases = try await helmClient.listReleases(
-            from: state.kubeConfigSources,
-            context: context,
-            namespace: state.isHelmAllNamespaces ? nil : namespace,
-            allNamespaces: state.isHelmAllNamespaces
-        )
-
-        state.setHelmReleases(releases)
-        if let selected = state.selectedHelmRelease {
-            state.setSelectedHelmRelease(selected)
-        }
-        await loadHelmDetailsForCurrentSelectionAsync()
-    }
-
-    private func loadHelmDetailsForCurrentSelection() {
-        Task {
-            await loadHelmDetailsForCurrentSelectionAsync()
-        }
-    }
-
-    private func loadHelmDetailsForCurrentSelectionAsync() async {
-        do {
-            guard let context = state.selectedContext, let release = state.selectedHelmRelease else {
-                state.setHelmValues("")
-                state.setHelmManifest("")
-                state.setHelmHistory([])
-                return
-            }
-
-            async let values = helmClient.releaseValues(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: release.namespace,
-                releaseName: release.name
-            )
-
-            async let manifest = helmClient.releaseManifest(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: release.namespace,
-                releaseName: release.name
-            )
-
-            async let history = helmClient.releaseHistory(
-                from: state.kubeConfigSources,
-                context: context,
-                namespace: release.namespace,
-                releaseName: release.name
-            )
-
-            state.setHelmValues(try await values)
-            state.setHelmManifest(try await manifest)
-            state.setHelmHistory(try await history)
-        } catch {
-            state.setError(error)
-        }
-    }
-
     private func resolvedKubeConfigSources(fallbackURLs: [URL]) throws -> [KubeConfigSource] {
         let bookmarked: [KubeConfigSource]
         if KubeConfigDiscoverer.isIsolatedKubeconfigActive()
@@ -4262,6 +4145,63 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func loadHelmReleases(context: KubeContext, namespace: String) async throws {
+        state.isLoading = true
+        defer { state.isLoading = false }
+
+        let releases = try await kubeClient.listReleases(
+            from: state.kubeConfigSources,
+            context: context,
+            namespace: state.isHelmAllNamespaces ? nil : namespace,
+            allNamespaces: state.isHelmAllNamespaces
+        )
+
+        state.setHelmReleases(releases)
+        await loadHelmDetailsForCurrentSelectionAsync()
+    }
+
+    private func loadHelmDetailsForCurrentSelection() {
+        Task {
+            await loadHelmDetailsForCurrentSelectionAsync()
+        }
+    }
+
+    private func loadHelmDetailsForCurrentSelectionAsync() async {
+        do {
+            guard let context = state.selectedContext, let release = state.selectedHelmRelease else {
+                state.setHelmValues("")
+                state.setHelmManifest("")
+                state.setHelmHistory([])
+                return
+            }
+
+            async let values = kubeClient.releaseValues(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: release.namespace,
+                releaseName: release.name
+            )
+            async let manifest = kubeClient.releaseManifest(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: release.namespace,
+                releaseName: release.name
+            )
+            async let history = kubeClient.releaseHistory(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: release.namespace,
+                releaseName: release.name
+            )
+
+            state.setHelmValues(try await values)
+            state.setHelmManifest(try await manifest)
+            state.setHelmHistory(try await history)
+        } catch {
+            state.setError(error)
+        }
+    }
+
     /// Short English message for the log pane when streaming logs failed (timeout or error output from the log fetch).
     private static func logFetchFailureMessage(for error: Error) -> String {
         if case let RuneError.commandFailed(_, message) = error {
@@ -4495,7 +4435,6 @@ public final class RuneAppViewModel: ObservableObject {
             selectedConfigMapName: state.selectedConfigMap?.name,
             selectedSecretName: state.selectedSecret?.name,
             selectedNodeName: state.selectedNode?.name,
-            selectedHelmReleaseID: state.selectedHelmRelease?.id,
             selectedRBACResourceID: state.selectedRBACResource?.id
         )
     }
@@ -4601,11 +4540,6 @@ public final class RuneAppViewModel: ObservableObject {
             let lists = state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
             let match = lists.first(where: { $0.id == checkpoint.selectedRBACResourceID })
             selectRBACResource(match, trackHistory: false)
-        }
-
-        if checkpoint.section == .helm {
-            let release = state.helmReleases.first(where: { $0.id == checkpoint.selectedHelmReleaseID })
-            selectHelmRelease(release, trackHistory: false)
         }
     }
 
@@ -6497,7 +6431,6 @@ public final class RuneAppViewModel: ObservableObject {
             "secrets": state.secrets.count,
             "nodes": state.nodes.count,
             "events": state.events.count,
-            "helmReleases": state.helmReleases.count,
             "roles": state.rbacRoles.count,
             "roleBindings": state.rbacRoleBindings.count,
             "clusterRoles": state.rbacClusterRoles.count,
@@ -6516,8 +6449,6 @@ public final class RuneAppViewModel: ObservableObject {
             return currentWritableResource()?.0.kubernetesResourceName
         case .events:
             return state.selectedEvent == nil ? nil : "event"
-        case .helm:
-            return state.selectedHelmRelease == nil ? nil : "helm-release"
         default:
             return nil
         }
@@ -6529,8 +6460,6 @@ public final class RuneAppViewModel: ObservableObject {
             return currentWritableResource()?.1
         case .events:
             return state.selectedEvent?.objectName
-        case .helm:
-            return state.selectedHelmRelease?.name
         default:
             return nil
         }

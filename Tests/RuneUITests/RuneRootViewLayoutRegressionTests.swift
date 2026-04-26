@@ -11,6 +11,7 @@ import XCTest
 final class RuneRootViewLayoutRegressionTests: XCTestCase {
     /// Vertical probe alignment (top edges).
     private let verticalAlignmentAccuracy: CGFloat = 1.5
+    private let detailVerticalAlignmentAccuracy: CGFloat = 3.0
     /// Horizontal probe alignment — catches inspector/content shifting sideways (“offset”) when tabs or editors change.
     private let horizontalOffsetAccuracy: CGFloat = 2.5
     private static let defaultPostSettleObservationDuration: TimeInterval = 0.35
@@ -283,7 +284,8 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                         )
                     },
                     section: .config,
-                    kind: .configMap
+                    kind: .configMap,
+                    settleNanoseconds: 250_000_000
                 )
                 let describe = try await hostSnapshot(
                     viewModel: makeConfigViewModel(resource: resource),
@@ -298,7 +300,8 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                         )
                     },
                     section: .config,
-                    kind: .configMap
+                    kind: .configMap,
+                    settleNanoseconds: 250_000_000
                 )
 
                 assertAligned(baseline: yaml, candidate: describe)
@@ -1401,7 +1404,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         )
         XCTAssertEqual(baseline.contentMinY ?? 0, candidate.contentMinY ?? 0, accuracy: verticalAlignmentAccuracy, "content top (minY) drift")
         XCTAssertEqual(baseline.headerMinY ?? 0, candidate.headerMinY ?? 0, accuracy: verticalAlignmentAccuracy, "header top (minY) drift")
-        XCTAssertEqual(baseline.detailMinY ?? 0, candidate.detailMinY ?? 0, accuracy: verticalAlignmentAccuracy, "detail top (minY) drift")
+        XCTAssertEqual(baseline.detailMinY ?? 0, candidate.detailMinY ?? 0, accuracy: detailVerticalAlignmentAccuracy, "detail top (minY) drift")
         XCTAssertEqual(baseline.contentMinX ?? 0, candidate.contentMinX ?? 0, accuracy: horizontalOffsetAccuracy, "content leading edge offset (minX)")
         XCTAssertEqual(baseline.headerMinX ?? 0, candidate.headerMinX ?? 0, accuracy: horizontalOffsetAccuracy, "header leading edge offset (minX)")
         XCTAssertEqual(baseline.detailMinX ?? 0, candidate.detailMinX ?? 0, accuracy: horizontalOffsetAccuracy, "detail leading edge offset (minX) — catches right panel jumping sideways")

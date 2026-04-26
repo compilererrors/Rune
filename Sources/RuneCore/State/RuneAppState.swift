@@ -177,6 +177,12 @@ public final class RuneAppState: ObservableObject {
         selectedEvent = events.first
     }
 
+    public func setHelmReleases(_ releases: [HelmReleaseSummary]) {
+        helmReleases = releases
+        if let selectedHelmRelease, releases.contains(selectedHelmRelease) { return }
+        selectedHelmRelease = releases.first
+    }
+
     public func setStatefulSets(_ resources: [ClusterResourceSummary]) {
         statefulSets = resources
         if let selectedStatefulSet, resources.contains(selectedStatefulSet) { return }
@@ -259,12 +265,6 @@ public final class RuneAppState: ObservableObject {
         nodes = resources
         if let selectedNode, resources.contains(selectedNode) { return }
         selectedNode = resources.first
-    }
-
-    public func setHelmReleases(_ releases: [HelmReleaseSummary]) {
-        helmReleases = releases
-        if let selectedHelmRelease, releases.contains(selectedHelmRelease) { return }
-        selectedHelmRelease = releases.first
     }
 
     public func setRBACData(
@@ -411,10 +411,6 @@ public final class RuneAppState: ObservableObject {
         selectedNode = resource
     }
 
-    public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
-        selectedHelmRelease = release
-    }
-
     public func setPodLogs(_ logs: String) {
         podLogs = logs
         lastLogFetchError = nil
@@ -512,18 +508,6 @@ public final class RuneAppState: ObservableObject {
         deploymentRolloutHistory = history
     }
 
-    public func setHelmValues(_ values: String) {
-        helmValues = values
-    }
-
-    public func setHelmManifest(_ manifest: String) {
-        helmManifest = manifest
-    }
-
-    public func setHelmHistory(_ history: [HelmReleaseRevision]) {
-        helmHistory = history
-    }
-
     public func setLastExecResult(_ result: PodExecResult?) {
         lastExecResult = result
     }
@@ -596,6 +580,22 @@ public final class RuneAppState: ObservableObject {
 
     public func removePortForwardSession(id: String) {
         portForwardSessions.removeAll { $0.id == id }
+    }
+
+    public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
+        selectedHelmRelease = release
+    }
+
+    public func setHelmValues(_ values: String) {
+        helmValues = values
+    }
+
+    public func setHelmManifest(_ manifest: String) {
+        helmManifest = manifest
+    }
+
+    public func setHelmHistory(_ history: [HelmReleaseRevision]) {
+        helmHistory = history
     }
 
     public func clearResourceDetails() {

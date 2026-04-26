@@ -16,10 +16,6 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let unifiedLogs: String
     public let unifiedLogPods: [String]
     public let deploymentRolloutHistory: String
-    public let helmRelease: HelmReleaseSummary?
-    public let helmValues: String
-    public let helmManifest: String
-    public let helmHistory: [HelmReleaseRevision]
     public let recentEvents: [EventSummary]
     public let portForwardSessions: [PortForwardSession]
     public let lastExecResult: PodExecResult?
@@ -39,10 +35,6 @@ public struct SupportBundleRequest: Codable, Sendable {
         unifiedLogs: String,
         unifiedLogPods: [String],
         deploymentRolloutHistory: String,
-        helmRelease: HelmReleaseSummary?,
-        helmValues: String,
-        helmManifest: String,
-        helmHistory: [HelmReleaseRevision],
         recentEvents: [EventSummary],
         portForwardSessions: [PortForwardSession],
         lastExecResult: PodExecResult?
@@ -61,10 +53,6 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.unifiedLogs = unifiedLogs
         self.unifiedLogPods = unifiedLogPods
         self.deploymentRolloutHistory = deploymentRolloutHistory
-        self.helmRelease = helmRelease
-        self.helmValues = helmValues
-        self.helmManifest = helmManifest
-        self.helmHistory = helmHistory
         self.recentEvents = recentEvents
         self.portForwardSessions = portForwardSessions
         self.lastExecResult = lastExecResult
@@ -110,10 +98,6 @@ public extension SupportBundleRequest {
             unifiedLogs: state.unifiedServiceLogs,
             unifiedLogPods: state.unifiedServiceLogPods,
             deploymentRolloutHistory: state.deploymentRolloutHistory,
-            helmRelease: state.selectedHelmRelease,
-            helmValues: state.helmValues,
-            helmManifest: state.helmManifest,
-            helmHistory: state.helmHistory,
             recentEvents: Array(state.events.prefix(25)),
             portForwardSessions: state.portForwardSessions,
             lastExecResult: state.lastExecResult

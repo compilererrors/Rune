@@ -10,7 +10,7 @@ It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboa
 
 Kubernetes debugging is often about keeping enough context in view: the pod, its controller, related service, current YAML, recent events, and the logs that actually contain the error. Rune keeps those workflows close together.
 
-- Browse contexts, namespaces, workloads, networking, storage, config, RBAC, events, and a terminal view.
+- Browse contexts, namespaces, workloads, networking, storage, config, RBAC, events, Helm releases, and a terminal view.
 - Inspect full pod logs and unified logs across related workloads.
 - Search through multi-pod logs without constantly changing log limits or jumping between panes.
 - Edit YAML with syntax highlighting plus validation feedback for errors and warnings.
@@ -210,6 +210,7 @@ Open the palette with **Cmd+K**, or click the **Palette** button in the toolbar.
 - **Networking:** `:svc` / `:service` / `:services`, `:ing`, and `:net`.
 - **Configuration:** `:cm`, `:sec`, and `:cfg`.
 - **RBAC:** `:rbac`, `:role`, `:rb`, `:cr`, and `:crb`.
+- **Helm:** `:helm` / `:hr` opens Helm releases and can filter by release name.
 - **More:** `:ev`, `:reload`, `:import`, `:ro`, and `:readonly`.
 
 Type `:` by itself to see the built-in command cheat sheet.
