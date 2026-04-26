@@ -22,13 +22,9 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 
 ## Screenshots
 
-### Cluster Overview
+The gallery below uses every curated screenshot in `assets/screenshot/readme`, ordered roughly like a real debugging session: start with the cluster, find the workload, inspect logs and YAML, validate edits, check related resources, then jump through the command palette.
 
-![Rune cluster overview](assets/screenshot/readme/Overview.png)
-
-Rune keeps cluster status, resource navigation, metrics, and the active inspector in one native macOS workspace.
-
-### Workloads, Logs, and YAML
+### Workloads and Logs
 
 <table>
   <tr>
@@ -50,18 +46,6 @@ Rune keeps cluster status, resource navigation, metrics, and the active inspecto
       <sub>Unified workload logs make related pod output easier to search and compare.</sub>
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/EditYaml.png" alt="Rune YAML editor sheet">
-      <br>
-      <sub>Edit YAML in a focused editor with syntax highlighting and validation feedback.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/YamlError.png" alt="Rune YAML validation">
-      <br>
-      <sub>YAML problems are surfaced directly in the editor.</sub>
-    </td>
-    <td width="50%">
       <img src="assets/screenshot/readme/WorkloadsDescribe.png" alt="Rune describe view">
       <br>
       <sub>Describe output stays close to YAML, logs, exec, and port-forward actions.</sub>
@@ -69,9 +53,33 @@ Rune keeps cluster status, resource navigation, metrics, and the active inspecto
   </tr>
 </table>
 
-### Networking, Config, Storage, and Terminal
+### YAML Inspection, Editing, and Validation
 
 <table>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/readme/WorkloadsYaml.png" alt="Rune workload YAML view">
+      <br>
+      <sub>Inspect live workload YAML while keeping the selected resource in context.</sub>
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/readme/EditYaml.png" alt="Rune YAML editor sheet">
+      <br>
+      <sub>Edit manifests in a focused editor with syntax highlighting.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/readme/YamlEditError.png" alt="Rune YAML edit validation warnings">
+      <br>
+      <sub>Errors and warnings are shown while editing, before you apply changes.</sub>
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/readme/YamlError.png" alt="Rune YAML validation error">
+      <br>
+      <sub>Validation feedback points you to YAML problems directly in the workflow.</sub>
+    </td>
+  </tr>
   <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/DeploymentYaml.png" alt="Rune deployment YAML view">
@@ -79,16 +87,21 @@ Rune keeps cluster status, resource navigation, metrics, and the active inspecto
       <sub>Inspect controller YAML without losing surrounding context.</sub>
     </td>
     <td width="50%">
+      <img src="assets/screenshot/readme/ConfigYaml.png" alt="Rune config YAML view">
+      <br>
+      <sub>Configuration resources use the same readable YAML inspector.</sub>
+    </td>
+  </tr>
+</table>
+
+### Describe, RBAC, Storage, and Events
+
+<table>
+  <tr>
+    <td width="50%">
       <img src="assets/screenshot/readme/DeploymentDescribe.png" alt="Rune deployment describe view">
       <br>
       <sub>Describe output is available in the same resource workflow.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/ConfigYaml.png" alt="Rune config YAML view">
-      <br>
-      <sub>Configuration resources can be browsed and inspected directly.</sub>
     </td>
     <td width="50%">
       <img src="assets/screenshot/readme/RbacYaml.png" alt="Rune RBAC YAML view">
@@ -98,16 +111,33 @@ Rune keeps cluster status, resource navigation, metrics, and the active inspecto
   </tr>
   <tr>
     <td width="50%">
+      <img src="assets/screenshot/readme/StorageDescribe.png" alt="Rune storage describe view">
+      <br>
+      <sub>Storage describe output helps connect PVC state to the rest of the investigation.</sub>
+    </td>
+    <td width="50%">
       <img src="assets/screenshot/readme/StorageYaml.png" alt="Rune storage YAML view">
       <br>
       <sub>Storage resources and PVC YAML are available for inspection.</sub>
     </td>
+  </tr>
+  <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/Event.png" alt="Rune event detail">
       <br>
       <sub>Events stay close to the resources you are investigating.</sub>
     </td>
+    <td width="50%">
+      <img src="assets/screenshot/readme/PortForward.png" alt="Rune port forward view">
+      <br>
+      <sub>Port-forward controls are available from resource workflows.</sub>
+    </td>
   </tr>
+</table>
+
+### Terminal and Commands
+
+<table>
   <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/Terminal.png" alt="Rune terminal view">
@@ -115,9 +145,9 @@ Rune keeps cluster status, resource navigation, metrics, and the active inspecto
       <sub>Drop into a terminal when the direct command line is the right tool.</sub>
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/PortForward.png" alt="Rune port forward view">
+      <img src="assets/screenshot/readme/TerminalCommand.png" alt="Rune terminal command view">
       <br>
-      <sub>Port-forward controls are available from resource and terminal workflows.</sub>
+      <sub>Run focused commands while staying inside the same cluster workspace.</sub>
     </td>
   </tr>
 </table>
@@ -194,7 +224,8 @@ The only network traffic is the traffic required for Rune to communicate with th
 
 - macOS 14 or later
 - Swift 6, for example via Xcode
-- `kubectl` on your `PATH` when the app talks to a cluster
+- Rune talks to Kubernetes through its bundled `rune-k8s-agent`; `kubectl` is no longer required for the normal cluster runtime path.
+- Helm workflows currently require `helm` on `PATH` unless a packaged Helm helper is bundled with a release build.
 
 ## Build and Run
 

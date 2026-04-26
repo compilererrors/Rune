@@ -66,6 +66,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
+	case "exec-stream":
+		if err := runExecStream(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
 	case "delete":
 		if err := runDelete(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
@@ -83,6 +88,16 @@ func main() {
 		}
 	case "apply":
 		if err := runApply(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+	case "validate":
+		if err := runValidate(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+	case "resource":
+		if err := runResource(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
@@ -120,10 +135,13 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent selector <service|deployment> --context NAME --namespace NS --name NAME")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent selector pods --context NAME --namespace NS --label-selector key=value,...")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent exec --context NAME --namespace NS --pod POD [--container C] -- <command...>")
+	fmt.Fprintln(os.Stderr, "  rune-k8s-agent exec-stream --context NAME --namespace NS --pod POD [--container C] -- <command...>")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent delete --context NAME --namespace NS --kind KIND --name NAME")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent scale deployment --context NAME --namespace NS --name NAME --replicas N")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent rollout <restart|history|undo> deployment --context NAME --namespace NS --name NAME [--to-revision N]")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent apply --context NAME --namespace NS --file PATH")
+	fmt.Fprintln(os.Stderr, "  rune-k8s-agent validate --context NAME --namespace NS --file PATH")
+	fmt.Fprintln(os.Stderr, "  rune-k8s-agent resource <yaml|describe> --context NAME --namespace NS --kind KIND --name NAME")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent patch cronjob-suspend --context NAME --namespace NS --name NAME --suspend <true|false>")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent create job-from-cronjob --context NAME --namespace NS --cronjob NAME --job NAME")
 	fmt.Fprintln(os.Stderr, "  rune-k8s-agent port-forward --context NAME --namespace NS --target-kind <pod|service> --target-name NAME --local-port N --remote-port N [--address 127.0.0.1]")
@@ -500,6 +518,30 @@ func runExec(args []string) error {
 	return writeJSON(result)
 }
 
+func runExecStream(args []string) error {
+	fs := flag.NewFlagSet("exec-stream", flag.ContinueOnError)
+	var contextName, namespace, podName, container string
+	fs.StringVar(&contextName, "context", "", "kubeconfig context")
+	fs.StringVar(&namespace, "namespace", "", "namespace")
+	fs.StringVar(&podName, "pod", "", "pod name")
+	fs.StringVar(&container, "container", "", "container")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if contextName == "" || namespace == "" || podName == "" {
+		return fmt.Errorf("--context, --namespace and --pod are required")
+	}
+	command := fs.Args()
+	if len(command) > 0 && command[0] == "--" {
+		command = command[1:]
+	}
+	if len(command) == 0 {
+		return fmt.Errorf("exec-stream requires a command after --")
+	}
+	ctx := context.Background()
+	return ops.ExecStreamInPod(ctx, contextName, namespace, podName, container, command)
+}
+
 func runDelete(args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	var contextName, namespace, kind, name string
@@ -613,6 +655,60 @@ func runApply(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), kube.DefaultListTimeout)
 	defer cancel()
 	return ops.ApplyFile(ctx, contextName, namespace, filePath)
+}
+
+func runValidate(args []string) error {
+	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	var contextName, namespace, filePath string
+	fs.StringVar(&contextName, "context", "", "kubeconfig context")
+	fs.StringVar(&namespace, "namespace", "", "namespace fallback")
+	fs.StringVar(&filePath, "file", "", "manifest file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if contextName == "" || filePath == "" {
+		return fmt.Errorf("--context and --file are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), kube.DefaultListTimeout)
+	defer cancel()
+	return ops.ValidateFile(ctx, contextName, namespace, filePath)
+}
+
+func runResource(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("resource requires an action (yaml|describe)")
+	}
+	action := args[0]
+	if action != "yaml" && action != "describe" {
+		return fmt.Errorf("resource supports yaml and describe only")
+	}
+	fs := flag.NewFlagSet("resource", flag.ContinueOnError)
+	var contextName, namespace, kind, name string
+	fs.StringVar(&contextName, "context", "", "kubeconfig context")
+	fs.StringVar(&namespace, "namespace", "", "namespace")
+	fs.StringVar(&kind, "kind", "", "resource kind")
+	fs.StringVar(&name, "name", "", "resource name")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if contextName == "" || kind == "" || name == "" {
+		return fmt.Errorf("--context, --kind and --name are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), kube.DefaultListTimeout)
+	defer cancel()
+	var text string
+	var err error
+	switch action {
+	case "yaml":
+		text, err = ops.ResourceYAML(ctx, contextName, namespace, kind, name)
+	case "describe":
+		text, err = ops.ResourceDescribe(ctx, contextName, namespace, kind, name)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, text)
+	return err
 }
 
 func runPatch(args []string) error {

@@ -124,10 +124,26 @@ func ApplyFile(ctx context.Context, contextName, namespace, filePath string) err
 	if err != nil {
 		return err
 	}
-	return ApplyYAML(ctx, contextName, namespace, data)
+	return applyYAML(ctx, contextName, namespace, data, false)
 }
 
 func ApplyYAML(ctx context.Context, contextName, namespace string, yamlBytes []byte) error {
+	return applyYAML(ctx, contextName, namespace, yamlBytes, false)
+}
+
+func ValidateFile(ctx context.Context, contextName, namespace, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	return ValidateYAML(ctx, contextName, namespace, data)
+}
+
+func ValidateYAML(ctx context.Context, contextName, namespace string, yamlBytes []byte) error {
+	return applyYAML(ctx, contextName, namespace, yamlBytes, true)
+}
+
+func applyYAML(ctx context.Context, contextName, namespace string, yamlBytes []byte, dryRun bool) error {
 	cfg, err := kube.NewRESTConfig(contextName)
 	if err != nil {
 		return err
@@ -186,15 +202,19 @@ func ApplyYAML(ctx context.Context, contextName, namespace string, yamlBytes []b
 			return err
 		}
 		force := true
+		patchOptions := metav1.PatchOptions{
+			FieldManager: "rune-k8s-agent",
+			Force:        &force,
+		}
+		if dryRun {
+			patchOptions.DryRun = []string{metav1.DryRunAll}
+		}
 		_, err = res.Patch(
 			ctx,
 			obj.GetName(),
 			types.ApplyPatchType,
 			payload,
-			metav1.PatchOptions{
-				FieldManager: "rune-k8s-agent",
-				Force:        &force,
-			},
+			patchOptions,
 		)
 		if err != nil {
 			return err

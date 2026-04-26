@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 
@@ -82,6 +83,54 @@ func ExecInPod(
 		Stderr:   stderr.String(),
 		ExitCode: exitCode,
 	}, nil
+}
+
+func ExecStreamInPod(
+	ctx context.Context,
+	contextName, namespace, podName, container string,
+	command []string,
+) error {
+	if len(command) == 0 {
+		return errors.New("exec requires at least one command argument")
+	}
+	restConfig, err := kube.NewRESTConfigWithTimeout(contextName, 0)
+	if err != nil {
+		return err
+	}
+	clientset, err := kube.NewClientset(contextName)
+	if err != nil {
+		return err
+	}
+
+	req := clientset.CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec")
+
+	options := &corev1.PodExecOptions{
+		Command: command,
+		Stdin:   true,
+		Stdout:  true,
+		Stderr:  true,
+		TTY:     false,
+	}
+	if container != "" {
+		options.Container = container
+	}
+	req.VersionedParams(options, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
+	if err != nil {
+		return err
+	}
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		Tty:    false,
+	})
 }
 
 func parseRemoteExecExitCode(err error) *int {

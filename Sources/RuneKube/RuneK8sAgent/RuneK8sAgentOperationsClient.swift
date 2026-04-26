@@ -472,6 +472,82 @@ enum RuneK8sAgentOperationsClient {
         )
     }
 
+    static func validateFile(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        filePath: String,
+        timeout: TimeInterval
+    ) async throws {
+        _ = try await runAgentCommand(
+            executablePath: executablePath,
+            runner: runner,
+            environment: environment,
+            arguments: [
+                "validate",
+                "--context", contextName,
+                "--namespace", namespace,
+                "--file", filePath
+            ],
+            timeout: timeout,
+            commandName: "rune-k8s-agent validate"
+        )
+    }
+
+    static func resourceYAML(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String,
+        timeout: TimeInterval
+    ) async throws -> String {
+        try await runAgentCommand(
+            executablePath: executablePath,
+            runner: runner,
+            environment: environment,
+            arguments: [
+                "resource", "yaml",
+                "--context", contextName,
+                "--namespace", namespace,
+                "--kind", kind.kubectlName,
+                "--name", name
+            ],
+            timeout: timeout,
+            commandName: "rune-k8s-agent resource yaml"
+        )
+    }
+
+    static func resourceDescribe(
+        executablePath: String,
+        runner: CommandRunning,
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String,
+        timeout: TimeInterval
+    ) async throws -> String {
+        try await runAgentCommand(
+            executablePath: executablePath,
+            runner: runner,
+            environment: environment,
+            arguments: [
+                "resource", "describe",
+                "--context", contextName,
+                "--namespace", namespace,
+                "--kind", kind.kubectlName,
+                "--name", name
+            ],
+            timeout: timeout,
+            commandName: "rune-k8s-agent resource describe"
+        )
+    }
+
     static func patchCronJobSuspend(
         executablePath: String,
         runner: CommandRunning,
@@ -543,6 +619,27 @@ enum RuneK8sAgentOperationsClient {
             "--remote-port", String(remotePort),
             "--address", address
         ]
+    }
+
+    static func podInteractiveShellArguments(
+        contextName: String,
+        namespace: String,
+        podName: String,
+        container: String?,
+        shellCommand: [String]
+    ) -> [String] {
+        var args: [String] = [
+            "exec-stream",
+            "--context", contextName,
+            "--namespace", namespace,
+            "--pod", podName
+        ]
+        if let container, !container.isEmpty {
+            args += ["--container", container]
+        }
+        args.append("--")
+        args += shellCommand
+        return args
     }
 
     private static func runAgentCommand(
