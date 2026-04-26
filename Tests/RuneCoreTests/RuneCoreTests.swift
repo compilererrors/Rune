@@ -2,40 +2,6 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
-    func testRuntimeDependencyPolicyHonorsKubectlFallbackEnvironmentOverride() {
-        let previous = getenv("RUNE_ALLOW_KUBECTL_FALLBACKS").map { String(cString: $0) }
-        defer {
-            if let previous {
-                setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", previous, 1)
-            } else {
-                unsetenv("RUNE_ALLOW_KUBECTL_FALLBACKS")
-            }
-        }
-
-        setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", "0", 1)
-        XCTAssertFalse(RuneRuntimeDependencyPolicy.allowsKubectlFallbacks)
-
-        setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", "1", 1)
-        XCTAssertTrue(RuneRuntimeDependencyPolicy.allowsKubectlFallbacks)
-    }
-
-    func testRuntimeDependencyPolicyHonorsHelmPATHEnvironmentOverride() {
-        let previous = getenv("RUNE_ALLOW_PATH_HELM").map { String(cString: $0) }
-        defer {
-            if let previous {
-                setenv("RUNE_ALLOW_PATH_HELM", previous, 1)
-            } else {
-                unsetenv("RUNE_ALLOW_PATH_HELM")
-            }
-        }
-
-        setenv("RUNE_ALLOW_PATH_HELM", "0", 1)
-        XCTAssertFalse(RuneRuntimeDependencyPolicy.allowsPATHHelmFallback)
-
-        setenv("RUNE_ALLOW_PATH_HELM", "1", 1)
-        XCTAssertTrue(RuneRuntimeDependencyPolicy.allowsPATHHelmFallback)
-    }
-
     func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
         let shortcut = RuneKeyboardShortcut(storageValue: "shift-f")
 

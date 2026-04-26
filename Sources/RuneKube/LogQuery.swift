@@ -21,7 +21,7 @@ extension LogTimeFilter {
             return ResolvedLogQuery(since: nil, usesSinceTime: false, tailLines: max(1, lines))
         case .lastMinutes, .lastHours, .lastDays, .since:
             return ResolvedLogQuery(
-                since: kubectlSinceArgument,
+                since: kubernetesSinceArgument,
                 usesSinceTime: usesSinceTime,
                 tailLines: nil
             )

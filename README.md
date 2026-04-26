@@ -2,7 +2,7 @@
 
 Rune is a fast native macOS Kubernetes cluster manager for people who debug real clusters every day.
 
-It is built for the workflow many of us like in `kubectl` and `k9s`: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, Helm, events, and focused troubleshooting without turning into bloat.
+It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
 ![Rune overview](assets/screenshot/readme/Overview.png)
 
@@ -10,7 +10,7 @@ It is built for the workflow many of us like in `kubectl` and `k9s`: quick navig
 
 Kubernetes debugging is often about keeping enough context in view: the pod, its controller, related service, current YAML, recent events, and the logs that actually contain the error. Rune keeps those workflows close together.
 
-- Browse contexts, namespaces, workloads, networking, storage, config, RBAC, events, Helm, and a terminal view.
+- Browse contexts, namespaces, workloads, networking, storage, config, RBAC, events, and a terminal view.
 - Inspect full pod logs and unified logs across related workloads.
 - Search through multi-pod logs without constantly changing log limits or jumping between panes.
 - Edit YAML with syntax highlighting plus validation feedback for errors and warnings.
@@ -210,7 +210,7 @@ Open the palette with **Cmd+K**, or click the **Palette** button in the toolbar.
 - **Networking:** `:svc` / `:service` / `:services`, `:ing`, and `:net`.
 - **Configuration:** `:cm`, `:sec`, and `:cfg`.
 - **RBAC:** `:rbac`, `:role`, `:rb`, `:cr`, and `:crb`.
-- **More:** `:ev`, `:helm`, `:hr`, `:reload`, `:import`, `:ro`, and `:readonly`.
+- **More:** `:ev`, `:reload`, `:import`, `:ro`, and `:readonly`.
 
 Type `:` by itself to see the built-in command cheat sheet.
 
@@ -224,8 +224,7 @@ The only network traffic is the traffic required for Rune to communicate with th
 
 - macOS 14 or later
 - Swift 6, for example via Xcode
-- Rune talks to Kubernetes through the bundled `rune-k8s-agent`.
-- Helm workflows use Helm support. Development builds can use `helm` on `PATH`; release builds should package the Helm helper when Helm features are enabled.
+- Rune talks to Kubernetes through its native in-app Kubernetes client.
 
 ## Build and Run
 

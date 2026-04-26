@@ -25,7 +25,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains(".id(\"overview\")"))
         XCTAssertTrue(rootViewSource.contains(".id(\"networking:service\")"))
         XCTAssertTrue(rootViewSource.contains(".id(\"terminal\")"))
-        XCTAssertTrue(rootViewSource.contains(".id(\"\\(viewModel.state.selectedSection.rawValue):\\(viewModel.state.selectedWorkloadKind.kubectlName):\\(genericResourceListIdentity(resources))\")"))
+        XCTAssertTrue(rootViewSource.contains(".id(\"\\(viewModel.state.selectedSection.rawValue):\\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\\(genericResourceListIdentity(resources))\")"))
         XCTAssertTrue(textViewSource.contains("var resetScrollOnExternalChange = false"))
         XCTAssertTrue(textViewSource.contains("if resetScrollOnExternalChange"))
         XCTAssertTrue(textViewSource.contains("textView.scrollRangeToVisible(NSRange(location: 0, length: 0))"))

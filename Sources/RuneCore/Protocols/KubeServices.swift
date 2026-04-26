@@ -271,3 +271,60 @@ public protocol HelmReleaseService: Sendable {
         revision: Int
     ) async throws
 }
+
+public struct UnavailableHelmReleaseService: HelmReleaseService {
+    public init() {}
+
+    public func listReleases(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?,
+        allNamespaces: Bool
+    ) async throws -> [HelmReleaseSummary] {
+        throw unavailable()
+    }
+
+    public func releaseValues(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String {
+        throw unavailable()
+    }
+
+    public func releaseManifest(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String {
+        throw unavailable()
+    }
+
+    public func releaseHistory(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> [HelmReleaseRevision] {
+        throw unavailable()
+    }
+
+    public func rollbackRelease(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String,
+        revision: Int
+    ) async throws {
+        throw unavailable()
+    }
+
+    private func unavailable() -> RuneError {
+        RuneError.commandFailed(
+            command: "native helm",
+            message: "Helm release support is not implemented in this build."
+        )
+    }
+}
