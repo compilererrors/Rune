@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -107,8 +108,8 @@ func TopPods(ctx context.Context, contextName, namespace string) ([]output.PodTo
 		}
 		out = append(out, output.PodTopUsage{
 			Name:   row.Name,
-			CPU:    cpu.String(),
-			Memory: mem.String(),
+			CPU:    formatPodCPU(cpu),
+			Memory: formatPodMemory(mem),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -146,8 +147,8 @@ func TopPodsAllNamespaces(ctx context.Context, contextName string) ([]output.Pod
 		out = append(out, output.PodTopUsage{
 			Namespace: row.Namespace,
 			Name:      row.Name,
-			CPU:       cpu.String(),
-			Memory:    mem.String(),
+			CPU:       formatPodCPU(cpu),
+			Memory:    formatPodMemory(mem),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -187,4 +188,12 @@ func averageRounded(values []int) int {
 	}
 	// Integer rounding to nearest.
 	return (total + len(values)/2) / len(values)
+}
+
+func formatPodCPU(quantity resource.Quantity) string {
+	return fmt.Sprintf("%dm", quantity.MilliValue())
+}
+
+func formatPodMemory(quantity resource.Quantity) string {
+	return fmt.Sprintf("%dMi", quantity.Value()/(1024*1024))
 }

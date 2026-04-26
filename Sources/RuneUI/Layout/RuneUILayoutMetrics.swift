@@ -19,11 +19,11 @@ enum RuneUILayoutMetrics {
     static let paneInnerPadding: CGFloat = 12
     static let sidebarPadding: CGFloat = 14
     /// Minimum width for the resource list column (`NavigationSplitView` content).
-    static let splitContentColumnMinWidth: CGFloat = 420
+    static let splitContentColumnMinWidth: CGFloat = 360
     /// Matches first-ship column cap (`49c6517` First draft).
     static let splitContentColumnMaxWidth: CGFloat = 1200
     /// Minimum / ideal / max inspector column (`49c6517` First draft).
-    static let splitDetailColumnMinWidth: CGFloat = 340
+    static let splitDetailColumnMinWidth: CGFloat = 320
     static let splitDetailColumnIdealWidth: CGFloat = 520
     static let splitDetailColumnMaxWidth: CGFloat = 1280
     /// Sidebar min / max width (`49c6517`).
@@ -31,6 +31,7 @@ enum RuneUILayoutMetrics {
     static let splitSidebarMaxWidth: CGFloat = 460
     static let headerChipHeight: CGFloat = 28
     static let headerChipHorizontalPadding: CGFloat = 10
+    static let contentHeaderMinimumScrollableWidth: CGFloat = 640
 
     static let minWindowContentTopInset: CGFloat = 0
     static let maxWindowContentTopInset: CGFloat = 28

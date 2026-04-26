@@ -334,6 +334,11 @@ public final class RuneAppState: ObservableObject {
         overviewEvents = events
     }
 
+    public func setOverviewClusterUsage(cpuPercent: Int?, memoryPercent: Int?) {
+        overviewClusterCPUPercent = cpuPercent
+        overviewClusterMemoryPercent = memoryPercent
+    }
+
     public func setSelectedPod(_ pod: PodSummary?) {
         selectedPod = pod
     }

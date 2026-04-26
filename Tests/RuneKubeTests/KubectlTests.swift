@@ -429,18 +429,167 @@ final class KubectlTests: XCTestCase {
         XCTAssertEqual(unified.mergedText, "[api-1] logs")
     }
 
-    func testUnifiedServiceLogsPrefersMergedAgentLogFetch() async throws {
+    func testListPodsMergesAgentPodMetrics() async throws {
         let agentPath = try makeExecutableFile()
         let runner = ScriptedCommandRunner(script: [
             CommandKey(
                 executable: agentPath,
-                arguments: [
-                    "selector", "service",
-                    "--context", "prod",
-                    "--namespace", "default",
-                    "--name", "api"
-                ]
-            ): .success(CommandResult(stdout: #"{"app":"api"}"#, stderr: "", exitCode: 0)),
+                arguments: ["list", "pods", "--context", "dev", "--namespace", "default"]
+            ): .success(CommandResult(
+                stdout: #"[{"name":"api-1","namespace":"default","status":"Running","totalRestarts":0,"creationTimestamp":"2026-04-25T10:00:00Z"}]"#,
+                stderr: "",
+                exitCode: 0
+            )),
+            CommandKey(
+                executable: agentPath,
+                arguments: ["top", "pods", "--context", "dev", "--namespace", "default"]
+            ): .success(CommandResult(
+                stdout: #"[{"namespace":"default","name":"api-1","cpu":"7m","memory":"32Mi"}]"#,
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let pods = try await client.listPods(from: sources, context: KubeContext(name: "dev"), namespace: "default")
+
+        XCTAssertEqual(pods.count, 1)
+        XCTAssertEqual(pods[0].cpuUsage, "7m")
+        XCTAssertEqual(pods[0].memoryUsage, "32Mi")
+        let didFetchMetrics = await runner.didRun(arguments: ["top", "pods", "--context", "dev", "--namespace", "default"])
+        XCTAssertTrue(didFetchMetrics)
+    }
+
+    func testListPodsAllNamespacesMergesAgentPodMetrics() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["list", "pods", "--context", "dev", "--all-namespaces"]
+            ): .success(CommandResult(
+                stdout: #"[{"name":"api-1","namespace":"default","status":"Running","totalRestarts":0,"creationTimestamp":"2026-04-25T10:00:00Z"}]"#,
+                stderr: "",
+                exitCode: 0
+            )),
+            CommandKey(
+                executable: agentPath,
+                arguments: ["top", "pods", "--context", "dev", "--all-namespaces"]
+            ): .success(CommandResult(
+                stdout: #"[{"namespace":"default","name":"api-1","cpu":"7m","memory":"32Mi"}]"#,
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let pods = try await client.listPodsAllNamespaces(from: sources, context: KubeContext(name: "dev"))
+
+        XCTAssertEqual(pods.count, 1)
+        XCTAssertEqual(pods[0].cpuUsage, "7m")
+        XCTAssertEqual(pods[0].memoryUsage, "32Mi")
+        let didFetchMetrics = await runner.didRun(arguments: ["top", "pods", "--context", "dev", "--all-namespaces"])
+        XCTAssertTrue(didFetchMetrics)
+    }
+
+    func testListPodsFallsBackToKubectlTopWhenAgentMetricsFail() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["list", "pods", "--context", "dev", "--namespace", "default"]
+            ): .success(CommandResult(
+                stdout: #"[{"name":"api-1","namespace":"default","status":"Running","totalRestarts":0,"creationTimestamp":"2026-04-25T10:00:00Z"}]"#,
+                stderr: "",
+                exitCode: 0
+            )),
+            CommandKey(
+                executable: agentPath,
+                arguments: ["top", "pods", "--context", "dev", "--namespace", "default"]
+            ): .failure(RuneError.commandFailed(command: "rune-k8s-agent top pods", message: "metrics API unavailable")),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "--context", "dev", "top", "pods", "-n", "default", "--no-headers"]
+            ): .success(CommandResult(
+                stdout: "api-1 9m 44Mi\n",
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let pods = try await client.listPods(from: sources, context: KubeContext(name: "dev"), namespace: "default")
+
+        XCTAssertEqual(pods[0].cpuUsage, "9m")
+        XCTAssertEqual(pods[0].memoryUsage, "44Mi")
+        let didRunAgentTop = await runner.didRun(arguments: ["top", "pods", "--context", "dev", "--namespace", "default"])
+        let didRunKubectlTop = await runner.didRun(arguments: ["kubectl", "--context", "dev", "top", "pods", "-n", "default", "--no-headers"])
+        XCTAssertTrue(didRunAgentTop)
+        XCTAssertTrue(didRunKubectlTop)
+    }
+
+    func testListPodsAllNamespacesFallsBackToKubectlTopWhenAgentMetricsFail() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
+            CommandKey(
+                executable: agentPath,
+                arguments: ["list", "pods", "--context", "dev", "--all-namespaces"]
+            ): .success(CommandResult(
+                stdout: #"[{"name":"api-1","namespace":"default","status":"Running","totalRestarts":0,"creationTimestamp":"2026-04-25T10:00:00Z"}]"#,
+                stderr: "",
+                exitCode: 0
+            )),
+            CommandKey(
+                executable: agentPath,
+                arguments: ["top", "pods", "--context", "dev", "--all-namespaces"]
+            ): .failure(RuneError.commandFailed(command: "rune-k8s-agent top pods --all-namespaces", message: "metrics API unavailable")),
+            CommandKey(
+                executable: "/usr/bin/env",
+                arguments: ["kubectl", "--context", "dev", "top", "pods", "-A", "--no-headers"]
+            ): .success(CommandResult(
+                stdout: "default api-1 10m 48Mi\n",
+                stderr: "",
+                exitCode: 0
+            ))
+        ])
+        let client = KubectlClient(
+            runner: runner,
+            longRunningRunner: NoopLongRunningCommandRunner(),
+            kubectlPath: "/usr/bin/env",
+            k8sAgentPath: agentPath
+        )
+        let sources = try makeKubeConfigSources()
+
+        let pods = try await client.listPodsAllNamespaces(from: sources, context: KubeContext(name: "dev"))
+
+        XCTAssertEqual(pods[0].cpuUsage, "10m")
+        XCTAssertEqual(pods[0].memoryUsage, "48Mi")
+        let didRunAgentTop = await runner.didRun(arguments: ["top", "pods", "--context", "dev", "--all-namespaces"])
+        let didRunKubectlTop = await runner.didRun(arguments: ["kubectl", "--context", "dev", "top", "pods", "-A", "--no-headers"])
+        XCTAssertTrue(didRunAgentTop)
+        XCTAssertTrue(didRunKubectlTop)
+    }
+
+    func testUnifiedServiceLogsPrefersMergedAgentLogFetch() async throws {
+        let agentPath = try makeExecutableFile()
+        let runner = ScriptedCommandRunner(script: [
             CommandKey(
                 executable: agentPath,
                 arguments: [
@@ -466,14 +615,22 @@ final class KubectlTests: XCTestCase {
             from: sources,
             context: KubeContext(name: "prod"),
             namespace: "default",
-            service: ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"),
+            service: ServiceSummary(
+                name: "api",
+                namespace: "default",
+                type: "ClusterIP",
+                clusterIP: "10.0.0.10",
+                selector: ["app": "api"]
+            ),
             filter: .lastMinutes(15),
             previous: false
         )
 
         XCTAssertEqual(logs.podNames, ["api-0", "api-1"])
         XCTAssertEqual(logs.mergedText, "[api-0] first\n[api-1] second")
+        let ranServiceSelector = await runner.didRun(arguments: ["selector", "service", "--context", "prod", "--namespace", "default", "--name", "api"])
         let ranSelectorPods = await runner.didRun(arguments: ["selector", "pods", "--context", "prod", "--namespace", "default", "--label-selector", "app=api"])
+        XCTAssertFalse(ranServiceSelector)
         XCTAssertFalse(ranSelectorPods)
     }
 
@@ -1017,6 +1174,19 @@ final class KubectlTests: XCTestCase {
 
         XCTAssertEqual(selector["app"], "api")
         XCTAssertEqual(selector["tier"], "backend")
+    }
+
+    func testParseServicesCarriesSelectorForUnifiedLogs() throws {
+        let parser = KubectlOutputParser()
+        let raw = """
+        {"items":[
+          {"metadata":{"name":"api","namespace":"default"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.10","selector":{"app":"api","tier":"backend"}}}
+        ]}
+        """
+
+        let services = try parser.parseServices(namespace: "default", from: raw)
+
+        XCTAssertEqual(services.first?.selector, ["app": "api", "tier": "backend"])
     }
 
     func testDeploymentJSONArguments() {

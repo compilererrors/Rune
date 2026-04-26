@@ -55,19 +55,43 @@ private enum RuneRootPaneWidthKind: Hashable {
 private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case overview
     case workloadPodOverview
-    case workloadPodYAML
+    case workloadPodLogs
+    case workloadPodExec
+    case workloadPodPortForward
+    case workloadPodYAMLReadOnly
+    case workloadPodYAMLQuickEdit
+    case workloadPodYAMLEditorSheet
     case workloadPodDescribe
     case workloadDeploymentOverview
-    case workloadDeploymentYAML
+    case workloadDeploymentUnifiedLogs
+    case workloadDeploymentRollout
+    case workloadDeploymentYAMLReadOnly
+    case workloadDeploymentYAMLQuickEdit
     case workloadDeploymentDescribe
     case networkingServiceOverview
-    case networkingServiceYAML
+    case networkingServiceUnifiedLogs
+    case networkingServicePortForward
+    case networkingServiceYAMLReadOnly
+    case networkingServiceYAMLQuickEdit
     case networkingServiceDescribe
     case configConfigMapPrepare
-    case configConfigMapYAML
+    case configConfigMapYAMLReadOnly
+    case configConfigMapYAMLQuickEdit
     case configConfigMapDescribe
+    case storagePVCDescribe
+    case storagePVCYAML
+    case eventsDetail
     case rbacRole
     case terminal
+
+    var presentsYAMLEditorSheet: Bool {
+        switch self {
+        case .workloadPodYAMLEditorSheet:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 private struct RuneRootLayoutProbeFrame: Equatable {
@@ -108,12 +132,30 @@ private enum RuneRootLayoutDebug {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     static let liveScenarioNamespace = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_NAMESPACE"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let initialDetailWidth: CGFloat? = {
+        guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_DETAIL_WIDTH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let value = Double(rawValue),
+              value > 0 else {
+            return nil
+        }
+        return CGFloat(value)
+    }()
     static let liveScenarioPodDwellNanoseconds: UInt64 = {
         guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_POD_DWELL_MS"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               let milliseconds = UInt64(rawValue),
               milliseconds > 0 else {
             return 3_500_000_000
+        }
+        return milliseconds * 1_000_000
+    }()
+    static let liveScenarioSnapshotHoldNanoseconds: UInt64 = {
+        guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_SNAPSHOT_HOLD_MS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let milliseconds = UInt64(rawValue),
+              milliseconds > 0 else {
+            return 1_800_000_000
         }
         return milliseconds * 1_000_000
     }()
@@ -266,6 +308,7 @@ private enum PodTableLayout {
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
     static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+    static let minimumScrollableWidth: CGFloat = 620
     /// Space between column headers and first row — enough to avoid a cramped look without excess air.
     static let headerBottomSpacing: CGFloat = 10
 }
@@ -333,6 +376,8 @@ public struct RuneRootView: View {
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
     @State private var yamlManifestIsEditing = false
     @State private var isYAMLEditorSheetPresented = false
+    @State private var terminalShellPodID = ""
+    @State private var terminalPortForwardPodID = ""
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
     @State private var overviewCardSelectionIndex = 0
@@ -460,7 +505,7 @@ public struct RuneRootView: View {
                     .keyboardShortcut("]", modifiers: [.command, .option])
 
                     Menu(viewModel.state.selectedContext?.name ?? "No Context") {
-                        ForEach(viewModel.visibleContexts) { context in
+                        ForEach(viewModel.contextMenuOptions) { context in
                             Button(context.name) {
                                 viewModel.setContext(context)
                             }
@@ -644,15 +689,16 @@ public struct RuneRootView: View {
     private func performLiveDebugScenarioStep(_ step: RuneRootLiveDebugScenarioStep) async {
         RuneRootLayoutDebug.logScenario(step, status: "begin")
 
-        let applied = applyLiveDebugScenarioStep(step)
+        let applied = await waitUntilLiveDebugScenarioStepCanApply(step)
         if !applied {
-            RuneRootLayoutDebug.logScenario(step, status: "skip")
+            RuneRootLayoutDebug.logScenario(step, status: "skip-timeout")
             return
         }
 
         let dwellNanoseconds = liveDebugScenarioDwellNanoseconds(for: step)
         RuneRootLayoutDebug.logScenario(step, status: "settling", detail: "dwellMs=\(dwellNanoseconds / 1_000_000)")
         try? await Task.sleep(nanoseconds: dwellNanoseconds)
+        await waitUntilLiveDebugScenarioStepSettled(step)
 
         if let snapshot = lastLayoutSnapshot {
             RuneRootLayoutDebug.logScenario(
@@ -663,12 +709,76 @@ public struct RuneRootView: View {
         } else {
             RuneRootLayoutDebug.logScenario(step, status: "snapshot-missing")
         }
+        try? await Task.sleep(nanoseconds: RuneRootLayoutDebug.liveScenarioSnapshotHoldNanoseconds)
+    }
+
+    @MainActor
+    private func waitUntilLiveDebugScenarioStepSettled(_ step: RuneRootLiveDebugScenarioStep) async {
+        let timeout = Date().addingTimeInterval(20)
+        while Date() < timeout {
+            if isLiveDebugScenarioStepSettled(step) {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        RuneRootLayoutDebug.logScenario(step, status: "settle-timeout")
+    }
+
+    private func isLiveDebugScenarioStepSettled(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
+        switch step {
+        case .workloadPodLogs, .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs:
+            return !viewModel.state.isLoading && !viewModel.state.isLoadingLogs
+        case .workloadPodYAMLReadOnly,
+             .workloadPodYAMLQuickEdit,
+             .workloadPodYAMLEditorSheet,
+             .workloadDeploymentYAMLReadOnly,
+             .workloadDeploymentYAMLQuickEdit,
+             .networkingServiceYAMLReadOnly,
+             .networkingServiceYAMLQuickEdit,
+             .configConfigMapYAMLReadOnly,
+             .configConfigMapYAMLQuickEdit,
+             .storagePVCYAML:
+            return !viewModel.state.isLoadingResourceDetails
+                && (!viewModel.state.resourceYAML.isEmpty || viewModel.state.lastResourceYAMLError != nil)
+        case .workloadPodDescribe,
+             .workloadDeploymentDescribe,
+             .networkingServiceDescribe,
+             .configConfigMapDescribe,
+             .storagePVCDescribe,
+             .rbacRole:
+            return !viewModel.state.isLoadingResourceDetails
+                && (!viewModel.state.resourceDescribe.isEmpty || viewModel.state.lastResourceDescribeError != nil)
+        default:
+            return !viewModel.state.isLoading
+        }
+    }
+
+    @MainActor
+    private func waitUntilLiveDebugScenarioStepCanApply(_ step: RuneRootLiveDebugScenarioStep) async -> Bool {
+        let timeout = Date().addingTimeInterval(25)
+        repeat {
+            if applyLiveDebugScenarioStep(step) {
+                return true
+            }
+            viewModel.refreshCurrentView()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        } while Date() < timeout
+        return false
     }
 
     private func liveDebugScenarioDwellNanoseconds(for step: RuneRootLiveDebugScenarioStep) -> UInt64 {
         switch step {
-        case .workloadPodOverview, .workloadPodYAML, .workloadPodDescribe:
+        case .workloadPodOverview,
+             .workloadPodLogs,
+             .workloadPodExec,
+             .workloadPodPortForward,
+             .workloadPodYAMLReadOnly,
+             .workloadPodYAMLQuickEdit,
+             .workloadPodYAMLEditorSheet,
+             .workloadPodDescribe:
             return RuneRootLayoutDebug.liveScenarioPodDwellNanoseconds
+        case .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs:
+            return max(RuneRootLayoutDebug.liveScenarioPodDwellNanoseconds, 2_500_000_000)
         default:
             return 900_000_000
         }
@@ -676,6 +786,10 @@ public struct RuneRootView: View {
 
     @MainActor
     private func applyLiveDebugScenarioStep(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
+        if !step.presentsYAMLEditorSheet {
+            isYAMLEditorSheetPresented = false
+        }
+
         switch step {
         case .overview:
             viewModel.setSection(.overview)
@@ -687,22 +801,71 @@ public struct RuneRootView: View {
             podInspectorTab = .overview
             yamlManifestIsEditing = false
             return true
-        case .workloadPodYAML:
+        case .workloadPodLogs:
+            guard let pod = viewModel.state.selectedPod ?? viewModel.visiblePods.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.pod)
+            viewModel.selectPod(pod)
+            podInspectorTab = .logs
+            yamlManifestIsEditing = false
+            viewModel.reloadLogsForSelection()
+            return true
+        case .workloadPodExec:
+            guard let pod = viewModel.state.selectedPod ?? viewModel.visiblePods.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.pod)
+            viewModel.selectPod(pod)
+            podInspectorTab = .exec
+            yamlManifestIsEditing = false
+            return true
+        case .workloadPodPortForward:
+            guard let pod = viewModel.state.selectedPod ?? viewModel.visiblePods.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.pod)
+            viewModel.selectPod(pod)
+            podInspectorTab = .portForward
+            yamlManifestIsEditing = false
+            return true
+        case .workloadPodYAMLReadOnly:
             guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
             if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
                 viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.pod)
+                viewModel.selectPod(pod)
+            }
+            podInspectorTab = .yaml
+            yamlManifestIsEditing = false
+            return true
+        case .workloadPodYAMLQuickEdit:
+            guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
+            if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
+                viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.pod)
                 viewModel.selectPod(pod)
             }
             podInspectorTab = .yaml
             yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
+        case .workloadPodYAMLEditorSheet:
+            guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
+            if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
+                viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.pod)
+                viewModel.selectPod(pod)
+            }
+            podInspectorTab = .yaml
+            yamlManifestIsEditing = false
+            isYAMLEditorSheetPresented = true
+            return true
         case .workloadPodDescribe:
             guard viewModel.state.selectedPod != nil || viewModel.visiblePods.first != nil else { return false }
             if viewModel.state.selectedPod == nil, let pod = viewModel.visiblePods.first {
                 viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.pod)
                 viewModel.selectPod(pod)
             }
             podInspectorTab = .describe
+            yamlManifestIsEditing = false
             return true
         case .workloadDeploymentOverview:
             guard let deployment = viewModel.visibleDeployments.first else { return false }
@@ -711,10 +874,38 @@ public struct RuneRootView: View {
             deploymentInspectorTab = .overview
             yamlManifestIsEditing = false
             return true
-        case .workloadDeploymentYAML:
+        case .workloadDeploymentUnifiedLogs:
+            guard let deployment = viewModel.state.selectedDeployment ?? viewModel.visibleDeployments.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.deployment)
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .unifiedLogs
+            yamlManifestIsEditing = false
+            viewModel.reloadLogsForSelection()
+            return true
+        case .workloadDeploymentRollout:
+            guard let deployment = viewModel.state.selectedDeployment ?? viewModel.visibleDeployments.first else { return false }
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.deployment)
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .rollout
+            yamlManifestIsEditing = false
+            return true
+        case .workloadDeploymentYAMLReadOnly:
             guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
             if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
                 viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.deployment)
+                viewModel.selectDeployment(deployment)
+            }
+            deploymentInspectorTab = .yaml
+            yamlManifestIsEditing = false
+            return true
+        case .workloadDeploymentYAMLQuickEdit:
+            guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
+            if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
+                viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.deployment)
                 viewModel.selectDeployment(deployment)
             }
             deploymentInspectorTab = .yaml
@@ -724,9 +915,11 @@ public struct RuneRootView: View {
             guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
             if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
                 viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.deployment)
                 viewModel.selectDeployment(deployment)
             }
             deploymentInspectorTab = .describe
+            yamlManifestIsEditing = false
             return true
         case .networkingServiceOverview:
             guard let service = viewModel.visibleServices.first else { return false }
@@ -735,10 +928,38 @@ public struct RuneRootView: View {
             serviceInspectorTab = .overview
             yamlManifestIsEditing = false
             return true
-        case .networkingServiceYAML:
+        case .networkingServiceUnifiedLogs:
+            guard let service = viewModel.state.selectedService ?? viewModel.visibleServices.first else { return false }
+            viewModel.setSection(.networking)
+            viewModel.setWorkloadKind(.service)
+            viewModel.selectService(service)
+            serviceInspectorTab = .unifiedLogs
+            yamlManifestIsEditing = false
+            viewModel.reloadLogsForSelection()
+            return true
+        case .networkingServicePortForward:
+            guard let service = viewModel.state.selectedService ?? viewModel.visibleServices.first else { return false }
+            viewModel.setSection(.networking)
+            viewModel.setWorkloadKind(.service)
+            viewModel.selectService(service)
+            serviceInspectorTab = .portForward
+            yamlManifestIsEditing = false
+            return true
+        case .networkingServiceYAMLReadOnly:
             guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
             if viewModel.state.selectedService == nil, let service = viewModel.visibleServices.first {
                 viewModel.setSection(.networking)
+                viewModel.setWorkloadKind(.service)
+                viewModel.selectService(service)
+            }
+            serviceInspectorTab = .yaml
+            yamlManifestIsEditing = false
+            return true
+        case .networkingServiceYAMLQuickEdit:
+            guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
+            if viewModel.state.selectedService == nil, let service = viewModel.visibleServices.first {
+                viewModel.setSection(.networking)
+                viewModel.setWorkloadKind(.service)
                 viewModel.selectService(service)
             }
             serviceInspectorTab = .yaml
@@ -748,9 +969,11 @@ public struct RuneRootView: View {
             guard viewModel.state.selectedService != nil || viewModel.visibleServices.first != nil else { return false }
             if viewModel.state.selectedService == nil, let service = viewModel.visibleServices.first {
                 viewModel.setSection(.networking)
+                viewModel.setWorkloadKind(.service)
                 viewModel.selectService(service)
             }
             serviceInspectorTab = .describe
+            yamlManifestIsEditing = false
             return true
         case .configConfigMapPrepare:
             viewModel.setSection(.config)
@@ -762,7 +985,15 @@ public struct RuneRootView: View {
             }
             yamlManifestIsEditing = false
             return true
-        case .configConfigMapYAML:
+        case .configConfigMapYAMLReadOnly:
+            viewModel.setSection(.config)
+            viewModel.setWorkloadKind(.configMap)
+            guard let configMap = viewModel.visibleConfigMaps.first else { return false }
+            viewModel.selectConfigMap(configMap)
+            genericResourceManifestTab = .yaml
+            yamlManifestIsEditing = false
+            return true
+        case .configConfigMapYAMLQuickEdit:
             viewModel.setSection(.config)
             viewModel.setWorkloadKind(.configMap)
             guard let configMap = viewModel.visibleConfigMaps.first else { return false }
@@ -778,12 +1009,37 @@ public struct RuneRootView: View {
                 viewModel.selectConfigMap(configMap)
             }
             genericResourceManifestTab = .describe
+            yamlManifestIsEditing = false
+            return true
+        case .storagePVCDescribe:
+            viewModel.setSection(.storage)
+            viewModel.setWorkloadKind(.persistentVolumeClaim)
+            guard let pvc = viewModel.visiblePersistentVolumeClaims.first else { return false }
+            viewModel.selectPersistentVolumeClaim(pvc)
+            genericResourceManifestTab = .describe
+            yamlManifestIsEditing = false
+            return true
+        case .storagePVCYAML:
+            viewModel.setSection(.storage)
+            viewModel.setWorkloadKind(.persistentVolumeClaim)
+            guard let pvc = viewModel.visiblePersistentVolumeClaims.first else { return false }
+            viewModel.selectPersistentVolumeClaim(pvc)
+            genericResourceManifestTab = .yaml
+            yamlManifestIsEditing = false
+            return true
+        case .eventsDetail:
+            viewModel.setSection(.events)
+            guard let event = viewModel.visibleEvents.first else { return false }
+            viewModel.selectEvent(event)
+            yamlManifestIsEditing = false
             return true
         case .rbacRole:
-            guard let resource = viewModel.visibleRBACResources.first else { return false }
             viewModel.setSection(.rbac)
+            viewModel.setWorkloadKind(.role)
+            guard let resource = viewModel.visibleRBACResources.first else { return false }
             viewModel.selectRBACResource(resource)
             genericResourceManifestTab = .describe
+            yamlManifestIsEditing = false
             return true
         case .terminal:
             viewModel.setSection(.terminal)
@@ -912,7 +1168,7 @@ public struct RuneRootView: View {
                         .background(RuneRootPaneWidthReporter(kind: .detail))
                         .frame(
                             minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
-                            idealWidth: resolvedDetailWidth,
+                            idealWidth: compactDetailIdealWidth,
                             maxWidth: RuneUILayoutMetrics.splitDetailColumnMaxWidth,
                             maxHeight: .infinity,
                             alignment: .topLeading
@@ -1100,6 +1356,7 @@ public struct RuneRootView: View {
             HStack {
                 Text(viewModel.state.selectedSection.title)
                     .font(.title2.weight(.bold))
+                    .lineLimit(1)
 
                 if viewModel.visibleContexts.isEmpty == false, viewModel.state.selectedSection != .terminal {
                     Button {
@@ -1156,6 +1413,7 @@ public struct RuneRootView: View {
                     .buttonStyle(.bordered)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if viewModel.visibleContexts.isEmpty {
                 HStack(spacing: 10) {
@@ -1178,6 +1436,7 @@ public struct RuneRootView: View {
 
             sectionSpecificControls
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RuneRootLayoutProbe(kind: .header, generation: layoutGeneration))
     }
 
@@ -1465,63 +1724,39 @@ public struct RuneRootView: View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
             case .pod:
-                List {
-                    Section {
-                        ForEach(viewModel.visiblePods) { pod in
-                            Button {
-                                viewModel.selectPod(pod)
-                            } label: {
-                                HStack(spacing: PodTableLayout.metricsSpacing) {
-                                    Text(pod.name)
-                                        .font(.body.weight(.medium))
-                                        .lineLimit(1)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                GeometryReader { proxy in
+                    let tableWidth = max(
+                        PodTableLayout.minimumScrollableWidth,
+                        proxy.size.width - (PodTableLayout.listRowEdgeInset * 2)
+                    )
 
-                                    HStack(spacing: PodTableLayout.metricsSpacing) {
-                                        Text(pod.cpuDisplay)
-                                            .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
-                                        Text(pod.memoryDisplay)
-                                            .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
-                                        Text("\(pod.totalRestarts)")
-                                            .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
-                                        Text(pod.ageDescription)
-                                            .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
+                    ScrollView([.horizontal, .vertical]) {
+                        LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
+                            Section {
+                                ForEach(viewModel.visiblePods) { pod in
+                                    Button {
+                                        viewModel.selectPod(pod)
+                                    } label: {
+                                        podTableRow(pod)
                                     }
-                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-
-                                    Text(pod.status)
-                                        .font(.caption.weight(.semibold))
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.78)
-                                        .multilineTextAlignment(.center)
-                                        .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
-                                        .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
-                                        .padding(.vertical, 2)
-                                        .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
-                                        .foregroundStyle(statusColor(for: pod.status))
-                                        .help("Pod phase from the cluster")
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        copyMenuItem(value: pod.name, label: "pod name")
+                                    }
                                 }
-                                .runeListRowCard(
-                                    isSelected: viewModel.state.selectedPod?.id == pod.id,
-                                    horizontalPadding: PodTableLayout.rowHorizontalPadding,
-                                    verticalPadding: PodTableLayout.rowVerticalPadding
-                                )
+                            } header: {
+                                podTableHeader
+                                    .background(panelFill)
                             }
-                            .buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(
-                                top: 2,
-                                leading: PodTableLayout.listRowEdgeInset,
-                                bottom: 2,
-                                trailing: PodTableLayout.listRowEdgeInset
-                            ))
-                            .listRowBackground(Color.clear)
                         }
-                    } header: {
-                        podTableHeader
+                        .frame(width: tableWidth, alignment: .topLeading)
+                        .padding(.horizontal, PodTableLayout.listRowEdgeInset)
+                        .padding(.vertical, 2)
                     }
+                    .defaultScrollAnchor(.topLeading)
                 }
-                .listStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
 
             case .deployment:
                 List(viewModel.visibleDeployments) { deployment in
@@ -1542,6 +1777,9 @@ public struct RuneRootView: View {
                         .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        copyMenuItem(value: deployment.name, label: "deployment name")
+                    }
                     .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
                     .listRowBackground(Color.clear)
                 }
@@ -1605,8 +1843,12 @@ public struct RuneRootView: View {
                                 .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
                             }
                             .buttonStyle(.plain)
+                            .contextMenu {
+                                copyMenuItem(value: service.name, label: "service name")
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
                 }
@@ -1699,6 +1941,45 @@ public struct RuneRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func podTableRow(_ pod: PodSummary) -> some View {
+        HStack(spacing: PodTableLayout.metricsSpacing) {
+            Text(pod.name)
+                .font(.body.weight(.medium))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: PodTableLayout.metricsSpacing) {
+                Text(pod.cpuDisplay)
+                    .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
+                Text(pod.memoryDisplay)
+                    .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
+                Text("\(pod.totalRestarts)")
+                    .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
+                Text(pod.ageDescription)
+                    .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
+            }
+            .font(.system(size: 11, weight: .regular, design: .monospaced))
+            .foregroundStyle(.secondary)
+
+            Text(pod.status)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .multilineTextAlignment(.center)
+                .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
+                .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
+                .padding(.vertical, 2)
+                .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
+                .foregroundStyle(statusColor(for: pod.status))
+                .help("Pod phase from the cluster")
+        }
+        .runeListRowCard(
+            isSelected: viewModel.state.selectedPod?.id == pod.id,
+            horizontalPadding: PodTableLayout.rowHorizontalPadding,
+            verticalPadding: PodTableLayout.rowVerticalPadding
+        )
+    }
+
     private var helmPane: some View {
         List(viewModel.visibleHelmReleases) { release in
             Button {
@@ -1732,6 +2013,10 @@ public struct RuneRootView: View {
                 .runeListRowCard(isSelected: viewModel.state.selectedHelmRelease == release)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                copyMenuItem(value: release.name, label: "Helm release name")
+                copyMenuItem(value: release.namespace, label: "namespace")
+            }
             .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
             .listRowBackground(Color.clear)
         }
@@ -1770,6 +2055,12 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.plain)
             .help(eventHint(for: event))
+            .contextMenu {
+                copyMenuItem(value: event.objectName, label: "object name")
+                if let namespace = event.involvedNamespace {
+                    copyMenuItem(value: namespace, label: "namespace")
+                }
+            }
             .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
             .listRowBackground(Color.clear)
         }
@@ -1980,9 +2271,7 @@ public struct RuneRootView: View {
         Group {
             if let release = viewModel.state.selectedHelmRelease {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(release.name)
-                        .font(.title2.weight(.bold))
-                        .help(release.name)
+                    copyableInspectorTitle(release.name, label: "Helm release name")
 
                     RuneSegmentedPickerInScroll(
                         "",
@@ -2090,8 +2379,7 @@ public struct RuneRootView: View {
         Group {
             if let pod = viewModel.state.selectedPod {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(pod.name)
-                        .font(.title2.weight(.bold))
+                    copyableInspectorTitle(pod.name, label: "Pod name")
 
                     RuneSegmentedPickerInScroll(
                         "",
@@ -2151,8 +2439,7 @@ public struct RuneRootView: View {
         Group {
             if let deployment = viewModel.state.selectedDeployment {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(deployment.name)
-                        .font(.title2.weight(.bold))
+                    copyableInspectorTitle(deployment.name, label: "Deployment name")
 
                     RuneSegmentedPickerInScroll(
                         "",
@@ -2236,8 +2523,7 @@ public struct RuneRootView: View {
         Group {
             if let service = viewModel.state.selectedService {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(service.name)
-                        .font(.title2.weight(.bold))
+                    copyableInspectorTitle(service.name, label: "Service name")
 
                     RuneSegmentedPickerInScroll(
                         "",
@@ -2338,11 +2624,9 @@ public struct RuneRootView: View {
 
                     Group {
                         if let k = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines), !k.isEmpty {
-                            Text("Object: \(k) / \(event.objectName)")
-                                .font(.body.weight(.medium))
+                            copyableInlineText("Object: \(k) / \(event.objectName)", copyValue: event.objectName, label: "object name")
                         } else {
-                            Text("Object: \(event.objectName)")
-                                .font(.body.weight(.medium))
+                            copyableInlineText("Object: \(event.objectName)", copyValue: event.objectName, label: "object name")
                         }
                     }
 
@@ -2398,9 +2682,7 @@ public struct RuneRootView: View {
         Group {
             if let resource {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(resource.name)
-                        .font(.title2.weight(.bold))
-                        .help(resource.name)
+                    copyableInspectorTitle(resource.name, label: "\(resource.kind.title) name")
 
                     VStack(alignment: .leading, spacing: 8) {
                         if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
@@ -2725,8 +3007,6 @@ public struct RuneRootView: View {
                         .controlSize(.small)
                 }
 
-                Spacer()
-
                 Button("Open Terminal") {
                     viewModel.setSection(.terminal)
                 }
@@ -2751,15 +3031,43 @@ public struct RuneRootView: View {
         ResourceTerminalWorkspaceView(
             session: viewModel.state.terminalSession,
             selectedPod: viewModel.state.selectedPod,
+            availablePods: viewModel.state.pods,
             portForwardSessions: viewModel.state.portForwardSessions,
             canApplyMutations: viewModel.canApplyClusterMutations,
+            selectedShellPodID: $terminalShellPodID,
+            selectedPortForwardPodID: $terminalPortForwardPodID,
             terminalInput: $viewModel.terminalSessionInput,
-            onStartSession: { viewModel.startTerminalSessionInSelectedPod() },
+            portForwardLocalPort: $viewModel.portForwardLocalPortInput,
+            portForwardRemotePort: $viewModel.portForwardRemotePortInput,
+            portForwardAddress: $viewModel.portForwardAddressInput,
+            onStartSession: { pod in viewModel.startTerminalSession(for: pod) },
+            onStartPortForward: { pod in
+                viewModel.startPortForward(targetKind: .pod, targetName: pod.name)
+            },
             onSend: { viewModel.sendTerminalSessionInput() },
             onDisconnect: { viewModel.stopTerminalSession() },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
         )
         .id("terminal")
+        .onAppear(perform: reconcileTerminalPodSelections)
+        .onChange(of: viewModel.state.pods.map(\.id)) { _, _ in
+            reconcileTerminalPodSelections()
+        }
+        .onChange(of: viewModel.state.selectedPod?.id) { _, _ in
+            reconcileTerminalPodSelections()
+        }
+    }
+
+    private func reconcileTerminalPodSelections() {
+        let availableIDs = Set(viewModel.state.pods.map(\.id))
+        let fallbackID = viewModel.state.selectedPod?.id ?? viewModel.state.pods.first?.id ?? ""
+
+        if terminalShellPodID.isEmpty || !availableIDs.contains(terminalShellPodID) {
+            terminalShellPodID = fallbackID
+        }
+        if terminalPortForwardPodID.isEmpty || !availableIDs.contains(terminalPortForwardPodID) {
+            terminalPortForwardPodID = fallbackID
+        }
     }
 
     private var terminalDetails: some View {
@@ -2845,8 +3153,15 @@ public struct RuneRootView: View {
                         .runeListRowCard(isSelected: selection == resource)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        copyMenuItem(value: resource.name, label: "\(resource.kind.title) name")
+                        if let namespace = resource.namespace {
+                            copyMenuItem(value: namespace, label: "namespace")
+                        }
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(.vertical, 2)
         }
         .padding(.horizontal, 2)
@@ -3232,8 +3547,8 @@ public struct RuneRootView: View {
     }
 
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
-        guard keyboardPaneFocus == .content || keyboardPaneFocus == .detail else { return false }
         guard !keyboardNavigationSuspended else { return false }
+        guard textInputFocus == nil else { return false }
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
         return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
@@ -3642,7 +3957,11 @@ public struct RuneRootView: View {
     }
 
     private func genericResourceListIdentity(_ resources: [ClusterResourceSummary]) -> String {
-        resources.map(\.id).joined(separator: "|")
+        "\(resources.count):\(resources.first?.id ?? ""):\(resources.last?.id ?? "")"
+    }
+
+    private func podListIdentity(_ pods: [PodSummary]) -> String {
+        "\(pods.count):\(pods.first?.id ?? ""):\(pods.last?.id ?? "")"
     }
 
     private func advanceLayoutGeneration() {
@@ -3656,7 +3975,19 @@ public struct RuneRootView: View {
     }
 
     private var resolvedDetailWidth: CGFloat {
-        clampedDetailWidth(CGFloat(forcedInitialDetailWidth ?? persistedDetailWidth))
+        let width = forcedInitialDetailWidth.map { CGFloat($0) }
+            ?? RuneRootLayoutDebug.initialDetailWidth
+            ?? CGFloat(persistedDetailWidth)
+        return clampedDetailWidth(width)
+    }
+
+    private var compactDetailIdealWidth: CGFloat {
+        guard !viewModel.isSidebarVisible, viewModel.isDetailPaneVisible else {
+            return resolvedDetailWidth
+        }
+
+        let expandedDefault = RuneUILayoutMetrics.splitDetailColumnIdealWidth + 180
+        return clampedDetailWidth(max(resolvedDetailWidth, expandedDefault))
     }
 
     private func clampedSidebarWidth(_ width: CGFloat) -> CGFloat {
@@ -3908,6 +4239,77 @@ public struct RuneRootView: View {
         .controlSize(.regular)
     }
 
+    private func normalizedCopyValue(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "—", trimmed.lowercased() != "n/a" else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func copyToClipboard(_ value: String) {
+        guard let copyValue = normalizedCopyValue(value) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(copyValue, forType: .string)
+    }
+
+    @ViewBuilder
+    private func copyMenuItem(value: String, label: String) -> some View {
+        if normalizedCopyValue(value) != nil {
+            Button("Copy \(label)") {
+                copyToClipboard(value)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func copyButton(value: String, label: String) -> some View {
+        if normalizedCopyValue(value) != nil {
+            Button {
+                copyToClipboard(value)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Copy \(label)")
+            .accessibilityLabel("Copy \(label)")
+        }
+    }
+
+    private func copyableInspectorTitle(_ value: String, label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(value)
+                .font(.title2.weight(.bold))
+                .lineLimit(1)
+                .textSelection(.enabled)
+            copyButton(value: value, label: label)
+            Spacer(minLength: 0)
+        }
+        .help(value)
+        .contextMenu {
+            copyMenuItem(value: value, label: label)
+        }
+    }
+
+    private func copyableInlineText(_ text: String, copyValue: String, label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(text)
+                .font(.body.weight(.medium))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            copyButton(value: copyValue, label: label)
+        }
+        .contextMenu {
+            copyMenuItem(value: copyValue, label: label)
+        }
+    }
+
     private func deploymentReplicaStatusColor(_ deployment: DeploymentSummary) -> Color {
         if deployment.desiredReplicas == 0 { return .secondary }
         if deployment.readyReplicas >= deployment.desiredReplicas { return .green }
@@ -4003,20 +4405,26 @@ public struct RuneRootView: View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 podOverviewRowLabel(title: title, symbol: symbol, fixedWidth: true)
-                Text(value)
-                    .font(.body.weight(.medium))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                copyableOverviewValue(value, label: title)
             }
             VStack(alignment: .leading, spacing: 4) {
                 podOverviewRowLabel(title: title, symbol: symbol, fixedWidth: false)
-                Text(value)
-                    .font(.body.weight(.medium))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                copyableOverviewValue(value, label: title)
             }
+        }
+    }
+
+    private func copyableOverviewValue(_ value: String, label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(value)
+                .font(.body.weight(.medium))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            copyButton(value: value, label: label.lowercased())
+        }
+        .contextMenu {
+            copyMenuItem(value: value, label: label.lowercased())
         }
     }
 

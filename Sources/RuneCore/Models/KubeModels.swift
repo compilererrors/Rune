@@ -284,12 +284,20 @@ public struct ServiceSummary: Identifiable, Hashable, Codable, Sendable {
     public let namespace: String
     public let type: String
     public let clusterIP: String
+    public let selector: [String: String]?
 
-    public init(name: String, namespace: String, type: String, clusterIP: String) {
+    public init(
+        name: String,
+        namespace: String,
+        type: String,
+        clusterIP: String,
+        selector: [String: String]? = nil
+    ) {
         self.name = name
         self.namespace = namespace
         self.type = type
         self.clusterIP = clusterIP
+        self.selector = selector
     }
 
     public var id: String { "\(namespace)/\(name)" }

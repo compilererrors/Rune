@@ -46,6 +46,7 @@ func Services(ctx context.Context, contextName, namespace string) ([]output.Serv
 			Namespace: ns,
 			Type:      typ,
 			ClusterIP: clusterIP,
+			Selector:  svc.Spec.Selector,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

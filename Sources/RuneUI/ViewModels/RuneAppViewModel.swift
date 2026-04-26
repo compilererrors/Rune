@@ -533,18 +533,14 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var namespaceOptions: [String] {
-        guard let context = state.selectedContext else { return [] }
+        guard state.selectedContext != nil else { return [] }
         // Only expose namespaces that belong to the current context.
         // Source from the active state list (cleared on context switch) so we never leak a stale
         // namespace menu from cache before the current context has loaded.
         // If no verified list is loaded yet, only expose the current in-memory selection.
         let options = state.namespaces
         if !options.isEmpty {
-            return orderedNamespaceOptions(
-                options,
-                contextName: context.name,
-                selectedNamespace: state.selectedNamespace
-            )
+            return sortedNamespaceOptions(options)
         }
 
         let selected = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -555,11 +551,7 @@ public final class RuneAppViewModel: ObservableObject {
         return []
     }
 
-    private func orderedNamespaceOptions(
-        _ rawOptions: [String],
-        contextName: String,
-        selectedNamespace: String
-    ) -> [String] {
+    private func sortedNamespaceOptions(_ rawOptions: [String]) -> [String] {
         var seen = Set<String>()
         let normalized = rawOptions
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -567,28 +559,9 @@ public final class RuneAppViewModel: ObservableObject {
 
         guard !normalized.isEmpty else { return [] }
 
-        let selected = selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let suffixMatch = namespaceLongestSuffixOfContext(contextName, availableNamespaces: normalized)?.lowercased()
-
         return normalized.sorted { lhs, rhs in
-            let lRank = namespaceOptionSortRank(lhs, selected: selected, suffixMatch: suffixMatch)
-            let rRank = namespaceOptionSortRank(rhs, selected: selected, suffixMatch: suffixMatch)
-            if lRank != rRank {
-                return lRank < rRank
-            }
             return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
-    }
-
-    private func namespaceOptionSortRank(
-        _ namespace: String,
-        selected: String,
-        suffixMatch: String?
-    ) -> Int {
-        let lowered = namespace.lowercased()
-        if !selected.isEmpty && lowered == selected { return 0 }
-        if let suffixMatch, lowered == suffixMatch { return 1 }
-        return 2
     }
 
     public var visibleContexts: [KubeContext] {
@@ -607,6 +580,12 @@ public final class RuneAppViewModel: ObservableObject {
             }
 
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    public var contextMenuOptions: [KubeContext] {
+        state.contexts.sorted { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
@@ -1091,7 +1070,11 @@ public final class RuneAppViewModel: ObservableObject {
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         let previousContextName = state.selectedContext?.name
+        let isChangingContext = context.name != previousContextName
         state.selectedContext = context
+        if isChangingContext {
+            state.setOverviewClusterUsage(cpuPercent: nil, memoryPercent: nil)
+        }
         rememberRecentContext(context.name)
         // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
         state.setNamespaces([])
@@ -2209,24 +2192,29 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func startPortForwardForSelection() {
+        let target: (PortForwardTargetKind, String)
+        switch state.selectedWorkloadKind {
+        case .pod:
+            guard let pod = state.selectedPod else { return }
+            target = (.pod, pod.name)
+        case .service:
+            guard let service = state.selectedService else { return }
+            target = (.service, service.name)
+        case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            state.setError(RuneError.invalidInput(message: "Port-forward is only supported for Pod or Service right now."))
+            return
+        }
+
+        startPortForward(targetKind: target.0, targetName: target.1)
+    }
+
+    public func startPortForward(targetKind: PortForwardTargetKind, targetName: String) {
         Task {
             do {
                 guard let context = state.selectedContext else { return }
                 let localPort = try parsePort(portForwardLocalPortInput, fieldName: "local port")
                 let remotePort = try parsePort(portForwardRemotePortInput, fieldName: "remote port")
                 let address = normalizedPortForwardAddress()
-
-                let target: (PortForwardTargetKind, String)
-                switch state.selectedWorkloadKind {
-                case .pod:
-                    guard let pod = state.selectedPod else { return }
-                    target = (.pod, pod.name)
-                case .service:
-                    guard let service = state.selectedService else { return }
-                    target = (.service, service.name)
-                case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-                    throw RuneError.invalidInput(message: "Port-forward is only supported for Pod or Service right now.")
-                }
 
                 state.isStartingPortForward = true
                 defer { state.isStartingPortForward = false }
@@ -2235,8 +2223,8 @@ public final class RuneAppViewModel: ObservableObject {
                     from: state.kubeConfigSources,
                     context: context,
                     namespace: state.selectedNamespace,
-                    targetKind: target.0,
-                    targetName: target.1,
+                    targetKind: targetKind,
+                    targetName: targetName,
                     localPort: localPort,
                     remotePort: remotePort,
                     address: address
@@ -2856,10 +2844,10 @@ public final class RuneAppViewModel: ObservableObject {
         let preservedRBACClusterRoleBindings = state.rbacClusterRoleBindings
         let currentOverviewClusterCPUPercent = state.overviewClusterCPUPercent
         let currentOverviewClusterMemoryPercent = state.overviewClusterMemoryPercent
-        let shouldRefreshClusterUsage = plan.podStatuses || plan.pods
+        let shouldRefreshClusterUsageInline = plan.podStatuses
 
         async let clusterUsageResult: (cpuPercent: Int?, memoryPercent: Int?) = {
-            if shouldRefreshClusterUsage {
+            if shouldRefreshClusterUsageInline {
                 if shouldUseWarmOverviewForHeavyRequests,
                    let warmOverview,
                    warmOverview.clusterCPUPercent != nil || warmOverview.clusterMemoryPercent != nil {
@@ -3196,7 +3184,7 @@ public final class RuneAppViewModel: ObservableObject {
         let loadedClusterUsage = await clusterUsageResult
         let loadedClusterCPUPercent = loadedClusterUsage.cpuPercent
         let loadedClusterMemoryPercent = loadedClusterUsage.memoryPercent
-        if shouldRefreshClusterUsage,
+        if shouldRefreshClusterUsageInline,
            loadedClusterCPUPercent == nil,
            loadedClusterMemoryPercent == nil {
             diagnostics.log("cluster usage unavailable context=\(context.name)")
@@ -3343,6 +3331,11 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             }
         } else {
+            refreshClusterUsageForHeaderIfNeeded(
+                context: context,
+                namespace: effectiveNamespace,
+                requestID: requestID
+            )
             diagnostics.trace(
                 "snapshot.overview",
                 "skipped overview write section=\(state.selectedSection.rawValue) context=\(context.name) namespace=\(effectiveNamespace)"
@@ -3499,6 +3492,46 @@ public final class RuneAppViewModel: ObservableObject {
         )
     }
 
+    private func refreshClusterUsageForHeaderIfNeeded(
+        context: KubeContext,
+        namespace: String,
+        requestID: UUID
+    ) {
+        guard state.selectedSection != .terminal else { return }
+
+        let reference = Date()
+        let cacheKey = Self.overviewCacheKey(contextName: context.name, namespace: namespace)
+        if let warmOverview = overviewSnapshotCache[cacheKey],
+           Self.isOverviewCacheFresh(warmOverview, ttl: overviewHeavyRequestCooldownTTL, reference: reference),
+           warmOverview.clusterCPUPercent != nil || warmOverview.clusterMemoryPercent != nil {
+            state.setOverviewClusterUsage(
+                cpuPercent: warmOverview.clusterCPUPercent,
+                memoryPercent: warmOverview.clusterMemoryPercent
+            )
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let usage = await self.kubeClient.clusterUsagePercent(from: self.state.kubeConfigSources, context: context)
+            guard self.snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else { return }
+            guard self.state.selectedSection != .terminal else { return }
+            self.state.setOverviewClusterUsage(
+                cpuPercent: usage.cpuPercent,
+                memoryPercent: usage.memoryPercent
+            )
+            self.updateOverviewCacheClusterUsage(
+                contextName: context.name,
+                namespace: namespace,
+                cpuPercent: usage.cpuPercent,
+                memoryPercent: usage.memoryPercent
+            )
+            if usage.cpuPercent == nil, usage.memoryPercent == nil {
+                self.diagnostics.log("cluster usage unavailable context=\(context.name)")
+            }
+        }
+    }
+
     private func loadHelmReleases(context: KubeContext, namespace: String) async throws {
         state.isLoading = true
         defer { state.isLoading = false }
@@ -3563,11 +3596,16 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func resolvedKubeConfigSources(fallbackURLs: [URL]) throws -> [KubeConfigSource] {
         let bookmarked: [KubeConfigSource]
-        do {
-            bookmarked = try bookmarkManager.loadKubeConfigSources()
-        } catch {
-            diagnostics.log("bookmark load failed, falling back to direct kubeconfig paths: \(error.localizedDescription)")
+        if KubeConfigDiscoverer.isIsolatedKubeconfigActive()
+            || ProcessInfo.processInfo.environment["RUNE_DISABLE_BOOKMARKED_KUBECONFIGS"] == "1" {
             bookmarked = []
+        } else {
+            do {
+                bookmarked = try bookmarkManager.loadKubeConfigSources()
+            } catch {
+                diagnostics.log("bookmark load failed, falling back to direct kubeconfig paths: \(error.localizedDescription)")
+                bookmarked = []
+            }
         }
         let fallback = fallbackURLs.map(KubeConfigSource.init(url:))
 
@@ -4677,6 +4715,32 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func updateOverviewCacheClusterUsage(
+        contextName: String,
+        namespace: String,
+        cpuPercent: Int?,
+        memoryPercent: Int?
+    ) {
+        let cacheKey = Self.overviewCacheKey(contextName: contextName, namespace: namespace)
+        let entry = overviewSnapshotCache[cacheKey]
+        let fetchedAt = Date()
+        let updated = OverviewSnapshotCacheEntry(
+            fetchedAt: fetchedAt,
+            pods: entry?.pods ?? state.overviewPods,
+            deploymentsCount: entry?.deploymentsCount ?? state.overviewDeploymentsCount,
+            servicesCount: entry?.servicesCount ?? state.overviewServicesCount,
+            ingressesCount: entry?.ingressesCount ?? state.overviewIngressesCount,
+            configMapsCount: entry?.configMapsCount ?? state.overviewConfigMapsCount,
+            cronJobsCount: entry?.cronJobsCount ?? state.overviewCronJobsCount,
+            nodesCount: entry?.nodesCount ?? state.overviewNodesCount,
+            clusterCPUPercent: cpuPercent,
+            clusterMemoryPercent: memoryPercent,
+            events: entry?.events ?? state.overviewEvents
+        )
+        overviewSnapshotCache[cacheKey] = updated
+        pruneOverviewCache(reference: fetchedAt)
+    }
+
     private func pruneOverviewCache(reference: Date) {
         overviewSnapshotCache = overviewSnapshotCache.filter { _, entry in
             reference.timeIntervalSince(entry.fetchedAt) <= overviewSnapshotRetentionTTL
@@ -5368,19 +5432,17 @@ public final class RuneAppViewModel: ObservableObject {
         let reference = Date()
         if let cachedOverview = overviewSnapshotCache[Self.overviewCacheKey(contextName: context.name, namespace: normalizedNamespace)],
            Self.isOverviewCacheFresh(cachedOverview, ttl: overviewSnapshotFreshnessTTL, reference: reference) {
-            // Merge: `cachedOverview` supplies cluster CPU/MEM when present; non-empty `ResourceStore` lists override counts and pod rows.
+            // Merge: `cachedOverview` supplies fresh cluster CPU/MEM; non-empty `ResourceStore` lists override counts and pod rows.
             let mergedPods = cached.pods.isEmpty ? cachedOverview.pods : cached.pods
             let mergedDeploymentsCount = cached.deployments.isEmpty ? cachedOverview.deploymentsCount : cached.deployments.count
             let mergedServicesCount = cached.services.isEmpty ? cachedOverview.servicesCount : cached.services.count
             let mergedIngressesCount = cached.ingresses.isEmpty ? cachedOverview.ingressesCount : cached.ingresses.count
             let mergedConfigMapsCount = cached.configMaps.isEmpty ? cachedOverview.configMapsCount : cached.configMaps.count
             let mergedCronJobsCount = cached.cronJobs.isEmpty ? cachedOverview.cronJobsCount : cached.cronJobs.count
-            // Node list is cluster-scoped RAM cache; if it is empty we must not reuse overview/disk cache counts or
-            // CPU/MEM from a warm entry — those can come from another session or stale prefetch (see scheduleOverviewPrefetch).
+            // Node rows are cluster-scoped RAM cache; keep node count tied to live RAM rows while CPU/MEM can use
+            // the fresh per-context overview cache.
             let mergedNodesCount = cachedNodes.isEmpty ? 0 : cachedNodes.count
             let mergedEvents = cached.events.isEmpty ? cachedOverview.events : cached.events
-            let mergedClusterCPU = cachedNodes.isEmpty ? nil : cachedOverview.clusterCPUPercent
-            let mergedClusterMem = cachedNodes.isEmpty ? nil : cachedOverview.clusterMemoryPercent
             state.setOverviewSnapshot(
                 pods: mergedPods,
                 deploymentsCount: mergedDeploymentsCount,
@@ -5389,8 +5451,8 @@ public final class RuneAppViewModel: ObservableObject {
                 configMapsCount: mergedConfigMapsCount,
                 cronJobsCount: mergedCronJobsCount,
                 nodesCount: mergedNodesCount,
-                clusterCPUPercent: mergedClusterCPU,
-                clusterMemoryPercent: mergedClusterMem,
+                clusterCPUPercent: cachedOverview.clusterCPUPercent,
+                clusterMemoryPercent: cachedOverview.clusterMemoryPercent,
                 events: mergedEvents
             )
             return
@@ -5404,8 +5466,8 @@ public final class RuneAppViewModel: ObservableObject {
             configMapsCount: cached.configMaps.count,
             cronJobsCount: cached.cronJobs.count,
             nodesCount: cachedNodes.count,
-            clusterCPUPercent: nil,
-            clusterMemoryPercent: nil,
+            clusterCPUPercent: state.overviewClusterCPUPercent,
+            clusterMemoryPercent: state.overviewClusterMemoryPercent,
             events: cached.events
         )
 

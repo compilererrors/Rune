@@ -5,20 +5,44 @@ import RuneCore
 struct ResourceTerminalWorkspaceView: View {
     let session: PodTerminalSession?
     let selectedPod: PodSummary?
+    let availablePods: [PodSummary]
     let portForwardSessions: [PortForwardSession]
     let canApplyMutations: Bool
+    @Binding var selectedShellPodID: String
+    @Binding var selectedPortForwardPodID: String
     @Binding var terminalInput: String
-    let onStartSession: () -> Void
+    @Binding var portForwardLocalPort: String
+    @Binding var portForwardRemotePort: String
+    @Binding var portForwardAddress: String
+    let onStartSession: (PodSummary) -> Void
+    let onStartPortForward: (PodSummary) -> Void
     let onSend: () -> Void
     let onDisconnect: () -> Void
     let onClearTranscript: () -> Void
+    @State private var isPortForwardExpanded = true
+
+    private var shellPod: PodSummary? {
+        pod(for: selectedShellPodID) ?? selectedPod ?? availablePods.first
+    }
+
+    private var portForwardPod: PodSummary? {
+        pod(for: selectedPortForwardPodID) ?? selectedPod ?? availablePods.first
+    }
+
+    private var activeOrStartingPortForwardSessions: [PortForwardSession] {
+        portForwardSessions.filter { $0.status == .active || $0.status == .starting }
+    }
+
+    private var primaryPortForwardSession: PortForwardSession? {
+        activeOrStartingPortForwardSessions.first ?? portForwardSessions.first
+    }
 
     private var targetPodLabel: String? {
         if let session {
             return "\(session.namespace)/\(session.podName)"
         }
-        if let selectedPod {
-            return "\(selectedPod.namespace)/\(selectedPod.name)"
+        if let shellPod {
+            return "\(shellPod.namespace)/\(shellPod.name)"
         }
         return nil
     }
@@ -28,8 +52,8 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     private var transcriptPlaceholder: String {
-        if selectedPod == nil && session == nil {
-            return "Select a pod in Workloads > Pods, then start an interactive shell."
+        if shellPod == nil && session == nil {
+            return "Select a pod in this namespace, then start an interactive shell."
         }
         return "No shell session yet."
     }
@@ -48,99 +72,300 @@ struct ResourceTerminalWorkspaceView: View {
 
     private var terminalCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Pod Shell")
-                        .font(.headline)
-                    if let targetPodLabel {
-                        Text(targetPodLabel)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("No pod selected")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 10) {
+                    terminalTitleBlock
+                    Spacer(minLength: 12)
+                    terminalActions
                 }
 
-                Spacer()
-
-                if let session {
-                    terminalStatusBadge(session.status)
+                VStack(alignment: .leading, spacing: 10) {
+                    terminalTitleBlock
+                    terminalActions
                 }
-
-                Button(session == nil ? "Connect Shell" : "Reconnect") {
-                    onStartSession()
-                }
-                .disabled(targetPodLabel == nil || !canApplyMutations)
-
-                Button("Disconnect") {
-                    onDisconnect()
-                }
-                .disabled(session == nil)
-
-                Button("Clear") {
-                    onClearTranscript()
-                }
-                .disabled(session?.transcript.isEmpty ?? true)
             }
+
+            TerminalPodSelectorRow(
+                title: "Shell pod",
+                systemImage: "terminal",
+                pods: availablePods,
+                selection: $selectedShellPodID
+            )
 
             TerminalTranscriptSurface(
                 text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : transcriptPlaceholder,
-                minHeight: 420,
+                minHeight: 460,
                 resetID: "terminal:\(session?.id ?? "empty")"
             )
 
+            terminalInputRow
+        }
+        .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
+    }
+
+    private var terminalTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Text("$")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(canSendInput ? Color.accentColor : .secondary)
-
-                TextField("Type a shell command and press Return", text: $terminalInput)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(onSend)
-                    .disabled(!canSendInput)
-
-                Button("Send") {
-                    onSend()
+                Label("Pod Shell", systemImage: "terminal")
+                    .font(.headline)
+                if let session {
+                    terminalStatusBadge(session.status)
                 }
-                .disabled(!canSendInput || terminalInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if let targetPodLabel {
+                Text(targetPodLabel)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(targetPodLabel)
+            } else {
+                Text("No pod selected")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                .fill(.regularMaterial)
-        )
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var terminalActions: some View {
+        HStack(spacing: 8) {
+            Button(session == nil ? "Connect Shell" : "Reconnect") {
+                if let shellPod {
+                    onStartSession(shellPod)
+                }
+            }
+            .disabled(shellPod == nil || !canApplyMutations)
+
+            Button("Disconnect") {
+                onDisconnect()
+            }
+            .disabled(session == nil)
+
+            Button("Clear") {
+                onClearTranscript()
+            }
+            .disabled(session?.transcript.isEmpty ?? true)
+        }
+        .controlSize(.small)
+    }
+
+    private var terminalInputRow: some View {
+        HStack(spacing: 8) {
+            Text("$")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(canSendInput ? Color.accentColor : .secondary)
+
+            TextField("Type a shell command and press Return", text: $terminalInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .onSubmit(onSend)
+                .disabled(!canSendInput)
+
+            Button("Send") {
+                onSend()
+            }
+            .disabled(!canSendInput || terminalInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .controlSize(.small)
     }
 
     private var portForwardCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Active Port Forwards")
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 10) {
+                    portForwardTitleBlock
+                    Spacer(minLength: 12)
+                    portForwardHeaderActions
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    portForwardTitleBlock
+                    portForwardHeaderActions
+                }
+            }
+
+            if isPortForwardExpanded {
+                TerminalPodSelectorRow(
+                    title: "Port-forward pod",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    pods: availablePods,
+                    selection: $selectedPortForwardPodID
+                )
+
+                ViewThatFits(in: .horizontal) {
+                    portForwardEndpointFields
+                    VStack(alignment: .leading, spacing: 8) {
+                        portForwardEndpointFields
+                    }
+                }
+
+                activePortForwardList
+            } else {
+                compactPortForwardStatus
+            }
+        }
+        .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
+    }
+
+    private var portForwardTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label("Port Forward", systemImage: "point.3.connected.trianglepath.dotted")
                 .font(.headline)
 
-            if portForwardSessions.isEmpty {
-                Text("No port-forward sessions started yet.")
+            Text(portForwardPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(portForwardPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
+        }
+    }
+
+    private var portForwardStartButton: some View {
+        Button("Start") {
+            if let portForwardPod {
+                onStartPortForward(portForwardPod)
+            }
+        }
+        .disabled(portForwardPod == nil || !canApplyMutations)
+        .controlSize(.small)
+    }
+
+    private var portForwardHeaderActions: some View {
+        HStack(spacing: 6) {
+            portForwardStartButton
+
+            Button {
+                isPortForwardExpanded.toggle()
+            } label: {
+                Label(isPortForwardExpanded ? "Minimize" : "Expand", systemImage: isPortForwardExpanded ? "chevron.up" : "chevron.down")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(isPortForwardExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
+        }
+    }
+
+    private var compactPortForwardStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let session = primaryPortForwardSession {
+                    portForwardStatusDot(session.status)
+                    Text("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
+                    Spacer(minLength: 0)
+                    Text(session.status.rawValue.capitalized)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(portForwardStatusColor(session.status))
+                } else {
+                    portForwardStatusDot(.stopped)
+                    Text("No active port-forward")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Text("\(portForwardLocalPort) -> \(portForwardRemotePort)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text(portForwardPod.map { $0.name } ?? "No pod selected")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                ForEach(portForwardSessions) { session in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(session.resourceLabel)  \(session.localPort):\(session.remotePort)")
-                            .font(.subheadline.weight(.semibold))
-                        Text("\(session.contextName) • \(session.namespace) • \(session.status.rawValue.capitalized)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(portForwardPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
+
+                if activeOrStartingPortForwardSessions.count > 1 {
+                    RuneChip(verticalPadding: 2) {
+                        Text("+\(activeOrStartingPortForwardSessions.count - 1) more")
+                            .font(.caption2.weight(.semibold))
                     }
                 }
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                .fill(.regularMaterial)
-        )
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RuneSurfaceBackground(kind: .editor))
+    }
+
+    private var portForwardEndpointFields: some View {
+        HStack(spacing: 8) {
+            terminalField("Local", text: $portForwardLocalPort, minWidth: 74, idealWidth: 92)
+            Text("->")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            terminalField("Remote", text: $portForwardRemotePort, minWidth: 74, idealWidth: 92)
+            terminalField("Address", text: $portForwardAddress, minWidth: 120, idealWidth: 150)
+            Spacer(minLength: 0)
+        }
+        .controlSize(.small)
+    }
+
+    private var activePortForwardList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Active Port Forwards")
+                .font(.subheadline.weight(.semibold))
+
+            if portForwardSessions.isEmpty {
+                Text("No port-forward sessions started yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(portForwardSessions) { session in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        portForwardStatusDot(session.status)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(session.resourceLabel)  \(session.localPort):\(session.remotePort)")
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                                .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
+                            Text("\(session.contextName) • \(session.namespace) • \(session.status.rawValue.capitalized)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help("\(session.contextName) • \(session.namespace) • \(session.status.rawValue.capitalized)")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
+                }
+            }
+        }
+    }
+
+    private func terminalField(_ placeholder: String, text: Binding<String>, minWidth: CGFloat, idealWidth: CGFloat) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: idealWidth + 44)
+    }
+
+    private func pod(for id: String) -> PodSummary? {
+        availablePods.first { $0.id == id }
+    }
+
+    private func portForwardStatusDot(_ status: PortForwardStatus) -> some View {
+        Circle()
+            .fill(portForwardStatusColor(status))
+            .frame(width: 8, height: 8)
+            .padding(.top, 4)
+    }
+
+    private func portForwardStatusColor(_ status: PortForwardStatus) -> Color {
+        switch status {
+        case .starting:
+            return .orange
+        case .active:
+            return .green
+        case .stopped:
+            return .secondary
+        case .failed:
+            return .red
+        }
     }
 
     private func terminalStatusBadge(_ status: PodTerminalSessionStatus) -> some View {
@@ -168,6 +393,58 @@ struct ResourceTerminalWorkspaceView: View {
         case .disconnected: return .secondary
         case .failed: return .red
         }
+    }
+}
+
+private struct TerminalPodSelectorRow: View {
+    let title: String
+    let systemImage: String
+    let pods: [PodSummary]
+    @Binding var selection: String
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                selectorLabel
+                    .frame(width: 128, alignment: .leading)
+                picker
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                selectorLabel
+                picker
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RuneSurfaceBackground(kind: .editor))
+    }
+
+    private var selectorLabel: some View {
+        Label(title, systemImage: systemImage)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+
+    private var picker: some View {
+        Picker(title, selection: $selection) {
+            if pods.isEmpty {
+                Text("No pods in namespace").tag("")
+            } else {
+                ForEach(pods) { pod in
+                    Text(podTitle(pod)).tag(pod.id)
+                }
+            }
+        }
+        .labelsHidden()
+        .disabled(pods.isEmpty)
+        .controlSize(.small)
+        .frame(minWidth: 180, idealWidth: 320, maxWidth: .infinity, minHeight: 24, idealHeight: 26, maxHeight: 28, alignment: .leading)
+    }
+
+    private func podTitle(_ pod: PodSummary) -> String {
+        "\(pod.name)  \(pod.status)"
     }
 }
 

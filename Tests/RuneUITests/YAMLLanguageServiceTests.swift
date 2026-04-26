@@ -312,6 +312,41 @@ final class YAMLLanguageServiceTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.15)
     }
 
+    func testLargeDocumentsPreferViewportAnalysis() {
+        let line = "metadata:\n  labels:\n    app: api\n"
+        let source = String(repeating: line, count: 1_000)
+
+        XCTAssertTrue(YAMLLanguageService.prefersViewportAnalysis(source))
+    }
+
+    func testFragmentAnalysisKeepsAbsoluteRangesAndLines() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            app: api
+          bad: [1, 2
+        spec:
+          containers: []
+        """
+        let nsSource = source as NSString
+        let badOffset = nsSource.range(of: "bad:").location
+        let analysis = YAMLLanguageService.analyzeFragment(
+            source,
+            range: NSRange(location: badOffset, length: 16)
+        )
+
+        XCTAssertTrue(analysis.highlights.contains {
+            $0.kind == .key && nsSubstring(source, $0.range) == "bad"
+        })
+        XCTAssertTrue(analysis.validationIssues.contains {
+            $0.message == "Unclosed '[' flow collection."
+                && $0.line == 6
+                && nsSubstring(source, $0.range?.nsRange) == "["
+        })
+    }
+
     private func nsSubstring(_ source: String, _ range: NSRange?) -> String {
         guard let range else { return "" }
         return (source as NSString).substring(with: range)
