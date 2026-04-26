@@ -9,7 +9,7 @@ public enum RuneLaunchEnvironment {
     public static let diagnosticsLoggingVariable = "RUNE_DIAGNOSTICS_LOGGING"
     /// `=1` → mirror `[Rune]` log and trace lines to **stderr** (visible in the Terminal that launched the app).
     public static let logToStderrVariable = "RUNE_LOG_TO_STDERR"
-    /// Absolute path to append JSON lines for every kubectl subprocess (A/B harness, comparisons).
+    /// Absolute path to append JSON lines for Kubernetes request traces (A/B harness, comparisons).
     public static let k8sTraceFileVariable = "RUNE_K8S_TRACE_FILE"
 
     /// Call once at app startup, immediately after ``RuneSettingsKeys/registerDefaults()``.

@@ -295,24 +295,6 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
     }
 }
 
-private enum PodTableLayout {
-    static let metricsSpacing: CGFloat = 10
-    static let rowHorizontalPadding: CGFloat = 10
-    static let rowVerticalPadding: CGFloat = 5
-    static let listRowEdgeInset: CGFloat = 4
-    static let cpuWidth: CGFloat = 44
-    static let memoryWidth: CGFloat = 56
-    static let restartsWidth: CGFloat = 56
-    static let ageWidth: CGFloat = 44
-    static let statusTextWidth: CGFloat = 120
-    static let statusHorizontalPadding: CGFloat = 8
-    static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
-    static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
-    static let minimumScrollableWidth: CGFloat = 620
-    /// Space between column headers and first row — enough to avoid a cramped look without excess air.
-    static let headerBottomSpacing: CGFloat = 10
-}
-
 private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case values
@@ -329,6 +311,24 @@ private enum HelmInspectorTab: String, CaseIterable, Identifiable {
         case .history: return "History"
         }
     }
+}
+
+private enum PodTableLayout {
+    static let metricsSpacing: CGFloat = 10
+    static let rowHorizontalPadding: CGFloat = 10
+    static let rowVerticalPadding: CGFloat = 5
+    static let listRowEdgeInset: CGFloat = 4
+    static let cpuWidth: CGFloat = 44
+    static let memoryWidth: CGFloat = 56
+    static let restartsWidth: CGFloat = 56
+    static let ageWidth: CGFloat = 44
+    static let statusTextWidth: CGFloat = 120
+    static let statusHorizontalPadding: CGFloat = 8
+    static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
+    static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+    static let minimumScrollableWidth: CGFloat = 620
+    /// Space between column headers and first row — enough to avoid a cramped look without excess air.
+    static let headerBottomSpacing: CGFloat = 10
 }
 
 private enum RuneRootKeyboardPane: CaseIterable {
@@ -1327,10 +1327,10 @@ public struct RuneRootView: View {
                 configPane
             case .storage:
                 storagePane
-            case .helm:
-                helmPane
             case .events:
                 eventsPane
+            case .helm:
+                helmPane
             case .terminal:
                 terminalPane
             case .rbac:
@@ -1489,6 +1489,8 @@ public struct RuneRootView: View {
             resourceKindPicker(kinds: viewModel.configKinds)
         case .storage:
             resourceKindPicker(kinds: viewModel.storageKinds)
+        case .rbac:
+            resourceKindPicker(kinds: viewModel.rbacKinds)
         case .helm:
             Toggle("All namespaces", isOn: Binding(get: {
                 viewModel.state.isHelmAllNamespaces
@@ -1496,8 +1498,7 @@ public struct RuneRootView: View {
                 viewModel.setHelmAllNamespaces(value)
             }))
             .toggleStyle(.switch)
-        case .rbac:
-            resourceKindPicker(kinds: viewModel.rbacKinds)
+            .controlSize(.small)
         default:
             EmptyView()
         }
@@ -1979,47 +1980,57 @@ public struct RuneRootView: View {
     }
 
     private var helmPane: some View {
-        List(viewModel.visibleHelmReleases) { release in
-            Button {
-                viewModel.selectHelmRelease(release)
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(release.name)
-                            .font(.body.weight(.medium))
-                            .help(release.name)
-                        Spacer()
-                        Text(release.status.capitalized)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(statusColor(for: release.status).opacity(0.22), in: Capsule())
-                            .foregroundStyle(statusColor(for: release.status))
-                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                if viewModel.state.isLoading, viewModel.visibleHelmReleases.isEmpty {
+                    inspectorEmptyState("Loading Helm releases", symbol: "hourglass")
+                } else if viewModel.visibleHelmReleases.isEmpty {
+                    inspectorEmptyState("No Helm releases found", symbol: "ferry")
+                } else {
+                    ForEach(viewModel.visibleHelmReleases) { release in
+                        Button {
+                            viewModel.selectHelmRelease(release)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(release.name)
+                                        .font(.body.weight(.medium))
+                                        .lineLimit(1)
+                                        .help(release.name)
+                                    Spacer()
+                                    Text(release.status.capitalized)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 2)
+                                        .background(statusColor(for: release.status).opacity(0.22), in: Capsule())
+                                        .foregroundStyle(statusColor(for: release.status))
+                                }
 
-                    HStack(spacing: 8) {
-                        if shouldShowResourceNamespaceLabel(release.namespace) {
-                            Text(release.namespace)
+                                HStack(spacing: 8) {
+                                    if shouldShowResourceNamespaceLabel(release.namespace) {
+                                        Text(release.namespace)
+                                    }
+                                    Text("Rev \(release.revision)")
+                                    Text(release.chart)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            }
+                            .runeListRowCard(isSelected: viewModel.state.selectedHelmRelease == release)
                         }
-                        Text("Rev \(release.revision)")
-                        Text(release.chart)
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            copyMenuItem(value: release.name, label: "Helm release name")
+                            copyMenuItem(value: release.namespace, label: "namespace")
+                        }
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 }
-                .runeListRowCard(isSelected: viewModel.state.selectedHelmRelease == release)
             }
-            .buttonStyle(.plain)
-            .contextMenu {
-                copyMenuItem(value: release.name, label: "Helm release name")
-                copyMenuItem(value: release.namespace, label: "namespace")
-            }
-            .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
-            .listRowBackground(Color.clear)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.vertical, 2)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -2092,12 +2103,12 @@ public struct RuneRootView: View {
                     configDetails
                 case .storage:
                     storageDetails
-                case .helm:
-                    helmDetails
-                case .events:
-                    eventDetails
-                case .rbac:
-                    rbacDetails
+            case .events:
+                eventDetails
+            case .helm:
+                helmDetails
+            case .rbac:
+                rbacDetails
                 case .terminal:
                     terminalDetails
                 }
@@ -2280,13 +2291,16 @@ public struct RuneRootView: View {
                             Text(tab.title).tag(tab)
                         }
                     }
-                    .accessibilityLabel("Inspector")
+                    .accessibilityLabel("Helm inspector")
 
                     switch helmInspectorTab {
                     case .overview:
                         VStack(alignment: .leading, spacing: 10) {
                             if shouldShowResourceNamespaceLabel(release.namespace) {
-                                Label("Namespace: \(release.namespace)", systemImage: "square.stack.3d.up")
+                                HStack(spacing: 6) {
+                                    Label("Namespace: \(release.namespace)", systemImage: "square.stack.3d.up")
+                                    copyButton(value: release.namespace, label: "namespace")
+                                }
                             }
                             Label("Status: \(release.status.capitalized)", systemImage: "checkmark.seal")
                             Label("Chart: \(release.chart)", systemImage: "shippingbox")
@@ -2295,18 +2309,8 @@ public struct RuneRootView: View {
                             Text(release.updated)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-
-                            HStack(spacing: 10) {
-                                TextField("Rollback revision", text: $viewModel.helmRollbackRevisionInput)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: 140)
-
-                                Button("Rollback") {
-                                    viewModel.requestRollbackSelectedHelmRelease()
-                                }
-                                .disabled(!viewModel.canApplyClusterMutations)
-                            }
                         }
+                        .font(.subheadline.weight(.medium))
 
                     case .values:
                         exportableTextPane(
@@ -2332,11 +2336,10 @@ public struct RuneRootView: View {
                             }
 
                             if viewModel.state.helmHistory.isEmpty {
-                                Text("No history loaded")
-                                    .foregroundStyle(.secondary)
+                                inspectorEmptyState("No history loaded", symbol: "clock.arrow.circlepath")
                             } else {
                                 ScrollView {
-                                    VStack(alignment: .leading, spacing: 10) {
+                                    LazyVStack(alignment: .leading, spacing: 10) {
                                         ForEach(viewModel.state.helmHistory) { entry in
                                             VStack(alignment: .leading, spacing: 4) {
                                                 HStack {
@@ -3608,12 +3611,6 @@ public struct RuneRootView: View {
             return openPortForwardInspectorForSelection()
         case .rollout:
             return openRolloutInspectorForSelection()
-        case .helmValues:
-            return openHelmInspectorTab(.values)
-        case .helmManifest:
-            return openHelmInspectorTab(.manifest)
-        case .helmHistory:
-            return openHelmInspectorTab(.history)
         }
     }
 
@@ -3748,17 +3745,6 @@ public struct RuneRootView: View {
             return false
         }
         deploymentInspectorTab = .rollout
-        yamlManifestIsEditing = false
-        keyboardPaneFocus = .detail
-        return true
-    }
-
-    private func openHelmInspectorTab(_ tab: HelmInspectorTab) -> Bool {
-        guard viewModel.state.selectedSection == .helm,
-              viewModel.state.selectedHelmRelease != nil else {
-            return false
-        }
-        helmInspectorTab = tab
         yamlManifestIsEditing = false
         keyboardPaneFocus = .detail
         return true

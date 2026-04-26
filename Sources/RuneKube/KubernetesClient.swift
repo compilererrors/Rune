@@ -1,9 +1,10 @@
+import Compression
 import Foundation
 import RuneCore
 import RuneDiagnostics
 import RuneSecurity
 
-public final class KubernetesClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ManifestValidationService, ResourceWriteService, @unchecked Sendable {
+public final class KubernetesClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ManifestValidationService, ResourceWriteService, HelmReleaseService, @unchecked Sendable {
     private let parser: KubernetesOutputParser
     private let restClient: KubernetesRESTClient
     private let commandTimeout: TimeInterval
@@ -1071,6 +1072,69 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func listReleases(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?,
+        allNamespaces: Bool
+    ) async throws -> [HelmReleaseSummary] {
+        let releases = try await helmReleases(
+            from: sources,
+            context: context,
+            namespace: allNamespaces ? nil : namespace
+        )
+        let latest = Dictionary(grouping: releases, by: { "\($0.namespace)/\($0.name)" })
+            .compactMap { _, revisions in revisions.max { $0.revision < $1.revision } }
+        return latest
+            .map(\.summary)
+            .sorted {
+                let ns = $0.namespace.localizedCaseInsensitiveCompare($1.namespace)
+                if ns != .orderedSame { return ns == .orderedAscending }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    public func releaseValues(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String {
+        let release = try await latestHelmRelease(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            releaseName: releaseName
+        )
+        return HelmValueYAMLRenderer.render(release.config)
+    }
+
+    public func releaseManifest(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> String {
+        try await latestHelmRelease(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            releaseName: releaseName
+        ).manifest
+    }
+
+    public func releaseHistory(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> [HelmReleaseRevision] {
+        try await helmReleases(from: sources, context: context, namespace: namespace)
+            .filter { $0.name == releaseName }
+            .sorted { $0.revision > $1.revision }
+            .map(\.revisionSummary)
+    }
+
     public func execInPod(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -1225,6 +1289,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         address: String,
         onEvent: @escaping @Sendable (PortForwardSession) -> Void
     ) async throws -> PortForwardSession {
+        let env = try kubeconfigEnvironment(from: sources)
         let sessionID = UUID().uuidString
         let baseSession = PortForwardSession(
             id: sessionID,
@@ -1237,21 +1302,105 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             address: address,
             status: .starting
         )
-        onEvent(
-            PortForwardSession(
-                id: sessionID,
-                contextName: context.name,
+
+        onEvent(baseSession)
+
+        let podName: String
+        switch targetKind {
+        case .pod:
+            podName = targetName
+        case .service:
+            let selectorMap = try await requiredServiceSelectorViaREST(
+                environment: env,
+                context: context,
                 namespace: namespace,
-                targetKind: targetKind,
-                targetName: targetName,
-                localPort: localPort,
-                remotePort: remotePort,
-                address: address,
-                status: .failed,
-                lastMessage: "Native Kubernetes port-forward transport is not implemented yet."
+                serviceName: targetName
             )
+            guard !selectorMap.isEmpty else {
+                throw RuneError.parseError(message: "Service \(targetName) is missing a selector and cannot be port-forwarded.")
+            }
+
+            let selector = selectorMap
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ",")
+            let pods = try await requiredPodsBySelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                selector: selector
+            )
+            guard let selectedPod = Self.preferredPortForwardPod(from: pods) else {
+                throw RuneError.parseError(message: "No pods matched service \(targetName) selector \(selector).")
+            }
+            podName = selectedPod.name
+        }
+
+        let handle = try await restClient.startPodPortForward(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            podName: podName,
+            localPort: localPort,
+            remotePort: remotePort,
+            address: address,
+            onReady: {
+                onEvent(
+                    PortForwardSession(
+                        id: sessionID,
+                        contextName: context.name,
+                        namespace: namespace,
+                        targetKind: targetKind,
+                        targetName: targetName,
+                        localPort: localPort,
+                        remotePort: remotePort,
+                        address: address,
+                        status: .active,
+                        lastMessage: "Forwarding \(address):\(localPort) to \(podName):\(remotePort)"
+                    )
+                )
+            },
+            onFailure: { message in
+                onEvent(
+                    PortForwardSession(
+                        id: sessionID,
+                        contextName: context.name,
+                        namespace: namespace,
+                        targetKind: targetKind,
+                        targetName: targetName,
+                        localPort: localPort,
+                        remotePort: remotePort,
+                        address: address,
+                        status: .failed,
+                        lastMessage: message
+                    )
+                )
+            }
         )
-        return baseSession
+        await portForwardRegistry.insert(handle: handle, id: sessionID)
+        return PortForwardSession(
+            id: sessionID,
+            contextName: context.name,
+            namespace: namespace,
+            targetKind: targetKind,
+            targetName: targetName,
+            localPort: localPort,
+            remotePort: remotePort,
+            address: address,
+            status: .starting,
+            lastMessage: "Starting port-forward to \(podName):\(remotePort)"
+        )
+    }
+
+    static func preferredPortForwardPod(from pods: [PodSummary]) -> PodSummary? {
+        pods
+            .sorted { lhs, rhs in
+                let lhsRunning = lhs.status.localizedCaseInsensitiveCompare("Running") == .orderedSame
+                let rhsRunning = rhs.status.localizedCaseInsensitiveCompare("Running") == .orderedSame
+                if lhsRunning != rhsRunning { return lhsRunning && !rhsRunning }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            .first
     }
 
     public func stopPortForward(sessionID: String) async {
@@ -1402,6 +1551,54 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             timeout: timeout
         )
         return try parse(raw)
+    }
+
+    private func helmReleases(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?
+    ) async throws -> [DecodedHelmRelease] {
+        let env = try kubeconfigEnvironment(from: sources)
+        var objects: [HelmStorageObject] = []
+        var lastError: Error?
+
+        for resource in ["secrets", "configmaps"] {
+            do {
+                let raw = try await restClient.collection(
+                    environment: env,
+                    contextName: context.name,
+                    resource: resource,
+                    namespace: namespace,
+                    timeout: slowNamespacedJSONListTimeout,
+                    options: KubernetesListOptions(labelSelector: "owner=helm")
+                )
+                objects.append(contentsOf: try HelmStorageObject.parseList(raw, storageResource: resource))
+            } catch {
+                lastError = error
+            }
+        }
+
+        let decoded = objects.compactMap { object in
+            try? object.decodeRelease()
+        }
+        if decoded.isEmpty, let lastError, objects.isEmpty {
+            throw lastError
+        }
+        return decoded
+    }
+
+    private func latestHelmRelease(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        releaseName: String
+    ) async throws -> DecodedHelmRelease {
+        let matches = try await helmReleases(from: sources, context: context, namespace: namespace)
+            .filter { $0.name == releaseName }
+        guard let latest = matches.max(by: { $0.revision < $1.revision }) else {
+            throw RuneError.invalidInput(message: "Helm release \(releaseName) was not found in namespace \(namespace).")
+        }
+        return latest
     }
 
     private func podLogsViaREST(
@@ -2063,6 +2260,266 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 containerNamesLine: pod.containerNamesLine
             )
         }
+    }
+}
+
+private struct HelmStorageObject {
+    let name: String
+    let namespace: String
+    let labels: [String: String]
+    let releasePayload: String
+    let isSecret: Bool
+
+    static func parseList(_ raw: String, storageResource: String) throws -> [HelmStorageObject] {
+        guard
+            let root = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+            let items = root["items"] as? [[String: Any]]
+        else { return [] }
+
+        return items.compactMap { item in
+            guard
+                let metadata = item["metadata"] as? [String: Any],
+                let name = metadata["name"] as? String,
+                let namespace = metadata["namespace"] as? String
+            else { return nil }
+
+            let labels = (metadata["labels"] as? [String: String]) ?? [:]
+            let payload: String?
+            if storageResource == "secrets" {
+                payload = (item["data"] as? [String: String])?["release"]
+            } else {
+                payload = (item["data"] as? [String: String])?["release"]
+            }
+            guard let payload, !payload.isEmpty else { return nil }
+            return HelmStorageObject(
+                name: name,
+                namespace: namespace,
+                labels: labels,
+                releasePayload: payload,
+                isSecret: storageResource == "secrets"
+            )
+        }
+    }
+
+    func decodeRelease() throws -> DecodedHelmRelease {
+        let storedRelease: String
+        if isSecret {
+            guard let decoded = Data(base64Encoded: releasePayload),
+                  let string = String(data: decoded, encoding: .utf8) else {
+                throw RuneError.parseError(message: "Helm release Secret \(namespace)/\(name) could not be base64 decoded.")
+            }
+            storedRelease = string
+        } else {
+            storedRelease = releasePayload
+        }
+
+        let releaseJSON: Data
+        if let storedData = Data(base64Encoded: storedRelease),
+           let inflated = try? GzipInflator.inflate(storedData) {
+            releaseJSON = inflated
+        } else if let plain = storedRelease.data(using: .utf8), plain.first == UInt8(ascii: "{") {
+            releaseJSON = plain
+        } else {
+            throw RuneError.parseError(message: "Helm release \(namespace)/\(name) uses an unsupported storage payload.")
+        }
+
+        guard let root = try JSONSerialization.jsonObject(with: releaseJSON) as? [String: Any] else {
+            throw RuneError.parseError(message: "Helm release \(namespace)/\(name) JSON could not be parsed.")
+        }
+        return DecodedHelmRelease(raw: root, fallbackNamespace: namespace, labels: labels)
+    }
+}
+
+private struct DecodedHelmRelease {
+    let name: String
+    let namespace: String
+    let revision: Int
+    let updated: String
+    let status: String
+    let chart: String
+    let appVersion: String
+    let description: String
+    let config: Any
+    let manifest: String
+
+    init(raw: [String: Any], fallbackNamespace: String, labels: [String: String]) {
+        let info = raw["info"] as? [String: Any] ?? [:]
+        let chartRoot = raw["chart"] as? [String: Any] ?? [:]
+        let metadata = chartRoot["metadata"] as? [String: Any] ?? [:]
+        let chartName = metadata["name"] as? String ?? labels["name"] ?? ""
+        let chartVersion = metadata["version"] as? String ?? ""
+
+        self.name = raw["name"] as? String ?? labels["name"] ?? ""
+        self.namespace = raw["namespace"] as? String ?? fallbackNamespace
+        self.revision = raw["version"] as? Int ?? Int(labels["version"] ?? "") ?? 0
+        self.updated = info["last_deployed"] as? String
+            ?? info["lastDeployed"] as? String
+            ?? info["first_deployed"] as? String
+            ?? ""
+        self.status = info["status"] as? String ?? labels["status"] ?? ""
+        self.chart = [chartName, chartVersion].filter { !$0.isEmpty }.joined(separator: "-")
+        self.appVersion = metadata["appVersion"] as? String
+            ?? metadata["app_version"] as? String
+            ?? ""
+        self.description = info["description"] as? String ?? ""
+        self.config = raw["config"] ?? [:]
+        self.manifest = raw["manifest"] as? String ?? ""
+    }
+
+    var summary: HelmReleaseSummary {
+        HelmReleaseSummary(
+            name: name,
+            namespace: namespace,
+            revision: revision,
+            updated: updated,
+            status: status,
+            chart: chart,
+            appVersion: appVersion
+        )
+    }
+
+    var revisionSummary: HelmReleaseRevision {
+        HelmReleaseRevision(
+            revision: revision,
+            updated: updated,
+            status: status,
+            chart: chart,
+            appVersion: appVersion,
+            description: description
+        )
+    }
+}
+
+private enum HelmValueYAMLRenderer {
+    static func render(_ value: Any) -> String {
+        let rendered = renderValue(value, indent: 0)
+        return rendered.isEmpty ? "{}\n" : rendered
+    }
+
+    private static func renderValue(_ value: Any, indent: Int) -> String {
+        if let dictionary = value as? [String: Any] {
+            return renderDictionary(dictionary, indent: indent)
+        }
+        if let array = value as? [Any] {
+            return renderArray(array, indent: indent)
+        }
+        return "\(scalar(value))\n"
+    }
+
+    private static func renderDictionary(_ dictionary: [String: Any], indent: Int) -> String {
+        guard !dictionary.isEmpty else { return "{}\n" }
+        let prefix = String(repeating: " ", count: indent)
+        return dictionary.keys.sorted().map { key in
+            let value = dictionary[key] as Any
+            if value is [String: Any] || value is [Any] {
+                let nested = renderValue(value, indent: indent + 2)
+                return "\(prefix)\(key):\n\(nested)"
+            }
+            return "\(prefix)\(key): \(scalar(value))\n"
+        }.joined()
+    }
+
+    private static func renderArray(_ array: [Any], indent: Int) -> String {
+        guard !array.isEmpty else { return "[]\n" }
+        let prefix = String(repeating: " ", count: indent)
+        return array.map { value in
+            if value is [String: Any] || value is [Any] {
+                let nested = renderValue(value, indent: indent + 2)
+                return "\(prefix)-\n\(nested)"
+            }
+            return "\(prefix)- \(scalar(value))\n"
+        }.joined()
+    }
+
+    private static func scalar(_ value: Any) -> String {
+        switch value {
+        case let string as String:
+            if string.isEmpty { return "\"\"" }
+            if string.range(of: #"[:#\[\]\{\},&\*\?|\-<>=!%@`]"#, options: .regularExpression) != nil
+                || string.trimmingCharacters(in: .whitespacesAndNewlines) != string {
+                if let encoded = try? JSONEncoder().encode(string) {
+                    return String(decoding: encoded, as: UTF8.self)
+                }
+                return "\"\(string.replacingOccurrences(of: "\"", with: "\\\""))\""
+            }
+            return string
+        case let number as NSNumber:
+            return number.stringValue
+        case is NSNull:
+            return "null"
+        default:
+            return "\(value)"
+        }
+    }
+}
+
+private enum GzipInflator {
+    static func inflate(_ data: Data) throws -> Data {
+        let body = try deflateBody(from: data)
+        let initialCapacity = max(Int(gzipISize(data) ?? 0), body.count * 4, 1024)
+        return try inflateRawDeflate(body, initialCapacity: initialCapacity)
+    }
+
+    private static func deflateBody(from data: Data) throws -> Data {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 18, bytes[0] == 0x1f, bytes[1] == 0x8b, bytes[2] == 8 else {
+            throw RuneError.parseError(message: "Helm release payload is not gzip data.")
+        }
+        let flags = bytes[3]
+        var index = 10
+
+        if flags & 0x04 != 0 {
+            guard index + 2 <= bytes.count else { throw RuneError.parseError(message: "Malformed gzip header.") }
+            let extraLength = Int(bytes[index]) | (Int(bytes[index + 1]) << 8)
+            index += 2 + extraLength
+        }
+        if flags & 0x08 != 0 {
+            while index < bytes.count, bytes[index] != 0 { index += 1 }
+            index += 1
+        }
+        if flags & 0x10 != 0 {
+            while index < bytes.count, bytes[index] != 0 { index += 1 }
+            index += 1
+        }
+        if flags & 0x02 != 0 {
+            index += 2
+        }
+
+        guard index < bytes.count - 8 else {
+            throw RuneError.parseError(message: "Malformed gzip body.")
+        }
+        return Data(bytes[index..<(bytes.count - 8)])
+    }
+
+    private static func gzipISize(_ data: Data) -> UInt32? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 4 else { return nil }
+        let tail = bytes.suffix(4)
+        return tail.enumerated().reduce(UInt32(0)) { partial, pair in
+            partial | (UInt32(pair.element) << UInt32(pair.offset * 8))
+        }
+    }
+
+    private static func inflateRawDeflate(_ data: Data, initialCapacity: Int) throws -> Data {
+        var capacity = initialCapacity
+        while capacity <= 64 * 1024 * 1024 {
+            var output = [UInt8](repeating: 0, count: capacity)
+            let decoded = data.withUnsafeBytes { source in
+                compression_decode_buffer(
+                    &output,
+                    output.count,
+                    source.bindMemory(to: UInt8.self).baseAddress!,
+                    data.count,
+                    nil,
+                    COMPRESSION_ZLIB
+                )
+            }
+            if decoded > 0 {
+                return Data(output.prefix(decoded))
+            }
+            capacity *= 2
+        }
+        throw RuneError.parseError(message: "Helm release payload could not be decompressed.")
     }
 }
 

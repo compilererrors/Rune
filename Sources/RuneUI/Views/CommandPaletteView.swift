@@ -20,7 +20,7 @@ struct CommandPaletteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Command Palette")
                     .font(.title3.weight(.semibold))
-                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ov`, `:rbac`, `:cr`, `:helm`, `:cj` …")
+                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ov`, `:rbac`, `:cr`, `:cj` …")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -54,7 +54,6 @@ struct CommandPaletteView: View {
                     paletteHint(":ns")
                     paletteHint(":ov")
                     paletteHint(":rbac")
-                    paletteHint(":helm")
                     paletteHint(":reload")
                     keyboardHint()
                 }

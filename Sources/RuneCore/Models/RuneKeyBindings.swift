@@ -102,9 +102,6 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
     case yaml
     case portForward
     case rollout
-    case helmValues
-    case helmManifest
-    case helmHistory
 
     public var id: String { rawValue }
 
@@ -118,9 +115,6 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .yaml: return "YAML"
         case .portForward: return "Port Forward"
         case .rollout: return "Rollout"
-        case .helmValues: return "Helm Values"
-        case .helmManifest: return "Helm Manifest"
-        case .helmHistory: return "Helm History"
         }
     }
 
@@ -142,12 +136,6 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return "Open the port-forward pane for the selected pod or service."
         case .rollout:
             return "Open rollout actions/history for the selected deployment."
-        case .helmValues:
-            return "Open Helm release values for the selected release."
-        case .helmManifest:
-            return "Open Helm release manifest for the selected release."
-        case .helmHistory:
-            return "Open Helm release history for the selected release."
         }
     }
 
@@ -169,12 +157,6 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "f", requiresShift: true)!
         case .rollout:
             return RuneKeyboardShortcut(key: "r", requiresShift: false)!
-        case .helmValues:
-            return RuneKeyboardShortcut(key: "v", requiresShift: false)!
-        case .helmManifest:
-            return RuneKeyboardShortcut(key: "m", requiresShift: false)!
-        case .helmHistory:
-            return RuneKeyboardShortcut(key: "h", requiresShift: false)!
         }
     }
 
@@ -188,9 +170,6 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .yaml: return RuneSettingsKeys.keyBindingYAML
         case .portForward: return RuneSettingsKeys.keyBindingPortForward
         case .rollout: return RuneSettingsKeys.keyBindingRollout
-        case .helmValues: return RuneSettingsKeys.keyBindingHelmValues
-        case .helmManifest: return RuneSettingsKeys.keyBindingHelmManifest
-        case .helmHistory: return RuneSettingsKeys.keyBindingHelmHistory
         }
     }
 }

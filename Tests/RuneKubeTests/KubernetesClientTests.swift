@@ -87,6 +87,16 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(KubernetesListJSON.collectionPageInfo(from: raw)?.continueToken, "next")
     }
 
+    func testPreferredPortForwardPodChoosesRunningPodDeterministically() {
+        let pods = [
+            PodSummary(name: "api-b", namespace: "default", status: "Pending"),
+            PodSummary(name: "api-c", namespace: "default", status: "Running"),
+            PodSummary(name: "api-a", namespace: "default", status: "Running")
+        ]
+
+        XCTAssertEqual(KubernetesClient.preferredPortForwardPod(from: pods)?.name, "api-a")
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-native-kubeconfig-\(UUID().uuidString).yaml")

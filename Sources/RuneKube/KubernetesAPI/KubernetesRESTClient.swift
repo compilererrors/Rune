@@ -1,6 +1,7 @@
 import Foundation
 import RuneCore
-import Security
+@preconcurrency import Security
+import Network
 
 final class KubernetesRESTClient: @unchecked Sendable {
     private let configCache = KubernetesRESTConfigCache()
@@ -680,6 +681,65 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return handle
     }
 
+    func startPodPortForward(
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        podName: String,
+        localPort: Int,
+        remotePort: Int,
+        address: String,
+        onReady: @escaping @Sendable () -> Void,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) async throws -> any RunningCommandControlling {
+        guard (1...65535).contains(localPort), (1...65535).contains(remotePort) else {
+            throw RuneError.invalidInput(message: "Port-forward ports must be between 1 and 65535.")
+        }
+
+        let resolved = try await resolvedContext(environment: environment, contextName: contextName)
+        let session = makeSession(for: resolved)
+        let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(address),
+            port: port
+        )
+
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: parameters, on: port)
+        } catch {
+            session.invalidateAndCancel()
+            throw error
+        }
+
+        let handle = KubernetesPortForwardHandle(
+            listener: listener,
+            session: session,
+            resolved: resolved,
+            namespace: namespace,
+            podName: podName,
+            remotePort: remotePort,
+            makeTask: { [weak self] session, resolved in
+                guard let self else {
+                    throw RuneError.commandFailed(command: "port-forward", message: "Kubernetes client was released.")
+                }
+                return try self.makePortForwardWebSocketTask(
+                    session: session,
+                    resolved: resolved,
+                    namespace: namespace,
+                    podName: podName,
+                    remotePort: remotePort
+                )
+            },
+            onReady: onReady,
+            onFailure: onFailure
+        )
+        handle.start()
+        return handle
+    }
+
     private func resourcePath(
         kind: KubeResourceKind,
         namespace: String,
@@ -785,6 +845,23 @@ final class KubernetesRESTClient: @unchecked Sendable {
             break
         }
         return session.webSocketTask(with: request)
+    }
+
+    private func makePortForwardWebSocketTask(
+        session: URLSession,
+        resolved: ResolvedRESTContext,
+        namespace: String,
+        podName: String,
+        remotePort: Int
+    ) throws -> URLSessionWebSocketTask {
+        var components = URLComponents()
+        components.path = try resourcePath(kind: .pod, namespace: namespace, resource: "pods", name: podName, subresource: "portforward")
+        components.queryItems = [URLQueryItem(name: "ports", value: "\(remotePort)")]
+        return try makeWebSocketTask(
+            session: session,
+            resolved: resolved,
+            apiPath: components.percentEncodedPath + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
+        )
     }
 
     private func receiveExecOutput(
@@ -894,7 +971,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         let delegate = RESTURLSessionDelegate(
             insecureSkipTLSVerify: resolved.insecureSkipTLSVerify,
             certificateAuthorityData: resolved.certificateAuthorityData,
-            tlsServerName: resolved.tlsServerName
+            tlsServerName: resolved.tlsServerName,
+            clientIdentity: resolved.clientIdentity
         )
         return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
@@ -931,7 +1009,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
             authentication: authentication,
             insecureSkipTLSVerify: namedCluster.cluster.insecureSkipTLSVerify ?? false,
             certificateAuthorityData: try namedCluster.cluster.resolvedCertificateAuthorityData(),
-            tlsServerName: namedCluster.cluster.tlsServerName
+            tlsServerName: namedCluster.cluster.tlsServerName,
+            clientIdentity: try namedUser?.user.resolvedClientIdentity()
         )
     }
 
@@ -954,7 +1033,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
         if let exec = user.exec {
             throw RuneError.invalidInput(
-                message: "Kubeconfig exec auth is not available in the native runtime yet: \(exec.command)"
+                message: "Kubeconfig exec auth requires an external provider command, which Rune's native runtime does not invoke: \(exec.command)"
             )
         }
 
@@ -962,10 +1041,6 @@ final class KubernetesRESTClient: @unchecked Sendable {
            let password = user.password,
            !username.isEmpty {
             return .basic(username: username, password: password)
-        }
-
-        if user.clientCertificateData != nil || user.clientKeyData != nil {
-            throw RuneError.invalidInput(message: "Client certificate auth is not supported yet in the Rune REST transport")
         }
 
         return .none
@@ -1069,6 +1144,8 @@ private struct NormalizedKubeConfig: Decodable {
             let exec: ExecConfig?
             let clientCertificateData: String?
             let clientKeyData: String?
+            let clientCertificate: String?
+            let clientKey: String?
 
             enum CodingKeys: String, CodingKey {
                 case token
@@ -1078,6 +1155,35 @@ private struct NormalizedKubeConfig: Decodable {
                 case exec
                 case clientCertificateData = "client-certificate-data"
                 case clientKeyData = "client-key-data"
+                case clientCertificate = "client-certificate"
+                case clientKey = "client-key"
+            }
+
+            func resolvedClientIdentity() throws -> SecIdentity? {
+                guard let certificateData = try resolvedClientCertificateData() else {
+                    return nil
+                }
+                guard let certificate = SecCertificateCreateWithData(nil, normalizedCertificateData(certificateData) as CFData) else {
+                    throw RuneError.invalidInput(message: "Client certificate data in kubeconfig could not be parsed")
+                }
+                var identity: SecIdentity?
+                let status = SecIdentityCreateWithCertificate(nil, certificate, &identity)
+                guard status == errSecSuccess, let identity else {
+                    throw RuneError.invalidInput(
+                        message: "Client certificate auth requires a matching private key in the macOS keychain"
+                    )
+                }
+                return identity
+            }
+
+            private func resolvedClientCertificateData() throws -> Data? {
+                if let clientCertificateData, let decoded = Data(base64Encoded: clientCertificateData) {
+                    return decoded
+                }
+                guard let clientCertificate, !clientCertificate.isEmpty else {
+                    return nil
+                }
+                return try Data(contentsOf: URL(fileURLWithPath: NSString(string: clientCertificate).expandingTildeInPath))
             }
         }
 
@@ -1206,6 +1312,8 @@ private struct DirectKubeConfigParser {
         var password: String?
         var clientCertificateData: String?
         var clientKeyData: String?
+        var clientCertificate: String?
+        var clientKey: String?
         var execCommand: String?
         var execArgs: [String] = []
         var execEnv: [NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig.EnvironmentEntry] = []
@@ -1228,7 +1336,9 @@ private struct DirectKubeConfigParser {
                     password: password,
                     exec: exec,
                     clientCertificateData: clientCertificateData,
-                    clientKeyData: clientKeyData
+                    clientKeyData: clientKeyData,
+                    clientCertificate: clientCertificate,
+                    clientKey: clientKey
                 )
             )
         }
@@ -1405,6 +1515,10 @@ private struct DirectKubeConfigParser {
             user?.clientCertificateData = value
         } else if let value = scalarValue(line, key: "client-key-data") {
             user?.clientKeyData = value
+        } else if let value = scalarValue(line, key: "client-certificate") {
+            user?.clientCertificate = value
+        } else if let value = scalarValue(line, key: "client-key") {
+            user?.clientKey = value
         }
     }
 
@@ -1677,6 +1791,7 @@ private struct ResolvedRESTContext {
     let insecureSkipTLSVerify: Bool
     let certificateAuthorityData: Data?
     let tlsServerName: String?
+    let clientIdentity: SecIdentity?
 }
 
 private enum RESTAuthentication {
@@ -1706,15 +1821,18 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
     private let insecureSkipTLSVerify: Bool
     private let certificateAuthorityData: Data?
     private let tlsServerName: String?
+    private let clientIdentity: SecIdentity?
 
     init(
         insecureSkipTLSVerify: Bool,
         certificateAuthorityData: Data?,
-        tlsServerName: String?
+        tlsServerName: String?,
+        clientIdentity: SecIdentity?
     ) {
         self.insecureSkipTLSVerify = insecureSkipTLSVerify
         self.certificateAuthorityData = certificateAuthorityData
         self.tlsServerName = tlsServerName
+        self.clientIdentity = clientIdentity
     }
 
     func urlSession(
@@ -1722,6 +1840,18 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodClientCertificate {
+            guard let clientIdentity else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            completionHandler(
+                .useCredential,
+                URLCredential(identity: clientIdentity, certificates: nil, persistence: .forSession)
+            )
+            return
+        }
+
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil)
@@ -1743,7 +1873,7 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         SecTrustSetPolicies(trust, policy)
 
         if let certificateAuthorityData,
-           let certificate = SecCertificateCreateWithData(nil, pemOrDERCertificateData(certificateAuthorityData) as CFData) {
+           let certificate = SecCertificateCreateWithData(nil, normalizedCertificateData(certificateAuthorityData) as CFData) {
             SecTrustSetAnchorCertificates(trust, [certificate] as CFArray)
             SecTrustSetAnchorCertificatesOnly(trust, false)
         }
@@ -1756,22 +1886,23 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         }
     }
 
-    private func pemOrDERCertificateData(_ data: Data) -> Data {
-        guard let string = String(data: data, encoding: .utf8),
-              string.contains("BEGIN CERTIFICATE"),
-              let pem = extractPEMBody(from: string) else {
-            return data
-        }
-        return pem
-    }
+}
 
-    private func extractPEMBody(from string: String) -> Data? {
-        let lines = string
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .filter { !$0.contains("BEGIN CERTIFICATE") && !$0.contains("END CERTIFICATE") }
-        return Data(base64Encoded: lines.joined())
+private func normalizedCertificateData(_ data: Data) -> Data {
+    guard let string = String(data: data, encoding: .utf8),
+          string.contains("BEGIN CERTIFICATE"),
+          let pem = extractPEMBody(from: string) else {
+        return data
     }
+    return pem
+}
+
+private func extractPEMBody(from string: String) -> Data? {
+    let lines = string
+        .split(whereSeparator: \.isNewline)
+        .map(String.init)
+        .filter { !$0.contains("BEGIN CERTIFICATE") && !$0.contains("END CERTIFICATE") }
+    return Data(base64Encoded: lines.joined())
 }
 
 private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @unchecked Sendable {
@@ -1855,6 +1986,261 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
 
         func markTerminated() {
             isTerminated = true
+        }
+    }
+}
+
+private final class KubernetesPortForwardHandle: RunningCommandControlling, @unchecked Sendable {
+    let id = UUID()
+
+    private let listener: NWListener
+    private let session: URLSession
+    private let resolved: ResolvedRESTContext
+    private let namespace: String
+    private let podName: String
+    private let remotePort: Int
+    private let makeTask: @Sendable (URLSession, ResolvedRESTContext) throws -> URLSessionWebSocketTask
+    private let onReady: @Sendable () -> Void
+    private let onFailure: @Sendable (String) -> Void
+    private let queue = DispatchQueue(label: "com.rune.kubernetes-port-forward")
+    private let lock = NSLock()
+    private var bridges: [UUID: PortForwardConnectionBridge] = [:]
+    private var terminated = false
+
+    init(
+        listener: NWListener,
+        session: URLSession,
+        resolved: ResolvedRESTContext,
+        namespace: String,
+        podName: String,
+        remotePort: Int,
+        makeTask: @escaping @Sendable (URLSession, ResolvedRESTContext) throws -> URLSessionWebSocketTask,
+        onReady: @escaping @Sendable () -> Void,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) {
+        self.listener = listener
+        self.session = session
+        self.resolved = resolved
+        self.namespace = namespace
+        self.podName = podName
+        self.remotePort = remotePort
+        self.makeTask = makeTask
+        self.onReady = onReady
+        self.onFailure = onFailure
+    }
+
+    func start() {
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.onReady()
+            case let .failed(error):
+                self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
+                self.terminate()
+            case .cancelled:
+                self.closeAllBridges()
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.accept(connection)
+        }
+        listener.start(queue: queue)
+    }
+
+    func terminate() {
+        lock.lock()
+        let shouldTerminate = !terminated
+        terminated = true
+        lock.unlock()
+
+        guard shouldTerminate else { return }
+        listener.cancel()
+        closeAllBridges()
+        session.invalidateAndCancel()
+    }
+
+    func writeToStdin(_ data: Data) throws {
+        throw RuneError.commandFailed(command: "port-forward", message: "Port-forward sessions do not accept stdin.")
+    }
+
+    private func accept(_ connection: NWConnection) {
+        lock.lock()
+        let isTerminated = terminated
+        lock.unlock()
+        guard !isTerminated else {
+            connection.cancel()
+            return
+        }
+
+        do {
+            let task = try makeTask(session, resolved)
+            let bridge = PortForwardConnectionBridge(
+                connection: connection,
+                webSocketTask: task,
+                queue: queue,
+                onClose: { [weak self] id in
+                    self?.removeBridge(id: id)
+                },
+                onFailure: { [weak self] message in
+                    self?.onFailure("Port-forward \(self?.namespace ?? "")/\(self?.podName ?? ""):\(self?.remotePort ?? 0) failed: \(message)")
+                }
+            )
+            lock.lock()
+            bridges[bridge.id] = bridge
+            lock.unlock()
+            bridge.start()
+        } catch {
+            connection.cancel()
+            onFailure("Could not open Kubernetes port-forward stream: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeBridge(id: UUID) {
+        lock.lock()
+        bridges.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    private func closeAllBridges() {
+        lock.lock()
+        let current = Array(bridges.values)
+        bridges.removeAll()
+        lock.unlock()
+        for bridge in current {
+            bridge.close()
+        }
+    }
+}
+
+private final class PortForwardConnectionBridge: @unchecked Sendable {
+    let id = UUID()
+
+    private let connection: NWConnection
+    private let webSocketTask: URLSessionWebSocketTask
+    private let queue: DispatchQueue
+    private let onClose: @Sendable (UUID) -> Void
+    private let onFailure: @Sendable (String) -> Void
+    private let lock = NSLock()
+    private var closed = false
+
+    init(
+        connection: NWConnection,
+        webSocketTask: URLSessionWebSocketTask,
+        queue: DispatchQueue,
+        onClose: @escaping @Sendable (UUID) -> Void,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) {
+        self.connection = connection
+        self.webSocketTask = webSocketTask
+        self.queue = queue
+        self.onClose = onClose
+        self.onFailure = onFailure
+    }
+
+    func start() {
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.webSocketTask.resume()
+                self.receiveFromLocal()
+                self.receiveFromRemote()
+            case let .failed(error):
+                self.onFailure(error.localizedDescription)
+                self.close()
+            case .cancelled:
+                self.close()
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    func close() {
+        lock.lock()
+        let shouldClose = !closed
+        closed = true
+        lock.unlock()
+        guard shouldClose else { return }
+        connection.cancel()
+        webSocketTask.cancel(with: .goingAway, reason: nil)
+        onClose(id)
+    }
+
+    private func receiveFromLocal() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let error {
+                self.onFailure(error.localizedDescription)
+                self.close()
+                return
+            }
+            if let data, !data.isEmpty {
+                var framed = Data([0])
+                framed.append(data)
+                self.webSocketTask.send(.data(framed)) { [weak self] error in
+                    guard let self else { return }
+                    if let error {
+                        self.onFailure(error.localizedDescription)
+                        self.close()
+                    }
+                }
+            }
+            if isComplete {
+                self.close()
+            } else {
+                self.receiveFromLocal()
+            }
+        }
+    }
+
+    private func receiveFromRemote() {
+        webSocketTask.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case let .success(message):
+                let data: Data
+                switch message {
+                case let .data(value):
+                    data = value
+                case let .string(value):
+                    data = Data(value.utf8)
+                @unknown default:
+                    self.receiveFromRemote()
+                    return
+                }
+                guard let channel = data.first else {
+                    self.receiveFromRemote()
+                    return
+                }
+                let payload = data.dropFirst()
+                switch channel {
+                case 0:
+                    self.connection.send(content: Data(payload), completion: .contentProcessed { [weak self] error in
+                        guard let self else { return }
+                        if let error {
+                            self.onFailure(error.localizedDescription)
+                            self.close()
+                        }
+                    })
+                case 1:
+                    if !payload.isEmpty {
+                        self.onFailure(String(decoding: payload, as: UTF8.self))
+                    }
+                    self.close()
+                    return
+                default:
+                    break
+                }
+                self.receiveFromRemote()
+            case let .failure(error):
+                self.onFailure(error.localizedDescription)
+                self.close()
+            }
         }
     }
 }
