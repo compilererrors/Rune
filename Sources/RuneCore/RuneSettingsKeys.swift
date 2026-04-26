@@ -19,6 +19,8 @@ public enum RuneSettingsKeys {
     public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
     public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
     public static let keyBindingDescribe = "rune.settings.keybindings.describe"
+    public static let keyBindingHistoryBack = "rune.settings.keybindings.historyBack"
+    public static let keyBindingHistoryForward = "rune.settings.keybindings.historyForward"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
     public static let keyBindingYAML = "rune.settings.keybindings.yaml"
@@ -47,6 +49,8 @@ public enum RuneSettingsKeys {
             logsCustomPresetTwoTimeValue: "6",
             logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue,
             keyBindingDescribe: RuneKeyBindingAction.describe.defaultShortcut.storageValue,
+            keyBindingHistoryBack: RuneKeyBindingAction.historyBack.defaultShortcut.storageValue,
+            keyBindingHistoryForward: RuneKeyBindingAction.historyForward.defaultShortcut.storageValue,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
             keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,

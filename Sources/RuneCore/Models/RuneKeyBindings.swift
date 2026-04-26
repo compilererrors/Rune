@@ -2,61 +2,100 @@ import Foundation
 
 public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
     public let key: String
+    public let requiresCommand: Bool
+    public let requiresOption: Bool
     public let requiresShift: Bool
 
-    public init?(key: String, requiresShift: Bool) {
+    public init?(
+        key: String,
+        requiresShift: Bool,
+        requiresCommand: Bool = false,
+        requiresOption: Bool = false
+    ) {
         guard let normalizedKey = Self.normalizeKey(key) else { return nil }
         self.key = normalizedKey
+        self.requiresCommand = requiresCommand
+        self.requiresOption = requiresOption
         self.requiresShift = requiresShift
     }
 
     public init?(storageValue: String) {
         guard let normalized = Self.normalizeStorageValue(storageValue) else { return nil }
-        if normalized.hasPrefix("shift-") {
-            self.key = String(normalized.dropFirst("shift-".count))
-            self.requiresShift = true
-        } else {
-            self.key = normalized
-            self.requiresShift = false
-        }
+        let parts = normalized.split(separator: "-").map(String.init)
+        guard let key = parts.last, parts.count >= 1 else { return nil }
+        let modifiers = Set(parts.dropLast())
+        self.key = key
+        self.requiresCommand = modifiers.contains("command")
+        self.requiresOption = modifiers.contains("option")
+        self.requiresShift = modifiers.contains("shift")
     }
 
     public var storageValue: String {
-        requiresShift ? "shift-\(key)" : key
+        modifierStorageParts.joined(separator: "-") + (modifierStorageParts.isEmpty ? "" : "-") + key
     }
 
     public var displayValue: String {
-        requiresShift ? "Shift-\(key.uppercased())" : key
+        let modifiers = [
+            requiresCommand ? "⌘" : nil,
+            requiresOption ? "⌥" : nil,
+            requiresShift ? "⇧" : nil
+        ].compactMap { $0 }.joined()
+        return modifiers + displayKey
     }
 
-    public func matches(baseKey: String, requiresShift: Bool) -> Bool {
+    public func matches(
+        baseKey: String,
+        requiresShift: Bool,
+        requiresCommand: Bool = false,
+        requiresOption: Bool = false
+    ) -> Bool {
         guard let normalizedBaseKey = Self.normalizeKey(baseKey) else { return false }
-        return key == normalizedBaseKey && self.requiresShift == requiresShift
+        return key == normalizedBaseKey
+            && self.requiresShift == requiresShift
+            && self.requiresCommand == requiresCommand
+            && self.requiresOption == requiresOption
     }
 
     public static func normalizeStorageValue(_ rawValue: String) -> String? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return nil }
 
-        if trimmed.hasPrefix("shift-") {
-            let suffix = String(trimmed.dropFirst("shift-".count))
-            guard let normalizedKey = normalizeKey(suffix) else { return nil }
-            return "shift-\(normalizedKey)"
+        let parts = trimmed.split(separator: "-").map(String.init)
+        guard let rawKey = parts.last, let normalizedKey = normalizeKey(rawKey) else { return nil }
+
+        var seenModifiers = Set<String>()
+        for modifier in parts.dropLast() {
+            guard ["command", "option", "shift"].contains(modifier) else { return nil }
+            guard seenModifiers.insert(modifier).inserted else { return nil }
         }
 
-        guard let normalizedKey = normalizeKey(trimmed) else { return nil }
-        return normalizedKey
+        let orderedModifiers = ["command", "option", "shift"].filter { seenModifiers.contains($0) }
+        return orderedModifiers.joined(separator: "-") + (orderedModifiers.isEmpty ? "" : "-") + normalizedKey
     }
 
     private static func normalizeKey(_ rawKey: String) -> String? {
         let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed.count == 1, let scalar = trimmed.unicodeScalars.first else { return nil }
-        guard CharacterSet.alphanumerics.contains(scalar) else { return nil }
+        guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]"].contains(trimmed) else { return nil }
         return trimmed
+    }
+
+    private var modifierStorageParts: [String] {
+        [
+            requiresCommand ? "command" : nil,
+            requiresOption ? "option" : nil,
+            requiresShift ? "shift" : nil
+        ].compactMap { $0 }
+    }
+
+    private var displayKey: String {
+        key.rangeOfCharacter(from: .alphanumerics) != nil ? key.uppercased() : key
     }
 }
 
 public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
+    case historyBack
+    case historyForward
     case describe
     case logs
     case shell
@@ -71,6 +110,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
+        case .historyBack: return "History Back"
+        case .historyForward: return "History Forward"
         case .describe: return "Describe"
         case .logs: return "Logs"
         case .shell: return "Shell / Exec"
@@ -85,6 +126,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var detail: String {
         switch self {
+        case .historyBack:
+            return "Move back in Rune's navigation history."
+        case .historyForward:
+            return "Move forward in Rune's navigation history."
         case .describe:
             return "Open the describe inspector for the selected resource."
         case .logs:
@@ -108,6 +153,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var defaultShortcut: RuneKeyboardShortcut {
         switch self {
+        case .historyBack:
+            return RuneKeyboardShortcut(key: "[", requiresShift: false, requiresCommand: true, requiresOption: true)!
+        case .historyForward:
+            return RuneKeyboardShortcut(key: "]", requiresShift: false, requiresCommand: true, requiresOption: true)!
         case .describe:
             return RuneKeyboardShortcut(key: "d", requiresShift: false)!
         case .logs:
@@ -131,6 +180,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var settingsKey: String {
         switch self {
+        case .historyBack: return RuneSettingsKeys.keyBindingHistoryBack
+        case .historyForward: return RuneSettingsKeys.keyBindingHistoryForward
         case .describe: return RuneSettingsKeys.keyBindingDescribe
         case .logs: return RuneSettingsKeys.keyBindingLogs
         case .shell: return RuneSettingsKeys.keyBindingShell

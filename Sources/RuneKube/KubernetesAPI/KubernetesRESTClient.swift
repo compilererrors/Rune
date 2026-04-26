@@ -5,13 +5,15 @@ import Security
 final class KubernetesRESTClient: @unchecked Sendable {
     private let runner: CommandRunning
     private let kubectlPath: String
+    private let allowsKubectlConfigView: Bool
     private let configCache = KubernetesRESTConfigCache()
     private let normalizedConfigTimeout: TimeInterval = 2
     private let normalizedConfigFailureCooldown: TimeInterval = 300
 
-    init(runner: CommandRunning, kubectlPath: String) {
+    init(runner: CommandRunning, kubectlPath: String, allowsKubectlConfigView: Bool) {
         self.runner = runner
         self.kubectlPath = kubectlPath
+        self.allowsKubectlConfigView = allowsKubectlConfigView
     }
 
     func listContexts(environment: [String: String]) async throws -> [KubeContext] {
@@ -464,6 +466,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
     }
 
     private func normalizedConfig(environment: [String: String]) async throws -> NormalizedKubeConfig {
+        guard allowsKubectlConfigView else {
+            throw RuneError.commandFailed(
+                command: "kubectl config view",
+                message: "External kubectl fallback is disabled for this build."
+            )
+        }
+
         let cacheKey = environment["KUBECONFIG"] ?? ""
         if let cached = await configCache.config(for: cacheKey) {
             return cached

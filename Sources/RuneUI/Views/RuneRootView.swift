@@ -493,7 +493,6 @@ public struct RuneRootView: View {
                     }
                     .help("Back")
                     .disabled(!viewModel.canNavigateBack)
-                    .keyboardShortcut("[", modifiers: [.command, .option])
 
                     Button {
                         viewModel.navigateForward()
@@ -502,7 +501,6 @@ public struct RuneRootView: View {
                     }
                     .help("Forward")
                     .disabled(!viewModel.canNavigateForward)
-                    .keyboardShortcut("]", modifiers: [.command, .option])
 
                     Menu(viewModel.state.selectedContext?.name ?? "No Context") {
                         ForEach(viewModel.contextMenuOptions) { context in
@@ -3549,7 +3547,7 @@ public struct RuneRootView: View {
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
         guard !keyboardNavigationSuspended else { return false }
         guard textInputFocus == nil else { return false }
-        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
+        let disallowedModifiers: NSEvent.ModifierFlags = [.control, .function]
         return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
 
@@ -3559,8 +3557,15 @@ public struct RuneRootView: View {
         }
 
         let requiresShift = event.modifierFlags.contains(.shift)
+        let requiresCommand = event.modifierFlags.contains(.command)
+        let requiresOption = event.modifierFlags.contains(.option)
         return RuneKeyBindingAction.allCases.first {
-            UserDefaults.standard.runeKeyBindingShortcut(for: $0).matches(baseKey: baseKey, requiresShift: requiresShift)
+            UserDefaults.standard.runeKeyBindingShortcut(for: $0).matches(
+                baseKey: baseKey,
+                requiresShift: requiresShift,
+                requiresCommand: requiresCommand,
+                requiresOption: requiresOption
+            )
         }
     }
 
@@ -3583,6 +3588,14 @@ public struct RuneRootView: View {
 
     private func performConfiguredAction(_ action: RuneKeyBindingAction) -> Bool {
         switch action {
+        case .historyBack:
+            guard viewModel.canNavigateBack else { return false }
+            viewModel.navigateBack()
+            return true
+        case .historyForward:
+            guard viewModel.canNavigateForward else { return false }
+            viewModel.navigateForward()
+            return true
         case .describe:
             return openDescribeInspectorForSelection()
         case .logs:

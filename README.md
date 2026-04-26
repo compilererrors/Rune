@@ -224,8 +224,8 @@ The only network traffic is the traffic required for Rune to communicate with th
 
 - macOS 14 or later
 - Swift 6, for example via Xcode
-- Rune talks to Kubernetes through its bundled `rune-k8s-agent`; `kubectl` is no longer required for the normal cluster runtime path.
-- Helm workflows currently require `helm` on `PATH` unless a packaged Helm helper is bundled with a release build.
+- Rune talks to Kubernetes through the bundled `rune-k8s-agent`.
+- Helm workflows use Helm support. Development builds can use `helm` on `PATH`; release builds should package the Helm helper when Helm features are enabled.
 
 ## Build and Run
 

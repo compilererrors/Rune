@@ -2,18 +2,73 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
+    func testRuntimeDependencyPolicyHonorsKubectlFallbackEnvironmentOverride() {
+        let previous = getenv("RUNE_ALLOW_KUBECTL_FALLBACKS").map { String(cString: $0) }
+        defer {
+            if let previous {
+                setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", previous, 1)
+            } else {
+                unsetenv("RUNE_ALLOW_KUBECTL_FALLBACKS")
+            }
+        }
+
+        setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", "0", 1)
+        XCTAssertFalse(RuneRuntimeDependencyPolicy.allowsKubectlFallbacks)
+
+        setenv("RUNE_ALLOW_KUBECTL_FALLBACKS", "1", 1)
+        XCTAssertTrue(RuneRuntimeDependencyPolicy.allowsKubectlFallbacks)
+    }
+
+    func testRuntimeDependencyPolicyHonorsHelmPATHEnvironmentOverride() {
+        let previous = getenv("RUNE_ALLOW_PATH_HELM").map { String(cString: $0) }
+        defer {
+            if let previous {
+                setenv("RUNE_ALLOW_PATH_HELM", previous, 1)
+            } else {
+                unsetenv("RUNE_ALLOW_PATH_HELM")
+            }
+        }
+
+        setenv("RUNE_ALLOW_PATH_HELM", "0", 1)
+        XCTAssertFalse(RuneRuntimeDependencyPolicy.allowsPATHHelmFallback)
+
+        setenv("RUNE_ALLOW_PATH_HELM", "1", 1)
+        XCTAssertTrue(RuneRuntimeDependencyPolicy.allowsPATHHelmFallback)
+    }
+
     func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
         let shortcut = RuneKeyboardShortcut(storageValue: "shift-f")
 
         XCTAssertEqual(shortcut?.key, "f")
-        XCTAssertEqual(shortcut?.displayValue, "Shift-F")
+        XCTAssertEqual(shortcut?.displayValue, "⇧F")
         XCTAssertTrue(shortcut?.matches(baseKey: "f", requiresShift: true) ?? false)
         XCTAssertFalse(shortcut?.matches(baseKey: "f", requiresShift: false) ?? true)
+    }
+
+    func testRuneKeyboardShortcutParsesCommandOptionBracketBinding() {
+        let shortcut = RuneKeyboardShortcut(storageValue: "option-command-[")
+
+        XCTAssertEqual(shortcut?.key, "[")
+        XCTAssertEqual(shortcut?.storageValue, "command-option-[")
+        XCTAssertEqual(shortcut?.displayValue, "⌘⌥[")
+        XCTAssertTrue(shortcut?.matches(
+            baseKey: "[",
+            requiresShift: false,
+            requiresCommand: true,
+            requiresOption: true
+        ) ?? false)
+        XCTAssertFalse(shortcut?.matches(
+            baseKey: "[",
+            requiresShift: false,
+            requiresCommand: false,
+            requiresOption: true
+        ) ?? true)
     }
 
     func testRuneKeyboardShortcutRejectsUnsupportedValues() {
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-/"))
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "describe"))
+        XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-shift-f"))
         XCTAssertNil(RuneKeyboardShortcut(key: "-", requiresShift: false))
     }
 
@@ -30,6 +85,10 @@ final class RuneCoreTests: XCTestCase {
         defaults.setRuneKeyBindingShortcut(custom, for: action)
 
         XCTAssertEqual(defaults.runeKeyBindingShortcut(for: action), custom)
+        XCTAssertEqual(
+            defaults.runeKeyBindingShortcut(for: .historyBack),
+            RuneKeyboardShortcut(key: "[", requiresShift: false, requiresCommand: true, requiresOption: true)
+        )
     }
 
     func testLogTimeFilterUsesSinceTimeOnlyForAbsoluteDate() {
