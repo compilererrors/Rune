@@ -53,4 +53,37 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["alpha", "Beta", "prod"])
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["prod", "alpha", "Beta"])
     }
+
+    @MainActor
+    func testSessionLogCacheKeepsReadSegmentsWithResourceBreaks() {
+        let state = RuneAppState()
+        let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
+        let secondDate = Date(timeIntervalSince1970: 1_776_000_030)
+
+        state.appendPodLogRead(
+            "first line\n",
+            contextName: "aks-prod",
+            namespace: "backend",
+            podName: "api-0",
+            loadedAt: firstDate
+        )
+        state.appendPodLogRead(
+            "second line\n",
+            contextName: "aks-prod",
+            namespace: "backend",
+            podName: "api-0",
+            loadedAt: secondDate
+        )
+
+        XCTAssertTrue(state.podLogs.contains("Pod  backend/api-0"))
+        XCTAssertTrue(state.podLogs.contains("Context: aks-prod"))
+        XCTAssertTrue(state.podLogs.contains("first line"))
+        XCTAssertTrue(state.podLogs.contains("second line"))
+        XCTAssertGreaterThanOrEqual(state.podLogs.components(separatedBy: "────────────────").count, 5)
+
+        state.setPodLogs("")
+        state.showCachedPodLogs(contextName: "aks-prod", namespace: "backend", podName: "api-0")
+        XCTAssertTrue(state.podLogs.contains("first line"))
+        XCTAssertTrue(state.podLogs.contains("second line"))
+    }
 }

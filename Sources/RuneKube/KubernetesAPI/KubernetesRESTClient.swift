@@ -1,12 +1,33 @@
 import Foundation
 import RuneCore
+import RuneDiagnostics
 @preconcurrency import Security
 import Network
 
+@_silgen_name("SecKeychainCreate")
+private func RuneSecKeychainCreate(
+    _ pathName: UnsafePointer<CChar>,
+    _ passwordLength: UInt32,
+    _ password: UnsafeRawPointer?,
+    _ promptUser: DarwinBoolean,
+    _ initialAccess: SecAccess?,
+    _ keychain: UnsafeMutablePointer<SecKeychain?>
+) -> OSStatus
+
 final class KubernetesRESTClient: @unchecked Sendable {
     private let configCache = KubernetesRESTConfigCache()
+    private let execCredentialCache = KubernetesExecCredentialCache()
 
     init() {}
+
+    static func _testCreateClientTLSIdentity(certificateData: Data, keyData: Data) throws -> Bool {
+        try ClientTLSIdentity.temporaryIdentity(certificateData: certificateData, keyData: keyData) != nil
+    }
+
+    static func _testResolvedTLSDescription(environment: [String: String], contextName: String) async throws -> String {
+        let resolved = try await KubernetesRESTClient().resolvedContext(environment: environment, contextName: contextName)
+        return resolved.tlsDescription
+    }
 
     func listContexts(environment: [String: String]) async throws -> [KubeContext] {
         let config = try await normalizedConfig(environment: environment)
@@ -159,6 +180,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
             }
         }
+        items.append(URLQueryItem(name: "allContainers", value: "true"))
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))
         }
@@ -179,7 +201,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             contextName: contextName,
             method: "GET",
             apiPath: apiPath,
-            headers: ["Accept": "text/plain"],
+            headers: ["Accept": "*/*"],
             body: nil,
             timeout: timeout
         ).body
@@ -602,8 +624,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         timeout: TimeInterval
     ) async throws -> PodExecResult {
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
-        let session = makeSession(for: resolved)
-        defer { session.invalidateAndCancel() }
+        let restSession = makeSession(for: resolved)
+        defer { restSession.session.invalidateAndCancel() }
 
         var components = URLComponents()
         components.path = try resourcePath(kind: .pod, namespace: namespace, resource: "pods", name: podName, subresource: "exec")
@@ -620,7 +642,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         components.queryItems = queryItems
 
         let task = try makeWebSocketTask(
-            session: session,
+            session: restSession.session,
             resolved: resolved,
             apiPath: components.percentEncodedPath + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
         )
@@ -649,7 +671,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         onTermination: @escaping @Sendable (Int32) -> Void
     ) async throws -> any RunningCommandControlling {
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
-        let session = makeSession(for: resolved)
+        let restSession = makeSession(for: resolved)
         var components = URLComponents()
         components.path = try resourcePath(kind: .pod, namespace: namespace, resource: "pods", name: podName, subresource: "exec")
         var queryItems = [
@@ -666,13 +688,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
         })
         components.queryItems = queryItems
         let task = try makeWebSocketTask(
-            session: session,
+            session: restSession.session,
             resolved: resolved,
             apiPath: components.percentEncodedPath + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
         )
         let handle = KubernetesExecWebSocketHandle(
             task: task,
-            session: session,
+            session: restSession.session,
             onOutput: onOutput,
             onTermination: onTermination
         )
@@ -697,7 +719,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
-        let session = makeSession(for: resolved)
+        let restSession = makeSession(for: resolved)
         let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
@@ -710,13 +732,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
         do {
             listener = try NWListener(using: parameters, on: port)
         } catch {
-            session.invalidateAndCancel()
+            restSession.session.invalidateAndCancel()
             throw error
         }
 
         let handle = KubernetesPortForwardHandle(
             listener: listener,
-            session: session,
+            session: restSession.session,
             resolved: resolved,
             namespace: namespace,
             podName: podName,
@@ -769,8 +791,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
         timeout: TimeInterval
     ) async throws -> RESTResponse {
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
-        let session = makeSession(for: resolved)
-        defer { session.invalidateAndCancel() }
+        VerboseKubeTrace.append(
+            "k8s.request",
+            "start method=\(method) context=\(contextName) path=\(apiPath) server=\(resolved.serverURL.host ?? resolved.serverURL.absoluteString) tls=\(resolved.tlsDescription) auth=\(resolved.authentication.traceDescription) kubeconfigs=\(VerboseKubeTrace.kubeconfigSummary(environment))"
+        )
+        let restSession = makeSession(for: resolved)
+        defer { restSession.session.invalidateAndCancel() }
 
         guard let url = URL(string: apiPath, relativeTo: resolved.serverURL)?.absoluteURL else {
             throw RuneError.invalidInput(message: "Invalid Kubernetes API path: \(apiPath)")
@@ -797,12 +823,29 @@ final class KubernetesRESTClient: @unchecked Sendable {
             request.httpBody = Data(body.utf8)
         }
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await restSession.session.data(for: request)
+        } catch {
+            VerboseKubeTrace.append(
+                "k8s.request",
+                "failed method=\(method) context=\(contextName) path=\(apiPath) error=\(networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure()))"
+            )
+            throw RuneError.commandFailed(
+                command: "kubernetes REST \(method) \(apiPath)",
+                message: networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure())
+            )
+        }
         guard let http = response as? HTTPURLResponse else {
             throw RuneError.commandFailed(command: "kubernetes REST \(method) \(apiPath)", message: "Missing HTTP response")
         }
 
         let responseBody = String(data: data, encoding: .utf8) ?? ""
+        VerboseKubeTrace.append(
+            "k8s.request",
+            "response method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode)"
+        )
         guard (200..<300).contains(http.statusCode) else {
             throw RuneError.commandFailed(
                 command: "kubernetes REST \(method) \(apiPath)",
@@ -965,20 +1008,23 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return try KubernetesJSON.describeEvents(from: raw)
     }
 
-    private func makeSession(for resolved: ResolvedRESTContext) -> URLSession {
+    private func makeSession(for resolved: ResolvedRESTContext) -> RESTURLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         let delegate = RESTURLSessionDelegate(
             insecureSkipTLSVerify: resolved.insecureSkipTLSVerify,
             certificateAuthorityData: resolved.certificateAuthorityData,
             tlsServerName: resolved.tlsServerName,
-            clientIdentity: resolved.clientIdentity
+            clientTLSIdentity: resolved.clientTLSIdentity
         )
-        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        return RESTURLSession(
+            session: URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil),
+            delegate: delegate
+        )
     }
 
     private func normalizedConfig(environment: [String: String]) async throws -> NormalizedKubeConfig {
-        let cacheKey = environment["KUBECONFIG"] ?? ""
+        let cacheKey = NormalizedKubeConfig.cacheKey(environment: environment)
         if let cached = await configCache.config(for: cacheKey) {
             return cached
         }
@@ -1002,48 +1048,222 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "Invalid Kubernetes server URL for context \(contextName)")
         }
 
-        let authentication = try await resolveAuthentication(user: namedUser?.user, environment: environment)
+        let credentials = try await resolveCredentials(
+            user: namedUser?.user,
+            cluster: namedCluster.cluster,
+            environment: environment
+        )
         return ResolvedRESTContext(
             serverURL: serverURL,
             namespace: namedContext.context.namespace,
-            authentication: authentication,
+            authentication: credentials.authentication,
             insecureSkipTLSVerify: namedCluster.cluster.insecureSkipTLSVerify ?? false,
             certificateAuthorityData: try namedCluster.cluster.resolvedCertificateAuthorityData(),
             tlsServerName: namedCluster.cluster.tlsServerName,
-            clientIdentity: try namedUser?.user.resolvedClientIdentity()
+            clientTLSIdentity: credentials.clientTLSIdentity
         )
     }
 
-    private func resolveAuthentication(
+    private func resolveCredentials(
         user: NormalizedKubeConfig.NamedUser.UserEntry?,
+        cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
         environment: [String: String]
-    ) async throws -> RESTAuthentication {
-        guard let user else { return .none }
+    ) async throws -> RESTCredentialResolution {
+        guard let user else { return RESTCredentialResolution(authentication: .none, clientTLSIdentity: nil) }
 
         if let token = user.token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
-            return .bearer(token)
+            return RESTCredentialResolution(
+                authentication: .bearer(token),
+                clientTLSIdentity: nil
+            )
         }
 
         if let tokenFile = user.tokenFile?.trimmingCharacters(in: .whitespacesAndNewlines),
            !tokenFile.isEmpty,
            let token = try? String(contentsOfFile: tokenFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
            !token.isEmpty {
-            return .bearer(token)
+            return RESTCredentialResolution(
+                authentication: .bearer(token),
+                clientTLSIdentity: nil
+            )
         }
 
         if let exec = user.exec {
-            throw RuneError.invalidInput(
-                message: "Kubeconfig exec auth requires an external provider command, which Rune's native runtime does not invoke: \(exec.command)"
-            )
+            return try await resolveExecCredentials(exec: exec, cluster: cluster, environment: environment)
         }
 
         if let username = user.username,
            let password = user.password,
            !username.isEmpty {
-            return .basic(username: username, password: password)
+            return RESTCredentialResolution(
+                authentication: .basic(username: username, password: password),
+                clientTLSIdentity: nil
+            )
         }
 
-        return .none
+        return RESTCredentialResolution(
+            authentication: .none,
+            clientTLSIdentity: try user.resolvedClientTLSIdentityIfAvailable()
+        )
+    }
+
+    private func resolveExecCredentials(
+        exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
+        cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
+        environment: [String: String]
+    ) async throws -> RESTCredentialResolution {
+        let key = exec.cacheKey(environment: environment)
+        if let cached = await execCredentialCache.credential(for: key) {
+            return RESTCredentialResolution(authentication: .bearer(cached.token), clientTLSIdentity: nil)
+        }
+
+        let response = try await runExecCredential(exec: exec, cluster: cluster, environment: environment, timeout: 25)
+        guard let status = response.status else {
+            throw RuneError.invalidInput(message: "Kubeconfig exec auth response is missing status")
+        }
+
+        if let token = status.token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            let expiresAt = status.expirationTimestamp.flatMap(Self.parseExecCredentialExpiration(_:))
+            await execCredentialCache.setCredential(KubernetesExecCredential(token: token, expiresAt: expiresAt), for: key)
+            return RESTCredentialResolution(authentication: .bearer(token), clientTLSIdentity: nil)
+        }
+
+        if let certificateData = status.decodedClientCertificateData,
+           let keyData = status.decodedClientKeyData {
+            let identity = try ClientTLSIdentity.temporaryIdentity(certificateData: certificateData, keyData: keyData)
+            return RESTCredentialResolution(authentication: .none, clientTLSIdentity: identity)
+        }
+
+        if status.clientCertificateData != nil || status.clientKeyData != nil {
+            throw RuneError.invalidInput(message: "Kubeconfig exec auth returned incomplete client certificate credentials")
+        }
+
+        return RESTCredentialResolution(authentication: .none, clientTLSIdentity: nil)
+    }
+
+    private func runExecCredential(
+        exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
+        cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
+        environment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> ExecCredentialResponse {
+        let output = try await runProcess(
+            command: exec.command,
+            arguments: exec.args ?? [],
+            environment: try exec.processEnvironment(base: environment, execInfo: execInfo(for: exec, cluster: cluster)),
+            timeout: timeout
+        )
+        do {
+            let response = try JSONDecoder().decode(ExecCredentialResponse.self, from: output)
+            let expectedAPIVersion = exec.apiVersion ?? "client.authentication.k8s.io/v1"
+            if let apiVersion = response.apiVersion, apiVersion != expectedAPIVersion {
+                throw RuneError.parseError(
+                    message: "Kubeconfig exec auth returned apiVersion \(apiVersion), expected \(expectedAPIVersion)"
+                )
+            }
+            return response
+        } catch {
+            if let runeError = error as? RuneError {
+                throw runeError
+            }
+            let preview = String(decoding: output.prefix(512), as: UTF8.self)
+            throw RuneError.parseError(message: "Kubeconfig exec auth response is not a valid ExecCredential JSON document: \(preview)")
+        }
+    }
+
+    private func execInfo(
+        for exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
+        cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry
+    ) throws -> String? {
+        guard exec.provideClusterInfo == true else { return nil }
+        var clusterInfo: [String: Any] = ["server": cluster.server]
+        if let data = try cluster.resolvedCertificateAuthorityData() {
+            clusterInfo["certificate-authority-data"] = data.base64EncodedString()
+        }
+        if let insecure = cluster.insecureSkipTLSVerify {
+            clusterInfo["insecure-skip-tls-verify"] = insecure
+        }
+        if let tlsServerName = cluster.tlsServerName {
+            clusterInfo["tls-server-name"] = tlsServerName
+        }
+        let payload: [String: Any] = [
+            "apiVersion": exec.apiVersion ?? "client.authentication.k8s.io/v1",
+            "kind": "ExecCredential",
+            "spec": [
+                "interactive": false,
+                "cluster": clusterInfo
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func runProcess(
+        command: String,
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+
+            let expandedCommand = NSString(string: command).expandingTildeInPath
+            if expandedCommand.contains("/") {
+                process.executableURL = URL(fileURLWithPath: expandedCommand)
+                process.arguments = arguments
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                process.arguments = [expandedCommand] + arguments
+            }
+            process.environment = environment
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            do {
+                try process.run()
+            } catch {
+                throw RuneError.commandFailed(
+                    command: "kubeconfig exec auth \(command)",
+                    message: error.localizedDescription
+                )
+            }
+
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning, Date() < deadline {
+                try await Task.sleep(nanoseconds: 25_000_000)
+            }
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+                throw RuneError.commandFailed(
+                    command: "kubeconfig exec auth \(command)",
+                    message: "Timed out after \(Int(timeout)) seconds"
+                )
+            }
+
+            let output = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0 else {
+                let message = String(decoding: errorData.isEmpty ? output : errorData, as: UTF8.self)
+                throw RuneError.commandFailed(
+                    command: "kubeconfig exec auth \(command)",
+                    message: message.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            return output
+        }.value
+    }
+
+    private static func parseExecCredentialExpiration(_ raw: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
     }
 
     private func parseDurationSeconds(from token: String) -> Int {
@@ -1081,6 +1301,28 @@ private actor KubernetesRESTConfigCache {
     }
 }
 
+private actor KubernetesExecCredentialCache {
+    private var byKey: [String: KubernetesExecCredential] = [:]
+
+    func credential(for key: String) -> KubernetesExecCredential? {
+        guard let credential = byKey[key] else { return nil }
+        if let expiresAt = credential.expiresAt, expiresAt <= Date().addingTimeInterval(30) {
+            byKey.removeValue(forKey: key)
+            return nil
+        }
+        return credential
+    }
+
+    func setCredential(_ credential: KubernetesExecCredential, for key: String) {
+        byKey[key] = credential
+    }
+}
+
+private struct KubernetesExecCredential: Sendable {
+    let token: String
+    let expiresAt: Date?
+}
+
 private struct NormalizedKubeConfig: Decodable {
     struct NamedContext: Decodable {
         struct ContextEntry: Decodable {
@@ -1111,7 +1353,7 @@ private struct NormalizedKubeConfig: Decodable {
 
             func resolvedCertificateAuthorityData() throws -> Data? {
                 if let certificateAuthorityData {
-                    return Data(base64Encoded: certificateAuthorityData)
+                    return Data(base64Encoded: certificateAuthorityData, options: .ignoreUnknownCharacters)
                 }
                 guard let certificateAuthority, !certificateAuthority.isEmpty else {
                     return nil
@@ -1132,9 +1374,51 @@ private struct NormalizedKubeConfig: Decodable {
                     let value: String
                 }
 
+                let apiVersion: String?
                 let command: String
                 let args: [String]?
                 let env: [EnvironmentEntry]?
+                let provideClusterInfo: Bool?
+                let interactiveMode: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case apiVersion
+                    case command
+                    case args
+                    case env
+                    case provideClusterInfo = "provideClusterInfo"
+                    case interactiveMode
+                }
+
+                func processEnvironment(base: [String: String], execInfo: String?) -> [String: String] {
+                    var output = ProcessInfo.processInfo.environment
+                    for (key, value) in base {
+                        output[key] = value
+                    }
+                    for entry in env ?? [] {
+                        output[entry.name] = entry.value
+                    }
+                    if let execInfo {
+                        output["KUBERNETES_EXEC_INFO"] = execInfo
+                    }
+                    return output
+                }
+
+                func cacheKey(environment: [String: String]) -> String {
+                    let envKey = (env ?? [])
+                        .map { "\($0.name)=\($0.value)" }
+                        .sorted()
+                        .joined(separator: "\u{1f}")
+                    return [
+                        apiVersion ?? "",
+                        command,
+                        (args ?? []).joined(separator: "\u{1e}"),
+                        envKey,
+                        provideClusterInfo == true ? "cluster" : "",
+                        interactiveMode ?? "",
+                        environment["KUBECONFIG"] ?? ""
+                    ].joined(separator: "\u{1d}")
+                }
             }
 
             let token: String?
@@ -1159,31 +1443,50 @@ private struct NormalizedKubeConfig: Decodable {
                 case clientKey = "client-key"
             }
 
-            func resolvedClientIdentity() throws -> SecIdentity? {
-                guard let certificateData = try resolvedClientCertificateData() else {
+            func resolvedClientTLSIdentityIfAvailable() throws -> ClientTLSIdentity? {
+                guard let certificateMaterial = try resolvedClientCertificateData() else {
                     return nil
                 }
-                guard let certificate = SecCertificateCreateWithData(nil, normalizedCertificateData(certificateData) as CFData) else {
+                guard let certificateDER = certificateDERBlocks(from: certificateMaterial).first,
+                      let certificate = SecCertificateCreateWithData(nil, certificateDER as CFData) else {
                     throw RuneError.invalidInput(message: "Client certificate data in kubeconfig could not be parsed")
                 }
                 var identity: SecIdentity?
                 let status = SecIdentityCreateWithCertificate(nil, certificate, &identity)
-                guard status == errSecSuccess, let identity else {
-                    throw RuneError.invalidInput(
-                        message: "Client certificate auth requires a matching private key in the macOS keychain"
-                    )
+                if status == errSecSuccess, let identity {
+                    return ClientTLSIdentity(identity: identity)
                 }
-                return identity
+
+                guard let keyData = try resolvedClientKeyData() else {
+                    return nil
+                }
+                return try ClientTLSIdentity.temporaryIdentity(certificateData: certificateMaterial, keyData: keyData)
+            }
+
+            func optionalClientTLSIdentity() -> ClientTLSIdentity? {
+                try? resolvedClientTLSIdentityIfAvailable()
             }
 
             private func resolvedClientCertificateData() throws -> Data? {
-                if let clientCertificateData, let decoded = Data(base64Encoded: clientCertificateData) {
+                if let clientCertificateData,
+                   let decoded = Data(base64Encoded: clientCertificateData, options: .ignoreUnknownCharacters) {
                     return decoded
                 }
                 guard let clientCertificate, !clientCertificate.isEmpty else {
                     return nil
                 }
                 return try Data(contentsOf: URL(fileURLWithPath: NSString(string: clientCertificate).expandingTildeInPath))
+            }
+
+            private func resolvedClientKeyData() throws -> Data? {
+                if let clientKeyData,
+                   let decoded = Data(base64Encoded: clientKeyData, options: .ignoreUnknownCharacters) {
+                    return decoded
+                }
+                guard let clientKey, !clientKey.isEmpty else {
+                    return nil
+                }
+                return try Data(contentsOf: URL(fileURLWithPath: NSString(string: clientKey).expandingTildeInPath))
             }
         }
 
@@ -1216,7 +1519,8 @@ private struct NormalizedKubeConfig: Decodable {
             let expanded = NSString(string: path).expandingTildeInPath
             guard FileManager.default.fileExists(atPath: expanded) else { continue }
             let raw = try String(contentsOfFile: expanded, encoding: .utf8)
-            let config = try DirectKubeConfigParser(raw: raw).parse()
+            let baseDirectory = URL(fileURLWithPath: expanded).deletingLastPathComponent().path
+            let config = try DirectKubeConfigParser(raw: raw, baseDirectory: baseDirectory).parse()
             mergedContexts.append(contentsOf: config.contexts)
             mergedClusters.append(contentsOf: config.clusters)
             mergedUsers.append(contentsOf: config.users)
@@ -1235,6 +1539,18 @@ private struct NormalizedKubeConfig: Decodable {
             clusters: deduplicateByName(mergedClusters, name: \.name),
             users: deduplicateByName(mergedUsers, name: \.name)
         )
+    }
+
+    static func cacheKey(environment: [String: String]) -> String {
+        kubeconfigPaths(environment: environment)
+            .map { path in
+                let expanded = NSString(string: path).expandingTildeInPath
+                let attributes = try? FileManager.default.attributesOfItem(atPath: expanded)
+                let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                let size = attributes?[.size] as? NSNumber
+                return "\(expanded):\(modified):\(size?.int64Value ?? -1)"
+            }
+            .joined(separator: "\u{1d}")
     }
 
     private static func kubeconfigPaths(environment: [String: String]) -> [String] {
@@ -1315,16 +1631,22 @@ private struct DirectKubeConfigParser {
         var clientCertificate: String?
         var clientKey: String?
         var execCommand: String?
+        var execAPIVersion: String?
         var execArgs: [String] = []
         var execEnv: [NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig.EnvironmentEntry] = []
+        var execProvideClusterInfo: Bool?
+        var execInteractiveMode: String?
 
         func build() -> NormalizedKubeConfig.NamedUser? {
             guard !name.isEmpty else { return nil }
             let exec = execCommand.map {
                 NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig(
+                    apiVersion: execAPIVersion,
                     command: $0,
                     args: execArgs.isEmpty ? nil : execArgs,
-                    env: execEnv.isEmpty ? nil : execEnv
+                    env: execEnv.isEmpty ? nil : execEnv,
+                    provideClusterInfo: execProvideClusterInfo,
+                    interactiveMode: execInteractiveMode
                 )
             }
             return NormalizedKubeConfig.NamedUser(
@@ -1345,6 +1667,7 @@ private struct DirectKubeConfigParser {
     }
 
     let raw: String
+    let baseDirectory: String?
 
     func parse() throws -> NormalizedKubeConfig {
         var currentContext: String?
@@ -1443,7 +1766,7 @@ private struct DirectKubeConfigParser {
         if let value = scalarValue(line, key: "server") { cluster?.server = value }
         if let value = scalarValue(line, key: "insecure-skip-tls-verify") { cluster?.insecureSkipTLSVerify = parseBool(value) }
         if let value = scalarValue(line, key: "certificate-authority-data") { cluster?.certificateAuthorityData = value }
-        if let value = scalarValue(line, key: "certificate-authority") { cluster?.certificateAuthority = value }
+        if let value = scalarValue(line, key: "certificate-authority") { cluster?.certificateAuthority = resolvedPath(value) }
         if let value = scalarValue(line, key: "tls-server-name") { cluster?.tlsServerName = value }
     }
 
@@ -1503,10 +1826,16 @@ private struct DirectKubeConfigParser {
 
         if let value = scalarValue(line, key: "command"), subsection.hasPrefix("exec") {
             user?.execCommand = value
+        } else if let value = scalarValue(line, key: "apiVersion"), subsection.hasPrefix("exec") {
+            user?.execAPIVersion = value
+        } else if let value = scalarValue(line, key: "provideClusterInfo"), subsection.hasPrefix("exec") {
+            user?.execProvideClusterInfo = parseBool(value)
+        } else if let value = scalarValue(line, key: "interactiveMode"), subsection.hasPrefix("exec") {
+            user?.execInteractiveMode = value
         } else if let value = scalarValue(line, key: "token") {
             user?.token = value
         } else if let value = scalarValue(line, key: "tokenFile") ?? scalarValue(line, key: "token-file") {
-            user?.tokenFile = value
+            user?.tokenFile = resolvedPath(value)
         } else if let value = scalarValue(line, key: "username") {
             user?.username = value
         } else if let value = scalarValue(line, key: "password") {
@@ -1516,10 +1845,20 @@ private struct DirectKubeConfigParser {
         } else if let value = scalarValue(line, key: "client-key-data") {
             user?.clientKeyData = value
         } else if let value = scalarValue(line, key: "client-certificate") {
-            user?.clientCertificate = value
+            user?.clientCertificate = resolvedPath(value)
         } else if let value = scalarValue(line, key: "client-key") {
-            user?.clientKey = value
+            user?.clientKey = resolvedPath(value)
         }
+    }
+
+    private func resolvedPath(_ path: String) -> String {
+        guard !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.hasPrefix("~"),
+              let baseDirectory else {
+            return path
+        }
+        return URL(fileURLWithPath: baseDirectory).appendingPathComponent(path).path
     }
 
     private func scalarValue(_ line: String, key: String) -> String? {
@@ -1779,9 +2118,29 @@ private enum KubernetesJSON {
 private struct ExecCredentialResponse: Decodable {
     struct Status: Decodable {
         let token: String?
+        let expirationTimestamp: String?
+        let clientCertificateData: String?
+        let clientKeyData: String?
+
+        var decodedClientCertificateData: Data? {
+            clientCertificateData.map { Data($0.utf8) }
+        }
+
+        var decodedClientKeyData: Data? {
+            clientKeyData.map { Data($0.utf8) }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case token
+            case expirationTimestamp
+            case clientCertificateData = "clientCertificateData"
+            case clientKeyData = "clientKeyData"
+        }
     }
 
-    let status: Status
+    let apiVersion: String?
+    let kind: String?
+    let status: Status?
 }
 
 private struct ResolvedRESTContext {
@@ -1791,18 +2150,39 @@ private struct ResolvedRESTContext {
     let insecureSkipTLSVerify: Bool
     let certificateAuthorityData: Data?
     let tlsServerName: String?
-    let clientIdentity: SecIdentity?
+    let clientTLSIdentity: ClientTLSIdentity?
 }
 
 private enum RESTAuthentication {
     case none
     case bearer(String)
     case basic(username: String, password: String)
+
+    var traceDescription: String {
+        switch self {
+        case .none:
+            return "none"
+        case .bearer:
+            return "bearer"
+        case .basic:
+            return "basic"
+        }
+    }
+}
+
+private struct RESTCredentialResolution {
+    let authentication: RESTAuthentication
+    let clientTLSIdentity: ClientTLSIdentity?
 }
 
 private struct RESTResponse {
     let body: String
     let contentType: String
+}
+
+private struct RESTURLSession {
+    let session: URLSession
+    let delegate: RESTURLSessionDelegate
 }
 
 private struct NamespaceList: Decodable {
@@ -1817,22 +2197,112 @@ private struct NamespaceList: Decodable {
     let items: [Item]
 }
 
-private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
+private final class ClientTLSIdentity: @unchecked Sendable {
+    let identity: SecIdentity
+    private let keychain: SecKeychain?
+    private let keychainPath: String?
+
+    init(identity: SecIdentity, keychain: SecKeychain? = nil, keychainPath: String? = nil) {
+        self.identity = identity
+        self.keychain = keychain
+        self.keychainPath = keychainPath
+    }
+
+    deinit {
+        guard let keychainPath else { return }
+        try? FileManager.default.removeItem(atPath: keychainPath)
+    }
+
+    static func temporaryIdentity(certificateData: Data, keyData: Data) throws -> ClientTLSIdentity? {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-kube-mtls", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let keychainURL = directory.appendingPathComponent("\(UUID().uuidString).keychain-db")
+        let password = UUID().uuidString
+
+        var keychain: SecKeychain?
+        let createStatus = password.withCString { passwordPointer in
+            keychainURL.path.withCString { pathPointer in
+                RuneSecKeychainCreate(
+                    pathPointer,
+                    UInt32(strlen(passwordPointer)),
+                    passwordPointer,
+                    false,
+                    nil,
+                    &keychain
+                )
+            }
+        }
+        guard createStatus == errSecSuccess, let keychain else {
+            throw RuneError.invalidInput(message: "Could not create temporary keychain for Kubernetes client certificate auth: OSStatus \(createStatus)")
+        }
+
+        do {
+            _ = try importSecurityItems(certificateData, into: keychain)
+            _ = try importSecurityItems(keyData, into: keychain)
+            guard let certificateDER = certificateDERBlocks(from: certificateData).first,
+                  let certificate = SecCertificateCreateWithData(nil, certificateDER as CFData) else {
+                throw RuneError.invalidInput(message: "Client certificate data in kubeconfig could not be parsed")
+            }
+            var identity: SecIdentity?
+            let identityStatus = SecIdentityCreateWithCertificate(keychain, certificate, &identity)
+            guard identityStatus == errSecSuccess, let identity else {
+                throw RuneError.invalidInput(
+                    message: "Client certificate and key in kubeconfig could not be paired into a TLS identity: OSStatus \(identityStatus)"
+                )
+            }
+            return ClientTLSIdentity(identity: identity, keychain: keychain, keychainPath: keychainURL.path)
+        } catch {
+            try? FileManager.default.removeItem(at: keychainURL)
+            throw error
+        }
+    }
+
+    private static func importSecurityItems(_ data: Data, into keychain: SecKeychain) throws -> [AnyObject] {
+        var format = SecExternalFormat.formatUnknown
+        var itemType = SecExternalItemType.itemTypeUnknown
+        var items: CFArray?
+        var parameters = SecItemImportExportKeyParameters()
+        parameters.version = UInt32(SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION)
+        parameters.flags = SecKeyImportExportFlags(rawValue: 0)
+        let status = SecItemImport(
+            data as CFData,
+            nil,
+            &format,
+            &itemType,
+            SecItemImportExportFlags(rawValue: 0),
+            &parameters,
+            keychain,
+            &items
+        )
+        guard status == errSecSuccess else {
+            throw RuneError.invalidInput(message: "Could not import Kubernetes client TLS material: OSStatus \(status)")
+        }
+        return (items as? [AnyObject]) ?? []
+    }
+}
+
+private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
     private let insecureSkipTLSVerify: Bool
     private let certificateAuthorityData: Data?
     private let tlsServerName: String?
-    private let clientIdentity: SecIdentity?
+    private let clientTLSIdentity: ClientTLSIdentity?
+    private let tlsFailureState = TLSFailureState()
 
     init(
         insecureSkipTLSVerify: Bool,
         certificateAuthorityData: Data?,
         tlsServerName: String?,
-        clientIdentity: SecIdentity?
+        clientTLSIdentity: ClientTLSIdentity?
     ) {
         self.insecureSkipTLSVerify = insecureSkipTLSVerify
         self.certificateAuthorityData = certificateAuthorityData
         self.tlsServerName = tlsServerName
-        self.clientIdentity = clientIdentity
+        self.clientTLSIdentity = clientTLSIdentity
+    }
+
+    func lastTLSFailure() -> String? {
+        tlsFailureState.value()
     }
 
     func urlSession(
@@ -1840,11 +2310,39 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        handle(challenge: challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handle(challenge: challenge, completionHandler: completionHandler)
+    }
+
+    private func handle(
+        challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        VerboseKubeTrace.append(
+            "k8s.tls",
+            "challenge method=\(challenge.protectionSpace.authenticationMethod) host=\(challenge.protectionSpace.host) previousFailures=\(challenge.previousFailureCount) hasClientIdentity=\(clientTLSIdentity != nil) caConfigured=\(certificateAuthorityData != nil) insecureSkipTLSVerify=\(insecureSkipTLSVerify)"
+        )
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodClientCertificate {
-            guard let clientIdentity else {
+            guard let clientIdentity = clientTLSIdentity?.identity else {
+                VerboseKubeTrace.append(
+                    "k8s.tls",
+                    "client-certificate challenge default-handling host=\(challenge.protectionSpace.host) reason=no-client-identity"
+                )
                 completionHandler(.performDefaultHandling, nil)
                 return
             }
+            VerboseKubeTrace.append(
+                "k8s.tls",
+                "client-certificate challenge use-credential host=\(challenge.protectionSpace.host)"
+            )
             completionHandler(
                 .useCredential,
                 URLCredential(identity: clientIdentity, certificates: nil, persistence: .forSession)
@@ -1859,11 +2357,20 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         }
 
         if insecureSkipTLSVerify {
+            clearTLSFailure()
+            VerboseKubeTrace.append(
+                "k8s.tls",
+                "server-trust accepted host=\(challenge.protectionSpace.host) mode=insecure-skip-tls-verify"
+            )
             completionHandler(.useCredential, URLCredential(trust: trust))
             return
         }
 
         guard certificateAuthorityData != nil || tlsServerName != nil else {
+            VerboseKubeTrace.append(
+                "k8s.tls",
+                "server-trust default-handling host=\(challenge.protectionSpace.host) mode=system-trust"
+            )
             completionHandler(.performDefaultHandling, nil)
             return
         }
@@ -1872,37 +2379,151 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate {
         let policy = SecPolicyCreateSSL(true, serverName as CFString)
         SecTrustSetPolicies(trust, policy)
 
-        if let certificateAuthorityData,
-           let certificate = SecCertificateCreateWithData(nil, normalizedCertificateData(certificateAuthorityData) as CFData) {
-            SecTrustSetAnchorCertificates(trust, [certificate] as CFArray)
-            SecTrustSetAnchorCertificatesOnly(trust, false)
+        if let certificateAuthorityData {
+            let certificates = certificates(from: certificateAuthorityData)
+            guard !certificates.isEmpty else {
+                recordTLSFailure("kubeconfig certificate-authority-data was present but did not contain a parseable certificate")
+                VerboseKubeTrace.append(
+                    "k8s.tls",
+                    "server-trust rejected host=\(challenge.protectionSpace.host) reason=unparseable-kubeconfig-ca"
+                )
+                completionHandler(.cancelAuthenticationChallenge, nil)
+                return
+            }
+            SecTrustSetAnchorCertificates(trust, certificates as CFArray)
+            SecTrustSetAnchorCertificatesOnly(trust, true)
         }
 
         var error: CFError?
         if SecTrustEvaluateWithError(trust, &error) {
+            clearTLSFailure()
+            VerboseKubeTrace.append(
+                "k8s.tls",
+                "server-trust accepted host=\(challenge.protectionSpace.host) serverName=\(serverName) mode=kubeconfig-ca"
+            )
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
+            let message = trustFailureMessage(trust: trust, error: error, serverName: serverName)
+            recordTLSFailure(message)
+            VerboseKubeTrace.append(
+                "k8s.tls",
+                "server-trust rejected host=\(challenge.protectionSpace.host) \(message)"
+            )
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
 
-}
-
-private func normalizedCertificateData(_ data: Data) -> Data {
-    guard let string = String(data: data, encoding: .utf8),
-          string.contains("BEGIN CERTIFICATE"),
-          let pem = extractPEMBody(from: string) else {
-        return data
+    private func recordTLSFailure(_ message: String) {
+        tlsFailureState.set(message)
     }
-    return pem
+
+    private func clearTLSFailure() {
+        tlsFailureState.set(nil)
+    }
+
+    private func trustFailureMessage(trust: SecTrust, error: CFError?, serverName: String) -> String {
+        var parts = ["serverTrust=\(serverName)"]
+        if let error {
+            parts.append("trustError=\(CFErrorCopyDescription(error) as String)")
+        }
+        let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
+        if !chain.isEmpty {
+            let subjects = chain
+                .prefix(4)
+                .compactMap { SecCertificateCopySubjectSummary($0) as String? }
+                .joined(separator: " -> ")
+            parts.append("chainCount=\(chain.count)")
+            if !subjects.isEmpty {
+                parts.append("chain=\(subjects)")
+            }
+        }
+        return parts.joined(separator: " | ")
+    }
 }
 
-private func extractPEMBody(from string: String) -> Data? {
-    let lines = string
-        .split(whereSeparator: \.isNewline)
-        .map(String.init)
-        .filter { !$0.contains("BEGIN CERTIFICATE") && !$0.contains("END CERTIFICATE") }
-    return Data(base64Encoded: lines.joined())
+private final class TLSFailureState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: String?
+
+    func value() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func set(_ value: String?) {
+        lock.lock()
+        storage = value
+        lock.unlock()
+    }
+}
+
+private func certificates(from data: Data) -> [SecCertificate] {
+    certificateDERBlocks(from: data).compactMap {
+        SecCertificateCreateWithData(nil, $0 as CFData)
+    }
+}
+
+private func networkErrorMessage(_ error: Error, resolved: ResolvedRESTContext, tlsFailure: String?) -> String {
+    let nsError = error as NSError
+    var details = [
+        error.localizedDescription,
+        "server=\(resolved.serverURL.host ?? resolved.serverURL.absoluteString)",
+        "tls=\(resolved.tlsDescription)"
+    ]
+    if let tlsFailure {
+        details.append("trust=\(tlsFailure)")
+    }
+    if let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+        details.append("url=\(failingURL.host ?? failingURL.absoluteString)")
+    }
+    if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        details.append("underlying=\(underlying.domain)(\(underlying.code)): \(underlying.localizedDescription)")
+        if let deeper = underlying.userInfo[NSUnderlyingErrorKey] as? NSError {
+            details.append("root=\(deeper.domain)(\(deeper.code)): \(deeper.localizedDescription)")
+        }
+    }
+    return details.joined(separator: " | ")
+}
+
+private extension ResolvedRESTContext {
+    var tlsDescription: String {
+        if insecureSkipTLSVerify {
+            return "insecure-skip-tls-verify"
+        }
+        var parts: [String] = []
+        parts.append(certificateAuthorityData == nil ? "system-trust" : "kubeconfig-ca")
+        if tlsServerName != nil {
+            parts.append("tls-server-name")
+        }
+        if clientTLSIdentity != nil {
+            parts.append("client-certificate")
+        }
+        return parts.joined(separator: "+")
+    }
+}
+
+private func certificateDERBlocks(from data: Data) -> [Data] {
+    guard let string = String(data: data, encoding: .utf8),
+          string.contains("BEGIN CERTIFICATE") else {
+        return [data]
+    }
+    let begin = "-----BEGIN CERTIFICATE-----"
+    let end = "-----END CERTIFICATE-----"
+    var blocks: [Data] = []
+    var remaining = string[...]
+    while let beginRange = remaining.range(of: begin) {
+        let bodyStart = beginRange.upperBound
+        guard let endRange = remaining[bodyStart...].range(of: end) else { break }
+        let body = remaining[bodyStart..<endRange.lowerBound]
+            .split(whereSeparator: \.isWhitespace)
+            .joined()
+        if let decoded = Data(base64Encoded: body, options: .ignoreUnknownCharacters) {
+            blocks.append(decoded)
+        }
+        remaining = remaining[endRange.upperBound...]
+    }
+    return blocks
 }
 
 private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @unchecked Sendable {

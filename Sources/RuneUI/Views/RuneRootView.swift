@@ -295,6 +295,86 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
     }
 }
 
+private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
+    case aks
+    case eks
+    case gke
+    case local
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .aks: return "Microsoft AKS"
+        case .eks: return "Amazon EKS"
+        case .gke: return "Google GKE"
+        case .local: return "Local Cluster"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .aks: return "AKS"
+        case .eks: return "EKS"
+        case .gke: return "GKE"
+        case .local: return "Local"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .aks: return "Azure CLI or kubelogin"
+        case .eks: return "AWS CLI"
+        case .gke: return "gcloud auth plugin"
+        case .local: return "kind, k3d, minikube"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .aks: return "square.grid.3x3.fill"
+        case .eks: return "shippingbox.fill"
+        case .gke: return "hexagon.fill"
+        case .local: return "laptopcomputer"
+        }
+    }
+
+    var accent: Color {
+        switch self {
+        case .aks: return .blue
+        case .eks: return .orange
+        case .gke: return .indigo
+        case .local: return .green
+        }
+    }
+
+    var command: String {
+        switch self {
+        case .aks:
+            return "az aks get-credentials --resource-group <resource-group> --name <cluster-name> --overwrite-existing"
+        case .eks:
+            return "aws eks update-kubeconfig --region <region> --name <cluster-name>"
+        case .gke:
+            return "gcloud container clusters get-credentials <cluster-name> --region <region> --project <project-id>"
+        case .local:
+            return "kind create cluster --name rune-dev"
+        }
+    }
+
+    var note: String {
+        switch self {
+        case .aks:
+            return "Rune reads the kubeconfig after Azure writes the context. If the context uses exec auth, Rune invokes the configured plugin."
+        case .eks:
+            return "Rune reads the kubeconfig after AWS writes the context. The generated exec auth stays in kubeconfig."
+        case .gke:
+            return "Rune reads the kubeconfig after gcloud writes the context. Install gke-gcloud-auth-plugin if the kubeconfig requires it."
+        case .local:
+            return "Create or start the local cluster first, then import the kubeconfig or use ~/.kube/config."
+        }
+    }
+}
+
 private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case values
@@ -382,6 +462,8 @@ public struct RuneRootView: View {
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
     @State private var overviewCardSelectionIndex = 0
     @State private var localKeyEventMonitor: Any?
+    @State private var addClusterPopoverPresented = false
+    @State private var selectedAddClusterProvider: RuneAddClusterProvider?
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -465,6 +547,21 @@ public struct RuneRootView: View {
         }
         .onChange(of: viewModel.state.selectedWorkloadKind) { _, _ in
             advanceLayoutGeneration()
+        }
+        .onChange(of: podInspectorTab) { _, tab in
+            if tab == .logs {
+                viewModel.reloadLogsForSelection()
+            }
+        }
+        .onChange(of: deploymentInspectorTab) { _, tab in
+            if tab == .unifiedLogs {
+                viewModel.reloadLogsForSelection()
+            }
+        }
+        .onChange(of: serviceInspectorTab) { _, tab in
+            if tab == .unifiedLogs {
+                viewModel.reloadLogsForSelection()
+            }
         }
         .onChange(of: viewModel.isSidebarVisible) { _, isVisible in
             if !isVisible, keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts {
@@ -558,6 +655,9 @@ public struct RuneRootView: View {
             }
             .sheet(isPresented: $isYAMLEditorSheetPresented) {
                 yamlManifestEditorSheet()
+            }
+            .sheet(item: $selectedAddClusterProvider) { provider in
+                addClusterProviderSheet(provider)
             }
             .confirmationDialog(
                 viewModel.pendingWriteActionTitle,
@@ -1167,7 +1267,7 @@ public struct RuneRootView: View {
                         .frame(
                             minWidth: RuneUILayoutMetrics.splitDetailColumnMinWidth,
                             idealWidth: compactDetailIdealWidth,
-                            maxWidth: RuneUILayoutMetrics.splitDetailColumnMaxWidth,
+                            maxWidth: compactDetailMaxWidth,
                             maxHeight: .infinity,
                             alignment: .topLeading
                         )
@@ -1203,9 +1303,15 @@ public struct RuneRootView: View {
             Divider()
                 .overlay(Color(nsColor: .separatorColor))
 
-            Text("Contexts")
-                .font(.headline)
-                .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
+            HStack(spacing: 8) {
+                Text("Contexts")
+                    .font(.headline)
+                    .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
+                Spacer(minLength: 0)
+                if !viewModel.visibleContexts.isEmpty {
+                    addClusterButton
+                }
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1217,10 +1323,7 @@ public struct RuneRootView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
 
-                            Button("Import Kubeconfig…") {
-                                viewModel.importKubeConfig()
-                            }
-                            .buttonStyle(.borderedProminent)
+                            addClusterButton
                         }
                         .runePanelCard(padding: 10)
                     } else {
@@ -1273,6 +1376,136 @@ public struct RuneRootView: View {
         .buttonStyle(.plain)
     }
 
+    private var addClusterButton: some View {
+        Button {
+            addClusterPopoverPresented.toggle()
+        } label: {
+            Label("Add Cluster", systemImage: "plus.circle.fill")
+                .font(.caption.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.accentColor.opacity(0.16)))
+                .foregroundStyle(Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        .help("Add cluster or kubeconfig")
+        .popover(isPresented: $addClusterPopoverPresented, arrowEdge: .trailing) {
+            addClusterPopover
+        }
+    }
+
+    private var addClusterPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(Color.accentColor)
+                Text("Add Cluster")
+                    .font(.headline)
+                Spacer(minLength: 0)
+            }
+
+            VStack(spacing: 8) {
+                addClusterQuickAction(
+                    title: "Import Kubeconfig",
+                    subtitle: "YAML, yml or config file",
+                    symbolName: "doc.badge.plus"
+                ) {
+                    addClusterPopoverPresented = false
+                    viewModel.importKubeConfig()
+                }
+
+                addClusterQuickAction(
+                    title: "Use ~/.kube/config",
+                    subtitle: "Load the standard kubeconfig path",
+                    symbolName: "folder.badge.plus"
+                ) {
+                    addClusterPopoverPresented = false
+                    viewModel.addDefaultKubeConfig()
+                }
+            }
+
+            Text("Providers")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(RuneAddClusterProvider.allCases) { provider in
+                    providerTileButton(provider)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 360)
+    }
+
+    private func addClusterQuickAction(
+        title: String,
+        subtitle: String,
+        symbolName: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbolName)
+                    .frame(width: 18)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func providerTileButton(_ provider: RuneAddClusterProvider) -> some View {
+        Button {
+            addClusterPopoverPresented = false
+            selectedAddClusterProvider = provider
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: provider.symbolName)
+                        .foregroundStyle(provider.accent)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(provider.shortTitle)
+                    .font(.subheadline.weight(.semibold))
+                Text(provider.subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(provider.accent.opacity(0.11))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(provider.accent.opacity(0.18), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(provider.title)
+    }
+
     private func contextRow(_ context: KubeContext) -> some View {
         HStack(spacing: 8) {
             Button {
@@ -1302,6 +1535,76 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: provider.symbolName)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(provider.accent)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(provider.accent.opacity(0.14)))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(provider.title)
+                        .font(.title3.weight(.semibold))
+                    Text(provider.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text(provider.note)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Credential command")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(provider.command)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.68))
+                    )
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    copyToPasteboard(provider.command)
+                } label: {
+                    Label("Copy Command", systemImage: "doc.on.doc")
+                }
+
+                Button {
+                    selectedAddClusterProvider = nil
+                    viewModel.importKubeConfig()
+                } label: {
+                    Label("Import Kubeconfig", systemImage: "doc.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer(minLength: 0)
+
+                Button("Done") {
+                    selectedAddClusterProvider = nil
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private var contentPane: some View {
@@ -1740,7 +2043,7 @@ public struct RuneRootView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
-                                        copyMenuItem(value: pod.name, label: "pod name")
+                                        podResourceContextMenu(pod)
                                     }
                                 }
                             } header: {
@@ -1777,7 +2080,7 @@ public struct RuneRootView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
-                        copyMenuItem(value: deployment.name, label: "deployment name")
+                        deploymentResourceContextMenu(deployment)
                     }
                     .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
                     .listRowBackground(Color.clear)
@@ -1843,7 +2146,7 @@ public struct RuneRootView: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                copyMenuItem(value: service.name, label: "service name")
+                                serviceResourceContextMenu(service)
                             }
                         }
                     }
@@ -2402,6 +2705,7 @@ public struct RuneRootView: View {
                             PodLogsInspectorPane(
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
+                                isTailModeEnabled: $viewModel.isLogTailModeEnabled,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
@@ -2462,6 +2766,7 @@ public struct RuneRootView: View {
                             UnifiedResourceLogsInspectorPane(
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
+                                isTailModeEnabled: $viewModel.isLogTailModeEnabled,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
@@ -2576,6 +2881,7 @@ public struct RuneRootView: View {
                             UnifiedResourceLogsInspectorPane(
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
+                                isTailModeEnabled: $viewModel.isLogTailModeEnabled,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
@@ -3155,10 +3461,7 @@ public struct RuneRootView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
-                        copyMenuItem(value: resource.name, label: "\(resource.kind.title) name")
-                        if let namespace = resource.namespace {
-                            copyMenuItem(value: namespace, label: "namespace")
-                        }
+                        genericResourceContextMenu(resource, action: action)
                     }
                 }
             }
@@ -3985,8 +4288,14 @@ public struct RuneRootView: View {
             return resolvedDetailWidth
         }
 
-        let expandedDefault = RuneUILayoutMetrics.splitDetailColumnIdealWidth + 180
-        return clampedDetailWidth(max(resolvedDetailWidth, expandedDefault))
+        let expandedDefault = RuneUILayoutMetrics.splitDetailColumnIdealWidth + 260
+        return clampedDetailWidth(max(resolvedDetailWidth, expandedDefault), maxWidth: compactDetailMaxWidth)
+    }
+
+    private var compactDetailMaxWidth: CGFloat {
+        viewModel.isSidebarVisible
+            ? RuneUILayoutMetrics.splitDetailColumnMaxWidth
+            : RuneUILayoutMetrics.splitDetailColumnExpandedMaxWidth
     }
 
     private func clampedSidebarWidth(_ width: CGFloat) -> CGFloat {
@@ -3994,7 +4303,11 @@ public struct RuneRootView: View {
     }
 
     private func clampedDetailWidth(_ width: CGFloat) -> CGFloat {
-        min(max(width, RuneUILayoutMetrics.splitDetailColumnMinWidth), RuneUILayoutMetrics.splitDetailColumnMaxWidth)
+        clampedDetailWidth(width, maxWidth: RuneUILayoutMetrics.splitDetailColumnMaxWidth)
+    }
+
+    private func clampedDetailWidth(_ width: CGFloat, maxWidth: CGFloat) -> CGFloat {
+        min(max(width, RuneUILayoutMetrics.splitDetailColumnMinWidth), maxWidth)
     }
 
     private func persistPaneWidthsIfNeeded(_ paneWidths: [RuneRootPaneWidthKind: CGFloat]) {
@@ -4016,7 +4329,7 @@ public struct RuneRootView: View {
     }
 
     private func persistDetailWidthIfNeeded(_ width: CGFloat) {
-        let clamped = clampedDetailWidth(width)
+        let clamped = clampedDetailWidth(width, maxWidth: compactDetailMaxWidth)
         if abs(clamped - CGFloat(persistedDetailWidth)) >= 1 {
             persistedDetailWidth = Double(clamped)
             UserDefaults.standard.set(persistedDetailWidth, forKey: RuneSettingsKeys.layoutDetailWidth)
@@ -4251,6 +4564,158 @@ public struct RuneRootView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(copyValue, forType: .string)
+    }
+
+    @ViewBuilder
+    private func podResourceContextMenu(_ pod: PodSummary) -> some View {
+        Button {
+            viewModel.selectPod(pod)
+            podInspectorTab = .logs
+            viewModel.reloadLogsForSelection()
+        } label: {
+            Label("Open Logs", systemImage: "text.alignleft")
+        }
+        Button {
+            viewModel.selectPod(pod)
+            podInspectorTab = .exec
+        } label: {
+            Label("Exec Shell", systemImage: "terminal")
+        }
+        Button {
+            viewModel.selectPod(pod)
+            podInspectorTab = .describe
+        } label: {
+            Label("Describe", systemImage: "doc.text.magnifyingglass")
+        }
+        Button {
+            viewModel.selectPod(pod)
+            podInspectorTab = .yaml
+        } label: {
+            Label("Open YAML", systemImage: "curlybraces")
+        }
+        Divider()
+        copyMenuItem(value: pod.name, label: "pod name")
+        copyMenuItem(value: pod.namespace, label: "namespace")
+        Divider()
+        Button(role: .destructive) {
+            viewModel.selectPod(pod)
+            viewModel.requestDeleteSelectedResource()
+        } label: {
+            Label("Delete Pod", systemImage: "trash")
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
+    }
+
+    @ViewBuilder
+    private func deploymentResourceContextMenu(_ deployment: DeploymentSummary) -> some View {
+        Button {
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .unifiedLogs
+            viewModel.reloadLogsForSelection()
+        } label: {
+            Label("Open Unified Logs", systemImage: "text.alignleft")
+        }
+        Button {
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .rollout
+        } label: {
+            Label("Open Rollout", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+        }
+        Button {
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .describe
+        } label: {
+            Label("Describe", systemImage: "doc.text.magnifyingglass")
+        }
+        Button {
+            viewModel.selectDeployment(deployment)
+            deploymentInspectorTab = .yaml
+        } label: {
+            Label("Open YAML", systemImage: "curlybraces")
+        }
+        Divider()
+        copyMenuItem(value: deployment.name, label: "deployment name")
+        copyMenuItem(value: deployment.namespace, label: "namespace")
+        Divider()
+        Button(role: .destructive) {
+            viewModel.selectDeployment(deployment)
+            viewModel.requestDeleteSelectedResource()
+        } label: {
+            Label("Delete Deployment", systemImage: "trash")
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
+    }
+
+    @ViewBuilder
+    private func serviceResourceContextMenu(_ service: ServiceSummary) -> some View {
+        Button {
+            viewModel.selectService(service)
+            serviceInspectorTab = .unifiedLogs
+            viewModel.reloadLogsForSelection()
+        } label: {
+            Label("Open Unified Logs", systemImage: "text.alignleft")
+        }
+        Button {
+            viewModel.selectService(service)
+            serviceInspectorTab = .portForward
+        } label: {
+            Label("Port Forward", systemImage: "arrow.left.arrow.right")
+        }
+        Button {
+            viewModel.selectService(service)
+            serviceInspectorTab = .describe
+        } label: {
+            Label("Describe", systemImage: "doc.text.magnifyingglass")
+        }
+        Button {
+            viewModel.selectService(service)
+            serviceInspectorTab = .yaml
+        } label: {
+            Label("Open YAML", systemImage: "curlybraces")
+        }
+        Divider()
+        copyMenuItem(value: service.name, label: "service name")
+        copyMenuItem(value: service.namespace, label: "namespace")
+        Divider()
+        Button(role: .destructive) {
+            viewModel.selectService(service)
+            viewModel.requestDeleteSelectedResource()
+        } label: {
+            Label("Delete Service", systemImage: "trash")
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
+    }
+
+    @ViewBuilder
+    private func genericResourceContextMenu(
+        _ resource: ClusterResourceSummary,
+        action: @escaping (ClusterResourceSummary?) -> Void
+    ) -> some View {
+        Button {
+            action(resource)
+            genericResourceManifestTab = .describe
+        } label: {
+            Label("Describe", systemImage: "doc.text.magnifyingglass")
+        }
+        Button {
+            action(resource)
+            genericResourceManifestTab = .yaml
+        } label: {
+            Label("Open YAML", systemImage: "curlybraces")
+        }
+        Divider()
+        copyMenuItem(value: resource.name, label: "\(resource.kind.singularTypeName) name")
+        if let namespace = resource.namespace {
+            copyMenuItem(value: namespace, label: "namespace")
+        }
+        Divider()
+        Button(role: .destructive) {
+            action(resource)
+            viewModel.requestDeleteSelectedResource()
+        } label: {
+            Label("Delete \(resource.kind.singularTypeName)", systemImage: "trash")
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
     }
 
     @ViewBuilder

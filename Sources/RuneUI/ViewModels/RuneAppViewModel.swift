@@ -326,6 +326,16 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var state: RuneAppState
     @Published public var selectedLogPreset: PodLogPreset = .recentLines
     @Published public var includePreviousLogs: Bool = false
+    @Published public var isLogTailModeEnabled: Bool = false {
+        didSet {
+            if isLogTailModeEnabled {
+                reloadLogsForSelection()
+            } else {
+                tailLogsReloadTask?.cancel()
+                tailLogsReloadTask = nil
+            }
+        }
+    }
     @Published public private(set) var podSortColumn: PodListSortColumn = .name
     @Published public private(set) var podSortAscending: Bool = true
     @Published public var pendingWriteAction: PendingWriteAction?
@@ -370,6 +380,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var resourceDetailsTask: Task<Void, Never>?
     private var scheduledLogsReloadTask: Task<Void, Never>?
     private var logsReloadTask: Task<Void, Never>?
+    private var tailLogsReloadTask: Task<Void, Never>?
     private var yamlValidationTask: Task<Void, Never>?
     private var pendingForcedNamespaceRefresh = false
     /// Set during context switch with no explicit namespace so first metadata refresh can override stale carry-over namespace.
@@ -390,6 +401,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
     /// Coalesces rapid log preset toggles while still cancelling any in-flight fetch immediately.
     private let logsReloadDebounceNanoseconds: UInt64 = 180_000_000
+    private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
     private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
     /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.
@@ -784,6 +796,26 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func addDefaultKubeConfig() {
+        Task {
+            do {
+                let url = URL(fileURLWithPath: "\(NSHomeDirectory())/.kube/config")
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw RuneError.invalidInput(message: "Default kubeconfig was not found at \(url.path)")
+                }
+
+                try? bookmarkManager.addKubeConfig(url: url)
+                let sources = try resolvedKubeConfigSources(fallbackURLs: [url])
+                state.setSources(sources)
+                diagnostics.log("addDefaultKubeConfig loaded \(url.path), sources count=\(sources.count)")
+                try await reloadContexts()
+            } catch {
+                diagnostics.log("addDefaultKubeConfig failed: \(error.localizedDescription)")
+                state.setError(error)
+            }
+        }
+    }
+
     public func reloadContexts() async throws {
         state.isLoading = true
         defer { state.isLoading = false }
@@ -955,6 +987,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func setWorkloadKind(_ kind: KubeResourceKind, trackHistory: Bool, triggerReload: Bool) {
         guard kind != .event else { return }
+        cancelPendingLogReload()
         state.selectedWorkloadKind = kind
         if state.selectedSection == .rbac {
             state.reconcileRBACSelection()
@@ -1669,12 +1702,16 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func reloadLogsForSelection() {
+        tailLogsReloadTask?.cancel()
+        tailLogsReloadTask = nil
         scheduledLogsReloadTask?.cancel()
         startLogsReloadForSelection()
     }
 
     private func scheduleLogsReloadForSelection() {
         resourceDetailsTask?.cancel()
+        tailLogsReloadTask?.cancel()
+        tailLogsReloadTask = nil
         let requestID = UUID()
         latestLogsReloadRequestID = requestID
         scheduledLogsReloadTask?.cancel()
@@ -1694,6 +1731,8 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func startLogsReloadForSelection(requestID requestedRequestID: UUID? = nil) {
         resourceDetailsTask?.cancel()
+        tailLogsReloadTask?.cancel()
+        tailLogsReloadTask = nil
         logsReloadTask?.cancel()
         scheduledLogsReloadTask?.cancel()
         let requestID = requestedRequestID ?? UUID()
@@ -1716,7 +1755,8 @@ public final class RuneAppViewModel: ObservableObject {
                 switch kind {
                 case .pod:
                     guard let pod else { return }
-                    self.state.setPodLogs("")
+                    self.state.showCachedPodLogs(contextName: context.name, namespace: namespace, podName: pod.name)
+                    self.state.setLastLogFetchError(nil)
                     self.state.isLoadingLogs = true
                     defer {
                         if self.isCurrentLogsReloadRequest(requestID) {
@@ -1732,10 +1772,17 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
-                    self.state.setPodLogs(logs)
+                    self.state.appendPodLogRead(
+                        logs,
+                        contextName: context.name,
+                        namespace: namespace,
+                        podName: pod.name
+                    )
+                    self.scheduleNextTailLogsReload()
                 case .service:
                     guard let service else { return }
-                    self.state.clearUnifiedServiceLogs()
+                    self.state.showCachedUnifiedLogs(contextName: context.name, namespace: namespace, kind: .service, resourceName: service.name)
+                    self.state.setLastLogFetchError(nil)
                     self.state.isLoadingLogs = true
                     defer {
                         if self.isCurrentLogsReloadRequest(requestID) {
@@ -1751,10 +1798,19 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
-                    self.state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    self.state.appendUnifiedServiceLogRead(
+                        unified.mergedText,
+                        pods: unified.podNames,
+                        contextName: context.name,
+                        namespace: namespace,
+                        kind: .service,
+                        resourceName: service.name
+                    )
+                    self.scheduleNextTailLogsReload()
                 case .deployment:
                     guard let deployment else { return }
-                    self.state.clearUnifiedServiceLogs()
+                    self.state.showCachedUnifiedLogs(contextName: context.name, namespace: namespace, kind: .deployment, resourceName: deployment.name)
+                    self.state.setLastLogFetchError(nil)
                     self.state.isLoadingLogs = true
                     defer {
                         if self.isCurrentLogsReloadRequest(requestID) {
@@ -1770,7 +1826,15 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
-                    self.state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    self.state.appendUnifiedServiceLogRead(
+                        unified.mergedText,
+                        pods: unified.podNames,
+                        contextName: context.name,
+                        namespace: namespace,
+                        kind: .deployment,
+                        resourceName: deployment.name
+                    )
+                    self.scheduleNextTailLogsReload()
                 case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     return
                 }
@@ -1781,8 +1845,10 @@ public final class RuneAppViewModel: ObservableObject {
                 guard self.isCurrentLogsReloadRequest(requestID) else { return }
                 if Self.isLikelyLogFetchFailure(error) {
                     self.state.setLastLogFetchError(Self.logFetchFailureMessage(for: error))
+                } else {
+                    self.state.setLastLogFetchError(error.localizedDescription)
                 }
-                self.state.setError(error)
+                self.state.clearError()
             }
         }
     }
@@ -3575,7 +3641,24 @@ public final class RuneAppViewModel: ObservableObject {
         scheduledLogsReloadTask?.cancel()
         scheduledLogsReloadTask = nil
         logsReloadTask?.cancel()
+        tailLogsReloadTask?.cancel()
+        tailLogsReloadTask = nil
         latestLogsReloadRequestID = UUID()
+    }
+
+    private func scheduleNextTailLogsReload() {
+        guard isLogTailModeEnabled else { return }
+        tailLogsReloadTask?.cancel()
+        tailLogsReloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: self.tailLogsReloadNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self.startLogsReloadForSelection()
+        }
     }
 
     private func isCurrentLogsReloadRequest(_ requestID: UUID) -> Bool {
@@ -3663,7 +3746,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
-                state.setPodLogs("")
+                state.showCachedPodLogs(contextName: context.name, namespace: state.selectedNamespace, podName: pod.name)
                 state.isLoadingLogs = true
                 defer {
                     if isCurrentResourceDetailsRequest(requestID) {
@@ -3710,7 +3793,12 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await logsResult {
                 case let .success(logs):
-                    state.setPodLogs(logs)
+                    state.appendPodLogRead(
+                        logs,
+                        contextName: context.name,
+                        namespace: state.selectedNamespace,
+                        podName: pod.name
+                    )
                     state.setLastLogFetchError(nil)
                 case let .failure(error):
                     if Self.isLikelyLogFetchFailure(error) {
@@ -3729,7 +3817,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
-                state.clearUnifiedServiceLogs()
+                state.showCachedUnifiedLogs(contextName: context.name, namespace: state.selectedNamespace, kind: .service, resourceName: service.name)
                 state.isLoadingLogs = true
                 defer {
                     if isCurrentResourceDetailsRequest(requestID) {
@@ -3759,7 +3847,14 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await unifiedResult {
                 case let .success(unified):
-                    state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    state.appendUnifiedServiceLogRead(
+                        unified.mergedText,
+                        pods: unified.podNames,
+                        contextName: context.name,
+                        namespace: state.selectedNamespace,
+                        kind: .service,
+                        resourceName: service.name
+                    )
                     state.setLastLogFetchError(nil)
                 case let .failure(error):
                     if Self.isLikelyLogFetchFailure(error) {
@@ -3767,7 +3862,6 @@ public final class RuneAppViewModel: ObservableObject {
                     } else {
                         state.setLastLogFetchError(error.localizedDescription)
                     }
-                    state.clearUnifiedServiceLogs()
                 }
                 state.setPodLogs("")
 
@@ -3779,7 +3873,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
 
-                state.clearUnifiedServiceLogs()
+                state.showCachedUnifiedLogs(contextName: context.name, namespace: state.selectedNamespace, kind: .deployment, resourceName: deployment.name)
                 state.isLoadingLogs = true
                 defer {
                     if isCurrentResourceDetailsRequest(requestID) {
@@ -3817,7 +3911,14 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await unifiedResult {
                 case let .success(unified):
-                    state.setUnifiedServiceLogs(unified.mergedText, pods: unified.podNames)
+                    state.appendUnifiedServiceLogRead(
+                        unified.mergedText,
+                        pods: unified.podNames,
+                        contextName: context.name,
+                        namespace: state.selectedNamespace,
+                        kind: .deployment,
+                        resourceName: deployment.name
+                    )
                     state.setLastLogFetchError(nil)
                 case let .failure(error):
                     if Self.isLikelyLogFetchFailure(error) {
@@ -3825,7 +3926,6 @@ public final class RuneAppViewModel: ObservableObject {
                     } else {
                         state.setLastLogFetchError(error.localizedDescription)
                     }
-                    state.clearUnifiedServiceLogs()
                 }
 
                 switch await historyResult {
@@ -4214,6 +4314,8 @@ public final class RuneAppViewModel: ObservableObject {
     private static func isLikelyLogFetchFailure(_ error: Error) -> Bool {
         guard case let RuneError.commandFailed(command, _) = error else { return false }
         return command.split(separator: " ").contains(Substring("logs"))
+            || command.contains("/log")
+            || command.localizedCaseInsensitiveContains("pod log")
     }
 
     private func currentWritableResource() -> (KubeResourceKind, String)? {

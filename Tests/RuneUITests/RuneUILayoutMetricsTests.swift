@@ -48,4 +48,11 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             RuneUILayoutMetrics.maxWindowContentTopInset
         )
     }
+
+    func testDetailPaneCanExpandFurtherWhenSidebarIsHidden() {
+        XCTAssertGreaterThan(
+            RuneUILayoutMetrics.splitDetailColumnExpandedMaxWidth,
+            RuneUILayoutMetrics.splitDetailColumnMaxWidth
+        )
+    }
 }

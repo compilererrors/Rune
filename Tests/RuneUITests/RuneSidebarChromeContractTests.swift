@@ -31,6 +31,75 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(textViewSource.contains("textView.scrollRangeToVisible(NSRange(location: 0, length: 0))"))
     }
 
+    func testSidebarExposesAddClusterProviderFlow() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("Add Cluster"))
+        XCTAssertTrue(rootViewSource.contains("Import Kubeconfig"))
+        XCTAssertTrue(rootViewSource.contains("Use ~/.kube/config"))
+        XCTAssertTrue(rootViewSource.contains("Microsoft AKS"))
+        XCTAssertTrue(rootViewSource.contains("Amazon EKS"))
+        XCTAssertTrue(rootViewSource.contains("Google GKE"))
+        XCTAssertTrue(rootViewSource.contains("Local Cluster"))
+        XCTAssertTrue(rootViewSource.contains("az aks get-credentials"))
+        XCTAssertTrue(rootViewSource.contains("aws eks update-kubeconfig"))
+        XCTAssertTrue(rootViewSource.contains("gcloud container clusters get-credentials"))
+        XCTAssertTrue(viewModelSource.contains("func addDefaultKubeConfig()"))
+    }
+
+    func testLogInspectorTabsReloadWhenSelectedDirectly() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains(".onChange(of: podInspectorTab)"))
+        XCTAssertTrue(rootViewSource.contains("if tab == .logs"))
+        XCTAssertTrue(rootViewSource.contains(".onChange(of: deploymentInspectorTab)"))
+        XCTAssertTrue(rootViewSource.contains("if tab == .unifiedLogs"))
+        XCTAssertTrue(rootViewSource.contains(".onChange(of: serviceInspectorTab)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.reloadLogsForSelection()"))
+    }
+
+    func testLogReloadErrorsStayInLogInspectorInsteadOfGlobalErrorBanner() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        guard let reloadStart = viewModelSource.range(of: "private func startLogsReloadForSelection"),
+              let saveLogsStart = viewModelSource.range(of: "public func saveCurrentLogs", range: reloadStart.upperBound..<viewModelSource.endIndex) else {
+            XCTFail("Could not locate log reload implementation in RuneAppViewModel.swift")
+            return
+        }
+
+        let reloadBlock = String(viewModelSource[reloadStart.lowerBound..<saveLogsStart.lowerBound])
+        XCTAssertTrue(reloadBlock.contains("state.setLastLogFetchError"))
+        XCTAssertTrue(reloadBlock.contains("state.clearError()"))
+        XCTAssertFalse(reloadBlock.contains("state.setError(error)"))
+    }
+
+    func testLogsExposeTailModeAndSessionCache() throws {
+        let logsViewSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
+
+        XCTAssertTrue(logsViewSource.contains("Toggle(\"Tail\""))
+        XCTAssertTrue(viewModelSource.contains("isLogTailModeEnabled"))
+        XCTAssertTrue(viewModelSource.contains("tailLogsReloadNanoseconds"))
+        XCTAssertTrue(stateSource.contains("sessionLogCache"))
+        XCTAssertTrue(stateSource.contains("appendPodLogRead"))
+        XCTAssertTrue(stateSource.contains("appendUnifiedServiceLogRead"))
+    }
+
+    func testCenterResourceRowsExposeOperationalContextMenus() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("podResourceContextMenu(pod)"))
+        XCTAssertTrue(rootViewSource.contains("deploymentResourceContextMenu(deployment)"))
+        XCTAssertTrue(rootViewSource.contains("serviceResourceContextMenu(service)"))
+        XCTAssertTrue(rootViewSource.contains("genericResourceContextMenu(resource, action: action)"))
+        XCTAssertTrue(rootViewSource.contains("Open Logs"))
+        XCTAssertTrue(rootViewSource.contains("Open Unified Logs"))
+        XCTAssertTrue(rootViewSource.contains("Open YAML"))
+        XCTAssertTrue(rootViewSource.contains("Describe"))
+    }
+
     private var runeRootViewPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -40,6 +109,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
     }
 
+    private var runeAppViewModelPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/ViewModels/RuneAppViewModel.swift").path
+    }
+
     private var appKitManifestTextViewPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -47,5 +125,23 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitManifestTextView.swift").path
+    }
+
+    private var resourceLogsInspectorViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceLogsInspectorView.swift").path
+    }
+
+    private var runeAppStatePath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneCore/State/RuneAppState.swift").path
     }
 }

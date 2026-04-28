@@ -14,7 +14,7 @@ enum IconAssetError: Error {
 
 struct IconAssetGenerator {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    let logoPath = "assets/rune_icon_wheel.png"
+    let logoPath = "assets/rune_logo_redone/rune_logo_no_edge_halo_hard_trim.png"
     let iconsetPath = "assets/rune_app_iconset_wheel.iconset"
     let icnsPath = "assets/rune_wheel.icns"
 
@@ -23,7 +23,7 @@ struct IconAssetGenerator {
     private let logoPadding: CGFloat = 0
     private let iconPlateInset: CGFloat = 0
     /// Scale applied to the logo before clipping it to the icon plate.
-    private let iconLogoScale: CGFloat = 1.10
+    private let iconLogoScale: CGFloat = 0.94
     private let iconLogoFitCornerFraction: CGFloat = 0.017
 
     func run() throws {
