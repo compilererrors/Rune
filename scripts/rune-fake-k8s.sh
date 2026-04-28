@@ -28,10 +28,10 @@ setup_fake_k8s() {
 
 export_env() {
   cat <<EOF
-export PATH="$STATE_DIR/bin:\$PATH"
 export KUBECONFIG="$STATE_DIR/kubeconfig.yaml"
 export RUNE_K8S_AGENT=""
 export RUNE_FAKE_K8S_STATE="$STATE_DIR"
+export RUNE_FAKE_K8S_BINARY="$BINARY_PATH"
 export HOME="$STATE_DIR/home"
 export RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY="1"
 EOF
@@ -56,13 +56,13 @@ case "$SUBCOMMAND" in
     "$BINARY_PATH" summary
     ;;
   kubectl)
-    exec "$STATE_DIR/bin/kubectl" "$@"
+    exec "$BINARY_PATH" kubectl --state-dir "$STATE_DIR" "$@"
     ;;
   app)
-    export PATH="$STATE_DIR/bin:$PATH"
     export KUBECONFIG="$STATE_DIR/kubeconfig.yaml"
     export RUNE_K8S_AGENT=""
     export RUNE_FAKE_K8S_STATE="$STATE_DIR"
+    export RUNE_FAKE_K8S_BINARY="$BINARY_PATH"
     export HOME="$STATE_DIR/home"
     export RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY="1"
     exec swift run RuneApp "$@"
@@ -73,7 +73,6 @@ usage:
   scripts/rune-fake-k8s.sh setup
   scripts/rune-fake-k8s.sh summary
   scripts/rune-fake-k8s.sh env
-  scripts/rune-fake-k8s.sh kubectl get pods -n delta-zone
   scripts/rune-fake-k8s.sh app
 EOF
     exit 1

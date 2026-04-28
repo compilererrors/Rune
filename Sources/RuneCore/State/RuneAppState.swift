@@ -3,6 +3,8 @@ import Foundation
 
 @MainActor
 public final class RuneAppState: ObservableObject {
+    private let maxSessionLogCacheCharacters = 1_000_000
+
     @Published public private(set) var kubeConfigSources: [KubeConfigSource] = []
     @Published public private(set) var contexts: [KubeContext] = []
     @Published public private(set) var namespaces: [String] = []
@@ -71,6 +73,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var podLogs: String = ""
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
+    @Published public private(set) var sessionLogCache: [String: String] = [:]
     /// Set when the latest log stream failed (timeout or error). Cleared on successful load or when a new fetch starts.
     @Published public private(set) var lastLogFetchError: String?
     @Published public private(set) var resourceYAML: String = ""
@@ -416,8 +419,58 @@ public final class RuneAppState: ObservableObject {
         lastLogFetchError = nil
     }
 
+    public func showCachedPodLogs(contextName: String, namespace: String, podName: String) {
+        podLogs = cachedLogs(contextName: contextName, namespace: namespace, kind: .pod, resourceName: podName)
+    }
+
+    public func appendPodLogRead(
+        _ logs: String,
+        contextName: String,
+        namespace: String,
+        podName: String,
+        loadedAt: Date = Date()
+    ) {
+        podLogs = appendSessionLogSegment(
+            logs,
+            contextName: contextName,
+            namespace: namespace,
+            kind: .pod,
+            resourceName: podName,
+            sourceNames: [podName],
+            loadedAt: loadedAt
+        )
+        lastLogFetchError = nil
+    }
+
     public func setUnifiedServiceLogs(_ logs: String, pods: [String]) {
         unifiedServiceLogs = logs
+        unifiedServiceLogPods = pods
+        lastLogFetchError = nil
+    }
+
+    public func showCachedUnifiedLogs(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) {
+        unifiedServiceLogs = cachedLogs(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)
+        unifiedServiceLogPods = []
+    }
+
+    public func appendUnifiedServiceLogRead(
+        _ logs: String,
+        pods: [String],
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceName: String,
+        loadedAt: Date = Date()
+    ) {
+        unifiedServiceLogs = appendSessionLogSegment(
+            logs,
+            contextName: contextName,
+            namespace: namespace,
+            kind: kind,
+            resourceName: resourceName,
+            sourceNames: pods,
+            loadedAt: loadedAt
+        )
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
     }
@@ -430,6 +483,10 @@ public final class RuneAppState: ObservableObject {
 
     public func setLastLogFetchError(_ message: String?) {
         lastLogFetchError = message
+    }
+
+    public func cachedLogs(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) -> String {
+        sessionLogCache[logCacheKey(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)] ?? ""
     }
 
     public func setResourceYAML(_ yaml: String) {
@@ -628,5 +685,62 @@ public final class RuneAppState: ObservableObject {
 
     public func setErrorMessage(_ message: String?) {
         lastError = message
+    }
+
+    private func appendSessionLogSegment(
+        _ logs: String,
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceName: String,
+        sourceNames: [String],
+        loadedAt: Date
+    ) -> String {
+        let key = logCacheKey(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)
+        let previous = sessionLogCache[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let segment = formattedLogSegment(
+            logs,
+            contextName: contextName,
+            namespace: namespace,
+            kind: kind,
+            resourceName: resourceName,
+            sourceNames: sourceNames,
+            loadedAt: loadedAt
+        )
+        let combined = previous.isEmpty ? segment : "\(previous)\n\n\(segment)"
+        let bounded = boundedSessionLogCache(combined)
+        sessionLogCache[key] = bounded
+        return bounded
+    }
+
+    private func formattedLogSegment(
+        _ logs: String,
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceName: String,
+        sourceNames: [String],
+        loadedAt: Date
+    ) -> String {
+        let timestamp = ISO8601DateFormatter().string(from: loadedAt)
+        let sourceSummary = sourceNames.isEmpty ? "" : "\nSources: \(sourceNames.joined(separator: ", "))"
+        let body = logs.trimmingCharacters(in: .newlines)
+        return """
+        ────────────────────────────────────────────────────────────
+        \(timestamp)  \(kind.singularTypeName)  \(namespace)/\(resourceName)
+        Context: \(contextName)\(sourceSummary)
+        ────────────────────────────────────────────────────────────
+        \(body.isEmpty ? "[no log lines returned]" : body)
+        """
+    }
+
+    private func boundedSessionLogCache(_ text: String) -> String {
+        guard text.count > maxSessionLogCacheCharacters else { return text }
+        let suffix = text.suffix(maxSessionLogCacheCharacters)
+        return "[older session log cache truncated]\n\(suffix)"
+    }
+
+    private func logCacheKey(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) -> String {
+        "\(contextName)|\(namespace)|\(kind.rawValue)|\(resourceName)"
     }
 }

@@ -1331,25 +1331,16 @@ private func kubeconfigYAML(stateDir: URL) -> String {
 
 private func ensureSetup(stateDir: URL, binaryPath: String) throws {
     let fileManager = FileManager.default
-    let binDir = stateDir.appendingPathComponent("bin", isDirectory: true)
-    try fileManager.createDirectory(at: binDir, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: stateDir, withIntermediateDirectories: true)
 
     let kubeconfig = stateDir.appendingPathComponent("kubeconfig.yaml")
     try kubeconfigYAML(stateDir: stateDir).write(to: kubeconfig, atomically: true, encoding: .utf8)
 
-    let wrapper = """
-    #!/usr/bin/env bash
-    exec "\(binaryPath)" kubectl --state-dir "\(stateDir.path)" "$@"
-    """
-    let wrapperURL = binDir.appendingPathComponent("kubectl")
-    try wrapper.write(to: wrapperURL, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapperURL.path)
-
     let envFile = """
-    export PATH="\(binDir.path):$PATH"
     export KUBECONFIG="\(kubeconfig.path)"
     export RUNE_K8S_AGENT=""
     export RUNE_FAKE_K8S_STATE="\(stateDir.path)"
+    export RUNE_FAKE_K8S_BINARY="\(binaryPath)"
     """
     try envFile.write(to: stateDir.appendingPathComponent("env.sh"), atomically: true, encoding: .utf8)
 }
@@ -1543,7 +1534,6 @@ do {
         usage:
           RuneFakeK8s setup [--state-dir PATH] [--binary PATH]
           RuneFakeK8s summary
-          RuneFakeK8s kubectl [--state-dir PATH] <kubectl args...>
         """)
         Foundation.exit(0)
     }
@@ -1557,7 +1547,6 @@ do {
         let resolvedBinary = binaryPath ?? CommandLine.arguments[0]
         try ensureSetup(stateDir: stateDir, binaryPath: resolvedBinary)
         write("fake kubeconfig: \(stateDir.appendingPathComponent("kubeconfig.yaml").path)\n")
-        write("fake kubectl: \(stateDir.appendingPathComponent("bin/kubectl").path)\n")
         write(commandSummary() + "\n")
     case "summary":
         write(commandSummary() + "\n")

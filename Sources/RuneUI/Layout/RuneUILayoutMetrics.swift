@@ -26,6 +26,7 @@ enum RuneUILayoutMetrics {
     static let splitDetailColumnMinWidth: CGFloat = 320
     static let splitDetailColumnIdealWidth: CGFloat = 520
     static let splitDetailColumnMaxWidth: CGFloat = 1280
+    static let splitDetailColumnExpandedMaxWidth: CGFloat = 1800
     /// Sidebar min / max width (`49c6517`).
     static let splitSidebarMinWidth: CGFloat = 220
     static let splitSidebarMaxWidth: CGFloat = 460

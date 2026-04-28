@@ -974,7 +974,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         guard !pods.isEmpty else { return [] }
 
         var collectedLines: [TaggedLogLine] = []
-        try await withThrowingTaskGroup(of: [TaggedLogLine].self) { group in
+        var failures: [Error] = []
+        try await withThrowingTaskGroup(of: UnifiedPodLogFetchResult.self) { group in
             var nextPodIndex = 0
             let initial = min(unifiedLogsMaxConcurrentPodFetches, pods.count)
 
@@ -993,19 +994,23 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                             timeoutOverride: self.unifiedLogsPerPodTimeout,
                             profile: .unifiedPerPod
                         )
-                        return self.taggedLines(from: logs, podName: pod.name)
+                        return .success(self.taggedLines(from: logs, podName: pod.name))
                     } catch {
                         if error is CancellationError {
                             throw error
                         }
-                        // Keep unified logs responsive even when one pod log fetch fails.
-                        return []
+                        return .failure(error)
                     }
                 }
             }
 
-            while let podLines = try await group.next() {
-                collectedLines.append(contentsOf: podLines)
+            while let result = try await group.next() {
+                switch result {
+                case let .success(podLines):
+                    collectedLines.append(contentsOf: podLines)
+                case let .failure(error):
+                    failures.append(error)
+                }
                 if nextPodIndex < pods.count {
                     let pod = pods[nextPodIndex]
                     nextPodIndex += 1
@@ -1021,16 +1026,20 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                                 timeoutOverride: self.unifiedLogsPerPodTimeout,
                                 profile: .unifiedPerPod
                             )
-                            return self.taggedLines(from: logs, podName: pod.name)
+                            return .success(self.taggedLines(from: logs, podName: pod.name))
                         } catch {
                             if error is CancellationError {
                                 throw error
                             }
-                            return []
+                            return .failure(error)
                         }
                     }
                 }
             }
+        }
+
+        if collectedLines.isEmpty, let firstFailure = failures.first {
+            throw firstFailure
         }
 
         return collectedLines
@@ -1803,6 +1812,11 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let podName: String
         let text: String
         let timestamp: Date?
+    }
+
+    private enum UnifiedPodLogFetchResult: Sendable {
+        case success([TaggedLogLine])
+        case failure(Error)
     }
 
     private func isMissingPreviousLogsError(_ error: Error) -> Bool {

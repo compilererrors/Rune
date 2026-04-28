@@ -4,6 +4,7 @@ import SwiftUI
 struct ResourceLogsToolbar: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
+    @Binding var isTailModeEnabled: Bool
     @Binding var searchQuery: String
     let searchSummary: ResourceLogSearchResult?
     let onReload: () -> Void
@@ -20,6 +21,9 @@ struct ResourceLogsToolbar: View {
                 .frame(maxWidth: 220)
 
                 Toggle("Previous", isOn: $includePreviousLogs)
+
+                Toggle("Tail", isOn: $isTailModeEnabled)
+                    .help("Keep reloading logs and append each read to the session cache.")
 
                 Spacer()
 
@@ -38,6 +42,7 @@ struct ResourceLogsToolbar: View {
 struct PodLogsInspectorPane: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
+    @Binding var isTailModeEnabled: Bool
     let isLoadingLogs: Bool
     let isLoadingResources: Bool
     let errorMessage: String?
@@ -54,6 +59,7 @@ struct PodLogsInspectorPane: View {
             ResourceLogsToolbar(
                 selectedLogPreset: $selectedLogPreset,
                 includePreviousLogs: $includePreviousLogs,
+                isTailModeEnabled: $isTailModeEnabled,
                 searchQuery: $searchQuery,
                 searchSummary: searchResult,
                 onReload: onReload,
@@ -78,6 +84,7 @@ struct PodLogsInspectorPane: View {
 struct UnifiedResourceLogsInspectorPane: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
+    @Binding var isTailModeEnabled: Bool
     let isLoadingLogs: Bool
     let isLoadingResources: Bool
     let errorMessage: String?
@@ -95,6 +102,7 @@ struct UnifiedResourceLogsInspectorPane: View {
             ResourceLogsToolbar(
                 selectedLogPreset: $selectedLogPreset,
                 includePreviousLogs: $includePreviousLogs,
+                isTailModeEnabled: $isTailModeEnabled,
                 searchQuery: $searchQuery,
                 searchSummary: searchResult,
                 onReload: onReload,
