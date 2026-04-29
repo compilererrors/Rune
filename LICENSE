@@ -1,0 +1,81 @@
+Rune Source-Available License 1.0
+
+Copyright (c) 2026 Viktor Nyberg
+
+This license governs use of the Rune source code, binaries, and other
+project files, except for third-party components that are distributed under
+their own licenses.
+
+1. Definitions
+
+"Rune" means this software project and its source code, binaries,
+documentation, scripts, and assets.
+
+"Licensor" means the copyright holder identified above.
+
+"You" means the individual or legal entity exercising rights under this
+license.
+
+"Non-Commercial Use" means use that is not Business Use and is not intended
+for commercial advantage, business operations, revenue generation, paid
+services, or other monetary compensation.
+
+"Business Use" means use by or for a company, partnership, sole
+proprietorship, government agency, nonprofit, or other organization in
+connection with that organization's work, operations, services, products,
+customers, infrastructure, employees, contractors, or revenue-generating
+activities.
+
+"Commercial License" means a separate paid license or written agreement with
+the Licensor that permits Business Use.
+
+2. Non-Commercial Permission
+
+Subject to this license, You may use, copy, modify, compile, run, and
+distribute Rune for Non-Commercial Use.
+
+3. Business Use Requires Payment
+
+Business Use is not permitted under this license unless You have a Commercial
+License. If You want to use Rune for Business Use, You must obtain and pay for
+a Commercial License from the Licensor before that use begins.
+
+No Business Use rights are granted by downloading, cloning, building,
+installing, modifying, or distributing Rune under this license.
+
+4. Redistribution
+
+If You distribute Rune or a modified version of Rune under this license, You
+must include this license, preserve copyright notices, and make clear that
+Business Use requires a Commercial License.
+
+5. Contributions
+
+Unless otherwise agreed in writing, any contribution You submit to Rune is
+licensed to the Licensor and downstream recipients under this license. You
+represent that You have the right to submit the contribution.
+
+6. Third-Party Components
+
+Third-party dependencies, libraries, tools, and assets remain subject to their
+own license terms. This license does not grant rights to third-party
+components beyond those provided by their respective licenses.
+
+7. No Trademark Rights
+
+This license does not grant permission to use the names, trademarks, logos,
+or branding of Rune or the Licensor except as reasonably necessary to describe
+an unmodified copy of Rune.
+
+8. Termination
+
+If You violate this license, the rights granted to You under this license
+terminate automatically. The Licensor may reinstate rights in writing.
+
+9. Disclaimer
+
+RUNE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, NON-INFRINGEMENT, SECURITY, OR AVAILABILITY. TO THE
+MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR IS NOT LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO RUNE OR USE OF RUNE.
