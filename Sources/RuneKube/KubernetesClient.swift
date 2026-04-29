@@ -1407,20 +1407,25 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     )
                 },
                 onFailure: { message in
-                    onEvent(
-                        PortForwardSession(
-                            id: sessionID,
-                            contextName: context.name,
-                            namespace: namespace,
-                            targetKind: targetKind,
-                            targetName: targetName,
-                            localPort: localPort,
-                            remotePort: remotePort,
-                            address: address,
-                            status: .failed,
-                            lastMessage: message
+                    Task {
+                        if let handle = await self.portForwardRegistry.remove(id: sessionID) {
+                            handle.terminate()
+                        }
+                        onEvent(
+                            PortForwardSession(
+                                id: sessionID,
+                                contextName: context.name,
+                                namespace: namespace,
+                                targetKind: targetKind,
+                                targetName: targetName,
+                                localPort: localPort,
+                                remotePort: remotePort,
+                                address: address,
+                                status: .failed,
+                                lastMessage: message
+                            )
                         )
-                    )
+                    }
                 }
             )
             let didInsert = await portForwardRegistry.insert(handle: handle, id: sessionID)

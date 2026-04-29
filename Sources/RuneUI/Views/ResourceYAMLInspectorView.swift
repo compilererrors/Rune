@@ -69,6 +69,10 @@ struct ResourceYAMLInspectorPane: View {
             text: yamlText,
             externalIssues: validationIssues
         )
+        let canApplyYAML = canApplyMutations
+            && hasUnsavedEdits
+            && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !presentedIssues.contains(where: { $0.severity == .error })
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -84,8 +88,8 @@ struct ResourceYAMLInspectorPane: View {
                 HStack(spacing: 8) {
                     Button("Apply YAML", action: onApply)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyMutations || yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
+                        .disabled(!canApplyYAML)
+                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
                     if inlineEditorImplementation.supportsInlineEditing {
                         Button(isInlineEditing ? "Done" : "Quick Edit") {
@@ -181,6 +185,10 @@ struct ResourceYAMLEditorSheetView: View {
             text: yamlText,
             externalIssues: validationIssues
         )
+        let canApplyYAML = canApplyMutations
+            && hasUnsavedEdits
+            && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !presentedIssues.contains(where: { $0.severity == .error })
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -199,8 +207,8 @@ struct ResourceYAMLEditorSheetView: View {
                 HStack(spacing: 8) {
                     Button("Apply YAML", action: onApply)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyMutations || yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Sends the manifest to the cluster. Closing this sheet does not.")
+                        .disabled(!canApplyYAML)
+                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing this sheet does not." : "No local YAML changes to apply.")
 
                     Button("Revert", action: onRevert)
                         .buttonStyle(.bordered)

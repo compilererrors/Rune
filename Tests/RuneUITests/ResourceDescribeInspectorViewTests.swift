@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
+@testable import RuneCore
 @testable import RuneUI
 
 @MainActor
@@ -13,6 +14,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
                 resourceReference: "pod api-0",
                 canApplyMutations: true,
                 yamlText: "apiVersion: v1\nkind: Pod\n",
+                hasUnsavedEdits: true,
+                validationIssues: [],
                 onApply: {},
                 onOpenYAMLEditor: {},
                 readOnlyResetID: "describe-scroll-test"

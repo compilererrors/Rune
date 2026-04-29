@@ -16,6 +16,7 @@ struct ResourceTerminalWorkspaceView: View {
     @Binding var portForwardAddress: String
     let onStartSession: (PodSummary) -> Void
     let onStartPortForward: (PodSummary) -> Void
+    let onStopPortForward: (PortForwardSession) -> Void
     let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
     let onSend: () -> Void
     let onDisconnect: () -> Void
@@ -36,6 +37,16 @@ struct ResourceTerminalWorkspaceView: View {
 
     private var primaryPortForwardSession: PortForwardSession? {
         activeOrStartingPortForwardSessions.first ?? portForwardSessions.first
+    }
+
+    private var selectedStoppablePortForwardSession: PortForwardSession? {
+        guard let portForwardPod else { return nil }
+        return portForwardSessions.first {
+            $0.targetKind == .pod
+                && $0.targetName == portForwardPod.name
+                && $0.namespace == portForwardPod.namespace
+                && ($0.status == .starting || $0.status == .active || $0.status == .failed)
+        }
     }
 
     private var targetPodLabel: String? {
@@ -222,12 +233,21 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     private var portForwardStartButton: some View {
-        Button("Start") {
-            if let portForwardPod {
-                onStartPortForward(portForwardPod)
+        Group {
+            if let session = selectedStoppablePortForwardSession {
+                Button(session.status == .starting ? "Cancel" : "Stop") {
+                    onStopPortForward(session)
+                }
+                .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
+            } else {
+                Button("Start") {
+                    if let portForwardPod {
+                        onStartPortForward(portForwardPod)
+                    }
+                }
+                .disabled(portForwardPod == nil || !canApplyMutations)
             }
         }
-        .disabled(portForwardPod == nil || !canApplyMutations)
         .controlSize(.small)
     }
 
@@ -261,6 +281,9 @@ struct ResourceTerminalWorkspaceView: View {
                         .foregroundStyle(portForwardStatusColor(session.status))
                     if session.status == .active, session.browserURL != nil {
                         portForwardOpenInBrowserButton(session)
+                    }
+                    if session.status == .starting || session.status == .active || session.status == .failed {
+                        portForwardStopButton(session)
                     }
                 } else {
                     portForwardStatusDot(.stopped)
@@ -332,6 +355,9 @@ struct ResourceTerminalWorkspaceView: View {
                                 .help("\(session.contextName) • \(session.namespace) • \(session.status.rawValue.capitalized)")
                         }
                         Spacer(minLength: 0)
+                        if session.status == .starting || session.status == .active || session.status == .failed {
+                            portForwardStopButton(session)
+                        }
                         if session.status == .active, session.browserURL != nil {
                             portForwardOpenInBrowserButton(session)
                         }
@@ -353,6 +379,15 @@ struct ResourceTerminalWorkspaceView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
+    }
+
+    private func portForwardStopButton(_ session: PortForwardSession) -> some View {
+        Button(session.status == .starting ? "Cancel" : "Stop") {
+            onStopPortForward(session)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
     }
 
     private func terminalField(_ placeholder: String, text: Binding<String>, minWidth: CGFloat, idealWidth: CGFloat) -> some View {
@@ -645,7 +680,21 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
         let shouldStickToBottom = isNearBottom(scrollView)
         if textView.string != text {
-            textView.string = text
+            if text.hasPrefix(textView.string),
+               let textStorage = textView.textStorage {
+                let suffix = String(text.dropFirst(textView.string.count))
+                textStorage.append(
+                    NSAttributedString(
+                        string: suffix,
+                        attributes: [
+                            .font: textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                            .foregroundColor: textView.textColor ?? NSColor.labelColor
+                        ]
+                    )
+                )
+            } else {
+                textView.string = text
+            }
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
             textView.invalidateIntrinsicContentSize()
             textView.layoutSubtreeIfNeeded()

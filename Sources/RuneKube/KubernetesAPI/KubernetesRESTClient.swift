@@ -405,7 +405,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         dryRun: Bool,
         timeout: TimeInterval
     ) async throws {
-        let manifest = try YAMLManifestIdentity.parse(yaml: yaml, defaultNamespace: defaultNamespace)
+        let sanitizedYAML = Self.serverSideApplyYAML(from: yaml)
+        let manifest = try YAMLManifestIdentity.parse(yaml: sanitizedYAML, defaultNamespace: defaultNamespace)
         let resource = KubernetesRESTPath.resourceName(for: manifest.kind)
         let path = try resourcePath(
             kind: manifest.kind,
@@ -431,9 +432,51 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 "Accept": "application/json",
                 "Content-Type": "application/apply-patch+yaml"
             ],
-            body: yaml,
+            body: sanitizedYAML,
             timeout: timeout
         )
+    }
+
+    static func _testServerSideApplyYAML(from yaml: String) -> String {
+        serverSideApplyYAML(from: yaml)
+    }
+
+    private static func serverSideApplyYAML(from yaml: String) -> String {
+        var output: [String] = []
+        let lines = yaml.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        var metadataIndent: Int?
+        var skippingMetadataBlockKeyIndent: Int?
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let indent = line.prefix { $0 == " " }.count
+
+            if let skipIndent = skippingMetadataBlockKeyIndent {
+                if trimmed.isEmpty {
+                    continue
+                }
+                if indent <= (metadataIndent ?? 0) || (indent == skipIndent && !trimmed.hasPrefix("-")) {
+                    skippingMetadataBlockKeyIndent = nil
+                } else {
+                    continue
+                }
+            }
+
+            if indent == 0 {
+                metadataIndent = trimmed == "metadata:" ? indent : nil
+            }
+
+            if metadataIndent != nil,
+               indent > (metadataIndent ?? 0),
+               trimmed == "managedFields:" || trimmed.hasPrefix("managedFields: ") {
+                skippingMetadataBlockKeyIndent = indent
+                continue
+            }
+
+            output.append(line)
+        }
+
+        return output.joined(separator: "\n")
     }
 
     func createJobFromCronJob(

@@ -97,6 +97,55 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(KubernetesClient.preferredPortForwardPod(from: pods)?.name, "api-a")
     }
 
+    func testServerSideApplyYAMLOmitsManagedFieldsFromFetchedManifest() {
+        let yaml = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: api-0
+          namespace: default
+          managedFields:
+          - apiVersion: v1
+            fieldsType: FieldsV1
+            fieldsV1:
+              f:metadata:
+                f:labels: {}
+          labels:
+            app: api
+        spec:
+          containers:
+          - name: api
+            image: api:latest
+        """
+
+        let sanitized = KubernetesRESTClient._testServerSideApplyYAML(from: yaml)
+
+        XCTAssertFalse(sanitized.contains("managedFields"))
+        XCTAssertFalse(sanitized.contains("fieldsType"))
+        XCTAssertTrue(sanitized.contains("  labels:"))
+        XCTAssertTrue(sanitized.contains("spec:"))
+    }
+
+    func testServerSideApplyYAMLOmitsInlineEmptyManagedFields() {
+        let yaml = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: settings
+          managedFields: []
+          labels:
+            app: settings
+        data:
+          key: value
+        """
+
+        let sanitized = KubernetesRESTClient._testServerSideApplyYAML(from: yaml)
+
+        XCTAssertFalse(sanitized.contains("managedFields"))
+        XCTAssertTrue(sanitized.contains("  labels:"))
+        XCTAssertTrue(sanitized.contains("data:"))
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-native-kubeconfig-\(UUID().uuidString).yaml")
