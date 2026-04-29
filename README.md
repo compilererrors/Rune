@@ -35,6 +35,22 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
   </tr>
   <tr>
     <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsPodYaml.png" alt="Rune pod YAML">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlEdit.png" alt="Rune pod YAML editor">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlEditError.png" alt="Rune pod YAML edit validation">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlError.png" alt="Rune pod YAML validation error">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
       <img src="assets/screenshot/ui/update260429/workloadDeployments.png" alt="Rune deployments">
     </td>
     <td width="50%">
@@ -215,3 +231,8 @@ Produces `dist/Rune.app`.
 ```bash
 swift test
 ```
+
+## License
+
+Rune is source-available. Personal and other non-commercial use is free.
+Business use requires a separate paid commercial license. See [LICENSE](LICENSE).

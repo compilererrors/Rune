@@ -25,10 +25,6 @@ test-reports/
 assets/screenshot/ui/*
 !assets/screenshot/ui/update260429/
 !assets/screenshot/ui/update260429/*.png
-assets/screenshot/ui/update260429/app-store-2880x1800/
-
-# Local App Store / Apple Developer screenshot exports.
-assets/appledev/
 
 # Environment files should stay local; commit examples instead.
 .env
