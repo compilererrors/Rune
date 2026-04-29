@@ -134,6 +134,56 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenPortForwardInBrowserOpensActiveLocalURL() {
+        let state = RuneAppState()
+        let browserOpener = RecordingPortForwardBrowserOpener()
+        let viewModel = RuneAppViewModel(state: state, portForwardBrowserOpener: browserOpener)
+        let session = PortForwardSession(
+            id: "pf-1",
+            contextName: "fake",
+            namespace: "default",
+            targetKind: .service,
+            targetName: "web",
+            localPort: 8080,
+            remotePort: 80,
+            address: "0.0.0.0",
+            status: .active,
+            lastMessage: "Connected"
+        )
+
+        XCTAssertEqual(session.browserURL?.absoluteString, "http://127.0.0.1:8080/")
+
+        viewModel.openPortForwardInBrowser(session)
+
+        XCTAssertEqual(browserOpener.openedURLs.map(\.absoluteString), ["http://127.0.0.1:8080/"])
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testOpenPortForwardInBrowserRejectsDisconnectedSession() {
+        let state = RuneAppState()
+        let browserOpener = RecordingPortForwardBrowserOpener()
+        let viewModel = RuneAppViewModel(state: state, portForwardBrowserOpener: browserOpener)
+        let session = PortForwardSession(
+            id: "pf-1",
+            contextName: "fake",
+            namespace: "default",
+            targetKind: .pod,
+            targetName: "api-0",
+            localPort: 8080,
+            remotePort: 80,
+            address: "127.0.0.1",
+            status: .starting,
+            lastMessage: "Starting"
+        )
+
+        viewModel.openPortForwardInBrowser(session)
+
+        XCTAssertTrue(browserOpener.openedURLs.isEmpty)
+        XCTAssertEqual(state.lastError, "Invalid input: Port-forward is not connected yet.")
+    }
+
+    @MainActor
     func testSessionLogCacheKeepsReadSegmentsWithResourceBreaks() {
         let state = RuneAppState()
         let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
@@ -164,5 +214,14 @@ final class RuneAppStateTests: XCTestCase {
         state.showCachedPodLogs(contextName: "aks-prod", namespace: "backend", podName: "api-0")
         XCTAssertTrue(state.podLogs.contains("first line"))
         XCTAssertTrue(state.podLogs.contains("second line"))
+    }
+}
+
+@MainActor
+private final class RecordingPortForwardBrowserOpener: PortForwardBrowserOpening {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) {
+        openedURLs.append(url)
     }
 }

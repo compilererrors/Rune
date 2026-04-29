@@ -1,4 +1,5 @@
 import Foundation
+import RuneFakeK8sSupport
 
 struct CommandFailure: Error, CustomStringConvertible {
     let message: String
@@ -1345,6 +1346,24 @@ private func ensureSetup(stateDir: URL, binaryPath: String) throws {
     try envFile.write(to: stateDir.appendingPathComponent("env.sh"), atomically: true, encoding: .utf8)
 }
 
+private func ensureRESTSetup(stateDir: URL, binaryPath: String, serverURL: String) throws {
+    let fileManager = FileManager.default
+    try fileManager.createDirectory(at: stateDir, withIntermediateDirectories: true)
+
+    let kubeconfig = stateDir.appendingPathComponent("kubeconfig.yaml")
+    let yaml = RuneFakeK8sKubeconfig.render(serverURL: serverURL)
+    try yaml.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+    let envFile = """
+    export KUBECONFIG="\(kubeconfig.path)"
+    export RUNE_K8S_AGENT=""
+    export RUNE_FAKE_K8S_STATE="\(stateDir.path)"
+    export RUNE_FAKE_K8S_BINARY="\(binaryPath)"
+    export RUNE_FAKE_K8S_REST_SERVER="\(serverURL)"
+    """
+    try envFile.write(to: stateDir.appendingPathComponent("env.sh"), atomically: true, encoding: .utf8)
+}
+
 private func commandSummary() -> String {
     let fixtures = makeFixtures()
     return fixtures.map { cluster in
@@ -1533,6 +1552,8 @@ do {
         write("""
         usage:
           RuneFakeK8s setup [--state-dir PATH] [--binary PATH]
+          RuneFakeK8s setup-rest [--state-dir PATH] [--binary PATH] --server-url URL
+          RuneFakeK8s serve [--host HOST] [--port PORT] [--context CONTEXT]
           RuneFakeK8s summary
         """)
         Foundation.exit(0)
@@ -1548,8 +1569,34 @@ do {
         try ensureSetup(stateDir: stateDir, binaryPath: resolvedBinary)
         write("fake kubeconfig: \(stateDir.appendingPathComponent("kubeconfig.yaml").path)\n")
         write(commandSummary() + "\n")
+    case "setup-rest":
+        let (stateDir, remaining) = parseStateDir(args, defaultPath: defaultStateDir)
+        let (binaryPath, withoutBinary) = parseOption(remaining, name: "--binary")
+        let (serverURL, _) = parseOption(withoutBinary, name: "--server-url")
+        guard let serverURL, !serverURL.isEmpty else {
+            throw CommandFailure(message: "setup-rest requires --server-url URL")
+        }
+        let resolvedBinary = binaryPath ?? CommandLine.arguments[0]
+        try ensureRESTSetup(stateDir: stateDir, binaryPath: resolvedBinary, serverURL: serverURL)
+        write("fake REST kubeconfig: \(stateDir.appendingPathComponent("kubeconfig.yaml").path)\n")
+        write("server: \(serverURL)\n")
     case "summary":
         write(commandSummary() + "\n")
+    case "serve":
+        let (host, withoutHost) = parseOption(args, name: "--host")
+        let (portString, withoutPort) = parseOption(withoutHost, name: "--port")
+        let (contextName, _) = parseOption(withoutPort, name: "--context")
+        let port = UInt16(portString ?? "0") ?? 0
+        let stopSemaphore = DispatchSemaphore(value: 0)
+        let server = try RuneFakeK8sRESTServer.startBlocking(
+            host: host ?? "127.0.0.1",
+            port: port,
+            contextName: contextName ?? RuneFakeK8sFixture.defaultContextName
+        )
+        write("RuneFakeK8s REST listening on http://\(host ?? "127.0.0.1"):\(server.port)\n")
+        withExtendedLifetime(server) {
+            stopSemaphore.wait()
+        }
     case "kubectl":
         try handleKubectl(arguments: args)
     default:

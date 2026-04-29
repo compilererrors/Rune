@@ -24,7 +24,11 @@ let package = Package(
             dependencies: ["RuneUI"]
         ),
         .executableTarget(
-            name: "RuneFakeK8s"
+            name: "RuneFakeK8s",
+            dependencies: ["RuneFakeK8sSupport"]
+        ),
+        .target(
+            name: "RuneFakeK8sSupport"
         ),
         .target(name: "RuneCore"),
         .target(
@@ -71,7 +75,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RuneKubeTests",
-            dependencies: ["RuneKube", "RuneCore"]
+            dependencies: ["RuneKube", "RuneCore", "RuneFakeK8sSupport"]
         ),
         .testTarget(
             name: "RuneStoreTests",

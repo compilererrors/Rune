@@ -1,5 +1,10 @@
+import AppKit
+import SwiftUI
 import XCTest
+@testable import RuneCore
+@testable import RuneUI
 
+@MainActor
 final class RuneSidebarChromeContractTests: XCTestCase {
     func testSidebarUsesGlassPaneSurfaceInsteadOfRoundedMaterialCard() throws {
         let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
@@ -11,14 +16,80 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
 
         let sidebarBlock = String(source[sidebarStart.lowerBound..<sectionRowStart.lowerBound])
-        XCTAssertTrue(sidebarBlock.contains("sidebarBrandHeader"))
-        XCTAssertTrue(source.contains("Image(\"rune_logo_main\", bundle: .module)"))
-        XCTAssertTrue(source.contains(".frame(width: 104, height: 104)"))
+        XCTAssertFalse(sidebarBlock.contains("sidebarBrandHeader"))
+        XCTAssertFalse(sidebarBlock.contains("rune_logo_main"))
+        XCTAssertFalse(sidebarBlock.contains(".frame(width: 104, height: 104)"))
+        XCTAssertTrue(sidebarBlock.contains("TextField(\"Search contexts\""))
         XCTAssertTrue(sidebarBlock.contains("RuneGlassPaneSurface(role: .sidebar)"))
         XCTAssertTrue(sidebarBlock.contains("RuneGlassPaneBorder(role: .sidebar)"))
         XCTAssertFalse(sidebarBlock.contains("RoundedRectangle(cornerRadius:"))
         XCTAssertFalse(sidebarBlock.contains(".thinMaterial"))
         XCTAssertFalse(sidebarBlock.contains(".clipShape("))
+    }
+
+    func testSidebarContextListIsAConstrainedScrollableRegion() async throws {
+        let state = RuneAppState()
+        state.setContexts((1...80).map { KubeContext(name: String(format: "cluster-%03d", $0)) })
+        state.setNamespaces(["default"])
+        let viewModel = RuneAppViewModel(state: state)
+
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true
+            )
+            .frame(width: 980, height: 520)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 520),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        guard let scrollView = findConstrainedOverflowingScrollView(in: host.view) else {
+            return XCTFail("Expected sidebar context list to render as a constrained overflowing scroll view")
+        }
+
+        let documentHeight = scrollView.documentView?.frame.height ?? 0
+        let viewportHeight = scrollView.contentView.bounds.height
+        XCTAssertGreaterThan(documentHeight, viewportHeight + 400, "Long context lists should overflow inside the sidebar scroll view")
+        XCTAssertLessThan(viewportHeight, 360, "Context scroll view should be constrained by sidebar chrome instead of expanding to full content height")
+
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: min(240, documentHeight - viewportHeight)))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try await settle(window: window)
+
+        XCTAssertGreaterThan(scrollView.contentView.bounds.origin.y, 0, "Sidebar context list should scroll downward")
+    }
+
+    func testPrimaryScrollViewsDeclareFlexibleHeightFrames() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"rune.sidebar.contexts.scroll\")"))
+        XCTAssertTrue(source.contains(".frame(minHeight: 80, maxHeight: .infinity, alignment: .topLeading)"))
+        XCTAssertTrue(source.contains("LazyVStack(alignment: .leading, spacing: 8)"))
+    }
+
+    func testPortForwardRowsExposeBrowserActionOnlyWhenActive() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let terminalViewSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("if session.status == .active, session.browserURL != nil"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Open in Browser\", systemImage: \"safari\")"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.openPortForwardInBrowser(session)"))
+        XCTAssertTrue(rootViewSource.contains("onOpenPortForwardInBrowser: { session in"))
+
+        XCTAssertTrue(terminalViewSource.contains("let onOpenPortForwardInBrowser: (PortForwardSession) -> Void"))
+        XCTAssertTrue(terminalViewSource.contains("if session.status == .active, session.browserURL != nil"))
+        XCTAssertTrue(terminalViewSource.contains("Label(\"Open in Browser\", systemImage: \"safari\")"))
+        XCTAssertTrue(terminalViewSource.contains("onOpenPortForwardInBrowser(session)"))
     }
 
     func testReadOnlyTextModulesResetScrollWhenExternalContentChanges() throws {
@@ -159,6 +230,40 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
     }
 
+    private func settle(window: NSWindow) async throws {
+        for _ in 0..<8 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 30_000_000)
+        }
+    }
+
+    private func findConstrainedOverflowingScrollView(in view: NSView) -> NSScrollView? {
+        allScrollViews(in: view)
+            .filter { scrollView in
+                let documentHeight = scrollView.documentView?.frame.height ?? 0
+                let viewportHeight = scrollView.contentView.bounds.height
+                return documentHeight > viewportHeight + 400
+                    && viewportHeight >= 80
+                    && viewportHeight < 360
+            }
+            .min { lhs, rhs in
+                lhs.frame.minX < rhs.frame.minX
+            }
+    }
+
+    private func allScrollViews(in view: NSView) -> [NSScrollView] {
+        var scrollViews: [NSScrollView] = []
+        if let scrollView = view as? NSScrollView {
+            scrollViews.append(scrollView)
+        }
+
+        for subview in view.subviews {
+            scrollViews.append(contentsOf: allScrollViews(in: subview))
+        }
+
+        return scrollViews
+    }
+
     private var runeAppViewModelPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -166,6 +271,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/ViewModels/RuneAppViewModel.swift").path
+    }
+
+    private var resourceTerminalInspectorViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceTerminalInspectorView.swift").path
     }
 
     private var appKitManifestTextViewPath: String {
