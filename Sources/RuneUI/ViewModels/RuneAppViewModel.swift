@@ -153,6 +153,17 @@ public struct CommandPaletteItem: Identifiable {
     public let action: Action
 }
 
+private extension CommandPaletteItem.Action {
+    var recordsCompositeNavigationCheckpoint: Bool {
+        switch self {
+        case .pod, .deployment, .service, .event, .helmRelease, .resourceKind, .clusterResource:
+            return true
+        case .section, .context, .namespace, .importKubeConfig, .reload, .readOnly:
+            return false
+        }
+    }
+}
+
 public enum OverviewModule: Sendable {
     case pods
     case deployments
@@ -948,6 +959,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func setSection(_ section: RuneSection, trackHistory: Bool, triggerReload: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         state.selectedSection = section
@@ -987,6 +999,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func setWorkloadKind(_ kind: KubeResourceKind, trackHistory: Bool, triggerReload: Bool) {
         guard kind != .event else { return }
+        prepareNavigationMutation(trackHistory: trackHistory)
         cancelPendingLogReload()
         state.selectedWorkloadKind = kind
         if state.selectedSection == .rbac {
@@ -1073,6 +1086,7 @@ public final class RuneAppViewModel: ObservableObject {
         trackHistory: Bool,
         triggerReload: Bool
     ) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         diagnostics.log("setContext -> \(context.name)")
         diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
         overviewPrefetchTask?.cancel()
@@ -1137,6 +1151,7 @@ public final class RuneAppViewModel: ObservableObject {
         let trimmed = namespace.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        prepareNavigationMutation(trackHistory: trackHistory)
         diagnostics.log("setNamespace -> \(trimmed)")
         stopTerminalSession(resetState: true)
         cancelPendingLogReload()
@@ -1402,6 +1417,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectPod(_ pod: PodSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPod(pod)
         state.selectedWorkloadKind = .pod
         loadResourceDetailsForCurrentSelection()
@@ -1415,6 +1431,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectDeployment(_ deployment: DeploymentSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedDeployment(deployment)
         state.selectedWorkloadKind = .deployment
         if let deployment {
@@ -1431,6 +1448,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectService(_ service: ServiceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedService(service)
         state.selectedWorkloadKind = .service
         loadResourceDetailsForCurrentSelection()
@@ -1444,6 +1462,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectEvent(_ event: EventSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedEvent(event)
         if trackHistory {
             recordNavigationCheckpoint()
@@ -1455,6 +1474,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectHelmRelease(_ release: HelmReleaseSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedHelmRelease(release)
         loadHelmDetailsForCurrentSelection()
         if trackHistory {
@@ -1467,6 +1487,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectStatefulSet(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedStatefulSet(resource)
         state.selectedWorkloadKind = .statefulSet
         loadResourceDetailsForCurrentSelection()
@@ -1480,6 +1501,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectDaemonSet(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedDaemonSet(resource)
         state.selectedWorkloadKind = .daemonSet
         loadResourceDetailsForCurrentSelection()
@@ -1493,6 +1515,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectJob(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedJob(resource)
         state.selectedWorkloadKind = .job
         loadResourceDetailsForCurrentSelection()
@@ -1506,6 +1529,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectCronJob(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedCronJob(resource)
         state.selectedWorkloadKind = .cronJob
         loadResourceDetailsForCurrentSelection()
@@ -1519,6 +1543,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectReplicaSet(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedReplicaSet(resource)
         state.selectedWorkloadKind = .replicaSet
         loadResourceDetailsForCurrentSelection()
@@ -1532,6 +1557,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectPersistentVolumeClaim(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPersistentVolumeClaim(resource)
         state.selectedWorkloadKind = .persistentVolumeClaim
         loadResourceDetailsForCurrentSelection()
@@ -1545,6 +1571,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectPersistentVolume(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPersistentVolume(resource)
         state.selectedWorkloadKind = .persistentVolume
         loadResourceDetailsForCurrentSelection()
@@ -1558,6 +1585,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectStorageClass(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedStorageClass(resource)
         state.selectedWorkloadKind = .storageClass
         loadResourceDetailsForCurrentSelection()
@@ -1571,6 +1599,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectHorizontalPodAutoscaler(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedHorizontalPodAutoscaler(resource)
         state.selectedWorkloadKind = .horizontalPodAutoscaler
         loadResourceDetailsForCurrentSelection()
@@ -1584,6 +1613,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectNetworkPolicy(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedNetworkPolicy(resource)
         state.selectedWorkloadKind = .networkPolicy
         loadResourceDetailsForCurrentSelection()
@@ -1639,6 +1669,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectIngress(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedIngress(resource)
         state.selectedWorkloadKind = .ingress
         loadResourceDetailsForCurrentSelection()
@@ -1652,6 +1683,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectConfigMap(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedConfigMap(resource)
         state.selectedWorkloadKind = .configMap
         loadResourceDetailsForCurrentSelection()
@@ -1665,6 +1697,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectSecret(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedSecret(resource)
         state.selectedWorkloadKind = .secret
         loadResourceDetailsForCurrentSelection()
@@ -1678,6 +1711,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectNode(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedNode(resource)
         state.selectedWorkloadKind = .node
         loadResourceDetailsForCurrentSelection()
@@ -1691,6 +1725,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func selectRBACResource(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedRBACResource(resource)
         if let resource {
             state.selectedWorkloadKind = resource.kind
@@ -2040,6 +2075,14 @@ public final class RuneAppViewModel: ObservableObject {
         pendingWriteAction = .delete(kind: kind, name: name)
     }
 
+    public func requestDeleteResource(kind: KubeResourceKind, name: String) {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        pendingWriteAction = .delete(kind: kind, name: name)
+    }
+
     public func requestApplySelectedResourceYAML() {
         guard writeActionsEnabled else {
             state.setError(RuneError.readOnlyMode)
@@ -2260,7 +2303,9 @@ public final class RuneAppViewModel: ObservableObject {
                 if !state.portForwardSessions.contains(where: { $0.id == session.id }) {
                     state.upsertPortForwardSession(session)
                 }
-                state.selectedSection = .terminal
+                if session.status != .stopped {
+                    state.selectedSection = .terminal
+                }
             } catch {
                 state.setError(error)
             }
@@ -2268,6 +2313,23 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func stopPortForward(_ session: PortForwardSession) {
+        state.upsertPortForwardSession(
+            PortForwardSession(
+                id: session.id,
+                contextName: session.contextName,
+                namespace: session.namespace,
+                targetKind: session.targetKind,
+                targetName: session.targetName,
+                localPort: session.localPort,
+                remotePort: session.remotePort,
+                address: session.address,
+                status: .stopped,
+                lastMessage: "Port-forward stopped."
+            )
+        )
+        if !state.portForwardSessions.contains(where: { $0.status == .starting }) {
+            state.isStartingPortForward = false
+        }
         Task {
             await kubeClient.stopPortForward(sessionID: session.id)
         }
@@ -2492,6 +2554,10 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func executeCommandPaletteItem(_ item: CommandPaletteItem) {
+        if item.action.recordsCompositeNavigationCheckpoint {
+            prepareNavigationMutation(trackHistory: true)
+        }
+
         switch item.action {
         case let .section(section):
             setSection(section)
@@ -4541,6 +4607,13 @@ public final class RuneAppViewModel: ObservableObject {
         )
     }
 
+    private func prepareNavigationMutation(trackHistory: Bool) {
+        guard trackHistory, !isApplyingNavigationCheckpoint, navigationHistory.isEmpty else { return }
+        navigationHistory.append(currentNavigationCheckpoint())
+        navigationIndex = 0
+        updateNavigationAvailability()
+    }
+
     private func recordNavigationCheckpoint() {
         guard !isApplyingNavigationCheckpoint else { return }
         let checkpoint = currentNavigationCheckpoint()
@@ -4570,7 +4643,7 @@ public final class RuneAppViewModel: ObservableObject {
                 trackHistory: false,
                 triggerReload: false
             )
-        } else if checkpoint.contextName == nil {
+        } else if checkpoint.contextName != nil {
             return
         }
 

@@ -588,7 +588,8 @@ public struct RuneRootView: View {
                     } label: {
                         Image(systemName: "chevron.left")
                     }
-                    .help("Back")
+                    .help("Back (Control-Option-Left Arrow)")
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
                     .disabled(!viewModel.canNavigateBack)
 
                     Button {
@@ -596,8 +597,23 @@ public struct RuneRootView: View {
                     } label: {
                         Image(systemName: "chevron.right")
                     }
-                    .help("Forward")
+                    .help("Forward (Control-Option-Right Arrow)")
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .option])
                     .disabled(!viewModel.canNavigateForward)
+
+                    Button {
+                        viewModel.toggleSidebarVisibility()
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help(viewModel.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+
+                    Button {
+                        viewModel.toggleDetailPaneVisibility()
+                    } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                    .help(viewModel.isDetailPaneVisible ? "Hide Inspector" : "Show Inspector")
 
                     Menu(viewModel.state.selectedContext?.name ?? "No Context") {
                         ForEach(viewModel.contextMenuOptions) { context in
@@ -618,18 +634,20 @@ public struct RuneRootView: View {
 
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
-                        viewModel.toggleSidebarVisibility()
+                        viewModel.refreshCurrentView(debounced: false)
                     } label: {
-                        Image(systemName: "sidebar.left")
+                        Image(systemName: "arrow.clockwise")
                     }
-                    .help(viewModel.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+                    .help("Reload")
+                    .keyboardShortcut("r", modifiers: .command)
 
                     Button {
-                        viewModel.toggleDetailPaneVisibility()
+                        viewModel.presentCommandPalette()
                     } label: {
-                        Image(systemName: "sidebar.right")
+                        Image(systemName: "command")
                     }
-                    .help(viewModel.isDetailPaneVisible ? "Hide Inspector" : "Show Inspector")
+                    .help("Command Palette")
+                    .keyboardShortcut("k", modifiers: .command)
 
                     Button {
                         openSettingsWindow()
@@ -637,16 +655,6 @@ public struct RuneRootView: View {
                         Image(systemName: "gearshape")
                     }
                     .help("Settings")
-
-                    Button("Palette") {
-                        viewModel.presentCommandPalette()
-                    }
-                    .keyboardShortcut("k", modifiers: .command)
-
-                    Button("Reload") {
-                        viewModel.refreshCurrentView(debounced: false)
-                    }
-                    .keyboardShortcut("r", modifiers: .command)
                 }
             }
             .toolbarBackground(.visible, for: .windowToolbar)
@@ -1284,6 +1292,8 @@ public struct RuneRootView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
+            sidebarBrandHeader
+
             TextField("Search contexts", text: Binding(get: {
                 viewModel.state.contextSearchQuery
             }, set: { newValue in
@@ -1356,6 +1366,19 @@ public struct RuneRootView: View {
                 paneFocusOutline(isFocused: keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts)
             }
         }
+    }
+
+    private var sidebarBrandHeader: some View {
+        HStack {
+            Image("rune_logo_main", bundle: .module)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 104, height: 104)
+                .accessibilityLabel("Rune")
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
     }
 
     private func sectionRow(_ section: RuneSection) -> some View {
@@ -3829,6 +3852,10 @@ public struct RuneRootView: View {
     }
 
     private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent? {
+        if let historyAction = historyArrowNavigationAction(for: event) {
+            return performConfiguredAction(historyAction) ? nil : event
+        }
+
         if shouldHandleTabNavigation(event) {
             if event.modifierFlags.contains(.shift) {
                 focusPreviousKeyboardPane()
@@ -3848,6 +3875,22 @@ public struct RuneRootView: View {
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
         guard event.modifierFlags.isDisjoint(with: disallowedModifiers) else { return false }
         return textInputFocus == .contextSearch || textInputFocus == .resourceFilter
+    }
+
+    private func historyArrowNavigationAction(for event: NSEvent) -> RuneKeyBindingAction? {
+        guard !keyboardNavigationSuspended else { return nil }
+        guard textInputFocus == nil else { return nil }
+        let relevantModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift, .function])
+        guard relevantModifiers == [.control, .option] else { return nil }
+
+        switch event.keyCode {
+        case 123:
+            return .historyBack
+        case 124:
+            return .historyForward
+        default:
+            return nil
+        }
     }
 
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
@@ -4598,8 +4641,7 @@ public struct RuneRootView: View {
         copyMenuItem(value: pod.namespace, label: "namespace")
         Divider()
         Button(role: .destructive) {
-            viewModel.selectPod(pod)
-            viewModel.requestDeleteSelectedResource()
+            viewModel.requestDeleteResource(kind: .pod, name: pod.name)
         } label: {
             Label("Delete Pod", systemImage: "trash")
         }
@@ -4638,8 +4680,7 @@ public struct RuneRootView: View {
         copyMenuItem(value: deployment.namespace, label: "namespace")
         Divider()
         Button(role: .destructive) {
-            viewModel.selectDeployment(deployment)
-            viewModel.requestDeleteSelectedResource()
+            viewModel.requestDeleteResource(kind: .deployment, name: deployment.name)
         } label: {
             Label("Delete Deployment", systemImage: "trash")
         }
@@ -4678,8 +4719,7 @@ public struct RuneRootView: View {
         copyMenuItem(value: service.namespace, label: "namespace")
         Divider()
         Button(role: .destructive) {
-            viewModel.selectService(service)
-            viewModel.requestDeleteSelectedResource()
+            viewModel.requestDeleteResource(kind: .service, name: service.name)
         } label: {
             Label("Delete Service", systemImage: "trash")
         }
@@ -4710,8 +4750,7 @@ public struct RuneRootView: View {
         }
         Divider()
         Button(role: .destructive) {
-            action(resource)
-            viewModel.requestDeleteSelectedResource()
+            viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
         } label: {
             Label("Delete \(resource.kind.singularTypeName)", systemImage: "trash")
         }

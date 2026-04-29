@@ -60,6 +60,68 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertFalse(podLogsBlock.contains(#""Accept": "text/plain""#))
     }
 
+    func testPortForwardListenerReportsWaitingAndStartupTimeout() throws {
+        let source = try String(contentsOfFile: kubernetesRESTClientPath, encoding: .utf8)
+
+        guard let handleStart = source.range(of: "private final class KubernetesPortForwardHandle"),
+              let bridgeStart = source.range(of: "private final class PortForwardConnectionBridge", range: handleStart.upperBound..<source.endIndex) else {
+            XCTFail("Could not locate KubernetesPortForwardHandle implementation")
+            return
+        }
+
+        let handleBlock = String(source[handleStart.lowerBound..<bridgeStart.lowerBound])
+        XCTAssertTrue(handleBlock.contains("case let .waiting(error):"))
+        XCTAssertTrue(handleBlock.contains("Port-forward listener is waiting:"))
+        XCTAssertTrue(handleBlock.contains("failIfListenerDidNotStart()"))
+        XCTAssertTrue(handleBlock.contains("Timed out starting local port-forward listener."))
+    }
+
+    func testPortForwardLocalPortConflictMessageIncludesProcessOwner() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+
+        guard let message = KubernetesRESTClient._testLocalPortConflictMessage(port: Int(server.port), address: "127.0.0.1") else {
+            throw XCTSkip("lsof did not report the local listener owner")
+        }
+
+        XCTAssertTrue(message.contains("Port in use: 127.0.0.1:\(server.port)"))
+        XCTAssertTrue(message.contains("pid "))
+    }
+
+    func testPortForwardLocalPortConflictMarksSessionFailed() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(serverURL: "http://127.0.0.1:\(server.port)")
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let recorder = PortForwardSessionRecorder()
+
+        do {
+            _ = try await client.startPortForward(
+                from: [KubeConfigSource(url: kubeconfig)],
+                context: KubeContext(name: "local-fixture"),
+                namespace: "default",
+                targetKind: .pod,
+                targetName: "api-0",
+                localPort: Int(server.port),
+                remotePort: 80,
+                address: "127.0.0.1",
+                onEvent: { session in
+                    recorder.append(session)
+                }
+            )
+            XCTFail("Expected occupied local port to fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Port in use"))
+        }
+
+        let sessions = recorder.sessions()
+        XCTAssertEqual(sessions.map(\.status), [.starting, .failed])
+        XCTAssertTrue(sessions.last?.lastMessage.contains("Port in use") == true)
+        XCTAssertTrue(sessions.last?.lastMessage.contains("pid ") == true)
+    }
+
     func testNativeHelmReleaseReaderDecodesV3StorageWithoutHelmBinary() async throws {
         let server = try await LocalKubernetesAPIServer.start()
         defer { server.stop() }
@@ -519,6 +581,228 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
     }
 
+    func testRuneFakeK8sEventsPointAtExistingPods() throws {
+        guard ProcessInfo.processInfo.environment["RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 to run guarded fake-k8s integration tests")
+        }
+        guard let binary = ProcessInfo.processInfo.environment["RUNE_FAKE_K8S_BINARY"],
+              !binary.isEmpty,
+              FileManager.default.isExecutableFile(atPath: binary) else {
+            throw XCTSkip("Set RUNE_FAKE_K8S_BINARY to the RuneFakeK8s executable")
+        }
+
+        let podsJSON = try runFakeK8s(binary: binary, arguments: ["kubectl", "get", "pods", "-A", "-o", "json"])
+        let eventsJSON = try runFakeK8s(binary: binary, arguments: ["kubectl", "get", "events", "-A", "-o", "json"])
+        let podKeys = try Set(jsonItems(from: podsJSON).compactMap { item -> String? in
+            guard let metadata = item["metadata"] as? [String: Any],
+                  let namespace = metadata["namespace"] as? String,
+                  let name = metadata["name"] as? String else {
+                return nil
+            }
+            return "\(namespace)/\(name)"
+        })
+        let eventTargets = try jsonItems(from: eventsJSON).compactMap { item -> String? in
+            guard let involvedObject = item["involvedObject"] as? [String: Any],
+                  let kind = involvedObject["kind"] as? String,
+                  kind == "Pod",
+                  let namespace = involvedObject["namespace"] as? String,
+                  let name = involvedObject["name"] as? String else {
+                return nil
+            }
+            return "\(namespace)/\(name)"
+        }
+
+        XCTAssertFalse(podKeys.isEmpty)
+        XCTAssertFalse(eventTargets.isEmpty)
+        XCTAssertTrue(eventTargets.allSatisfy { podKeys.contains($0) })
+    }
+
+    func testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable() async throws {
+        let fixture = try dockerComposeFakeK8sFixture()
+        let client = KubernetesClient(commandTimeout: 10)
+        let context = KubeContext(name: "fake-lattice-spark")
+        let namespace = "delta-zone"
+        let appName = "rune-it-http-\(Self.shortTestID())"
+        let localPort = try await availableLocalPort()
+
+        defer {
+            Task {
+                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .service, name: appName)
+                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: appName)
+            }
+        }
+
+        let namespaces = try await client.listNamespaces(from: fixture.sources, context: context)
+        XCTAssertTrue(namespaces.contains(namespace))
+
+        try await client.applyYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            yaml: Self.httpDeploymentYAML(name: appName, namespace: namespace, message: "rune docker fake http")
+        )
+        try await client.applyYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            yaml: Self.httpServiceYAML(name: appName, namespace: namespace)
+        )
+
+        let pod = try await waitForRunningPod(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            namePrefix: appName,
+            minimumCount: 1
+        ).first!
+        XCTAssertEqual(pod.status, "Running")
+
+        let events = try await waitForPodEvent(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            namePrefix: appName
+        )
+        XCTAssertTrue(events.contains { $0.involvedKind == "Pod" && $0.objectName.hasPrefix(appName) })
+
+        let services = try await client.listServices(from: fixture.sources, context: context, namespace: namespace)
+        XCTAssertTrue(services.contains { $0.name == appName })
+
+        let recorder = PortForwardSessionRecorder()
+        let session = try await client.startPortForward(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            targetKind: .service,
+            targetName: appName,
+            localPort: localPort,
+            remotePort: 8080,
+            address: "127.0.0.1",
+            onEvent: { recorder.append($0) }
+        )
+        _ = try await recorder.waitForStatus(.active, timeout: 10)
+        defer { Task { await client.stopPortForward(sessionID: session.id) } }
+
+        let body: String
+        do {
+            body = try await httpGET("http://127.0.0.1:\(localPort)/healthz")
+        } catch {
+            throw RuneError.commandFailed(
+                command: "http get through port-forward",
+                message: "\(error.localizedDescription). Port-forward sessions: \(recorder.sessions().map { "\($0.status.rawValue):\($0.lastMessage)" }.joined(separator: " | "))"
+            )
+        }
+        XCTAssertTrue(body.contains("rune docker fake http ok"), body)
+    }
+
+    func testDockerComposeFakeK8sReadWriteOperationsAreReversible() async throws {
+        let fixture = try dockerComposeFakeK8sFixture()
+        let client = KubernetesClient(commandTimeout: 10)
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let configName = "rune-it-config-\(Self.shortTestID())"
+        let deploymentName = "rune-it-editor-\(Self.shortTestID())"
+
+        defer {
+            Task {
+                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: deploymentName)
+                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .configMap, name: configName)
+            }
+        }
+
+        let baselineConfig = Self.configMapYAML(name: configName, namespace: namespace, value: "baseline")
+        let editedConfig = Self.configMapYAML(name: configName, namespace: namespace, value: "edited-from-yaml")
+        try await client.applyYAML(from: fixture.sources, context: context, namespace: namespace, yaml: baselineConfig)
+
+        let initialYAML = try await client.resourceYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(initialYAML.contains("baseline"))
+
+        let validationIssues = try await client.validateResourceYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            yaml: editedConfig
+        )
+        XCTAssertTrue(validationIssues.isEmpty)
+
+        try await client.applyYAML(from: fixture.sources, context: context, namespace: namespace, yaml: editedConfig)
+        let editedYAML = try await client.resourceYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(editedYAML.contains("edited-from-yaml"))
+
+        try await client.applyYAML(from: fixture.sources, context: context, namespace: namespace, yaml: baselineConfig)
+        let revertedYAML = try await client.resourceYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(revertedYAML.contains("baseline"))
+
+        try await client.applyYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            yaml: Self.httpDeploymentYAML(name: deploymentName, namespace: namespace, message: "rune editor manifest")
+        )
+        let pods = try await waitForRunningPod(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            namePrefix: deploymentName,
+            minimumCount: 1
+        )
+        let exec = try await client.execInPod(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            podName: pods[0].name,
+            container: nil,
+            command: ["sh", "-c", "cat /usr/share/nginx/html/index.html"]
+        )
+        XCTAssertEqual(exec.exitCode, 0)
+        XCTAssertTrue(exec.stdout.contains("rune editor manifest"))
+
+        try await client.scaleDeployment(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            replicas: 2
+        )
+        _ = try await waitForRunningPod(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            namePrefix: deploymentName,
+            minimumCount: 2
+        )
+
+        try await client.scaleDeployment(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            replicas: 1
+        )
+    }
+
     private func writeKubeconfig(
         serverURL: String,
         userYAML: String = "token: local-token",
@@ -558,6 +842,251 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             .appendingPathComponent("rune-local-k8s-\(UUID().uuidString).yaml")
         try kubeconfig.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private struct DockerComposeFakeK8sFixture {
+        let kubeconfig: URL
+        let sources: [KubeConfigSource]
+    }
+
+    private func dockerComposeFakeK8sFixture() throws -> DockerComposeFakeK8sFixture {
+        guard ProcessInfo.processInfo.environment["RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 to run guarded Docker fake-k8s integration tests")
+        }
+
+        let kubeconfig = repoRoot
+            .appendingPathComponent("docker-compose/generated/rune-fake-kubeconfig.yaml")
+        guard FileManager.default.fileExists(atPath: kubeconfig.path) else {
+            throw XCTSkip("Run scripts/run-local-k8s-integration-report.sh or merge the Docker fake-k8s kubeconfig first")
+        }
+
+        let contents = try String(contentsOf: kubeconfig, encoding: .utf8)
+        guard contents.contains("name: fake-orbit-mesh"),
+              contents.contains("name: fake-lattice-spark"),
+              contents.contains("server: https://127.0.0.1:16443"),
+              contents.contains("server: https://127.0.0.1:17443") else {
+            throw XCTSkip("Docker fake-k8s kubeconfig is not the expected localhost-only fixture")
+        }
+
+        return DockerComposeFakeK8sFixture(
+            kubeconfig: kubeconfig,
+            sources: [KubeConfigSource(url: kubeconfig)]
+        )
+    }
+
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func waitForRunningPod(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        namePrefix: String,
+        minimumCount: Int,
+        timeout: TimeInterval = 90
+    ) async throws -> [PodSummary] {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastPods: [PodSummary] = []
+        while Date() < deadline {
+            let pods = try await client.listPods(from: sources, context: context, namespace: namespace)
+                .filter { $0.name.hasPrefix(namePrefix) }
+            lastPods = pods
+            let running = pods.filter { $0.status.localizedCaseInsensitiveCompare("Running") == .orderedSame }
+            if running.count >= minimumCount {
+                return running
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for pods",
+            message: "Timed out waiting for \(minimumCount) running pod(s) with prefix \(namePrefix). Last pods: \(lastPods.map { "\($0.name)=\($0.status)" }.joined(separator: ", "))"
+        )
+    }
+
+    private func waitForPodEvent(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        namePrefix: String,
+        timeout: TimeInterval = 30
+    ) async throws -> [EventSummary] {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastEvents: [EventSummary] = []
+        while Date() < deadline {
+            let events = try await client.listEvents(from: sources, context: context, namespace: namespace)
+            lastEvents = events
+            if events.contains(where: { $0.involvedKind == "Pod" && $0.objectName.hasPrefix(namePrefix) }) {
+                return events
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for pod event",
+            message: "Timed out waiting for a Pod event with prefix \(namePrefix). Last events: \(lastEvents.map { "\($0.involvedKind ?? "?")/\($0.objectName)" }.joined(separator: ", "))"
+        )
+    }
+
+    private func availableLocalPort() async throws -> Int {
+        for port in 20_000...45_000 {
+            if KubernetesRESTClient._testLocalPortConflictMessage(port: port, address: "127.0.0.1") == nil {
+                return port
+            }
+        }
+        throw RuneError.commandFailed(command: "find local port", message: "No free local port found in test range.")
+    }
+
+    private func httpGET(_ rawURL: String, timeout: TimeInterval = 10) async throws -> String {
+        guard let url = URL(string: rawURL) else {
+            throw RuneError.invalidInput(message: "Invalid URL \(rawURL)")
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error?
+        while Date() < deadline {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                return String(decoding: data, as: UTF8.self)
+            } catch {
+                lastError = error
+                try await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+        throw lastError ?? RuneError.commandFailed(command: "http get", message: "Timed out fetching \(rawURL)")
+    }
+
+    private static func shortTestID() -> String {
+        String(UUID().uuidString.prefix(8)).lowercased()
+    }
+
+    private static func configMapYAML(name: String, namespace: String, value: String) -> String {
+        """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: \(name)
+          namespace: \(namespace)
+          labels:
+            app.kubernetes.io/managed-by: rune-integration-test
+        data:
+          editor-value: \(value)
+        """
+    }
+
+    private static func httpDeploymentYAML(name: String, namespace: String, message: String) -> String {
+        """
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: \(name)
+          namespace: \(namespace)
+          labels:
+            app: \(name)
+            app.kubernetes.io/managed-by: rune-integration-test
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: \(name)
+          template:
+            metadata:
+              labels:
+                app: \(name)
+            spec:
+              containers:
+                - name: http
+                  image: nginx:1.27-alpine
+                  ports:
+                    - containerPort: 8080
+                  command: ["/bin/sh", "-ec"]
+                  args:
+                    - |
+                      cat >/usr/share/nginx/html/index.html <<'EOF'
+                      \(message)
+                      EOF
+                      cat >/etc/nginx/conf.d/default.conf <<'EOF'
+                      server {
+                        listen 8080;
+                        access_log /dev/stdout;
+                        error_log /dev/stderr notice;
+                        location / {
+                          root /usr/share/nginx/html;
+                        }
+                        location /healthz {
+                          default_type text/plain;
+                          return 200 "\(message) ok\\n";
+                        }
+                      }
+                      EOF
+                      nginx -g 'daemon off;'
+        """
+    }
+
+    private static func httpServiceYAML(name: String, namespace: String) -> String {
+        """
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: \(name)
+          namespace: \(namespace)
+          labels:
+            app: \(name)
+            app.kubernetes.io/managed-by: rune-integration-test
+        spec:
+          selector:
+            app: \(name)
+          ports:
+            - port: 8080
+              targetPort: 8080
+        """
+    }
+
+    private func runFakeK8s(binary: String, arguments: [String]) throws -> String {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-fake-k8s-stdout-\(UUID().uuidString).txt")
+        let errorURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-fake-k8s-stderr-\(UUID().uuidString).txt")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
+
+        let output = try FileHandle(forWritingTo: outputURL)
+        let error = try FileHandle(forWritingTo: errorURL)
+        defer {
+            try? output.close()
+            try? error.close()
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+
+        let stdout = try String(contentsOf: outputURL, encoding: .utf8)
+        let stderr = try String(contentsOf: errorURL, encoding: .utf8)
+        guard process.terminationStatus == 0 else {
+            throw RuneError.commandFailed(command: "\(binary) \(arguments.joined(separator: " "))", message: stderr)
+        }
+        return stdout
+    }
+
+    private func jsonItems(from json: String) throws -> [[String: Any]] {
+        let data = Data(json.utf8)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = object["items"] as? [[String: Any]] else {
+            throw RuneError.parseError(message: "Expected Kubernetes list JSON with items.")
+        }
+        return items
     }
 
     private func writeExecCredentialPlugin(token: String, requireExecInfo: Bool = false) throws -> URL {
@@ -707,6 +1236,39 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
     }
 
 }
+
+private final class PortForwardSessionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedSessions: [PortForwardSession] = []
+
+    func append(_ session: PortForwardSession) {
+        lock.lock()
+        recordedSessions.append(session)
+        lock.unlock()
+    }
+
+    func sessions() -> [PortForwardSession] {
+        lock.lock()
+        let copy = recordedSessions
+        lock.unlock()
+        return copy
+    }
+
+    func waitForStatus(_ status: PortForwardStatus, timeout: TimeInterval) async throws -> PortForwardSession {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let session = sessions().last(where: { $0.status == status }) {
+                return session
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for port-forward",
+            message: "Timed out waiting for status \(status.rawValue). Seen: \(sessions().map(\.status.rawValue).joined(separator: ", "))"
+        )
+    }
+}
+
 
 private final class LocalKubernetesAPIServer: @unchecked Sendable {
     let port: UInt16

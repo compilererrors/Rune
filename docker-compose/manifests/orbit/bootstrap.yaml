@@ -206,14 +206,37 @@ spec:
       serviceAccountName: orbit-runner
       containers:
         - name: orbit-lens
-          image: busybox:1.36
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8080
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              while true; do
-                echo "orbit-lens heartbeat $(date -u +%H:%M:%S)"
-                sleep 20
-              done
+              cat >/usr/share/nginx/html/index.html <<'EOF'
+              rune fake-orbit-mesh orbit-lens
+              EOF
+              cat >/etc/nginx/conf.d/default.conf <<'EOF'
+              server {
+                listen 8080;
+                access_log /dev/stdout;
+                error_log /dev/stderr notice;
+                location / {
+                  root /usr/share/nginx/html;
+                }
+                location /healthz {
+                  default_type text/plain;
+                  return 200 "orbit-lens ok\n";
+                }
+              }
+              EOF
+              nginx -g 'daemon off;'
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -285,14 +308,37 @@ spec:
     spec:
       containers:
         - name: orbit-vault
-          image: busybox:1.36
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 9000
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              while true; do
-                echo "orbit-vault checkpoint $(hostname)"
-                sleep 30
-              done
+              cat >/usr/share/nginx/html/index.html <<EOF
+              rune fake-orbit-mesh orbit-vault $(hostname)
+              EOF
+              cat >/etc/nginx/conf.d/default.conf <<'EOF'
+              server {
+                listen 9000;
+                access_log /dev/stdout;
+                error_log /dev/stderr notice;
+                location / {
+                  root /usr/share/nginx/html;
+                }
+                location /healthz {
+                  default_type text/plain;
+                  return 200 "orbit-vault ok\n";
+                }
+              }
+              EOF
+              nginx -g 'daemon off;'
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
           volumeMounts:
             - name: data
               mountPath: /data
@@ -355,8 +401,8 @@ metadata:
   namespace: alpha-zone
 spec:
   schedule: "*/15 * * * *"
-  successfulJobsHistoryLimit: 50
-  failedJobsHistoryLimit: 20
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       template:
@@ -429,6 +475,13 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - while true; do echo "cinder-pulse sync"; sleep 18; done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
 ---
 apiVersion: v1
 kind: Service
@@ -558,8 +611,8 @@ metadata:
   namespace: bravo-zone
 spec:
   schedule: "*/20 * * * *"
-  successfulJobsHistoryLimit: 50
-  failedJobsHistoryLimit: 20
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       template:
@@ -714,8 +767,8 @@ metadata:
   namespace: charlie-zone
 spec:
   schedule: "*/30 * * * *"
-  successfulJobsHistoryLimit: 50
-  failedJobsHistoryLimit: 20
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       template:

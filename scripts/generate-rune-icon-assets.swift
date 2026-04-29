@@ -23,8 +23,8 @@ struct IconAssetGenerator {
     private let logoPadding: CGFloat = 0
     private let iconPlateInset: CGFloat = 0
     /// Scale applied to the logo before clipping it to the icon plate.
-    private let iconLogoScale: CGFloat = 0.94
-    private let iconLogoFitCornerFraction: CGFloat = 0.017
+    private let iconLogoScale: CGFloat = 1.10
+    private let iconLogoFitCornerFraction: CGFloat = 0
 
     func run() throws {
         let logoURL = root.appendingPathComponent(logoPath)
