@@ -663,6 +663,27 @@ public struct RuneRootView: View {
             }
             .sheet(isPresented: $isYAMLEditorSheetPresented) {
                 yamlManifestEditorSheet()
+                    .confirmationDialog(
+                        viewModel.pendingWriteActionTitle,
+                        isPresented: pendingWriteActionPresentedBinding,
+                        titleVisibility: .visible
+                    ) {
+                        if viewModel.pendingWriteActionIsDestructive {
+                            Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
+                                viewModel.confirmPendingWriteAction()
+                            }
+                        } else {
+                            Button(viewModel.pendingWriteActionConfirmLabel) {
+                                viewModel.confirmPendingWriteAction()
+                            }
+                        }
+
+                        Button("Cancel", role: .cancel) {
+                            viewModel.cancelPendingWriteAction()
+                        }
+                    } message: {
+                        Text(viewModel.pendingWriteActionMessage)
+                    }
             }
             .sheet(item: $selectedAddClusterProvider) { provider in
                 addClusterProviderSheet(provider)
@@ -3221,6 +3242,8 @@ public struct RuneRootView: View {
             resourceReference: manifestResourceReference,
             canApplyMutations: viewModel.canApplyClusterMutations,
             yamlText: viewModel.state.resourceYAML,
+            hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
+            validationIssues: viewModel.state.resourceYAMLValidationIssues,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onOpenYAMLEditor: { openYAMLEditorSheet() },
             readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
@@ -3363,6 +3386,9 @@ public struct RuneRootView: View {
             onStartPortForward: { pod in
                 viewModel.startPortForward(targetKind: .pod, targetName: pod.name)
             },
+            onStopPortForward: { session in
+                viewModel.stopPortForward(session)
+            },
             onOpenPortForwardInBrowser: { session in
                 viewModel.openPortForwardInBrowser(session)
             },
@@ -3428,7 +3454,7 @@ public struct RuneRootView: View {
                     .textSelection(.enabled)
             }
 
-            if session.status == .starting || session.status == .active {
+            if session.status == .starting || session.status == .active || session.status == .failed {
                 HStack(spacing: 8) {
                     if session.status == .active, session.browserURL != nil {
                         Button {
@@ -3442,6 +3468,7 @@ public struct RuneRootView: View {
                     Button("Stop") {
                         viewModel.stopPortForward(session)
                     }
+                    .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
                 }
             }
         }
@@ -4796,10 +4823,62 @@ public struct RuneRootView: View {
                 .textSelection(.enabled)
             copyButton(value: value, label: label)
             Spacer(minLength: 0)
+            detailRefreshButton
         }
         .help(value)
         .contextMenu {
             copyMenuItem(value: value, label: label)
+        }
+    }
+
+    private var detailRefreshButton: some View {
+        Button {
+            refreshDetailPane()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Refresh inspector")
+        .accessibilityLabel("Refresh inspector")
+    }
+
+    private func refreshDetailPane() {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                switch podInspectorTab {
+                case .logs:
+                    viewModel.reloadLogsForSelection()
+                case .describe, .yaml:
+                    viewModel.refreshResourceInspectorOnly()
+                default:
+                    viewModel.refreshCurrentView(debounced: false)
+                }
+            case .deployment:
+                switch deploymentInspectorTab {
+                case .unifiedLogs:
+                    viewModel.reloadLogsForSelection()
+                case .describe, .yaml:
+                    viewModel.refreshResourceInspectorOnly()
+                default:
+                    viewModel.refreshCurrentView(debounced: false)
+                }
+            default:
+                viewModel.refreshResourceInspectorOnly()
+            }
+        case .networking:
+            switch serviceInspectorTab {
+            case .unifiedLogs:
+                viewModel.reloadLogsForSelection()
+            case .describe, .yaml:
+                viewModel.refreshResourceInspectorOnly()
+            default:
+                viewModel.refreshCurrentView(debounced: false)
+            }
+        default:
+            viewModel.refreshResourceInspectorOnly()
         }
     }
 

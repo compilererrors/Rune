@@ -85,11 +85,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("Label(\"Open in Browser\", systemImage: \"safari\")"))
         XCTAssertTrue(rootViewSource.contains("viewModel.openPortForwardInBrowser(session)"))
         XCTAssertTrue(rootViewSource.contains("onOpenPortForwardInBrowser: { session in"))
+        XCTAssertTrue(rootViewSource.contains("onStopPortForward: { session in"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.stopPortForward(session)"))
 
         XCTAssertTrue(terminalViewSource.contains("let onOpenPortForwardInBrowser: (PortForwardSession) -> Void"))
+        XCTAssertTrue(terminalViewSource.contains("let onStopPortForward: (PortForwardSession) -> Void"))
         XCTAssertTrue(terminalViewSource.contains("if session.status == .active, session.browserURL != nil"))
+        XCTAssertTrue(terminalViewSource.contains("if session.status == .starting || session.status == .active || session.status == .failed"))
         XCTAssertTrue(terminalViewSource.contains("Label(\"Open in Browser\", systemImage: \"safari\")"))
         XCTAssertTrue(terminalViewSource.contains("onOpenPortForwardInBrowser(session)"))
+        XCTAssertTrue(terminalViewSource.contains("onStopPortForward(session)"))
     }
 
     func testReadOnlyTextModulesResetScrollWhenExternalContentChanges() throws {

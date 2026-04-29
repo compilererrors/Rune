@@ -77,6 +77,23 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertFalse(age.isEmpty)
     }
 
+    func testTerminalTranscriptSanitizerRemovesAnsiAndDeviceStatusQueries() {
+        let raw = "/ # \u{001B}[6nls -la\r\n\u{001B}[1;34mbin\u{001B}[m\n"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "/ # ls -la\nbin\n")
+    }
+
+    func testTerminalTranscriptSanitizerCarriesSplitEscapeSequences() {
+        var pendingEscape = ""
+
+        let first = TerminalTranscriptSanitizer.sanitize("hello \u{001B}[1;", pendingEscape: &pendingEscape)
+        let second = TerminalTranscriptSanitizer.sanitize("34mworld\u{001B}[m", pendingEscape: &pendingEscape)
+
+        XCTAssertEqual(first, "hello ")
+        XCTAssertEqual(second, "world")
+        XCTAssertTrue(pendingEscape.isEmpty)
+    }
+
     @MainActor
     func testUpdatingResourceYAMLDraftClearsValidationIssues() {
         let state = RuneAppState()

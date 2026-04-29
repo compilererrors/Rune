@@ -23,7 +23,10 @@ struct IconAssetGenerator {
     private let logoPadding: CGFloat = 0
     private let iconPlateInset: CGFloat = 0
     /// Scale applied to the logo before clipping it to the icon plate.
-    private let iconLogoScale: CGFloat = 1.10
+    private let iconLogoScale: CGFloat = 1.05
+    /// The source mark is wider than it is tall because of the horizontal axis ticks.
+    /// Cropping them symmetrically lets the wheel fill the macOS icon mask without one side feeling more clipped.
+    private let iconLogoHorizontalCropFraction: CGFloat = 0.035
     private let iconLogoFitCornerFraction: CGFloat = 0
 
     func run() throws {
@@ -122,10 +125,14 @@ struct IconAssetGenerator {
                                       dy: plateRect.height * (1 - iconLogoScale) / 2)
         let fitPlate = inner.insetBy(dx: plateCornerRadius * iconLogoFitCornerFraction,
                                      dy: plateCornerRadius * iconLogoFitCornerFraction)
-        let logoRect = fittedRect(
-            for: CGSize(width: tightenedLogo.width, height: tightenedLogo.height),
-            inside: fitPlate
+        let cropInsetX = CGFloat(tightenedLogo.width) * iconLogoHorizontalCropFraction
+        let iconLogoCropRect = CGRect(
+            x: cropInsetX,
+            y: 0,
+            width: CGFloat(tightenedLogo.width) - (cropInsetX * 2),
+            height: CGFloat(tightenedLogo.height)
         )
+        let logoRect = fittedRect(for: iconLogoCropRect.size, inside: fitPlate)
 
         return try render(size: canvas, name: "master icon") { context in
             context.clear(CGRect(origin: .zero, size: canvas))
@@ -160,7 +167,7 @@ struct IconAssetGenerator {
             context.saveGState()
             context.addPath(platePath.cgPath)
             context.clip()
-            draw(image: tightenedLogo, croppedTo: CGRect(x: 0, y: 0, width: tightenedLogo.width, height: tightenedLogo.height), in: logoRect, context: context)
+            draw(image: tightenedLogo, croppedTo: iconLogoCropRect, in: logoRect, context: context)
             context.restoreGState()
         }
     }

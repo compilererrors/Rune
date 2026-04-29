@@ -1,15 +1,23 @@
 import SwiftUI
+import RuneCore
 
 struct ResourceDescribeInspectorPane: View {
     let describeText: String
     let resourceReference: String
     let canApplyMutations: Bool
     let yamlText: String
+    let hasUnsavedEdits: Bool
+    let validationIssues: [YAMLValidationIssue]
     let onApply: () -> Void
     let onOpenYAMLEditor: () -> Void
     let readOnlyResetID: String
 
     var body: some View {
+        let canApplyYAML = canApplyMutations
+            && hasUnsavedEdits
+            && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !validationIssues.contains(where: { $0.severity == .error })
+
         VStack(alignment: .leading, spacing: 10) {
             Text("Describe output is read-only. Edit the YAML manifest to change the resource, then Apply.")
                 .font(.caption2)
@@ -20,8 +28,8 @@ struct ResourceDescribeInspectorPane: View {
                 HStack(spacing: 8) {
                     Button("Apply", action: onApply)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyMutations || yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Sends the manifest to the cluster. Closing the editor or this tab does not.")
+                        .disabled(!canApplyYAML)
+                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
                     Button("YAML manifest…", action: onOpenYAMLEditor)
                         .buttonStyle(.bordered)

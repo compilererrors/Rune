@@ -408,6 +408,9 @@ public final class RuneAppViewModel: ObservableObject {
     private var logsReloadTask: Task<Void, Never>?
     private var tailLogsReloadTask: Task<Void, Never>?
     private var yamlValidationTask: Task<Void, Never>?
+    private var terminalOutputFlushTask: Task<Void, Never>?
+    private var pendingTerminalOutputBySessionID: [String: String] = [:]
+    private var pendingTerminalEscapeBySessionID: [String: String] = [:]
     private var pendingForcedNamespaceRefresh = false
     /// Set during context switch with no explicit namespace so first metadata refresh can override stale carry-over namespace.
     private var pendingNamespaceRevalidationContextName: String?
@@ -427,6 +430,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
     /// Coalesces rapid log preset toggles while still cancelling any in-flight fetch immediately.
     private let logsReloadDebounceNanoseconds: UInt64 = 180_000_000
+    private let terminalOutputFlushNanoseconds: UInt64 = 33_000_000
     private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
     private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
@@ -2105,7 +2109,12 @@ public final class RuneAppViewModel: ObservableObject {
             state.setError(RuneError.readOnlyMode)
             return
         }
-        guard let (kind, name) = currentWritableResource(), !state.resourceYAML.isEmpty else { return }
+        guard let (kind, name) = currentWritableResource(), !state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard state.resourceYAMLHasUnsavedEdits else { return }
+        guard !state.resourceYAMLValidationIssues.contains(where: { $0.severity == .error }) else {
+            state.setError(RuneError.invalidInput(message: "Fix YAML errors before applying."))
+            return
+        }
         pendingWriteAction = .apply(kind: kind, name: name, yaml: state.resourceYAML)
     }
 
@@ -2200,12 +2209,13 @@ public final class RuneAppViewModel: ObservableObject {
                     shellCommand: terminalShellCommand,
                     onOutput: { [weak self] chunk in
                         Task { @MainActor [weak self] in
-                            self?.state.appendTerminalSessionOutput(id: sessionID, text: chunk)
+                            self?.enqueueTerminalSessionOutput(id: sessionID, text: chunk)
                         }
                     },
                     onTermination: { [weak self] exitCode in
                         Task { @MainActor [weak self] in
                             guard let self else { return }
+                            self.flushTerminalSessionOutput()
                             let status: PodTerminalSessionStatus = exitCode == 0 ? .disconnected : .failed
                             self.state.updateTerminalSessionStatus(id: sessionID, status: status, exitCode: exitCode)
                             self.state.appendTerminalSessionOutput(
@@ -2236,7 +2246,6 @@ public final class RuneAppViewModel: ObservableObject {
         let command = terminalSessionInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return }
         terminalSessionInput = ""
-        state.appendTerminalSessionCommandEcho(id: session.id, command: command)
 
         Task {
             do {
@@ -2244,6 +2253,30 @@ public final class RuneAppViewModel: ObservableObject {
             } catch {
                 state.setError(error)
             }
+        }
+    }
+
+    private func enqueueTerminalSessionOutput(id: String, text: String) {
+        var pendingEscape = pendingTerminalEscapeBySessionID[id] ?? ""
+        let sanitized = TerminalTranscriptSanitizer.sanitize(text, pendingEscape: &pendingEscape)
+        pendingTerminalEscapeBySessionID[id] = pendingEscape
+        guard !sanitized.isEmpty else { return }
+
+        pendingTerminalOutputBySessionID[id, default: ""] += sanitized
+        terminalOutputFlushTask?.cancel()
+        let flushDelay = terminalOutputFlushNanoseconds
+        terminalOutputFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: flushDelay)
+            self?.flushTerminalSessionOutput()
+        }
+    }
+
+    private func flushTerminalSessionOutput() {
+        guard !pendingTerminalOutputBySessionID.isEmpty else { return }
+        let pending = pendingTerminalOutputBySessionID
+        pendingTerminalOutputBySessionID.removeAll(keepingCapacity: true)
+        for (id, text) in pending {
+            state.appendTerminalSessionOutput(id: id, text: text)
         }
     }
 
@@ -2378,8 +2411,11 @@ public final class RuneAppViewModel: ObservableObject {
             do {
                 guard let context = state.selectedContext else { return }
 
+                let shouldReloadResourceInspectorAfterWrite: Bool
+
                 switch action {
                 case let .delete(kind, name):
+                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.deleteResource(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2388,6 +2424,7 @@ public final class RuneAppViewModel: ObservableObject {
                         name: name
                     )
                 case let .apply(_, _, yaml):
+                    shouldReloadResourceInspectorAfterWrite = true
                     try await kubeClient.applyYAML(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2395,6 +2432,7 @@ public final class RuneAppViewModel: ObservableObject {
                         yaml: yaml
                     )
                 case let .scale(deploymentName, replicas):
+                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.scaleDeployment(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2403,6 +2441,7 @@ public final class RuneAppViewModel: ObservableObject {
                         replicas: replicas
                     )
                 case let .rolloutRestart(deploymentName):
+                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.restartDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2410,6 +2449,7 @@ public final class RuneAppViewModel: ObservableObject {
                         deploymentName: deploymentName
                     )
                 case let .rolloutUndo(deploymentName, revision):
+                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.rollbackDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2418,6 +2458,7 @@ public final class RuneAppViewModel: ObservableObject {
                         revision: revision
                     )
                 case let .exec(podName, command):
+                    shouldReloadResourceInspectorAfterWrite = false
                     state.isExecutingCommand = true
                     defer { state.isExecutingCommand = false }
 
@@ -2443,6 +2484,9 @@ public final class RuneAppViewModel: ObservableObject {
                     namespace: state.selectedNamespace,
                     requestID: requestID
                 )
+                if shouldReloadResourceInspectorAfterWrite {
+                    loadResourceDetailsForCurrentSelection()
+                }
             } catch {
                 state.setError(error)
             }

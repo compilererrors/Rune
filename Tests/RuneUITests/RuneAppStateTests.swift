@@ -184,6 +184,80 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testApplyYAMLRequiresUnsavedEdits() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+            """
+        )
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+              labels:
+                app: api
+            """
+        )
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testApplyYAMLRejectsValidationErrorsBeforeConfirm() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+            """
+        )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+              labels:
+                app: api
+            """
+        )
+        state.setResourceYAMLValidationIssues([
+            YAMLValidationIssue(source: .syntax, severity: .error, message: "bad yaml")
+        ])
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertEqual(state.lastError, "Invalid input: Fix YAML errors before applying.")
+    }
+
+    @MainActor
     func testSessionLogCacheKeepsReadSegmentsWithResourceBreaks() {
         let state = RuneAppState()
         let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
