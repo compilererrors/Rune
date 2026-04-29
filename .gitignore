@@ -4,6 +4,9 @@
 .swiftpm/
 .cache/
 
+# Local experiments are not part of the Rune app path.
+go/
+
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
 
@@ -17,9 +20,12 @@ assets/readme/kubeconfig.fake-cluster.yaml
 rune-smoke-swift-testing.xml
 test-reports/
 
-# Full UI smoke screenshot runs are local review artifacts. Curated README
-# screenshots should live under assets/screenshot/readme/.
-assets/screenshot/ui/
+# Full UI smoke screenshot runs are local review artifacts. README-linked
+# update screenshots are kept as a narrow exception.
+assets/screenshot/ui/*
+!assets/screenshot/ui/update260429/
+!assets/screenshot/ui/update260429/*.png
+assets/screenshot/ui/update260429/app-store-2880x1800/
 
 # Local App Store / Apple Developer screenshot exports.
 assets/appledev/
