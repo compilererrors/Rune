@@ -83,6 +83,9 @@ run_step() {
     "$@"
   } > "$log_file" 2>&1
   exit_code=$?
+  if [[ $exit_code -eq 0 ]] && grep -q 'No matching test cases were run' "$log_file"; then
+    exit_code=66
+  fi
   ended="$(date +%s)"
   duration=$((ended - started))
 

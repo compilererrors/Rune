@@ -1314,91 +1314,143 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
         onEvent(baseSession)
 
-        let podName: String
-        switch targetKind {
-        case .pod:
-            podName = targetName
-        case .service:
-            let selectorMap = try await requiredServiceSelectorViaREST(
-                environment: env,
-                context: context,
+        func stoppedSession(message: String) -> PortForwardSession {
+            PortForwardSession(
+                id: sessionID,
+                contextName: context.name,
                 namespace: namespace,
-                serviceName: targetName
+                targetKind: targetKind,
+                targetName: targetName,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address,
+                status: .stopped,
+                lastMessage: message
             )
-            guard !selectorMap.isEmpty else {
-                throw RuneError.parseError(message: "Service \(targetName) is missing a selector and cannot be port-forwarded.")
-            }
-
-            let selector = selectorMap
-                .sorted { $0.key < $1.key }
-                .map { "\($0.key)=\($0.value)" }
-                .joined(separator: ",")
-            let pods = try await requiredPodsBySelectorViaREST(
-                environment: env,
-                context: context,
-                namespace: namespace,
-                selector: selector
-            )
-            guard let selectedPod = Self.preferredPortForwardPod(from: pods) else {
-                throw RuneError.parseError(message: "No pods matched service \(targetName) selector \(selector).")
-            }
-            podName = selectedPod.name
         }
 
-        let handle = try await restClient.startPodPortForward(
-            environment: env,
-            contextName: context.name,
-            namespace: namespace,
-            podName: podName,
-            localPort: localPort,
-            remotePort: remotePort,
-            address: address,
-            onReady: {
-                onEvent(
-                    PortForwardSession(
-                        id: sessionID,
-                        contextName: context.name,
-                        namespace: namespace,
-                        targetKind: targetKind,
-                        targetName: targetName,
-                        localPort: localPort,
-                        remotePort: remotePort,
-                        address: address,
-                        status: .active,
-                        lastMessage: "Forwarding \(address):\(localPort) to \(podName):\(remotePort)"
-                    )
+        func failedSession(message: String) -> PortForwardSession {
+            PortForwardSession(
+                id: sessionID,
+                contextName: context.name,
+                namespace: namespace,
+                targetKind: targetKind,
+                targetName: targetName,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address,
+                status: .failed,
+                lastMessage: message
+            )
+        }
+
+        do {
+            let podName: String
+            switch targetKind {
+            case .pod:
+                podName = targetName
+            case .service:
+                let selectorMap = try await requiredServiceSelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    serviceName: targetName
                 )
-            },
-            onFailure: { message in
-                onEvent(
-                    PortForwardSession(
-                        id: sessionID,
-                        contextName: context.name,
-                        namespace: namespace,
-                        targetKind: targetKind,
-                        targetName: targetName,
-                        localPort: localPort,
-                        remotePort: remotePort,
-                        address: address,
-                        status: .failed,
-                        lastMessage: message
-                    )
+                guard !selectorMap.isEmpty else {
+                    throw RuneError.parseError(message: "Service \(targetName) is missing a selector and cannot be port-forwarded.")
+                }
+
+                let selector = selectorMap
+                    .sorted { $0.key < $1.key }
+                    .map { "\($0.key)=\($0.value)" }
+                    .joined(separator: ",")
+                let pods = try await requiredPodsBySelectorViaREST(
+                    environment: env,
+                    context: context,
+                    namespace: namespace,
+                    selector: selector
                 )
+                guard let selectedPod = Self.preferredPortForwardPod(from: pods) else {
+                    throw RuneError.parseError(message: "No pods matched service \(targetName) selector \(selector).")
+                }
+                podName = selectedPod.name
             }
-        )
-        await portForwardRegistry.insert(handle: handle, id: sessionID)
-        return PortForwardSession(
-            id: sessionID,
-            contextName: context.name,
-            namespace: namespace,
-            targetKind: targetKind,
-            targetName: targetName,
-            localPort: localPort,
-            remotePort: remotePort,
-            address: address,
-            status: .starting,
-            lastMessage: "Starting port-forward to \(podName):\(remotePort)"
-        )
+
+            if await portForwardRegistry.isStopRequested(id: sessionID) {
+                let session = stoppedSession(message: "Port-forward stopped before it connected.")
+                onEvent(session)
+                return session
+            }
+
+            let handle = try await restClient.startPodPortForward(
+                environment: env,
+                contextName: context.name,
+                namespace: namespace,
+                podName: podName,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address,
+                onReady: {
+                    onEvent(
+                        PortForwardSession(
+                            id: sessionID,
+                            contextName: context.name,
+                            namespace: namespace,
+                            targetKind: targetKind,
+                            targetName: targetName,
+                            localPort: localPort,
+                            remotePort: remotePort,
+                            address: address,
+                            status: .active,
+                            lastMessage: "Forwarding \(address):\(localPort) to \(podName):\(remotePort)"
+                        )
+                    )
+                },
+                onFailure: { message in
+                    onEvent(
+                        PortForwardSession(
+                            id: sessionID,
+                            contextName: context.name,
+                            namespace: namespace,
+                            targetKind: targetKind,
+                            targetName: targetName,
+                            localPort: localPort,
+                            remotePort: remotePort,
+                            address: address,
+                            status: .failed,
+                            lastMessage: message
+                        )
+                    )
+                }
+            )
+            let didInsert = await portForwardRegistry.insert(handle: handle, id: sessionID)
+            guard didInsert else {
+                handle.terminate()
+                let session = stoppedSession(message: "Port-forward stopped before it became ready.")
+                onEvent(session)
+                return session
+            }
+            return PortForwardSession(
+                id: sessionID,
+                contextName: context.name,
+                namespace: namespace,
+                targetKind: targetKind,
+                targetName: targetName,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address,
+                status: .starting,
+                lastMessage: "Starting port-forward to \(podName):\(remotePort)"
+            )
+        } catch {
+            guard await portForwardRegistry.isStopRequested(id: sessionID) else {
+                onEvent(failedSession(message: error.localizedDescription))
+                throw error
+            }
+            let session = stoppedSession(message: "Port-forward stopped before it connected.")
+            onEvent(session)
+            return session
+        }
     }
 
     static func preferredPortForwardPod(from pods: [PodSummary]) -> PodSummary? {
@@ -2539,13 +2591,26 @@ private enum GzipInflator {
 
 private actor PortForwardRegistry {
     private var handles: [String: any RunningCommandControlling] = [:]
+    private var stopRequestedIDs: Set<String> = []
 
-    func insert(handle: any RunningCommandControlling, id: String) {
+    func insert(handle: any RunningCommandControlling, id: String) -> Bool {
+        if stopRequestedIDs.remove(id) != nil {
+            return false
+        }
         handles[id] = handle
+        return true
+    }
+
+    func isStopRequested(id: String) -> Bool {
+        stopRequestedIDs.contains(id)
     }
 
     func remove(id: String) -> (any RunningCommandControlling)? {
-        handles.removeValue(forKey: id)
+        if let handle = handles.removeValue(forKey: id) {
+            return handle
+        }
+        stopRequestedIDs.insert(id)
+        return nil
     }
 }
 

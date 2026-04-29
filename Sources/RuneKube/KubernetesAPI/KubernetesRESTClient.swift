@@ -3,6 +3,7 @@ import RuneCore
 import RuneDiagnostics
 @preconcurrency import Security
 import Network
+import zlib
 
 @_silgen_name("SecKeychainCreate")
 private func RuneSecKeychainCreate(
@@ -27,6 +28,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
     static func _testResolvedTLSDescription(environment: [String: String], contextName: String) async throws -> String {
         let resolved = try await KubernetesRESTClient().resolvedContext(environment: environment, contextName: contextName)
         return resolved.tlsDescription
+    }
+
+    static func _testLocalPortConflictMessage(port: Int, address: String) -> String? {
+        localPortConflictMessage(port: port, address: address)
     }
 
     func listContexts(environment: [String: String]) async throws -> [KubeContext] {
@@ -718,22 +723,49 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "Port-forward ports must be between 1 and 65535.")
         }
 
+        if let conflictMessage = Self.localPortConflictMessage(port: localPort, address: address) {
+            throw RuneError.commandFailed(command: "port-forward", message: conflictMessage)
+        }
+
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
+        if resolved.insecureSkipTLSVerify || resolved.serverURL.scheme == "http" {
+            let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            let listener: NWListener
+            do {
+                listener = try NWListener(using: parameters, on: port)
+            } catch {
+                let message = Self.localPortConflictMessage(port: localPort, address: address)
+                    ?? "Could not bind local port \(address):\(localPort): \(error.localizedDescription)"
+                throw RuneError.commandFailed(command: "port-forward", message: message)
+            }
+            let handle = LegacySPDYPortForwardHandle(
+                listener: listener,
+                resolved: resolved,
+                namespace: namespace,
+                podName: podName,
+                remotePort: remotePort,
+                onReady: onReady,
+                onFailure: onFailure
+            )
+            handle.start()
+            return handle
+        }
+
         let restSession = makeSession(for: resolved)
         let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(address),
-            port: port
-        )
 
         let listener: NWListener
         do {
             listener = try NWListener(using: parameters, on: port)
         } catch {
             restSession.session.invalidateAndCancel()
-            throw error
+            let message = Self.localPortConflictMessage(port: localPort, address: address)
+                ?? "Could not bind local port \(address):\(localPort): \(error.localizedDescription)"
+            throw RuneError.commandFailed(command: "port-forward", message: message)
         }
 
         let handle = KubernetesPortForwardHandle(
@@ -760,6 +792,34 @@ final class KubernetesRESTClient: @unchecked Sendable {
         )
         handle.start()
         return handle
+    }
+
+    private static func localPortConflictMessage(port: Int, address: String) -> String? {
+        guard let owner = localTCPListenerOwner(port: port) else { return nil }
+        return "Port in use: \(address):\(port) is already used by \(owner.command) (pid \(owner.pid))."
+    }
+
+    private static func localTCPListenerOwner(port: Int) -> PortOwner? {
+        let executable = "/usr/sbin/lsof"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fpct"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else { return nil }
+        let raw = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return PortOwner.parseLsofFieldOutput(raw)
     }
 
     private func resourcePath(
@@ -862,7 +922,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private func makeWebSocketTask(
         session: URLSession,
         resolved: ResolvedRESTContext,
-        apiPath: String
+        apiPath: String,
+        protocols: [String] = ["v5.channel.k8s.io", "v4.channel.k8s.io"]
     ) throws -> URLSessionWebSocketTask {
         guard var components = URLComponents(url: resolved.serverURL, resolvingAgainstBaseURL: false) else {
             throw RuneError.invalidInput(message: "Invalid Kubernetes server URL")
@@ -877,7 +938,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "Invalid Kubernetes websocket path: \(apiPath)")
         }
         var request = URLRequest(url: url)
-        request.setValue("v5.channel.k8s.io, v4.channel.k8s.io", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
         switch resolved.authentication {
         case let .bearer(token):
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -899,11 +960,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
     ) throws -> URLSessionWebSocketTask {
         var components = URLComponents()
         components.path = try resourcePath(kind: .pod, namespace: namespace, resource: "pods", name: podName, subresource: "portforward")
-        components.queryItems = [URLQueryItem(name: "ports", value: "\(remotePort)")]
+        components.queryItems = [URLQueryItem(name: "port", value: "\(remotePort)")]
         return try makeWebSocketTask(
             session: session,
             resolved: resolved,
-            apiPath: components.percentEncodedPath + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
+            apiPath: components.percentEncodedPath + (components.percentEncodedQuery.map { "?\($0)" } ?? ""),
+            protocols: ["SPDY/3.1+portforward.k8s.io"]
         )
     }
 
@@ -2180,6 +2242,43 @@ private struct RESTResponse {
     let contentType: String
 }
 
+private struct PortOwner {
+    let pid: String
+    let command: String
+
+    static func parseLsofFieldOutput(_ output: String) -> PortOwner? {
+        var currentPID: String?
+        var currentCommand: String?
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            guard let field = line.first else { continue }
+            let value = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            switch field {
+            case "p":
+                currentPID = value
+                currentCommand = nil
+            case "c":
+                currentCommand = value
+            case "t":
+                if value == "IPv4" || value == "IPv6",
+                   let pid = currentPID,
+                   let command = currentCommand,
+                   !pid.isEmpty,
+                   !command.isEmpty {
+                    return PortOwner(pid: pid, command: command)
+                }
+            default:
+                continue
+            }
+        }
+
+        if let pid = currentPID, let command = currentCommand, !pid.isEmpty, !command.isEmpty {
+            return PortOwner(pid: pid, command: command)
+        }
+        return nil
+    }
+}
+
 private struct RESTURLSession {
     let session: URLSession
     let delegate: RESTURLSessionDelegate
@@ -2626,6 +2725,7 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
     private let queue = DispatchQueue(label: "com.rune.kubernetes-port-forward")
     private let lock = NSLock()
     private var bridges: [UUID: PortForwardConnectionBridge] = [:]
+    private var listenerReady = false
     private var terminated = false
 
     init(
@@ -2655,7 +2755,11 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
             guard let self else { return }
             switch state {
             case .ready:
+                self.markReady()
                 self.onReady()
+            case let .waiting(error):
+                self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
+                self.terminate()
             case let .failed(error):
                 self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
                 self.terminate()
@@ -2669,6 +2773,9 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
             self?.accept(connection)
         }
         listener.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            self?.failIfListenerDidNotStart()
+        }
     }
 
     func terminate() {
@@ -2681,6 +2788,22 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
         listener.cancel()
         closeAllBridges()
         session.invalidateAndCancel()
+    }
+
+    private func markReady() {
+        lock.lock()
+        listenerReady = true
+        lock.unlock()
+    }
+
+    private func failIfListenerDidNotStart() {
+        lock.lock()
+        let shouldFail = !listenerReady && !terminated
+        lock.unlock()
+
+        guard shouldFail else { return }
+        onFailure("Timed out starting local port-forward listener.")
+        terminate()
     }
 
     func writeToStdin(_ data: Data) throws {
@@ -2701,6 +2824,7 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
             let bridge = PortForwardConnectionBridge(
                 connection: connection,
                 webSocketTask: task,
+                remotePort: remotePort,
                 queue: queue,
                 onClose: { [weak self] id in
                     self?.removeBridge(id: id)
@@ -2736,26 +2860,555 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
     }
 }
 
-private final class PortForwardConnectionBridge: @unchecked Sendable {
+private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unchecked Sendable {
     let id = UUID()
 
-    private let connection: NWConnection
-    private let webSocketTask: URLSessionWebSocketTask
+    private let listener: NWListener
+    private let resolved: ResolvedRESTContext
+    private let namespace: String
+    private let podName: String
+    private let remotePort: Int
+    private let onReady: @Sendable () -> Void
+    private let onFailure: @Sendable (String) -> Void
+    private let queue = DispatchQueue(label: "com.rune.legacy-spdy-port-forward")
+    private let lock = NSLock()
+    private var bridges: [UUID: LegacySPDYConnectionBridge] = [:]
+    private var listenerReady = false
+    private var terminated = false
+
+    init(
+        listener: NWListener,
+        resolved: ResolvedRESTContext,
+        namespace: String,
+        podName: String,
+        remotePort: Int,
+        onReady: @escaping @Sendable () -> Void,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) {
+        self.listener = listener
+        self.resolved = resolved
+        self.namespace = namespace
+        self.podName = podName
+        self.remotePort = remotePort
+        self.onReady = onReady
+        self.onFailure = onFailure
+    }
+
+    func start() {
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.markReady()
+                self.onReady()
+            case let .waiting(error):
+                self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
+                self.terminate()
+            case let .failed(error):
+                self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
+                self.terminate()
+            case .cancelled:
+                self.closeAllBridges()
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.accept(connection)
+        }
+        listener.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            self?.failIfListenerDidNotStart()
+        }
+    }
+
+    func terminate() {
+        lock.lock()
+        let shouldTerminate = !terminated
+        terminated = true
+        lock.unlock()
+
+        guard shouldTerminate else { return }
+        listener.cancel()
+        closeAllBridges()
+    }
+
+    func writeToStdin(_ data: Data) throws {
+        throw RuneError.commandFailed(command: "port-forward", message: "Port-forward sessions do not accept stdin.")
+    }
+
+    private func markReady() {
+        lock.lock()
+        listenerReady = true
+        lock.unlock()
+    }
+
+    private func failIfListenerDidNotStart() {
+        lock.lock()
+        let shouldFail = !listenerReady && !terminated
+        lock.unlock()
+
+        guard shouldFail else { return }
+        onFailure("Timed out starting local port-forward listener.")
+        terminate()
+    }
+
+    private func accept(_ connection: NWConnection) {
+        lock.lock()
+        let isTerminated = terminated
+        lock.unlock()
+        guard !isTerminated else {
+            connection.cancel()
+            return
+        }
+
+        do {
+            let remote = try Self.makeRemoteConnection(resolved: resolved, queue: queue)
+            let request = try Self.makeUpgradeRequest(
+                resolved: resolved,
+                namespace: namespace,
+                podName: podName
+            )
+            let bridge = LegacySPDYConnectionBridge(
+                localConnection: connection,
+                remoteConnection: remote,
+                upgradeRequest: request,
+                remotePort: remotePort,
+                queue: queue,
+                onClose: { [weak self] id in
+                    self?.removeBridge(id: id)
+                },
+                onFailure: { [weak self] message in
+                    self?.onFailure("Port-forward \(self?.namespace ?? "")/\(self?.podName ?? ""):\(self?.remotePort ?? 0) failed: \(message)")
+                }
+            )
+            lock.lock()
+            bridges[bridge.id] = bridge
+            lock.unlock()
+            bridge.start()
+        } catch {
+            connection.cancel()
+            onFailure("Could not open Kubernetes port-forward stream: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeBridge(id: UUID) {
+        lock.lock()
+        bridges.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    private func closeAllBridges() {
+        lock.lock()
+        let current = Array(bridges.values)
+        bridges.removeAll()
+        lock.unlock()
+        for bridge in current {
+            bridge.close()
+        }
+    }
+
+    private static func makeRemoteConnection(
+        resolved: ResolvedRESTContext,
+        queue: DispatchQueue
+    ) throws -> NWConnection {
+        guard let host = resolved.serverURL.host else {
+            throw RuneError.invalidInput(message: "Kubernetes server URL is missing a host.")
+        }
+        let rawPort = resolved.serverURL.port ?? (resolved.serverURL.scheme == "http" ? 80 : 443)
+        guard let port = NWEndpoint.Port(rawValue: UInt16(rawPort)) else {
+            throw RuneError.invalidInput(message: "Kubernetes server URL has an invalid port.")
+        }
+
+        let parameters: NWParameters
+        if resolved.serverURL.scheme == "http" {
+            parameters = .tcp
+        } else {
+            let tlsOptions = NWProtocolTLS.Options()
+            let tlsServerName = resolved.tlsServerName ?? host
+            sec_protocol_options_set_tls_server_name(tlsOptions.securityProtocolOptions, tlsServerName)
+            if resolved.insecureSkipTLSVerify {
+                sec_protocol_options_set_verify_block(
+                    tlsOptions.securityProtocolOptions,
+                    { _, _, complete in
+                        complete(true)
+                    },
+                    queue
+                )
+            }
+            parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        }
+
+        return NWConnection(host: NWEndpoint.Host(host), port: port, using: parameters)
+    }
+
+    private static func makeUpgradeRequest(
+        resolved: ResolvedRESTContext,
+        namespace: String,
+        podName: String
+    ) throws -> Data {
+        guard let host = resolved.serverURL.host else {
+            throw RuneError.invalidInput(message: "Kubernetes server URL is missing a host.")
+        }
+        let rawPort = resolved.serverURL.port ?? (resolved.serverURL.scheme == "http" ? 80 : 443)
+        let hostHeader = (rawPort == 80 || rawPort == 443) ? host : "\(host):\(rawPort)"
+        let path = "/api/v1/namespaces/\(namespace.runePercentEncodedPathSegment)/pods/\(podName.runePercentEncodedPathSegment)/portforward"
+
+        var lines = [
+            "POST \(path) HTTP/1.1",
+            "Host: \(hostHeader)",
+            "User-Agent: Rune",
+            "Connection: Upgrade",
+            "Upgrade: SPDY/3.1",
+            "X-Stream-Protocol-Version: portforward.k8s.io"
+        ]
+        switch resolved.authentication {
+        case .none:
+            break
+        case let .bearer(token):
+            lines.append("Authorization: Bearer \(token)")
+        case let .basic(username, password):
+            let raw = Data("\(username):\(password)".utf8).base64EncodedString()
+            lines.append("Authorization: Basic \(raw)")
+        }
+        lines.append("")
+        lines.append("")
+        return Data(lines.joined(separator: "\r\n").utf8)
+    }
+}
+
+private final class LegacySPDYConnectionBridge: @unchecked Sendable {
+    let id = UUID()
+
+    private enum Constants {
+        static let dataStreamID: UInt32 = 3
+        static let errorStreamID: UInt32 = 1
+        static let finFlag: UInt8 = 0x01
+    }
+
+    private let localConnection: NWConnection
+    private let remoteConnection: NWConnection
+    private let upgradeRequest: Data
+    private let remotePort: Int
     private let queue: DispatchQueue
     private let onClose: @Sendable (UUID) -> Void
     private let onFailure: @Sendable (String) -> Void
     private let lock = NSLock()
+    private let framer = SPDYPortForwardFramer()
     private var closed = false
+    private var localReady = false
+    private var remoteReady = false
+    private var didSendUpgrade = false
+    private var didUpgrade = false
+    private var handshakeBuffer = Data()
+    private var remoteBuffer = Data()
+    private var errorStreamText = ""
+
+    init(
+        localConnection: NWConnection,
+        remoteConnection: NWConnection,
+        upgradeRequest: Data,
+        remotePort: Int,
+        queue: DispatchQueue,
+        onClose: @escaping @Sendable (UUID) -> Void,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) {
+        self.localConnection = localConnection
+        self.remoteConnection = remoteConnection
+        self.upgradeRequest = upgradeRequest
+        self.remotePort = remotePort
+        self.queue = queue
+        self.onClose = onClose
+        self.onFailure = onFailure
+    }
+
+    func start() {
+        localConnection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            self.queue.async {
+                switch state {
+                case .ready:
+                    self.localReady = true
+                    self.startUpgradeIfReady()
+                case let .failed(error):
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                case .cancelled:
+                    self.close()
+                default:
+                    break
+                }
+            }
+        }
+        remoteConnection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            self.queue.async {
+                switch state {
+                case .ready:
+                    self.remoteReady = true
+                    self.startUpgradeIfReady()
+                case let .failed(error):
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                case .cancelled:
+                    self.close()
+                default:
+                    break
+                }
+            }
+        }
+        localConnection.start(queue: queue)
+        remoteConnection.start(queue: queue)
+    }
+
+    func close() {
+        lock.lock()
+        let shouldClose = !closed
+        closed = true
+        lock.unlock()
+        guard shouldClose else { return }
+        localConnection.cancel()
+        remoteConnection.cancel()
+        onClose(id)
+    }
+
+    private func startUpgradeIfReady() {
+        guard localReady, remoteReady, !didSendUpgrade else { return }
+        didSendUpgrade = true
+        remoteConnection.send(content: upgradeRequest, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                    return
+                }
+                self.receiveUpgradeResponse()
+            }
+        })
+    }
+
+    private func receiveUpgradeResponse() {
+        remoteConnection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                    return
+                }
+                if let data, !data.isEmpty {
+                    self.handshakeBuffer.append(data)
+                }
+                if let headerRange = self.handshakeBuffer.range(of: Data("\r\n\r\n".utf8)) {
+                    let headerData = self.handshakeBuffer.subdata(in: 0..<headerRange.lowerBound)
+                    let remainingStart = headerRange.upperBound
+                    let remainder = self.handshakeBuffer.subdata(in: remainingStart..<self.handshakeBuffer.endIndex)
+                    let response = String(decoding: headerData, as: UTF8.self)
+                    guard response.hasPrefix("HTTP/1.1 101") || response.hasPrefix("HTTP/1.0 101") else {
+                        let preview = response.split(separator: "\r\n", omittingEmptySubsequences: true).prefix(3).joined(separator: " ")
+                        self.onFailure("Kubernetes rejected SPDY port-forward upgrade: \(preview)")
+                        self.close()
+                        return
+                    }
+                    self.didUpgrade = true
+                    self.handshakeBuffer.removeAll(keepingCapacity: false)
+                    do {
+                        try self.openRemoteStreams()
+                    } catch {
+                        self.onFailure(error.localizedDescription)
+                        self.close()
+                        return
+                    }
+                    if !remainder.isEmpty {
+                        self.remoteBuffer.append(remainder)
+                        self.processRemoteFrames()
+                    }
+                    self.receiveFromLocal()
+                    self.receiveFromRemote()
+                } else if isComplete {
+                    self.onFailure("Kubernetes closed the port-forward upgrade before sending a response.")
+                    self.close()
+                } else {
+                    self.receiveUpgradeResponse()
+                }
+            }
+        }
+    }
+
+    private func receiveFromLocal() {
+        guard didUpgrade else { return }
+        localConnection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                    return
+                }
+                if let data, !data.isEmpty {
+                    self.sendRemoteData(self.framer.dataFrame(streamID: Constants.dataStreamID, payload: data))
+                }
+                if isComplete {
+                    self.sendRemoteData(self.framer.dataFrame(streamID: Constants.dataStreamID, payload: Data(), flags: Constants.finFlag))
+                } else {
+                    self.receiveFromLocal()
+                }
+            }
+        }
+    }
+
+    private func receiveFromRemote() {
+        guard didUpgrade else { return }
+        remoteConnection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                    return
+                }
+                if let data, !data.isEmpty {
+                    self.remoteBuffer.append(data)
+                    self.processRemoteFrames()
+                }
+                if isComplete {
+                    self.close()
+                } else {
+                    self.receiveFromRemote()
+                }
+            }
+        }
+    }
+
+    private func openRemoteStreams() throws {
+        let requestID = "1"
+        let port = String(remotePort)
+        sendRemoteData(try framer.synStream(
+            streamID: Constants.errorStreamID,
+            headers: [
+                "streamType": ["error"],
+                "port": [port],
+                "requestID": [requestID]
+            ]
+        ))
+        sendRemoteData(framer.dataFrame(streamID: Constants.errorStreamID, payload: Data(), flags: Constants.finFlag))
+        sendRemoteData(try framer.synStream(
+            streamID: Constants.dataStreamID,
+            headers: [
+                "streamType": ["data"],
+                "port": [port],
+                "requestID": [requestID]
+            ]
+        ))
+    }
+
+    private func sendRemoteData(_ data: Data) {
+        remoteConnection.send(content: data, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                }
+            }
+        })
+    }
+
+    private func processRemoteFrames() {
+        while let frame = SPDYPortForwardFrame.parse(from: &remoteBuffer) {
+            switch frame {
+            case let .data(streamID, flags, payload):
+                handleDataFrame(streamID: streamID, flags: flags, payload: payload)
+            case let .control(type, payload):
+                handleControlFrame(type: type, payload: payload)
+            }
+        }
+    }
+
+    private func handleDataFrame(streamID: UInt32, flags: UInt8, payload: Data) {
+        switch streamID {
+        case Constants.dataStreamID:
+            if !payload.isEmpty {
+                localConnection.send(content: payload, completion: .contentProcessed { [weak self] error in
+                    guard let self else { return }
+                    self.queue.async {
+                        if let error {
+                            self.onFailure(error.localizedDescription)
+                            self.close()
+                        }
+                    }
+                })
+            }
+            if flags & Constants.finFlag != 0 {
+                close()
+            }
+        case Constants.errorStreamID:
+            if !payload.isEmpty {
+                errorStreamText += String(decoding: payload, as: UTF8.self)
+            }
+            if flags & Constants.finFlag != 0, !errorStreamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                onFailure(errorStreamText.trimmingCharacters(in: .whitespacesAndNewlines))
+                close()
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleControlFrame(type: UInt16, payload: Data) {
+        switch type {
+        case 3:
+            if payload.count >= 8 {
+                let streamID = payload.runeReadUInt32(at: 0) & 0x7fffffff
+                let status = payload.runeReadUInt32(at: 4)
+                onFailure("SPDY stream \(streamID) reset with status \(status).")
+                close()
+            }
+        case 6:
+            if payload.count == 4 {
+                sendRemoteData(framer.pingFrame(id: payload.runeReadUInt32(at: 0)))
+            }
+        case 7:
+            close()
+        default:
+            break
+        }
+    }
+}
+
+private final class PortForwardConnectionBridge: @unchecked Sendable {
+    let id = UUID()
+
+    private enum Constants {
+        static let dataStreamID: UInt32 = 3
+        static let errorStreamID: UInt32 = 1
+        static let finFlag: UInt8 = 0x01
+    }
+
+    private let connection: NWConnection
+    private let webSocketTask: URLSessionWebSocketTask
+    private let remotePort: Int
+    private let queue: DispatchQueue
+    private let onClose: @Sendable (UUID) -> Void
+    private let onFailure: @Sendable (String) -> Void
+    private let lock = NSLock()
+    private let framer = SPDYPortForwardFramer()
+    private var closed = false
+    private var remoteBuffer = Data()
+    private var errorStreamText = ""
 
     init(
         connection: NWConnection,
         webSocketTask: URLSessionWebSocketTask,
+        remotePort: Int,
         queue: DispatchQueue,
         onClose: @escaping @Sendable (UUID) -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) {
         self.connection = connection
         self.webSocketTask = webSocketTask
+        self.remotePort = remotePort
         self.queue = queue
         self.onClose = onClose
         self.onFailure = onFailure
@@ -2766,9 +3419,17 @@ private final class PortForwardConnectionBridge: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                self.webSocketTask.resume()
-                self.receiveFromLocal()
-                self.receiveFromRemote()
+                self.queue.async {
+                    do {
+                        self.webSocketTask.resume()
+                        try self.openRemoteStreams()
+                        self.receiveFromLocal()
+                        self.receiveFromRemote()
+                    } catch {
+                        self.onFailure(error.localizedDescription)
+                        self.close()
+                    }
+                }
             case let .failed(error):
                 self.onFailure(error.localizedDescription)
                 self.close()
@@ -2795,26 +3456,20 @@ private final class PortForwardConnectionBridge: @unchecked Sendable {
     private func receiveFromLocal() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
-            if let error {
-                self.onFailure(error.localizedDescription)
-                self.close()
-                return
-            }
-            if let data, !data.isEmpty {
-                var framed = Data([0])
-                framed.append(data)
-                self.webSocketTask.send(.data(framed)) { [weak self] error in
-                    guard let self else { return }
-                    if let error {
-                        self.onFailure(error.localizedDescription)
-                        self.close()
-                    }
+            self.queue.async {
+                if let error {
+                    self.onFailure(error.localizedDescription)
+                    self.close()
+                    return
                 }
-            }
-            if isComplete {
-                self.close()
-            } else {
-                self.receiveFromLocal()
+                if let data, !data.isEmpty {
+                    self.sendWebSocketData(self.framer.dataFrame(streamID: Constants.dataStreamID, payload: data))
+                }
+                if isComplete {
+                    self.sendWebSocketData(self.framer.dataFrame(streamID: Constants.dataStreamID, payload: Data(), flags: Constants.finFlag))
+                } else {
+                    self.receiveFromLocal()
+                }
             }
         }
     }
@@ -2822,46 +3477,298 @@ private final class PortForwardConnectionBridge: @unchecked Sendable {
     private func receiveFromRemote() {
         webSocketTask.receive { [weak self] result in
             guard let self else { return }
-            switch result {
-            case let .success(message):
-                let data: Data
-                switch message {
-                case let .data(value):
-                    data = value
-                case let .string(value):
-                    data = Data(value.utf8)
-                @unknown default:
-                    self.receiveFromRemote()
-                    return
-                }
-                guard let channel = data.first else {
-                    self.receiveFromRemote()
-                    return
-                }
-                let payload = data.dropFirst()
-                switch channel {
-                case 0:
-                    self.connection.send(content: Data(payload), completion: .contentProcessed { [weak self] error in
-                        guard let self else { return }
-                        if let error {
-                            self.onFailure(error.localizedDescription)
-                            self.close()
-                        }
-                    })
-                case 1:
-                    if !payload.isEmpty {
-                        self.onFailure(String(decoding: payload, as: UTF8.self))
+            self.queue.async {
+                switch result {
+                case let .success(message):
+                    let data: Data
+                    switch message {
+                    case let .data(value):
+                        data = value
+                    case let .string(value):
+                        data = Data(value.utf8)
+                    @unknown default:
+                        self.receiveFromRemote()
+                        return
                     }
+                    self.remoteBuffer.append(data)
+                    self.processRemoteFrames()
+                    self.receiveFromRemote()
+                case let .failure(error):
+                    self.onFailure(error.localizedDescription)
                     self.close()
-                    return
-                default:
-                    break
                 }
-                self.receiveFromRemote()
-            case let .failure(error):
-                self.onFailure(error.localizedDescription)
-                self.close()
             }
         }
+    }
+
+    private func openRemoteStreams() throws {
+        let requestID = "1"
+        let port = String(remotePort)
+        sendWebSocketData(try framer.synStream(
+            streamID: Constants.errorStreamID,
+            headers: [
+                "streamType": ["error"],
+                "port": [port],
+                "requestID": [requestID]
+            ]
+        ))
+        sendWebSocketData(framer.dataFrame(streamID: Constants.errorStreamID, payload: Data(), flags: Constants.finFlag))
+        sendWebSocketData(try framer.synStream(
+            streamID: Constants.dataStreamID,
+            headers: [
+                "streamType": ["data"],
+                "port": [port],
+                "requestID": [requestID]
+            ]
+        ))
+    }
+
+    private func sendWebSocketData(_ data: Data) {
+        webSocketTask.send(.data(data)) { [weak self] error in
+            guard let self, let error else { return }
+            self.onFailure(error.localizedDescription)
+            self.close()
+        }
+    }
+
+    private func processRemoteFrames() {
+        while let frame = SPDYPortForwardFrame.parse(from: &remoteBuffer) {
+            switch frame {
+            case let .data(streamID, flags, payload):
+                handleDataFrame(streamID: streamID, flags: flags, payload: payload)
+            case let .control(type, payload):
+                handleControlFrame(type: type, payload: payload)
+            }
+        }
+    }
+
+    private func handleDataFrame(streamID: UInt32, flags: UInt8, payload: Data) {
+        switch streamID {
+        case Constants.dataStreamID:
+            if !payload.isEmpty {
+                connection.send(content: payload, completion: .contentProcessed { [weak self] error in
+                    guard let self else { return }
+                    if let error {
+                        self.onFailure(error.localizedDescription)
+                        self.close()
+                    }
+                })
+            }
+            if flags & Constants.finFlag != 0 {
+                self.close()
+            }
+        case Constants.errorStreamID:
+            if !payload.isEmpty {
+                errorStreamText += String(decoding: payload, as: UTF8.self)
+            }
+            if flags & Constants.finFlag != 0, !errorStreamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                onFailure(errorStreamText.trimmingCharacters(in: .whitespacesAndNewlines))
+                close()
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleControlFrame(type: UInt16, payload: Data) {
+        switch type {
+        case 3:
+            if payload.count >= 8 {
+                let streamID = payload.runeReadUInt32(at: 0) & 0x7fffffff
+                let status = payload.runeReadUInt32(at: 4)
+                onFailure("SPDY stream \(streamID) reset with status \(status).")
+                close()
+            }
+        case 6:
+            if payload.count == 4 {
+                sendWebSocketData(framer.pingFrame(id: payload.runeReadUInt32(at: 0)))
+            }
+        case 7:
+            close()
+        default:
+            break
+        }
+    }
+}
+
+private enum SPDYPortForwardFrame {
+    case data(streamID: UInt32, flags: UInt8, payload: Data)
+    case control(type: UInt16, payload: Data)
+
+    static func parse(from buffer: inout Data) -> SPDYPortForwardFrame? {
+        guard buffer.count >= 8 else { return nil }
+        let first = buffer.runeReadUInt16(at: 0)
+        let second = buffer.runeReadUInt16(at: 2)
+        let flags = buffer[4]
+        let length = buffer.runeReadUInt24(at: 5)
+        guard buffer.count >= 8 + length else { return nil }
+
+        let payload = buffer.subdata(in: 8..<(8 + length))
+        buffer.removeSubrange(0..<(8 + length))
+
+        if first & 0x8000 != 0 {
+            return .control(type: second, payload: payload)
+        }
+        let streamID = (UInt32(first & 0x7fff) << 16) | UInt32(second)
+        return .data(streamID: streamID, flags: flags, payload: payload)
+    }
+}
+
+private final class SPDYPortForwardFramer {
+    private let compressor = SPDYZlibCompressor()
+
+    func synStream(streamID: UInt32, headers: [String: [String]]) throws -> Data {
+        let headerBlock = try compressor.compress(headerValueBlock(headers))
+        var payload = Data()
+        payload.runeAppendUInt32(streamID & 0x7fffffff)
+        payload.runeAppendUInt32(0)
+        payload.append(0)
+        payload.append(0)
+        payload.append(headerBlock)
+
+        var frame = Data()
+        frame.runeAppendUInt16(0x8003)
+        frame.runeAppendUInt16(1)
+        frame.append(0)
+        frame.runeAppendUInt24(payload.count)
+        frame.append(payload)
+        return frame
+    }
+
+    func dataFrame(streamID: UInt32, payload: Data, flags: UInt8 = 0) -> Data {
+        var frame = Data()
+        frame.runeAppendUInt32(streamID & 0x7fffffff)
+        frame.append(flags)
+        frame.runeAppendUInt24(payload.count)
+        frame.append(payload)
+        return frame
+    }
+
+    func pingFrame(id: UInt32) -> Data {
+        var payload = Data()
+        payload.runeAppendUInt32(id)
+        var frame = Data()
+        frame.runeAppendUInt16(0x8003)
+        frame.runeAppendUInt16(6)
+        frame.append(0)
+        frame.runeAppendUInt24(payload.count)
+        frame.append(payload)
+        return frame
+    }
+
+    private func headerValueBlock(_ headers: [String: [String]]) -> Data {
+        let normalized = headers
+            .map { ($0.key.lowercased(), $0.value) }
+            .sorted { $0.0 < $1.0 }
+        var data = Data()
+        data.runeAppendUInt32(UInt32(normalized.count))
+        for (name, values) in normalized {
+            let nameData = Data(name.utf8)
+            let valueData = Data(values.joined(separator: "\u{0}").utf8)
+            data.runeAppendUInt32(UInt32(nameData.count))
+            data.append(nameData)
+            data.runeAppendUInt32(UInt32(valueData.count))
+            data.append(valueData)
+        }
+        return data
+    }
+}
+
+private final class SPDYZlibCompressor {
+    private var stream = z_stream()
+    private var didEnd = false
+
+    init() {
+        stream.zalloc = nil
+        stream.zfree = nil
+        stream.opaque = nil
+        deflateInit_(&stream, Z_BEST_COMPRESSION, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+        if let dictionary = Data(base64Encoded: Self.spdyDictionaryBase64) {
+            dictionary.withUnsafeBytes { buffer in
+                if let base = buffer.bindMemory(to: Bytef.self).baseAddress {
+                    deflateSetDictionary(&stream, base, uInt(buffer.count))
+                }
+            }
+        }
+    }
+
+    deinit {
+        if !didEnd {
+            deflateEnd(&stream)
+        }
+    }
+
+    func compress(_ data: Data) throws -> Data {
+        var inputData = data
+        var output = Data()
+        let status: Int32 = inputData.withUnsafeMutableBytes { inputBuffer in
+            stream.next_in = inputBuffer.bindMemory(to: Bytef.self).baseAddress
+            stream.avail_in = uInt(inputBuffer.count)
+
+            var finalStatus: Int32 = Z_OK
+            repeat {
+                var chunk = [UInt8](repeating: 0, count: 4096)
+                finalStatus = chunk.withUnsafeMutableBufferPointer { outputBuffer in
+                    stream.next_out = outputBuffer.baseAddress
+                    stream.avail_out = uInt(outputBuffer.count)
+                    return deflate(&stream, Z_SYNC_FLUSH)
+                }
+                let produced = chunk.count - Int(stream.avail_out)
+                if produced > 0 {
+                    output.append(contentsOf: chunk.prefix(produced))
+                }
+            } while stream.avail_out == 0
+            return finalStatus
+        }
+
+        guard status == Z_OK else {
+            throw RuneError.commandFailed(command: "spdy zlib", message: "Could not compress SPDY headers: zlib status \(status).")
+        }
+        return output
+    }
+
+    private static let spdyDictionaryBase64 = """
+    AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg==
+    """
+}
+
+private extension Data {
+    mutating func runeAppendUInt16(_ value: UInt16) {
+        append(UInt8((value >> 8) & 0xff))
+        append(UInt8(value & 0xff))
+    }
+
+    mutating func runeAppendUInt24(_ value: Int) {
+        append(UInt8((value >> 16) & 0xff))
+        append(UInt8((value >> 8) & 0xff))
+        append(UInt8(value & 0xff))
+    }
+
+    mutating func runeAppendUInt32(_ value: UInt32) {
+        append(UInt8((value >> 24) & 0xff))
+        append(UInt8((value >> 16) & 0xff))
+        append(UInt8((value >> 8) & 0xff))
+        append(UInt8(value & 0xff))
+    }
+
+    func runeReadUInt16(at offset: Int) -> UInt16 {
+        (UInt16(self[offset]) << 8) | UInt16(self[offset + 1])
+    }
+
+    func runeReadUInt24(at offset: Int) -> Int {
+        (Int(self[offset]) << 16) | (Int(self[offset + 1]) << 8) | Int(self[offset + 2])
+    }
+
+    func runeReadUInt32(at offset: Int) -> UInt32 {
+        (UInt32(self[offset]) << 24)
+            | (UInt32(self[offset + 1]) << 16)
+            | (UInt32(self[offset + 2]) << 8)
+            | UInt32(self[offset + 3])
+    }
+}
+
+private extension String {
+    var runePercentEncodedPathSegment: String {
+        addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? self
     }
 }

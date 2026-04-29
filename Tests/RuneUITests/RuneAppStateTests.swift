@@ -55,6 +55,85 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryBackAndForwardWorksAfterFirstTrackedNavigation() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(state.selectedSection, .overview)
+        XCTAssertFalse(viewModel.canNavigateBack)
+
+        viewModel.setSection(.workloads)
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertTrue(viewModel.canNavigateBack)
+
+        viewModel.navigateBack()
+
+        XCTAssertEqual(state.selectedSection, .overview)
+        XCTAssertFalse(viewModel.canNavigateBack)
+        XCTAssertTrue(viewModel.canNavigateForward)
+
+        viewModel.navigateForward()
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertTrue(viewModel.canNavigateBack)
+        XCTAssertFalse(viewModel.canNavigateForward)
+    }
+
+    @MainActor
+    func testCommandPaletteCompositeNavigationKeepsInitialBackTarget() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let item = CommandPaletteItem(
+            id: "kind:service",
+            title: "Services",
+            subtitle: "Networking",
+            symbolName: "network",
+            action: .resourceKind(section: .networking, kind: .service)
+        )
+
+        XCTAssertEqual(state.selectedSection, .overview)
+
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .service)
+        XCTAssertTrue(viewModel.canNavigateBack)
+
+        viewModel.navigateBack()
+
+        XCTAssertEqual(state.selectedSection, .overview)
+        XCTAssertFalse(viewModel.canNavigateBack)
+        XCTAssertTrue(viewModel.canNavigateForward)
+    }
+
+    @MainActor
+    func testStoppingPortForwardMarksStartingSessionStoppedImmediately() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let session = PortForwardSession(
+            id: "pf-1",
+            contextName: "fake",
+            namespace: "default",
+            targetKind: .pod,
+            targetName: "api-0",
+            localPort: 8080,
+            remotePort: 80,
+            address: "127.0.0.1",
+            status: .starting,
+            lastMessage: "Starting"
+        )
+        state.isStartingPortForward = true
+        state.upsertPortForwardSession(session)
+
+        viewModel.stopPortForward(session)
+
+        XCTAssertEqual(state.portForwardSessions.first?.status, .stopped)
+        XCTAssertEqual(state.portForwardSessions.first?.lastMessage, "Port-forward stopped.")
+        XCTAssertFalse(state.isStartingPortForward)
+    }
+
+    @MainActor
     func testSessionLogCacheKeepsReadSegmentsWithResourceBreaks() {
         let state = RuneAppState()
         let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
