@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/readme/Overview.png)
+![Rune overview](assets/screenshot/ui/update260429/overview.png)
 
 ## Why Rune
 
@@ -22,132 +22,106 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 
 ## Screenshots
 
-The gallery below uses every curated screenshot in `assets/screenshot/readme`, ordered roughly like a real debugging session: start with the cluster, find the workload, inspect logs and YAML, validate edits, check related resources, then jump through the command palette.
-
-### Workloads and Logs
+### Resource Views
 
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/WorkloadsOverview.png" alt="Rune workloads overview">
-      <br>
-      <sub>Browse workloads while keeping the active resource inspector visible.</sub>
+      <img src="assets/screenshot/ui/update260429/overview.png" alt="Rune overview">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/WorkloadsLogs.png" alt="Rune pod logs">
-      <br>
-      <sub>Read and search pod logs without leaving the workload context.</sub>
+      <img src="assets/screenshot/ui/update260429/workloadOverview.png" alt="Rune workload overview">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/UnifiedLogs.png" alt="Rune unified logs">
-      <br>
-      <sub>Unified workload logs make related pod output easier to search and compare.</sub>
+      <img src="assets/screenshot/ui/update260429/workloadDeployments.png" alt="Rune deployments">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/WorkloadsDescribe.png" alt="Rune describe view">
-      <br>
-      <sub>Describe output stays close to YAML, logs, exec, and port-forward actions.</sub>
+      <img src="assets/screenshot/ui/update260429/workloadsStateful.png" alt="Rune StatefulSets">
     </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsDaemon.png" alt="Rune DaemonSets">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsJobs.png" alt="Rune jobs">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsCronjobs.png" alt="Rune CronJobs">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsHPA.png" alt="Rune HPAs">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/workloadsHPAYaml.png" alt="Rune HPA YAML">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/servicesOverview.png" alt="Rune services">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/networkingIngress.png" alt="Rune ingress">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogs.png" alt="Rune unified logs">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogsLarge.png" alt="Rune expanded unified logs">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogsSearch.png" alt="Rune log search">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/configmaps.png" alt="Rune config maps">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/rbacroles.png" alt="Rune RBAC roles">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/storage.png" alt="Rune storage">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/events.png" alt="Rune events">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260429/terminal.png" alt="Rune terminal">
+    </td>
+    <td width="50%"></td>
   </tr>
 </table>
 
-### YAML Inspection, Editing, and Validation
+### YAML Editing
 
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/WorkloadsYaml.png" alt="Rune workload YAML view">
-      <br>
-      <sub>Inspect live workload YAML while keeping the selected resource in context.</sub>
+      <img src="assets/screenshot/readme/EditYaml.png" alt="Rune YAML editor">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/EditYaml.png" alt="Rune YAML editor sheet">
-      <br>
-      <sub>Edit manifests in a focused editor with syntax highlighting.</sub>
+      <img src="assets/screenshot/readme/YamlEditError.png" alt="Rune YAML validation in editor">
     </td>
   </tr>
   <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/YamlEditError.png" alt="Rune YAML edit validation warnings">
-      <br>
-      <sub>Errors and warnings are shown while editing, before you apply changes.</sub>
-    </td>
     <td width="50%">
       <img src="assets/screenshot/readme/YamlError.png" alt="Rune YAML validation error">
-      <br>
-      <sub>Validation feedback points you to YAML problems directly in the workflow.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/DeploymentYaml.png" alt="Rune deployment YAML view">
-      <br>
-      <sub>Inspect controller YAML without losing surrounding context.</sub>
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/ConfigYaml.png" alt="Rune config YAML view">
-      <br>
-      <sub>Configuration resources use the same readable YAML inspector.</sub>
-    </td>
-  </tr>
-</table>
-
-### Describe, RBAC, Storage, and Events
-
-<table>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/DeploymentDescribe.png" alt="Rune deployment describe view">
-      <br>
-      <sub>Describe output is available in the same resource workflow.</sub>
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/readme/RbacYaml.png" alt="Rune RBAC YAML view">
-      <br>
-      <sub>RBAC resources use the same YAML and describe workflow.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/StorageDescribe.png" alt="Rune storage describe view">
-      <br>
-      <sub>Storage describe output helps connect PVC state to the rest of the investigation.</sub>
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/readme/StorageYaml.png" alt="Rune storage YAML view">
-      <br>
-      <sub>Storage resources and PVC YAML are available for inspection.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/Event.png" alt="Rune event detail">
-      <br>
-      <sub>Events stay close to the resources you are investigating.</sub>
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/readme/PortForward.png" alt="Rune port forward view">
-      <br>
-      <sub>Port-forward controls are available from resource workflows.</sub>
-    </td>
-  </tr>
-</table>
-
-### Terminal and Commands
-
-<table>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/Terminal.png" alt="Rune terminal view">
-      <br>
-      <sub>Drop into a terminal when the direct command line is the right tool.</sub>
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/readme/TerminalCommand.png" alt="Rune terminal command view">
-      <br>
-      <sub>Run focused commands while staying inside the same cluster workspace.</sub>
+      <img src="assets/screenshot/readme/DeploymentYaml.png" alt="Rune deployment YAML">
     </td>
   </tr>
 </table>
@@ -158,37 +132,25 @@ The gallery below uses every curated screenshot in `assets/screenshot/readme`, o
   <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/41-command-palette-pods.png" alt="Rune command palette pods">
-      <br>
-      <sub>Jump to pods with palette commands like <code>:po</code>.</sub>
     </td>
     <td width="50%">
       <img src="assets/screenshot/readme/42-command-palette-deployments.png" alt="Rune command palette deployments">
-      <br>
-      <sub>Find deployments quickly from the keyboard.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/43-command-palette-services.png" alt="Rune command palette services">
-      <br>
-      <sub>Navigate to services without clicking through sections.</sub>
     </td>
     <td width="50%">
       <img src="assets/screenshot/readme/44-command-palette-configmaps.png" alt="Rune command palette config maps">
-      <br>
-      <sub>Open config maps and other resources by name.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="assets/screenshot/readme/45-command-palette-rbac.png" alt="Rune command palette RBAC">
-      <br>
-      <sub>RBAC resources are available from the same command flow.</sub>
     </td>
     <td width="50%">
       <img src="assets/screenshot/readme/46-command-palette-reload.png" alt="Rune command palette reload">
-      <br>
-      <sub>Refresh and app actions live in the palette too.</sub>
     </td>
   </tr>
 </table>
