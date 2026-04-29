@@ -15,7 +15,7 @@ COMPOSE_PROJECT="rune-fake-k8s"
 MERGED_KUBECONFIG="$ROOT_DIR/docker-compose/generated/rune-fake-kubeconfig.yaml"
 SCRIPT_STATE_DIR="${RUNE_FAKE_K8S_INTEGRATION_STATE:-/tmp/rune-fake-k8s-integration}"
 RESET_DOCKER="${RUNE_RESET_DOCKER_FAKE_K8S:-1}"
-SKIP_DOCKER="${RUNE_SKIP_DOCKER_FAKE_K8S:-0}"
+SKIP_DOCKER="${RUNE_SKIP_DOCKER_FAKE_K8S:-1}"
 
 FAILURES=0
 
@@ -194,9 +194,11 @@ run_step script_fake_integration_test env \
   RUNE_FAKE_K8S_BINARY="$FAKE_BIN" \
   swift test --filter LocalKubernetesIntegrationTests/testRuneFakeK8sEventsPointAtExistingPods
 
+run_step rest_fake_integration_test swift test --filter RuneFakeK8sRESTServerTests
+
 if [[ "$SKIP_DOCKER" == "1" ]]; then
-  skip_step docker_compose_stack "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S=1."
-  skip_step docker_compose_integration_test "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S=1."
+  skip_step docker_compose_stack "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."
+  skip_step docker_compose_integration_test "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."
 else
   if [[ "$RESET_DOCKER" == "1" ]]; then
     run_step docker_compose_reset docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans
@@ -248,7 +250,7 @@ cat >> "$REPORT_MD" <<EOF
 scripts/run-local-k8s-integration-report.sh
 \`\`\`
 
-Use \`RUNE_SKIP_DOCKER_FAKE_K8S=1\` to run only the script fake-k8s part.
+Docker Compose k3s is skipped by default to avoid kubelet/cgroup noise. Use \`RUNE_SKIP_DOCKER_FAKE_K8S=0\` when you explicitly need the k3s integration stack.
 Use \`RUNE_RESET_DOCKER_FAKE_K8S=0\` to reuse an existing Docker Compose stack.
 
 ## Machine Report

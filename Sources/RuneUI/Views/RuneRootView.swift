@@ -1291,9 +1291,7 @@ public struct RuneRootView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sidebarBrandHeader
-
+        VStack(alignment: .leading, spacing: 12) {
             TextField("Search contexts", text: Binding(get: {
                 viewModel.state.contextSearchQuery
             }, set: { newValue in
@@ -1324,7 +1322,7 @@ public struct RuneRootView: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: 8) {
                     if viewModel.visibleContexts.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("No kubeconfigs loaded")
@@ -1342,7 +1340,11 @@ public struct RuneRootView: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .accessibilityIdentifier("rune.sidebar.contexts.scroll")
+            .frame(minHeight: 80, maxHeight: .infinity, alignment: .topLeading)
+            .layoutPriority(1)
 
             Toggle(isOn: Binding(get: {
                 viewModel.state.isReadOnlyMode
@@ -1357,7 +1359,7 @@ public struct RuneRootView: View {
         }
         .padding(.horizontal, RuneUILayoutMetrics.sidebarPadding)
         .padding(.bottom, RuneUILayoutMetrics.sidebarPadding)
-        .padding(.top, 8)
+        .padding(.top, RuneUILayoutMetrics.sidebarPadding)
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
             ZStack(alignment: .trailing) {
@@ -1366,19 +1368,6 @@ public struct RuneRootView: View {
                 paneFocusOutline(isFocused: keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts)
             }
         }
-    }
-
-    private var sidebarBrandHeader: some View {
-        HStack {
-            Image("rune_logo_main", bundle: .module)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: 104, height: 104)
-                .accessibilityLabel("Rune")
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
     }
 
     private func sectionRow(_ section: RuneSection) -> some View {
@@ -3374,6 +3363,9 @@ public struct RuneRootView: View {
             onStartPortForward: { pod in
                 viewModel.startPortForward(targetKind: .pod, targetName: pod.name)
             },
+            onOpenPortForwardInBrowser: { session in
+                viewModel.openPortForwardInBrowser(session)
+            },
             onSend: { viewModel.sendTerminalSessionInput() },
             onDisconnect: { viewModel.stopTerminalSession() },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
@@ -3437,8 +3429,19 @@ public struct RuneRootView: View {
             }
 
             if session.status == .starting || session.status == .active {
-                Button("Stop") {
-                    viewModel.stopPortForward(session)
+                HStack(spacing: 8) {
+                    if session.status == .active, session.browserURL != nil {
+                        Button {
+                            viewModel.openPortForwardInBrowser(session)
+                        } label: {
+                            Label("Open in Browser", systemImage: "safari")
+                        }
+                        .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
+                    }
+
+                    Button("Stop") {
+                        viewModel.stopPortForward(session)
+                    }
                 }
             }
         }

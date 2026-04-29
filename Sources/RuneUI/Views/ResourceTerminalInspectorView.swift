@@ -16,6 +16,7 @@ struct ResourceTerminalWorkspaceView: View {
     @Binding var portForwardAddress: String
     let onStartSession: (PodSummary) -> Void
     let onStartPortForward: (PodSummary) -> Void
+    let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
     let onSend: () -> Void
     let onDisconnect: () -> Void
     let onClearTranscript: () -> Void
@@ -258,6 +259,9 @@ struct ResourceTerminalWorkspaceView: View {
                     Text(session.status.rawValue.capitalized)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(portForwardStatusColor(session.status))
+                    if session.status == .active, session.browserURL != nil {
+                        portForwardOpenInBrowserButton(session)
+                    }
                 } else {
                     portForwardStatusDot(.stopped)
                     Text("No active port-forward")
@@ -328,6 +332,9 @@ struct ResourceTerminalWorkspaceView: View {
                                 .help("\(session.contextName) • \(session.namespace) • \(session.status.rawValue.capitalized)")
                         }
                         Spacer(minLength: 0)
+                        if session.status == .active, session.browserURL != nil {
+                            portForwardOpenInBrowserButton(session)
+                        }
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
@@ -335,6 +342,17 @@ struct ResourceTerminalWorkspaceView: View {
                 }
             }
         }
+    }
+
+    private func portForwardOpenInBrowserButton(_ session: PortForwardSession) -> some View {
+        Button {
+            onOpenPortForwardInBrowser(session)
+        } label: {
+            Label("Open in Browser", systemImage: "safari")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
     }
 
     private func terminalField(_ placeholder: String, text: Binding<String>, minWidth: CGFloat, idealWidth: CGFloat) -> some View {

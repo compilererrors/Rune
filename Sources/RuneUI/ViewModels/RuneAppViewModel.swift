@@ -9,6 +9,20 @@ import RuneKube
 import RuneSecurity
 import RuneStore
 
+public protocol PortForwardBrowserOpening {
+    @MainActor
+    func open(_ url: URL)
+}
+
+public struct WorkspacePortForwardBrowserOpener: PortForwardBrowserOpening {
+    public init() {}
+
+    @MainActor
+    public func open(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+}
+
 // Cluster data caching: `ResourceStore` holds full lists per (context, namespace) in RAM; `overviewSnapshotCache`
 // holds lightweight overview rows with TTL; `overviewSnapshotPersistence` writes the same shape to disk
 // (Application Support) for cold start and background prefetch. `namespaceListPersistence` stores the last
@@ -372,6 +386,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let contextPreferences: ContextPreferencesStoring
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
     private let namespaceListPersistence: NamespaceListPersisting
+    private let portForwardBrowserOpener: PortForwardBrowserOpening
     private let diagnostics: DiagnosticsRecorder
     private let terminalShellCommand = ["sh"]
 
@@ -448,6 +463,7 @@ public final class RuneAppViewModel: ObservableObject {
         contextPreferences: ContextPreferencesStoring = UserDefaultsContextPreferencesStore(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
         namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
+        portForwardBrowserOpener: PortForwardBrowserOpening = WorkspacePortForwardBrowserOpener(),
         diagnostics: DiagnosticsRecorder = DiagnosticsRecorder()
     ) {
         self.state = state
@@ -461,6 +477,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.contextPreferences = contextPreferences
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
         self.namespaceListPersistence = namespaceListPersistence
+        self.portForwardBrowserOpener = portForwardBrowserOpener
         self.diagnostics = diagnostics
 
         self.state.setFavoriteContextNames(contextPreferences.loadFavoriteContextNames())
@@ -2333,6 +2350,15 @@ public final class RuneAppViewModel: ObservableObject {
         Task {
             await kubeClient.stopPortForward(sessionID: session.id)
         }
+    }
+
+    public func openPortForwardInBrowser(_ session: PortForwardSession) {
+        guard let url = session.browserURL else {
+            state.setError(RuneError.invalidInput(message: "Port-forward is not connected yet."))
+            return
+        }
+
+        portForwardBrowserOpener.open(url)
     }
 
     public func cancelPendingWriteAction() {

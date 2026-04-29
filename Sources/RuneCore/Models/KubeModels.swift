@@ -575,4 +575,28 @@ public struct PortForwardSession: Identifiable, Hashable, Codable, Sendable {
     public var resourceLabel: String {
         "\(targetKind.kubernetesResourcePathName)/\(targetName)"
     }
+
+    public var browserURL: URL? {
+        guard status == .active, (1...65535).contains(localPort) else { return nil }
+
+        var host = address
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host.removeFirst()
+            host.removeLast()
+        }
+        if host.isEmpty || host == "*" || host == "0.0.0.0" || host == "::" {
+            host = "127.0.0.1"
+        }
+
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = localPort
+        components.path = "/"
+        return components.url
+    }
 }
