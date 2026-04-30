@@ -593,7 +593,7 @@ public struct RunePreferencesView: View {
     }
 
     private static var availableShortcutKeys: [String] {
-        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["[", "]"]
+        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["[", "]", "left", "right"]
     }
 
     private static func displayShortcutKey(_ key: String) -> String {

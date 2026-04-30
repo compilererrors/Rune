@@ -75,6 +75,9 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
 
     private static func normalizeKey(_ rawKey: String) -> String? {
         let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["left", "right"].contains(trimmed) {
+            return trimmed
+        }
         guard trimmed.count == 1, let scalar = trimmed.unicodeScalars.first else { return nil }
         guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]"].contains(trimmed) else { return nil }
         return trimmed
@@ -89,7 +92,13 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
     }
 
     private var displayKey: String {
-        key.rangeOfCharacter(from: .alphanumerics) != nil ? key.uppercased() : key
+        if key == "left" {
+            return "←"
+        }
+        if key == "right" {
+            return "→"
+        }
+        return key.rangeOfCharacter(from: .alphanumerics) != nil ? key.uppercased() : key
     }
 }
 
@@ -142,9 +151,9 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
     public var defaultShortcut: RuneKeyboardShortcut {
         switch self {
         case .historyBack:
-            return RuneKeyboardShortcut(key: "[", requiresShift: false, requiresCommand: true, requiresOption: true)!
+            return RuneKeyboardShortcut(key: "left", requiresShift: false, requiresCommand: true, requiresOption: true)!
         case .historyForward:
-            return RuneKeyboardShortcut(key: "]", requiresShift: false, requiresCommand: true, requiresOption: true)!
+            return RuneKeyboardShortcut(key: "right", requiresShift: false, requiresCommand: true, requiresOption: true)!
         case .describe:
             return RuneKeyboardShortcut(key: "d", requiresShift: false)!
         case .logs:

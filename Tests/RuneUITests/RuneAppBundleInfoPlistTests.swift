@@ -18,6 +18,14 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("kubeconfig CA/client settings"))
     }
 
+    func testBuildScriptDeclaresMacAppStoreCategory() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("<key>LSApplicationCategoryType</key>"))
+        XCTAssertTrue(contents.contains("<string>public.app-category.developer-tools</string>"))
+    }
+
     func testBuildScriptUsesConfiguredBundleIdentifierByDefault() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)

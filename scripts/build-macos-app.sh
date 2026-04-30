@@ -59,6 +59,8 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 	<string>__BUNDLE_VERSION__</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
