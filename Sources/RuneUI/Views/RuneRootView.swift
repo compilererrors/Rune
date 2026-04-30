@@ -588,8 +588,8 @@ public struct RuneRootView: View {
                     } label: {
                         Image(systemName: "chevron.left")
                     }
-                    .help("Back (Control-Option-Left Arrow)")
-                    .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
+                    .help("Back (Command-Option-Left Arrow)")
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
                     .disabled(!viewModel.canNavigateBack)
 
                     Button {
@@ -597,8 +597,8 @@ public struct RuneRootView: View {
                     } label: {
                         Image(systemName: "chevron.right")
                     }
-                    .help("Forward (Control-Option-Right Arrow)")
-                    .keyboardShortcut(.rightArrow, modifiers: [.control, .option])
+                    .help("Forward (Command-Option-Right Arrow)")
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
                     .disabled(!viewModel.canNavigateForward)
 
                     Button {
@@ -3882,10 +3882,6 @@ public struct RuneRootView: View {
     }
 
     private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent? {
-        if let historyAction = historyArrowNavigationAction(for: event) {
-            return performConfiguredAction(historyAction) ? nil : event
-        }
-
         if shouldHandleTabNavigation(event) {
             if event.modifierFlags.contains(.shift) {
                 focusPreviousKeyboardPane()
@@ -3907,33 +3903,15 @@ public struct RuneRootView: View {
         return textInputFocus == .contextSearch || textInputFocus == .resourceFilter
     }
 
-    private func historyArrowNavigationAction(for event: NSEvent) -> RuneKeyBindingAction? {
-        guard !keyboardNavigationSuspended else { return nil }
-        guard textInputFocus == nil else { return nil }
-        let relevantModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift, .function])
-        guard relevantModifiers == [.control, .option] else { return nil }
-
-        switch event.keyCode {
-        case 123:
-            return .historyBack
-        case 124:
-            return .historyForward
-        default:
-            return nil
-        }
-    }
-
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
         guard !keyboardNavigationSuspended else { return false }
         guard textInputFocus == nil else { return false }
-        let disallowedModifiers: NSEvent.ModifierFlags = [.control, .function]
+        let disallowedModifiers: NSEvent.ModifierFlags = [.control]
         return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
 
     private func configuredAction(for event: NSEvent) -> RuneKeyBindingAction? {
-        guard let baseKey = event.charactersIgnoringModifiers?.lowercased(), baseKey.count == 1 else {
-            return nil
-        }
+        guard let baseKey = configuredActionBaseKey(for: event) else { return nil }
 
         let requiresShift = event.modifierFlags.contains(.shift)
         let requiresCommand = event.modifierFlags.contains(.command)
@@ -3945,6 +3923,20 @@ public struct RuneRootView: View {
                 requiresCommand: requiresCommand,
                 requiresOption: requiresOption
             )
+        }
+    }
+
+    private func configuredActionBaseKey(for event: NSEvent) -> String? {
+        switch event.keyCode {
+        case 123:
+            return "left"
+        case 124:
+            return "right"
+        default:
+            guard let baseKey = event.charactersIgnoringModifiers?.lowercased(), baseKey.count == 1 else {
+                return nil
+            }
+            return baseKey
         }
     }
 

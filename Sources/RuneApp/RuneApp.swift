@@ -86,6 +86,20 @@ struct RuneApplication: App {
             }
 
             CommandMenu("View") {
+                Button("Back") {
+                    viewModel.navigateBack()
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(!viewModel.canNavigateBack)
+
+                Button("Forward") {
+                    viewModel.navigateForward()
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(!viewModel.canNavigateForward)
+
+                Divider()
+
                 Button(viewModel.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
                     viewModel.toggleSidebarVisibility()
                 }

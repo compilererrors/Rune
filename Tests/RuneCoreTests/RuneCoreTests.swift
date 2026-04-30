@@ -11,14 +11,14 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertFalse(shortcut?.matches(baseKey: "f", requiresShift: false) ?? true)
     }
 
-    func testRuneKeyboardShortcutParsesCommandOptionBracketBinding() {
-        let shortcut = RuneKeyboardShortcut(storageValue: "option-command-[")
+    func testRuneKeyboardShortcutParsesCommandOptionArrowBinding() {
+        let shortcut = RuneKeyboardShortcut(storageValue: "option-command-left")
 
-        XCTAssertEqual(shortcut?.key, "[")
-        XCTAssertEqual(shortcut?.storageValue, "command-option-[")
-        XCTAssertEqual(shortcut?.displayValue, "⌘⌥[")
+        XCTAssertEqual(shortcut?.key, "left")
+        XCTAssertEqual(shortcut?.storageValue, "command-option-left")
+        XCTAssertEqual(shortcut?.displayValue, "⌘⌥←")
         XCTAssertTrue(shortcut?.matches(
-            baseKey: "[",
+            baseKey: "left",
             requiresShift: false,
             requiresCommand: true,
             requiresOption: true
@@ -36,6 +36,7 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "describe"))
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-shift-f"))
         XCTAssertNil(RuneKeyboardShortcut(key: "-", requiresShift: false))
+        XCTAssertNil(RuneKeyboardShortcut(key: "up", requiresShift: false))
     }
 
     func testUserDefaultsFallsBackToDefaultRuneKeyBindingShortcut() {
@@ -53,7 +54,7 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(defaults.runeKeyBindingShortcut(for: action), custom)
         XCTAssertEqual(
             defaults.runeKeyBindingShortcut(for: .historyBack),
-            RuneKeyboardShortcut(key: "[", requiresShift: false, requiresCommand: true, requiresOption: true)
+            RuneKeyboardShortcut(key: "left", requiresShift: false, requiresCommand: true, requiresOption: true)
         )
     }
 

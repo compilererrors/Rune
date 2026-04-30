@@ -175,7 +175,7 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 
 - **Main sections:** use the sidebar or **Cmd+1** through **Cmd+9**: Overview, Workloads, Networking, Storage, Config, RBAC, Events, Helm, and Terminal.
 - **Toolbar:** choose the Kubernetes context and namespace for the data you browse.
-- **History:** use **Cmd+Option+[** and **Cmd+Option+]** to move back and forward in the navigation stack.
+- **History:** use **Cmd+Option+Left Arrow** and **Cmd+Option+Right Arrow** to move back and forward in the navigation stack.
 - **Reload:** use **Cmd+R** to refresh the current view.
 
 ## Command Palette
@@ -197,7 +197,9 @@ Type `:` by itself to see the built-in command cheat sheet.
 
 Rune does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.
 
-The only network traffic is the traffic required for Rune to communicate with the Kubernetes clusters and services you choose to connect to.
+The only network traffic is the traffic required for Rune to communicate with the Kubernetes clusters and services you choose to connect to. Kubeconfig files, cluster endpoints, credentials, Keychain items, and security-scoped bookmarks are handled locally on your Mac.
+
+See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
 
 ## Requirements
 

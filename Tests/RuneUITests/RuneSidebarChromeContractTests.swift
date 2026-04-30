@@ -194,21 +194,48 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(toolbarBlock.contains("Image(systemName: \"arrow.clockwise\")"))
         XCTAssertTrue(toolbarBlock.contains("Image(systemName: \"command\")"))
         XCTAssertTrue(toolbarBlock.contains("Image(systemName: \"gearshape\")"))
-        XCTAssertTrue(toolbarBlock.contains(".keyboardShortcut(.leftArrow, modifiers: [.control, .option])"))
-        XCTAssertTrue(toolbarBlock.contains(".keyboardShortcut(.rightArrow, modifiers: [.control, .option])"))
+        XCTAssertTrue(toolbarBlock.contains(".keyboardShortcut(.leftArrow, modifiers: [.command, .option])"))
+        XCTAssertTrue(toolbarBlock.contains(".keyboardShortcut(.rightArrow, modifiers: [.command, .option])"))
         XCTAssertFalse(toolbarBlock.contains("Button(\"Palette\")"))
         XCTAssertFalse(toolbarBlock.contains("Button(\"Reload\")"))
     }
 
-    func testHistoryKeyboardMonitorAcceptsControlOptionArrowKeys() throws {
+    func testHistoryKeyboardMonitorAcceptsCommandOptionArrowKeys() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
-        XCTAssertTrue(rootViewSource.contains("historyArrowNavigationAction(for event: NSEvent)"))
-        XCTAssertTrue(rootViewSource.contains("guard relevantModifiers == [.control, .option] else { return nil }"))
+        XCTAssertTrue(rootViewSource.contains("configuredActionBaseKey(for event: NSEvent)"))
         XCTAssertTrue(rootViewSource.contains("case 123:"))
-        XCTAssertTrue(rootViewSource.contains("return .historyBack"))
+        XCTAssertTrue(rootViewSource.contains("return \"left\""))
         XCTAssertTrue(rootViewSource.contains("case 124:"))
-        XCTAssertTrue(rootViewSource.contains("return .historyForward"))
+        XCTAssertTrue(rootViewSource.contains("return \"right\""))
+        XCTAssertTrue(rootViewSource.contains("let disallowedModifiers: NSEvent.ModifierFlags = [.control]"))
+    }
+
+    func testPreferencesExposeArrowKeysForHistoryBindings() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let preferencesPath = root.appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift").path
+        let preferencesSource = try String(contentsOfFile: preferencesPath, encoding: .utf8)
+
+        XCTAssertTrue(preferencesSource.contains("[\"[\", \"]\", \"left\", \"right\"]"))
+    }
+
+    func testAppCommandsExposeHistoryArrowShortcuts() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appPath = root.appendingPathComponent("Sources/RuneApp/RuneApp.swift").path
+        let appSource = try String(contentsOfFile: appPath, encoding: .utf8)
+
+        XCTAssertTrue(appSource.contains("Button(\"Back\")"))
+        XCTAssertTrue(appSource.contains("Button(\"Forward\")"))
+        XCTAssertTrue(appSource.contains(".keyboardShortcut(.leftArrow, modifiers: [.command, .option])"))
+        XCTAssertTrue(appSource.contains(".keyboardShortcut(.rightArrow, modifiers: [.command, .option])"))
     }
 
     func testContextMenuDeleteOnlyArmsConfirmationWithoutSelectingOrReloading() throws {
