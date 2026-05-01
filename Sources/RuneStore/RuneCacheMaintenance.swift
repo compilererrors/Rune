@@ -33,7 +33,8 @@ public struct RuneCacheMaintenance {
     private static func cacheURLs() -> [URL] {
         var urls: [URL] = [
             JSONNamespaceListPersistenceStore.defaultDirectoryURL(),
-            JSONOverviewSnapshotCacheStore.defaultCacheFileURL()
+            JSONOverviewSnapshotCacheStore.defaultCacheFileURL(),
+            JSONOverviewSnapshotCacheStore.entriesDirectoryURL(for: JSONOverviewSnapshotCacheStore.defaultCacheFileURL())
         ]
 
         if let legacyOverview = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -47,4 +48,3 @@ public struct RuneCacheMaintenance {
         return urls.filter { seen.insert($0.path).inserted }
     }
 }
-

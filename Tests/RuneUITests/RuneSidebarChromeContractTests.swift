@@ -97,6 +97,23 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(terminalViewSource.contains("onStopPortForward(session)"))
     }
 
+    func testTerminalSectionRefreshLoadsPodsForShellAndPortForwardSelectors() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        guard let terminalCase = viewModelSource.range(of: "case .terminal:"),
+              let helmCase = viewModelSource.range(of: "case .helm:", range: terminalCase.upperBound..<viewModelSource.endIndex)
+        else {
+            XCTFail("Could not locate terminal snapshot load plan in RuneAppViewModel.swift")
+            return
+        }
+
+        let terminalPlanBlock = String(viewModelSource[terminalCase.lowerBound..<helmCase.lowerBound])
+        XCTAssertTrue(
+            terminalPlanBlock.contains("plan.pods = true"),
+            "Terminal refreshes must load pods directly; otherwise context/namespace switches can leave shell and port-forward selectors empty until the user visits Workloads."
+        )
+    }
+
     func testReadOnlyTextModulesResetScrollWhenExternalContentChanges() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let textViewSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)

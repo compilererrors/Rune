@@ -134,28 +134,11 @@ public struct KubernetesOutputParser {
     }
 
     public func parsePodsListJSON(namespace: String, from raw: String) throws -> [PodSummary] {
-        let decoded = try JSONDecoder().decode(KubePodList.self, from: Data(raw.utf8))
-        return decoded.items
-            .map { item in
-                let ns = item.metadata.namespace ?? namespace
-                return podSummaryFromJSONItem(item, namespace: ns)
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        try parsePodListJSONObject(namespace: namespace, from: raw, allNamespaces: false)
     }
 
     public func parsePodsListJSONAllNamespaces(from raw: String) throws -> [PodSummary] {
-        let decoded = try JSONDecoder().decode(KubePodList.self, from: Data(raw.utf8))
-        return decoded.items
-            .map { item in
-                let ns = item.metadata.namespace ?? ""
-                return podSummaryFromJSONItem(item, namespace: ns)
-            }
-            .sorted {
-                if $0.namespace != $1.namespace {
-                    return $0.namespace.localizedCaseInsensitiveCompare($1.namespace) == .orderedAscending
-                }
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
+        try parsePodListJSONObject(namespace: "", from: raw, allNamespaces: true)
     }
 
     /// metrics.k8s.io pod output: `NAME  CPU  MEM`.
@@ -274,6 +257,102 @@ public struct KubernetesOutputParser {
         let regular = status.containerStatuses?.reduce(0) { $0 + ($1.restartCount ?? 0) } ?? 0
         let inits = status.initContainerStatuses?.reduce(0) { $0 + ($1.restartCount ?? 0) } ?? 0
         return regular + inits
+    }
+
+    private func parsePodListJSONObject(namespace: String, from raw: String, allNamespaces: Bool) throws -> [PodSummary] {
+        let data = Data(raw.utf8)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RuneError.parseError(message: "Kubernetes pod list JSON could not be parsed")
+        }
+        let rawItems = root["items"] as? [[String: Any]] ?? []
+        var ageCache: [String: String] = [:]
+        var pods: [PodSummary] = []
+        pods.reserveCapacity(rawItems.count)
+
+        for item in rawItems {
+            guard let pod = podSummaryFromJSONObject(
+                item,
+                defaultNamespace: namespace,
+                allNamespaces: allNamespaces,
+                ageCache: &ageCache
+            ) else {
+                continue
+            }
+            pods.append(pod)
+        }
+
+        if allNamespaces {
+            return pods.sorted {
+                if $0.namespace != $1.namespace {
+                    return $0.namespace.localizedCaseInsensitiveCompare($1.namespace) == .orderedAscending
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+
+        return pods.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func podSummaryFromJSONObject(
+        _ item: [String: Any],
+        defaultNamespace: String,
+        allNamespaces: Bool,
+        ageCache: inout [String: String]
+    ) -> PodSummary? {
+        guard let metadata = item["metadata"] as? [String: Any],
+              let name = nonEmpty(metadata["name"] as? String) else {
+            return nil
+        }
+
+        let namespace = nonEmpty(metadata["namespace"] as? String) ?? (allNamespaces ? "" : defaultNamespace)
+        let status = item["status"] as? [String: Any]
+        let spec = item["spec"] as? [String: Any]
+        let containers = spec?["containers"] as? [[String: Any]]
+        let containerStatuses = status?["containerStatuses"] as? [[String: Any]]
+        let initContainerStatuses = status?["initContainerStatuses"] as? [[String: Any]]
+        let creationTimestamp = metadata["creationTimestamp"] as? String
+
+        let ageDescription: String = {
+            guard let creationTimestamp else { return "—" }
+            if let cached = ageCache[creationTimestamp] { return cached }
+            let age = KubernetesAgeFormatting.describe(creationISO8601: creationTimestamp)
+            ageCache[creationTimestamp] = age
+            return age
+        }()
+
+        let containerNames = containers?
+            .compactMap { nonEmpty($0["name"] as? String) }
+            .joined(separator: ", ")
+        let totalContainers = containers?.count ?? 0
+        let readyContainers = containerStatuses?.filter { ($0["ready"] as? Bool) == true }.count ?? 0
+        let containersReady = totalContainers > 0 ? "\(readyContainers)/\(totalContainers)" : nil
+
+        return PodSummary(
+            name: name,
+            namespace: namespace,
+            status: nonEmpty(status?["phase"] as? String) ?? "Unknown",
+            totalRestarts: restartSum(from: containerStatuses) + restartSum(from: initContainerStatuses),
+            ageDescription: ageDescription,
+            cpuUsage: nil,
+            memoryUsage: nil,
+            podIP: nonEmpty(status?["podIP"] as? String),
+            hostIP: nonEmpty(status?["hostIP"] as? String),
+            nodeName: nonEmpty(spec?["nodeName"] as? String),
+            qosClass: nonEmpty(status?["qosClass"] as? String),
+            containersReady: containersReady,
+            containerNamesLine: nonEmpty(containerNames)
+        )
+    }
+
+    private func restartSum(from statuses: [[String: Any]]?) -> Int {
+        statuses?.reduce(0) { partial, status in
+            partial + ((status["restartCount"] as? Int) ?? (status["restartCount"] as? NSNumber)?.intValue ?? 0)
+        } ?? 0
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     public func parseDeployments(namespace: String, from raw: String) throws -> [DeploymentSummary] {

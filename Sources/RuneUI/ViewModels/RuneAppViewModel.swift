@@ -325,7 +325,9 @@ private struct SnapshotLoadPlan: Sendable {
             plan.rbacRoleBindings = true
             plan.rbacClusterRoles = true
             plan.rbacClusterRoleBindings = true
-        case .helm, .terminal:
+        case .terminal:
+            plan.pods = true
+        case .helm:
             break
         }
         return plan

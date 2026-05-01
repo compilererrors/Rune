@@ -3,6 +3,7 @@
 .build-cache/
 .swiftpm/
 .cache/
+.local/
 
 # Local experiments are not part of the Rune app path.
 go/

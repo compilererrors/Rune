@@ -37,15 +37,7 @@ enum YAMLLanguageService {
             return true
         }
 
-        var lineCount = 1
-        for character in source where character == "\n" {
-            lineCount += 1
-            if lineCount > interactiveFullAnalysisLineLimit {
-                return true
-            }
-        }
-
-        return false
+        return lineIndexCache.index(for: source).lineCount > interactiveFullAnalysisLineLimit
     }
 
     static func analyzeFragment(_ source: String, range requestedRange: NSRange) -> YAMLTextAnalysis {
@@ -115,6 +107,7 @@ enum YAMLLanguageService {
     }
 
     private static let cache = YAMLAnalysisCache()
+    private static let lineIndexCache = YAMLLineIndexCache()
 
     fileprivate static func analyzeUncached(_ source: String) -> YAMLTextAnalysis {
         let model = YAMLDocumentModel(source: source)
@@ -228,14 +221,7 @@ enum YAMLLanguageService {
     }
 
     private static func lineNumber(for offset: Int, in source: String) -> Int {
-        let nsSource = source as NSString
-        let boundedOffset = max(0, min(offset, nsSource.length))
-        let prefix = nsSource.substring(to: boundedOffset)
-        return prefix.reduce(into: 1) { count, character in
-            if character == "\n" {
-                count += 1
-            }
-        }
+        lineIndexCache.index(for: source).lineNumber(for: offset)
     }
 
     private static func columnNumber(for offset: Int, in source: String) -> Int {
@@ -360,6 +346,78 @@ private final class YAMLAnalysisCache: @unchecked Sendable {
         lock.unlock()
 
         return analysis
+    }
+}
+
+private struct YAMLLineIndex {
+    let utf16Length: Int
+    let lineStartOffsets: [Int]
+
+    var lineCount: Int {
+        lineStartOffsets.count
+    }
+
+    func lineNumber(for offset: Int) -> Int {
+        let boundedOffset = max(0, min(offset, utf16Length))
+        var lowerBound = 0
+        var upperBound = lineStartOffsets.count
+
+        while lowerBound < upperBound {
+            let midpoint = (lowerBound + upperBound) / 2
+            if lineStartOffsets[midpoint] <= boundedOffset {
+                lowerBound = midpoint + 1
+            } else {
+                upperBound = midpoint
+            }
+        }
+
+        return max(1, lowerBound)
+    }
+}
+
+private final class YAMLLineIndexCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedSource: String?
+    private var cachedIndex: YAMLLineIndex?
+
+    func index(for source: String) -> YAMLLineIndex {
+        lock.lock()
+        if cachedSource == source, let cachedIndex {
+            lock.unlock()
+            return cachedIndex
+        }
+        lock.unlock()
+
+        let index = makeIndex(for: source)
+
+        lock.lock()
+        cachedSource = source
+        cachedIndex = index
+        lock.unlock()
+
+        return index
+    }
+
+    private func makeIndex(for source: String) -> YAMLLineIndex {
+        let nsSource = source as NSString
+        var lineStartOffsets = [0]
+        var offset = 0
+
+        while offset < nsSource.length {
+            let character = nsSource.character(at: offset)
+            if character == YAMLServiceCharacter.newline {
+                lineStartOffsets.append(offset + 1)
+            } else if character == YAMLServiceCharacter.carriageReturn {
+                if offset + 1 < nsSource.length,
+                   nsSource.character(at: offset + 1) == YAMLServiceCharacter.newline {
+                    offset += 1
+                }
+                lineStartOffsets.append(offset + 1)
+            }
+            offset += 1
+        }
+
+        return YAMLLineIndex(utf16Length: nsSource.length, lineStartOffsets: lineStartOffsets)
     }
 }
 

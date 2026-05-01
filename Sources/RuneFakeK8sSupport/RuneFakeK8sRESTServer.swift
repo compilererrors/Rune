@@ -254,6 +254,51 @@ private struct RuneFakeK8sRouter {
                 ))
             }
 
+            if pathParts == ["api", "v1", "configmaps"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "v1",
+                    kind: "ConfigMapList",
+                    items: cluster.namespaces.flatMap { namespace in configMapObjects(namespace) },
+                    query: query
+                ))
+            }
+
+            if pathParts == ["api", "v1", "events"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "v1",
+                    kind: "EventList",
+                    items: cluster.namespaces.flatMap { namespace in eventObjects(namespace) },
+                    query: query
+                ))
+            }
+
+            if pathParts == ["api", "v1", "nodes"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "v1",
+                    kind: "NodeList",
+                    items: cluster.nodes.map(nodeObject),
+                    query: query
+                ))
+            }
+
+            if pathParts == ["apis", "batch", "v1", "cronjobs"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "batch/v1",
+                    kind: "CronJobList",
+                    items: cluster.namespaces.flatMap { namespace in cronJobObjects(namespace) },
+                    query: query
+                ))
+            }
+
+            if pathParts == ["apis", "networking.k8s.io", "v1", "ingresses"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "networking.k8s.io/v1",
+                    kind: "IngressList",
+                    items: cluster.namespaces.flatMap { namespace in ingressObjects(namespace) },
+                    query: query
+                ))
+            }
+
             if pathParts == ["apis", "metrics.k8s.io", "v1beta1", "pods"] {
                 return .json(status: 200, object: podMetricsList(
                     cluster.namespaces.flatMap { namespace in namespace.pods.map { ($0, namespace.name) } }
@@ -270,6 +315,18 @@ private struct RuneFakeK8sRouter {
                Array(pathParts[0...3]) == ["apis", "apps", "v1", "namespaces"],
                let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }) {
                 return routeAppsNamespaced(pathParts: pathParts, namespace: namespace, query: query)
+            }
+
+            if pathParts.count >= 6,
+               Array(pathParts[0...3]) == ["apis", "batch", "v1", "namespaces"],
+               let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }) {
+                return routeBatchNamespaced(pathParts: pathParts, namespace: namespace, query: query)
+            }
+
+            if pathParts.count >= 6,
+               Array(pathParts[0...3]) == ["apis", "networking.k8s.io", "v1", "namespaces"],
+               let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }) {
+                return routeNetworkingNamespaced(pathParts: pathParts, namespace: namespace, query: query)
             }
 
             if pathParts.count >= 6,
@@ -323,6 +380,25 @@ private struct RuneFakeK8sRouter {
                 return .json(status: 404, object: status(message: "Service \(pathParts[5]) was not found."))
             }
             return .json(status: 200, object: serviceObject(service, namespace: namespace.name))
+        case "configmaps" where pathParts.count == 5:
+            return .json(status: 200, object: listObject(
+                apiVersion: "v1",
+                kind: "ConfigMapList",
+                items: configMapObjects(namespace),
+                query: query
+            ))
+        case "configmaps" where pathParts.count == 6:
+            guard let configMap = configMapObjects(namespace).first(where: { metadataName($0) == pathParts[5] }) else {
+                return .json(status: 404, object: status(message: "ConfigMap \(pathParts[5]) was not found."))
+            }
+            return .json(status: 200, object: configMap)
+        case "events" where pathParts.count == 5:
+            return .json(status: 200, object: listObject(
+                apiVersion: "v1",
+                kind: "EventList",
+                items: eventObjects(namespace),
+                query: query
+            ))
         default:
             return .json(status: 404, object: status(message: "Unsupported core namespaced route."))
         }
@@ -348,6 +424,52 @@ private struct RuneFakeK8sRouter {
             return .json(status: 200, object: deploymentObject(deployment, namespace: namespace.name))
         default:
             return .json(status: 404, object: status(message: "Unsupported apps namespaced route."))
+        }
+    }
+
+    private func routeBatchNamespaced(
+        pathParts: [String],
+        namespace: RuneFakeK8sNamespace,
+        query: [String: String]
+    ) -> RuneFakeK8sHTTPResponse {
+        switch pathParts.count {
+        case 6 where pathParts[5] == "cronjobs":
+            return .json(status: 200, object: listObject(
+                apiVersion: "batch/v1",
+                kind: "CronJobList",
+                items: cronJobObjects(namespace),
+                query: query
+            ))
+        case 7 where pathParts[5] == "cronjobs":
+            guard let cronJob = cronJobObjects(namespace).first(where: { metadataName($0) == pathParts[6] }) else {
+                return .json(status: 404, object: status(message: "CronJob \(pathParts[6]) was not found."))
+            }
+            return .json(status: 200, object: cronJob)
+        default:
+            return .json(status: 404, object: status(message: "Unsupported batch namespaced route."))
+        }
+    }
+
+    private func routeNetworkingNamespaced(
+        pathParts: [String],
+        namespace: RuneFakeK8sNamespace,
+        query: [String: String]
+    ) -> RuneFakeK8sHTTPResponse {
+        switch pathParts.count {
+        case 6 where pathParts[5] == "ingresses":
+            return .json(status: 200, object: listObject(
+                apiVersion: "networking.k8s.io/v1",
+                kind: "IngressList",
+                items: ingressObjects(namespace),
+                query: query
+            ))
+        case 7 where pathParts[5] == "ingresses":
+            guard let ingress = ingressObjects(namespace).first(where: { metadataName($0) == pathParts[6] }) else {
+                return .json(status: 404, object: status(message: "Ingress \(pathParts[6]) was not found."))
+            }
+            return .json(status: 200, object: ingress)
+        default:
+            return .json(status: 404, object: status(message: "Unsupported networking namespaced route."))
         }
     }
 
@@ -443,6 +565,123 @@ private struct RuneFakeK8sRouter {
         ]
     }
 
+    private func configMapObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        namespace.deployments.map { deployment in
+            [
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": [
+                    "name": "\(deployment.name)-settings",
+                    "namespace": namespace.name,
+                    "creationTimestamp": "2026-04-25T10:00:00Z"
+                ],
+                "data": [
+                    "LOG_LEVEL": deployment.readyReplicas < deployment.replicas ? "debug" : "info",
+                    "OWNER": namespace.name
+                ]
+            ]
+        }
+    }
+
+    private func cronJobObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        guard let deployment = namespace.deployments.first else { return [] }
+        return [[
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "metadata": [
+                "name": "\(deployment.name)-report",
+                "namespace": namespace.name,
+                "creationTimestamp": "2026-04-25T10:00:00Z"
+            ],
+            "spec": [
+                "schedule": "*/20 * * * *",
+                "suspend": false
+            ],
+            "status": [
+                "lastScheduleTime": "2026-04-26T09:00:00Z"
+            ]
+        ]]
+    }
+
+    private func ingressObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        namespace.services.prefix(1).map { service in
+            [
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": [
+                    "name": "\(service.name)-public",
+                    "namespace": namespace.name,
+                    "creationTimestamp": "2026-04-25T10:00:00Z"
+                ],
+                "spec": [
+                    "rules": [[
+                        "host": "\(service.name).\(namespace.name).fake.rune.local",
+                        "http": [
+                            "paths": [[
+                                "path": "/",
+                                "pathType": "Prefix",
+                                "backend": [
+                                    "service": [
+                                        "name": service.name,
+                                        "port": ["number": 80]
+                                    ]
+                                ]
+                            ]]
+                        ]
+                    ]]
+                ],
+                "status": [
+                    "loadBalancer": [
+                        "ingress": [["hostname": "lb-\(service.name).fake.rune.local"]]
+                    ]
+                ]
+            ]
+        }
+    }
+
+    private func nodeObject(_ node: RuneFakeK8sNode) -> [String: Any] {
+        [
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": [
+                "name": node.name,
+                "creationTimestamp": "2026-04-20T10:00:00Z"
+            ],
+            "status": [
+                "addresses": [["type": "InternalIP", "address": node.internalIP]],
+                "capacity": ["cpu": "4", "memory": "8192Mi"],
+                "conditions": [["type": "Ready", "status": "True"]],
+                "nodeInfo": ["kubeletVersion": "v1.30.0-fake"]
+            ]
+        ]
+    }
+
+    private func eventObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        namespace.pods.map { pod in
+            [
+                "apiVersion": "v1",
+                "kind": "Event",
+                "metadata": [
+                    "name": "\(pod.name).ready",
+                    "namespace": namespace.name,
+                    "creationTimestamp": "2026-04-26T10:02:00Z"
+                ],
+                "type": pod.phase == "Running" ? "Normal" : "Warning",
+                "reason": pod.phase == "Running" ? "Started" : "Scheduling",
+                "message": pod.phase == "Running"
+                    ? "Started container in fake pod \(pod.name)."
+                    : "Fake pod \(pod.name) is waiting for scheduling.",
+                "firstTimestamp": "2026-04-26T10:01:00Z",
+                "lastTimestamp": "2026-04-26T10:02:00Z",
+                "involvedObject": [
+                    "kind": "Pod",
+                    "name": pod.name,
+                    "namespace": namespace.name
+                ]
+            ]
+        }
+    }
+
     private func podMetricsList(_ pods: [(RuneFakeK8sPod, String)]) -> [String: Any] {
         [
             "apiVersion": "metrics.k8s.io/v1beta1",
@@ -456,6 +695,10 @@ private struct RuneFakeK8sRouter {
                 ]
             }
         ]
+    }
+
+    private func metadataName(_ object: [String: Any]) -> String? {
+        (object["metadata"] as? [String: Any])?["name"] as? String
     }
 
     private func listObject(

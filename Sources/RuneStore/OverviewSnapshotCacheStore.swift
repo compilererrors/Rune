@@ -1,9 +1,9 @@
 import Foundation
 import RuneCore
 
-// Overview snapshots on disk: `JSONOverviewSnapshotCacheStore` stores rows keyed by `contextName` and `namespace`.
-// Default file: `~/Library/Application Support/Rune/overview-snapshot-cache.json`. Older installs may have used
-// `~/Library/Caches/Rune/`; that file is imported once then deleted. In-RAM resource lists live in `ResourceStore`.
+// Overview snapshots on disk: `JSONOverviewSnapshotCacheStore` stores one JSON file per `contextName` / `namespace`.
+// Older aggregate files at `~/Library/Application Support/Rune/overview-snapshot-cache.json` or `~/Library/Caches/Rune/`
+// are imported into the per-snapshot directory. In-RAM resource lists live in `ResourceStore`.
 
 /// Serialized overview row: pod status list, namespaced resource counts, optional cluster CPU/MEM, events.
 public struct PersistedOverviewSnapshot: Codable, Sendable {
@@ -82,6 +82,7 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
     private static let schemaVersion = 1
 
     private let fileURL: URL
+    private let entriesDirectoryURL: URL
     private let maxEntries: Int
     private let retentionTTL: TimeInterval
     private let nowProvider: @Sendable () -> Date
@@ -96,6 +97,7 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
         nowProvider: @escaping @Sendable () -> Date = Date.init
     ) {
         self.fileURL = fileURL
+        self.entriesDirectoryURL = Self.entriesDirectoryURL(for: fileURL)
         self.maxEntries = max(8, maxEntries)
         self.retentionTTL = max(30, retentionTTL)
         self.nowProvider = nowProvider
@@ -110,12 +112,13 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
         let now = nowProvider()
         if now.timeIntervalSince(entry.fetchedAt) > maxAge {
             entriesByKey.removeValue(forKey: key)
-            persistToDisk()
+            removeSnapshotFile(forKey: key)
             return nil
         }
 
         entry.lastAccessedAt = now
         entriesByKey[key] = entry
+        persistSnapshotToDisk(entry)
         return entry
     }
 
@@ -141,8 +144,9 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
         )
 
         entriesByKey[Self.key(contextName: normalized.contextName, namespace: normalized.namespace)] = normalized
-        prune(reference: now)
-        persistToDisk()
+        let removedKeys = prune(reference: now)
+        persistSnapshotToDisk(normalized)
+        removeSnapshotFiles(forKeys: removedKeys)
     }
 
     private func ensureLoaded() async {
@@ -174,50 +178,113 @@ public actor JSONOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
         for entry in primaryEntries {
             entriesByKey[Self.key(contextName: entry.contextName, namespace: entry.namespace)] = entry
         }
-        prune(reference: nowProvider())
-
-        if migratedFromLegacy {
-            persistToDisk()
+        let directoryEntries = decodeDirectoryEntries()
+        for entry in directoryEntries {
+            entriesByKey[Self.key(contextName: entry.contextName, namespace: entry.namespace)] = entry
         }
+
+        let removedKeys = prune(reference: nowProvider())
+
+        if !primaryEntries.isEmpty || migratedFromLegacy {
+            persistAllSnapshotsToDisk()
+        }
+        removeSnapshotFiles(forKeys: removedKeys)
     }
 
-    private func prune(reference: Date) {
+    @discardableResult
+    private func prune(reference: Date) -> [String] {
+        var removedKeys: [String] = []
         entriesByKey = entriesByKey.filter { _, entry in
-            reference.timeIntervalSince(entry.fetchedAt) <= retentionTTL
+            let shouldKeep = reference.timeIntervalSince(entry.fetchedAt) <= retentionTTL
+            if !shouldKeep {
+                removedKeys.append(Self.key(contextName: entry.contextName, namespace: entry.namespace))
+            }
+            return shouldKeep
         }
 
-        guard entriesByKey.count > maxEntries else { return }
+        guard entriesByKey.count > maxEntries else { return removedKeys }
         let sortedByAccessAscending = entriesByKey.values.sorted { lhs, rhs in
             lhs.lastAccessedAt < rhs.lastAccessedAt
         }
 
         let removeCount = entriesByKey.count - maxEntries
         for entry in sortedByAccessAscending.prefix(removeCount) {
-            entriesByKey.removeValue(forKey: Self.key(contextName: entry.contextName, namespace: entry.namespace))
+            let key = Self.key(contextName: entry.contextName, namespace: entry.namespace)
+            entriesByKey.removeValue(forKey: key)
+            removedKeys.append(key)
+        }
+        return removedKeys
+    }
+
+    private func decodeDirectoryEntries() -> [PersistedOverviewSnapshot] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: entriesDirectoryURL,
+            includingPropertiesForKeys: nil
+        ) else {
+            return []
+        }
+
+        return files
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? decoder.decode(PersistedOverviewSnapshot.self, from: data)
+            }
+    }
+
+    private func persistAllSnapshotsToDisk() {
+        for entry in entriesByKey.values {
+            persistSnapshotToDisk(entry)
         }
     }
 
-    private func persistToDisk() {
-        let entries = entriesByKey.values.sorted { lhs, rhs in
-            lhs.lastAccessedAt > rhs.lastAccessedAt
-        }
-
-        let payload = FilePayload(schemaVersion: Self.schemaVersion, entries: entries)
+    private func persistSnapshotToDisk(_ snapshot: PersistedOverviewSnapshot) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
 
-        guard let data = try? encoder.encode(payload) else { return }
+        guard let data = try? encoder.encode(snapshot) else { return }
 
-        let directory = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: [.atomic])
+        try? FileManager.default.createDirectory(at: entriesDirectoryURL, withIntermediateDirectories: true)
+        let key = Self.key(contextName: snapshot.contextName, namespace: snapshot.namespace)
+        try? data.write(to: snapshotFileURL(forKey: key), options: [.atomic])
+    }
+
+    private func removeSnapshotFiles(forKeys keys: [String]) {
+        for key in keys {
+            removeSnapshotFile(forKey: key)
+        }
+    }
+
+    private func removeSnapshotFile(forKey key: String) {
+        try? FileManager.default.removeItem(at: snapshotFileURL(forKey: key))
+    }
+
+    private func snapshotFileURL(forKey key: String) -> URL {
+        entriesDirectoryURL.appendingPathComponent(Self.fileName(forKey: key), isDirectory: false)
     }
 
     private static func key(contextName: String, namespace: String) -> String {
         "\(contextName)::\(namespace)"
     }
 
-    /// Default path: `~/Library/Application Support/Rune/overview-snapshot-cache.json` (durable user data on macOS).
+    private static func fileName(forKey key: String) -> String {
+        let encoded = Data(key.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return "\(encoded).json"
+    }
+
+    public static func entriesDirectoryURL(for fileURL: URL) -> URL {
+        fileURL.deletingLastPathComponent()
+            .appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent + "-entries", isDirectory: true)
+    }
+
+    /// Default legacy aggregate path; new snapshots are stored beside it in `overview-snapshot-cache-entries/`.
     public static func defaultCacheFileURL() -> URL {
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             return appSupport

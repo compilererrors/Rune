@@ -159,6 +159,11 @@ extension AppKitTripleSplitView {
         private var onDetailWidthChange: ((CGFloat) -> Void)?
         private var hasReceivedInitialConfiguration = false
         private var pendingRestore = false
+        private var pendingWidthReport: DispatchWorkItem?
+        private var lastReportedSidebarWidth: CGFloat?
+        private var lastReportedDetailWidth: CGFloat?
+        private var lastRequestedSidebarWidth: CGFloat?
+        private var lastRequestedDetailWidth: CGFloat?
 
         override func viewDidLoad() {
             super.viewDidLoad()
@@ -185,12 +190,20 @@ extension AppKitTripleSplitView {
             onSidebarWidthChange: @escaping (CGFloat) -> Void,
             onDetailWidthChange: @escaping (CGFloat) -> Void
         ) {
-            sidebarController.rootView = sidebar
-            contentController.rootView = content
-            detailController.rootView = detail
             self.onSidebarWidthChange = onSidebarWidthChange
             self.onDetailWidthChange = onDetailWidthChange
+            let isInitialConfiguration = !hasReceivedInitialConfiguration
+            let requestedWidthsChanged = abs(sidebarWidth - (lastRequestedSidebarWidth ?? sidebarWidth)) > 1
+                || abs(detailWidth - (lastRequestedDetailWidth ?? detailWidth)) > 1
             hasReceivedInitialConfiguration = true
+            lastRequestedSidebarWidth = sidebarWidth
+            lastRequestedDetailWidth = detailWidth
+
+            if isInitialConfiguration || !requestedWidthsChanged {
+                sidebarController.rootView = sidebar
+                contentController.rootView = content
+                detailController.rootView = detail
+            }
 
             guard widthState.registerRequestedWidths(
                 sidebarWidth: sidebarWidth,
@@ -209,7 +222,7 @@ extension AppKitTripleSplitView {
                 containerWidth: splitView.bounds.width
             )
             guard widthState.hasAppliedInitialRestore else { return }
-            reportWidthsIfNeeded()
+            scheduleWidthReport()
         }
 
         private func applyDesiredWidthsIfNeeded() {
@@ -280,8 +293,26 @@ extension AppKitTripleSplitView {
         }
 
         private func reportWidthsIfNeeded() {
-            onSidebarWidthChange?(sidebarController.view.frame.width)
-            onDetailWidthChange?(detailController.view.frame.width)
+            let sidebarWidth = sidebarController.view.frame.width
+            let detailWidth = detailController.view.frame.width
+            guard abs(sidebarWidth - (lastReportedSidebarWidth ?? -1)) > 1
+                    || abs(detailWidth - (lastReportedDetailWidth ?? -1)) > 1
+            else { return }
+
+            lastReportedSidebarWidth = sidebarWidth
+            lastReportedDetailWidth = detailWidth
+            onSidebarWidthChange?(sidebarWidth)
+            onDetailWidthChange?(detailWidth)
+        }
+
+        private func scheduleWidthReport() {
+            pendingWidthReport?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.pendingWidthReport = nil
+                self?.reportWidthsIfNeeded()
+            }
+            pendingWidthReport = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
         }
     }
 }

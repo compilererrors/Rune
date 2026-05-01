@@ -160,7 +160,8 @@ private struct ResourceLogsOutputSurface: View {
 
                         InspectorReadOnlyTextView(
                             text: searchResult.displayedText,
-                            resetID: "\(readOnlyResetID):\(searchResult.resetToken)"
+                            resetID: "\(readOnlyResetID):\(searchResult.scrollIdentityToken)",
+                            resetScrollOnExternalChange: false
                         )
                     }
                 }
@@ -249,8 +250,8 @@ struct ResourceLogSearchResult: Equatable {
         !query.isEmpty
     }
 
-    var resetToken: String {
-        "\(query)|\(matchingLineCount)|\(displayedText.count)"
+    var scrollIdentityToken: String {
+        "query:\(query)"
     }
 
     var badgeText: String {
@@ -266,29 +267,74 @@ struct ResourceLogSearchResult: Equatable {
 
     static func make(text: String, query: String) -> ResourceLogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
 
         guard !trimmedQuery.isEmpty else {
+            let lineCount = lineCount(in: text)
             return ResourceLogSearchResult(
                 originalText: text,
                 displayedText: text,
                 query: "",
-                totalLineCount: lines.count,
-                matchingLineCount: lines.count
+                totalLineCount: lineCount,
+                matchingLineCount: lineCount
             )
         }
 
-        let matching = lines.filter {
-            $0.range(of: trimmedQuery, options: NSString.CompareOptions([.caseInsensitive, .diacriticInsensitive])) != nil
+        let options = NSString.CompareOptions([.caseInsensitive, .diacriticInsensitive])
+        let isASCIIQuery = trimmedQuery.unicodeScalars.allSatisfy(\.isASCII)
+        let normalizedASCIIQuery = isASCIIQuery ? trimmedQuery.lowercased() : ""
+        var totalLineCount = 0
+        var matchingLines: [String] = []
+
+        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            totalLineCount += 1
+            let isMatch: Bool
+            if isASCIIQuery {
+                isMatch = line.lowercased().contains(normalizedASCIIQuery)
+            } else {
+                isMatch = line.range(of: trimmedQuery, options: options) != nil
+            }
+
+            if isMatch {
+                matchingLines.append(String(line))
+            }
         }
 
         return ResourceLogSearchResult(
             originalText: text,
-            displayedText: matching.joined(separator: "\n"),
+            displayedText: matchingLines.joined(separator: "\n"),
             query: trimmedQuery,
-            totalLineCount: lines.count,
-            matchingLineCount: matching.count
+            totalLineCount: totalLineCount,
+            matchingLineCount: matchingLines.count
         )
+    }
+
+    private static func lineCount(in text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        guard text.utf8.allSatisfy({ $0 < 128 }) else {
+            return text.reduce(1) { count, character in
+                character.isNewline ? count + 1 : count
+            }
+        }
+
+        var count = 1
+        var previousWasCarriageReturn = false
+        for byte in text.utf8 {
+            switch byte {
+            case 10:
+                if previousWasCarriageReturn {
+                    previousWasCarriageReturn = false
+                } else {
+                    count += 1
+                }
+            case 13:
+                count += 1
+                previousWasCarriageReturn = true
+            default:
+                previousWasCarriageReturn = false
+            }
+        }
+
+        return count
     }
 }
 

@@ -83,7 +83,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RuneUITests",
-            dependencies: ["RuneUI", "RuneKube", "RuneDiagnostics", "RuneCore", "RuneSecurity", "RuneExport"]
+            dependencies: ["RuneUI", "RuneKube", "RuneDiagnostics", "RuneCore", "RuneSecurity", "RuneExport", "RuneStore", "RuneFakeK8sSupport"]
         )
     ]
 )

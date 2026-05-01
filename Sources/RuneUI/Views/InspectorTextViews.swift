@@ -25,6 +25,7 @@ struct InspectorTextSurface<Content: View>: View {
 struct InspectorReadOnlyTextView: View {
     let text: String
     let resetID: String
+    var resetScrollOnExternalChange = true
     var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
     var externalValidationIssues: [YAMLValidationIssue] = []
     var navigationRequest: YAMLTextNavigationRequest?
@@ -33,7 +34,7 @@ struct InspectorReadOnlyTextView: View {
         AppKitManifestTextView(
             text: .constant(text),
             isEditable: false,
-            resetScrollOnExternalChange: true,
+            resetScrollOnExternalChange: resetScrollOnExternalChange,
             contentStyle: contentStyle,
             externalValidationIssues: externalValidationIssues,
             navigationRequest: navigationRequest
