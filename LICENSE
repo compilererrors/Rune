@@ -1,4 +1,6 @@
-Rune Source-Available License 1.0
+Rune Source-Available License 1.1
+
+Effective date: 2026-05-01
 
 Copyright (c) 2026 Viktor Nyberg
 
@@ -29,10 +31,19 @@ activities.
 "Commercial License" means a separate paid license or written agreement with
 the Licensor that permits Business Use.
 
+"Mac App Store Purchase" means an authorized purchase or download of the
+App Store version of Rune through the Mac App Store using an Apple account
+permitted to make that purchase or download.
+
 2. Non-Commercial Permission
 
 Subject to this license, You may use, copy, modify, compile, run, and
 distribute Rune for Non-Commercial Use.
+
+Examples of Non-Commercial Use include personal learning, private homelab
+use, personal experimentation, academic experimentation, and hobby projects
+that are not connected to an organization's work, operations, customers,
+services, products, or revenue.
 
 3. Business Use Requires Payment
 
@@ -43,39 +54,133 @@ a Commercial License from the Licensor before that use begins.
 No Business Use rights are granted by downloading, cloning, building,
 installing, modifying, or distributing Rune under this license.
 
-4. Redistribution
+Examples of Business Use include using Rune to access, manage, monitor,
+debug, inspect, modify, or operate clusters, systems, services, products,
+customer environments, employee environments, production systems, staging
+systems, development systems, or other infrastructure used by or for an
+organization.
+
+4. Mac App Store Purchases
+
+A Mac App Store Purchase grants the purchaser a Commercial License to use the
+App Store version of Rune for Business Use, subject to this license, the Apple
+Media Services Terms and Conditions, and any applicable App Store terms.
+
+A Mac App Store Purchase does not grant any right to redistribute Rune outside
+the Mac App Store, sublicense Rune, sell Rune outside the Mac App Store, or use
+Rune's name, logo, icon, or branding for modified versions.
+
+5. Redistribution
 
 If You distribute Rune or a modified version of Rune under this license, You
 must include this license, preserve copyright notices, and make clear that
 Business Use requires a Commercial License.
 
-5. Contributions
+6. Contributions
 
-Unless otherwise agreed in writing, any contribution You submit to Rune is
-licensed to the Licensor and downstream recipients under this license. You
-represent that You have the right to submit the contribution.
+By submitting a contribution to Rune, You grant the Licensor a perpetual,
+worldwide, non-exclusive, royalty-free, irrevocable license to use, reproduce,
+modify, prepare derivative works of, publicly display, publicly perform,
+distribute, sublicense, and relicense the contribution as part of Rune,
+including under commercial licenses. You represent that You have the right to
+grant these rights.
 
-6. Third-Party Components
+7. Third-Party Components
 
-Third-party dependencies, libraries, tools, and assets remain subject to their
-own license terms. This license does not grant rights to third-party
-components beyond those provided by their respective licenses.
+Third-party components, if any, including dependencies, libraries, tools, and
+assets, remain subject to their own license terms. This license does not grant
+rights to third-party components beyond those provided by their respective
+licenses.
 
-7. No Trademark Rights
+8. No Trademark Rights
 
 This license does not grant permission to use the names, trademarks, logos,
 or branding of Rune or the Licensor except as reasonably necessary to describe
 an unmodified copy of Rune.
 
-8. Termination
+You may not distribute modified versions using the Rune name, logo, icon, or
+branding in a way that suggests they are official, endorsed, approved,
+maintained, or provided by the Licensor.
+
+9. Termination
 
 If You violate this license, the rights granted to You under this license
 terminate automatically. The Licensor may reinstate rights in writing.
 
-9. Disclaimer
+10. User Responsibility and Operational Risk
 
-RUNE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE, NON-INFRINGEMENT, SECURITY, OR AVAILABILITY. TO THE
-MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR IS NOT LIABLE FOR ANY CLAIM,
-DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO RUNE OR USE OF RUNE.
+Rune is a developer and operations tool. It may read from, connect to,
+inspect, display, modify, or otherwise interact with Kubernetes clusters,
+kubeconfig files, credentials, local files, terminals, logs, network
+endpoints, and other systems selected, configured, or controlled by You.
+
+You are solely responsible for how You install, configure, run, modify,
+distribute, and use Rune. You are solely responsible for the clusters,
+credentials, commands, manifests, files, infrastructure, accounts, networks,
+and systems You use with Rune, and for all consequences of that use.
+
+You are responsible for verifying that any action You take through Rune is
+appropriate, authorized, safe, lawful, and suitable for Your environment
+before You take that action. This includes, without limitation, reviewing
+Kubernetes contexts, namespaces, resource selections, YAML changes,
+terminal commands, exec sessions, port-forwarding, credentials, and any
+read or write operations.
+
+The Licensor does not control Your environment, does not validate Your
+authorization to access any cluster or system, does not assume operational
+responsibility for Your infrastructure, and does not accept responsibility
+for Your decisions, configurations, credentials, commands, data, or use of
+Rune.
+
+11. Disclaimer of Warranty
+
+RUNE IS PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS, WITH ALL FAULTS
+AND WITHOUT WARRANTY OF ANY KIND. TO THE MAXIMUM EXTENT PERMITTED BY
+APPLICABLE LAW, THE LICENSOR DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING WITHOUT
+LIMITATION WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT,
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT,
+ACCURACY, RELIABILITY, SECURITY, AVAILABILITY, COMPATIBILITY, AND THAT
+RUNE WILL BE ERROR-FREE OR UNINTERRUPTED.
+
+Without limiting the foregoing, the Licensor does not warrant that Rune will
+protect against data loss, downtime, security incidents, unauthorized
+access, accidental changes, destructive operations, misconfiguration,
+credential exposure, cluster failure, service interruption, regulatory
+non-compliance, or any other operational or business impact.
+
+12. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT AND UNDER
+NO LEGAL THEORY, WHETHER IN TORT, CONTRACT, STRICT LIABILITY, NEGLIGENCE,
+WARRANTY, STATUTE, OR OTHERWISE, SHALL THE LICENSOR BE LIABLE TO YOU OR
+ANY THIRD PARTY FOR ANY DIRECT, INDIRECT, SPECIAL, INCIDENTAL,
+CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS,
+REVENUE, BUSINESS, GOODWILL, USE, DATA, CREDENTIALS, SYSTEMS, SERVICES,
+INFRASTRUCTURE, OR OTHER LOSSES, ARISING OUT OF OR RELATED TO RUNE, THIS
+LICENSE, OR ANY USE OF OR INABILITY TO USE RUNE, EVEN IF THE LICENSOR HAS
+BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+You agree that any use of Rune is at Your own risk and that You, not the
+Licensor, are responsible for any damage, loss, claim, liability, cost, or
+expense arising from how Rune is obtained, built, installed, configured,
+run, modified, distributed, or used by You or on Your behalf.
+
+Nothing in this license excludes or limits liability that cannot be excluded
+or limited under applicable law. Some jurisdictions do not allow the exclusion
+of certain warranties or limitations of liability, so some of the above
+exclusions or limitations may not apply to You.
+
+13. Governing Law and Forum
+
+This license is governed by the laws of Sweden, excluding conflict-of-law
+rules. Any dispute arising out of or relating to this license shall be
+resolved by the competent courts of Sweden, unless applicable law requires
+otherwise.
+
+14. Survival
+
+Sections concerning Business Use, Mac App Store Purchases, redistribution
+obligations, contributions, third-party components, trademark rights, user
+responsibility, warranty disclaimers, limitation of liability, governing law,
+and this survival clause survive termination of this license.
