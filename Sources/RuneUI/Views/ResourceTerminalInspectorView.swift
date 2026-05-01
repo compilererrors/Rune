@@ -79,6 +79,8 @@ struct ResourceTerminalWorkspaceView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .id("terminal")
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 

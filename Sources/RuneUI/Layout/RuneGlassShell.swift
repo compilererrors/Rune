@@ -20,37 +20,27 @@ enum RuneGlassPaneRole {
     var tint: Color {
         switch self {
         case .window:
-            return Color(nsColor: .windowBackgroundColor).opacity(0.22)
-        case .sidebar:
-            return Color.black.opacity(0.10)
-        case .content:
-            return Color.white.opacity(0.05)
-        case .inspector:
-            return Color.white.opacity(0.03)
+            return Color(nsColor: .windowBackgroundColor).opacity(0.18)
+        case .sidebar, .content, .inspector:
+            return Color(nsColor: .windowBackgroundColor).opacity(0.16)
         }
     }
 
     var highlightOpacity: CGFloat {
         switch self {
         case .window:
+            return 0.08
+        case .sidebar, .content, .inspector:
             return 0.10
-        case .sidebar:
-            return 0.12
-        case .content:
-            return 0.14
-        case .inspector:
-            return 0.11
         }
     }
 
     var borderColor: Color {
         switch self {
         case .window:
-            return Color.white.opacity(0.10)
-        case .sidebar:
-            return Color.white.opacity(0.12)
-        case .content, .inspector:
-            return Color.white.opacity(0.08)
+            return Color(nsColor: .separatorColor).opacity(0.18)
+        case .sidebar, .content, .inspector:
+            return Color(nsColor: .separatorColor).opacity(0.22)
         }
     }
 }

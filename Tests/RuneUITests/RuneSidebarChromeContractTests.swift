@@ -27,6 +27,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(sidebarBlock.contains(".clipShape("))
     }
 
+    func testWorkspacePanesShareNeutralGlassChrome() throws {
+        let source = try String(contentsOfFile: runeGlassShellPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("case .sidebar, .content, .inspector:"))
+        XCTAssertFalse(source.contains("Color.black.opacity(0.10)"))
+        XCTAssertFalse(source.contains("Color.white.opacity(0.05)"))
+        XCTAssertFalse(source.contains("Color.white.opacity(0.03)"))
+    }
+
+    func testTerminalWorkspaceUsesTransparentScrollSurface() throws {
+        let source = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+
+        guard let bodyStart = source.range(of: "var body: some View {"),
+              let terminalCardStart = source.range(of: "private var terminalCard", range: bodyStart.upperBound..<source.endIndex) else {
+            XCTFail("Could not locate terminal workspace body")
+            return
+        }
+
+        let bodyBlock = String(source[bodyStart.lowerBound..<terminalCardStart.lowerBound])
+        XCTAssertTrue(bodyBlock.contains(".scrollContentBackground(.hidden)"))
+        XCTAssertTrue(bodyBlock.contains(".background(Color.clear)"))
+    }
+
     func testSidebarContextListIsAConstrainedScrollableRegion() async throws {
         let state = RuneAppState()
         state.setContexts((1...80).map { KubeContext(name: String(format: "cluster-%03d", $0)) })
@@ -329,6 +352,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceTerminalInspectorView.swift").path
+    }
+
+    private var runeGlassShellPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneGlassShell.swift").path
     }
 
     private var appKitManifestTextViewPath: String {
