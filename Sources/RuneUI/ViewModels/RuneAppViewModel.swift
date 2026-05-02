@@ -398,6 +398,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var latestResourceDetailsRequestID = UUID()
     private var latestLogsReloadRequestID = UUID()
     private var latestYAMLValidationRequestID = UUID()
+    private var latestHelmDetailsRequestID = UUID()
     private var navigationHistory: [NavigationCheckpoint] = []
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
@@ -919,6 +920,7 @@ public final class RuneAppViewModel: ObservableObject {
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: delay)
             }
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             let forceNamespaceMetadataRefresh = self.pendingForcedNamespaceRefresh
             self.pendingForcedNamespaceRefresh = false
@@ -952,7 +954,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             diagnostics.trace("refresh", "performRefreshCurrentView done context=\(context.name)")
         } catch {
-            if error is CancellationError {
+            if Self.isBenignCancellationError(error) {
                 markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
                 diagnostics.trace("refresh", "performRefreshCurrentView cancelled")
                 return
@@ -1094,6 +1096,10 @@ public final class RuneAppViewModel: ObservableObject {
             do {
                 try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
             } catch {
+                if Self.isBenignCancellationError(error) {
+                    diagnostics.trace("helm", "setHelmAllNamespaces load cancelled")
+                    return
+                }
                 state.setError(error)
             }
         }
@@ -2873,6 +2879,11 @@ public final class RuneAppViewModel: ObservableObject {
                 }
                 namespaceMetadataRefreshedAt[context.name] = now
             case let .failure(error):
+                if Self.isBenignCancellationError(error) {
+                    markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
+                    diagnostics.log("snapshot namespaces cancelled")
+                    throw CancellationError()
+                }
                 diagnostics.log("snapshot namespaces failed: \(error.localizedDescription)")
                 warnings.append("namespaces: \(error.localizedDescription)")
                 // Live namespace list is source of truth. If refresh fails, clear cached namespaces for
@@ -4405,6 +4416,9 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func loadHelmDetailsForCurrentSelectionAsync() async {
+        let requestID = UUID()
+        latestHelmDetailsRequestID = requestID
+
         do {
             guard let context = state.selectedContext, let release = state.selectedHelmRelease else {
                 state.setHelmValues("")
@@ -4432,12 +4446,40 @@ public final class RuneAppViewModel: ObservableObject {
                 releaseName: release.name
             )
 
-            state.setHelmValues(try await values)
-            state.setHelmManifest(try await manifest)
-            state.setHelmHistory(try await history)
+            let loadedValues = try await values
+            let loadedManifest = try await manifest
+            let loadedHistory = try await history
+            guard isCurrentHelmDetailsRequest(requestID, context: context, release: release) else {
+                diagnostics.trace("helm", "discarded stale details load")
+                return
+            }
+
+            state.setHelmValues(loadedValues)
+            state.setHelmManifest(loadedManifest)
+            state.setHelmHistory(loadedHistory)
         } catch {
+            if Self.isBenignCancellationError(error) {
+                diagnostics.trace("helm", "details load cancelled")
+                return
+            }
+            guard isCurrentHelmDetailsRequest(requestID) else {
+                diagnostics.trace("helm", "discarded stale details error")
+                return
+            }
             state.setError(error)
         }
+    }
+
+    private func isCurrentHelmDetailsRequest(
+        _ requestID: UUID,
+        context: KubeContext? = nil,
+        release: HelmReleaseSummary? = nil
+    ) -> Bool {
+        guard latestHelmDetailsRequestID == requestID else { return false }
+        guard state.selectedSection == .helm else { return false }
+        if let context, state.selectedContext != context { return false }
+        if let release, state.selectedHelmRelease != release { return false }
+        return true
     }
 
     /// Short English message for the log pane when streaming logs failed (timeout or error output from the log fetch).
@@ -5720,10 +5762,33 @@ public final class RuneAppViewModel: ObservableObject {
         case let .success(value):
             return value
         case let .failure(error):
+            if Self.isBenignCancellationError(error) {
+                diagnostics.log("snapshot \(label) cancelled")
+                return fallback
+            }
             diagnostics.log("snapshot \(label) failed: \(error.localizedDescription)")
             warnings.append("\(label): \(error.localizedDescription)")
             return fallback
         }
+    }
+
+    private nonisolated static func isBenignCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        if case let RuneError.commandFailed(_, message) = error,
+           isBenignCancellationText(message) {
+            return true
+        }
+
+        return isBenignCancellationText(error.localizedDescription)
+    }
+
+    private nonisolated static func isBenignCancellationText(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return normalized.contains("cancelled") || normalized.contains("canceled")
     }
 
     private nonisolated static func capture<T: Sendable>(

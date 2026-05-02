@@ -46,7 +46,10 @@ struct RuneApplication: App {
     var body: some Scene {
         WindowGroup("Rune") {
             RuneRootView(viewModel: viewModel)
-                .frame(minWidth: 1280, minHeight: 820)
+                .frame(
+                    minWidth: RuneWindowLayoutDefaults.minimumWidth,
+                    minHeight: RuneWindowLayoutDefaults.minimumHeight
+                )
         }
         Settings {
             RunePreferencesView()

@@ -267,6 +267,52 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(reloadBlock.contains("state.setError(error)"))
     }
 
+    func testCancelledSnapshotWorkDoesNotSurfaceAsGlobalPartialLoadError() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        let scheduleBlock = try functionBlock(
+            named: "private func scheduleRefreshCurrentView",
+            endingBefore: "private func performRefreshCurrentView",
+            in: viewModelSource
+        )
+        XCTAssertTrue(scheduleBlock.contains("guard !Task.isCancelled else { return }"))
+
+        let unwrapBlock = try functionBlock(
+            named: "private func unwrap<T>",
+            endingBefore: "private nonisolated static func capture",
+            in: viewModelSource
+        )
+        XCTAssertTrue(unwrapBlock.contains("Self.isBenignCancellationError(error)"))
+        XCTAssertTrue(unwrapBlock.contains("return fallback"))
+        XCTAssertTrue(unwrapBlock.contains("warnings.append"))
+
+        guard let namespaceFailure = viewModelSource.range(of: "case let .failure(error):\n                if Self.isBenignCancellationError(error)"),
+              let namespaceWarning = viewModelSource.range(of: "warnings.append(\"namespaces: \\(error.localizedDescription)\")")
+        else {
+            XCTFail("Namespace snapshot cancellation handling was not found")
+            return
+        }
+        XCTAssertLessThan(namespaceFailure.lowerBound, namespaceWarning.lowerBound)
+
+        XCTAssertTrue(viewModelSource.contains("private nonisolated static func isBenignCancellationError"))
+        XCTAssertTrue(viewModelSource.contains("normalized.contains(\"cancelled\") || normalized.contains(\"canceled\")"))
+    }
+
+    func testHelmDetailsDiscardStaleLoadsBeforeWritingGlobalErrors() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let helmDetailsBlock = try functionBlock(
+            named: "private func loadHelmDetailsForCurrentSelectionAsync() async",
+            endingBefore: "private func isCurrentHelmDetailsRequest",
+            in: viewModelSource
+        )
+
+        XCTAssertTrue(helmDetailsBlock.contains("latestHelmDetailsRequestID = requestID"))
+        XCTAssertTrue(helmDetailsBlock.contains("isCurrentHelmDetailsRequest(requestID, context: context, release: release)"))
+        XCTAssertTrue(helmDetailsBlock.contains("isCurrentHelmDetailsRequest(requestID)"))
+        XCTAssertTrue(helmDetailsBlock.contains("Self.isBenignCancellationError(error)"))
+        XCTAssertTrue(helmDetailsBlock.contains("state.setError(error)"))
+    }
+
     func testLogsExposeTailModeAndSessionCache() throws {
         let logsViewSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)

@@ -279,32 +279,90 @@ struct ResourceLogSearchResult: Equatable {
             )
         }
 
-        let options = NSString.CompareOptions([.caseInsensitive, .diacriticInsensitive])
         let isASCIIQuery = trimmedQuery.unicodeScalars.allSatisfy(\.isASCII)
-        let normalizedASCIIQuery = isASCIIQuery ? trimmedQuery.lowercased() : ""
+        if isASCIIQuery, text.utf8.allSatisfy({ $0 != 13 }) {
+            return makeFastASCIIFilteredResult(text: text, query: trimmedQuery)
+        }
+
+        let options = NSString.CompareOptions([.caseInsensitive, .diacriticInsensitive])
         var totalLineCount = 0
-        var matchingLines: [String] = []
+        var matchingLineCount = 0
+        var displayedText = ""
 
         for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             totalLineCount += 1
-            let isMatch: Bool
-            if isASCIIQuery {
-                isMatch = line.lowercased().contains(normalizedASCIIQuery)
-            } else {
-                isMatch = line.range(of: trimmedQuery, options: options) != nil
-            }
+            let isMatch = line.range(of: trimmedQuery, options: options) != nil
 
             if isMatch {
-                matchingLines.append(String(line))
+                if matchingLineCount > 0 {
+                    displayedText.append("\n")
+                }
+                displayedText.append(contentsOf: line)
+                matchingLineCount += 1
             }
         }
 
         return ResourceLogSearchResult(
             originalText: text,
-            displayedText: matchingLines.joined(separator: "\n"),
+            displayedText: displayedText,
             query: trimmedQuery,
             totalLineCount: totalLineCount,
-            matchingLineCount: matchingLines.count
+            matchingLineCount: matchingLineCount
+        )
+    }
+
+    private static func makeFastASCIIFilteredResult(text: String, query: String) -> ResourceLogSearchResult {
+        let nsText = text as NSString
+        let textLength = nsText.length
+        let totalLineCount = lineCount(in: text)
+        var matchingLineCount = 0
+        var displayedText = ""
+        displayedText.reserveCapacity(min(text.utf8.count, 1_048_576))
+
+        var searchLocation = 0
+        while searchLocation < textLength {
+            let searchRange = NSRange(location: searchLocation, length: textLength - searchLocation)
+            let matchRange = nsText.range(
+                of: query,
+                options: [.caseInsensitive],
+                range: searchRange
+            )
+            guard matchRange.location != NSNotFound else { break }
+
+            let beforeMatch = NSRange(location: 0, length: matchRange.location)
+            let previousLineBreak = nsText.range(
+                of: "\n",
+                options: [.backwards],
+                range: beforeMatch
+            )
+            let lineStart = previousLineBreak.location == NSNotFound
+                ? 0
+                : previousLineBreak.location + previousLineBreak.length
+
+            let afterMatch = NSRange(
+                location: matchRange.location,
+                length: textLength - matchRange.location
+            )
+            let nextLineBreak = nsText.range(of: "\n", range: afterMatch)
+            let lineEnd = nextLineBreak.location == NSNotFound ? textLength : nextLineBreak.location
+            let nextSearchLocation = nextLineBreak.location == NSNotFound
+                ? textLength
+                : nextLineBreak.location + nextLineBreak.length
+
+            if matchingLineCount > 0 {
+                displayedText.append("\n")
+            }
+            displayedText.append(nsText.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart)))
+            matchingLineCount += 1
+            searchLocation = nextSearchLocation
+        }
+
+        return ResourceLogSearchResult(
+            originalText: text,
+            displayedText: displayedText,
+            query: query,
+            totalLineCount: totalLineCount,
+            matchingLineCount: matchingLineCount
         )
     }
 

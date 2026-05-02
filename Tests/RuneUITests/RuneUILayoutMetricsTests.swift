@@ -55,4 +55,15 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             RuneUILayoutMetrics.splitDetailColumnMaxWidth
         )
     }
+
+    func testMinimumWindowSizeSupportsCompactMacScreens() {
+        XCTAssertLessThanOrEqual(RuneWindowLayoutDefaults.minimumWidth, 980)
+        XCTAssertLessThanOrEqual(RuneWindowLayoutDefaults.minimumHeight, 640)
+        XCTAssertGreaterThanOrEqual(
+            RuneWindowLayoutDefaults.minimumWidth,
+            RuneUILayoutMetrics.splitSidebarMinWidth
+                + RuneUILayoutMetrics.splitContentColumnMinWidth
+                + RuneUILayoutMetrics.splitDetailColumnMinWidth
+        )
+    }
 }

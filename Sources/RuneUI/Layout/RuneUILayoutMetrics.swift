@@ -14,10 +14,10 @@ enum RuneUILayoutMetrics {
     /// Small metadata chips and inline badges.
     static let compactGlyphCornerRadius: CGFloat = 6
 
-    /// Reserve the unified toolbar/titlebar clearance from the first SwiftUI frame.
-    /// Measuring `safeAreaInsets.top` asynchronously after the window attaches made the
-    /// whole split layout jump after the first resource hydration.
-    static let windowContentTopInset: CGFloat = 28
+    /// Root content lives in the window content area below the unified toolbar. Keep this at zero:
+    /// adding a synthetic inset makes the workspace drift down and hides the bottom of sidebars,
+    /// terminals, and inspector cards on smaller windows.
+    static let windowContentTopInset: CGFloat = 0
     static let paneOuterPadding: CGFloat = 16
     static let paneInnerPadding: CGFloat = 12
     static let sidebarPadding: CGFloat = 14
@@ -38,13 +38,14 @@ enum RuneUILayoutMetrics {
     static let contentHeaderMinimumScrollableWidth: CGFloat = 640
 
     static let minWindowContentTopInset: CGFloat = 0
-    static let maxWindowContentTopInset: CGFloat = 28
+    static let maxWindowContentTopInset: CGFloat = 0
 
     static func resolvedWindowContentTopInset(measuredInset: CGFloat?) -> CGFloat {
         windowContentTopInset
     }
+}
 
-    static func windowContentBottomInset(containerHeight: CGFloat) -> CGFloat {
-        min(22, max(10, containerHeight * 0.014))
-    }
+public enum RuneWindowLayoutDefaults {
+    public static let minimumWidth: CGFloat = 980
+    public static let minimumHeight: CGFloat = 640
 }

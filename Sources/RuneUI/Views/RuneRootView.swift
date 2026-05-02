@@ -520,8 +520,7 @@ public struct RuneRootView: View {
 
             GeometryReader { geometry in
                 let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
-                let resolvedBottomInset = RuneUILayoutMetrics.windowContentBottomInset(containerHeight: geometry.size.height)
-                let viewportHeight = max(0, geometry.size.height - resolvedTopInset - resolvedBottomInset)
+                let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
 
                 configuredMainSplitContainer
                     .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)

@@ -183,6 +183,16 @@ extension AppKitTripleSplitView {
             super.viewDidLoad()
             splitView.isVertical = true
             splitView.delegate = self
+            if #available(macOS 13.0, *) {
+                sidebarController.sizingOptions = []
+                contentController.sizingOptions = []
+                detailController.sizingOptions = []
+            }
+            configureVerticalSizing(view)
+            configureVerticalSizing(splitView)
+            configureVerticalSizing(sidebarController.view)
+            configureVerticalSizing(contentController.view)
+            configureVerticalSizing(detailController.view)
             addSplitViewItem(sidebarItem)
             addSplitViewItem(contentItem)
             addSplitViewItem(detailItem)
@@ -262,6 +272,11 @@ extension AppKitTripleSplitView {
             }
             hostedContentUpdateReset = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+        }
+
+        private func configureVerticalSizing(_ view: NSView) {
+            view.setContentHuggingPriority(.defaultLow, for: .vertical)
+            view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         }
 
         private func applyDesiredWidthsIfNeeded() {
