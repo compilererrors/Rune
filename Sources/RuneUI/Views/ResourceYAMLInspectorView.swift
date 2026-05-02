@@ -74,7 +74,7 @@ struct ResourceYAMLInspectorPane: View {
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !presentedIssues.contains(where: { $0.severity == .error })
 
-        VStack(alignment: .leading, spacing: 10) {
+        ResourceManifestInspectorLayout {
             HStack(spacing: 8) {
                 if hasUnsavedEdits {
                     Text("Unsaved edits")
@@ -83,7 +83,7 @@ struct ResourceYAMLInspectorPane: View {
                 }
                 Spacer(minLength: 0)
             }
-
+        } toolbar: {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button("Apply YAML", action: onApply)
@@ -125,14 +125,13 @@ struct ResourceYAMLInspectorPane: View {
                         .disabled(yamlText.isEmpty)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
+        } status: {
             YAMLValidationSummaryView(
                 issues: presentedIssues,
                 isValidating: isValidating,
                 onSelectIssue: navigateToIssue
             )
-
+        } surface: {
             ResourceYAMLEditorSurface(
                 text: $yamlText,
                 displayText: yamlDisplayText,
@@ -142,7 +141,7 @@ struct ResourceYAMLInspectorPane: View {
                 validationIssues: presentedIssues,
                 navigationRequest: issueNavigationRequest
             )
-
+        } footer: {
             if yamlText.isEmpty {
                 Text(yamlFooterText)
                     .font(.footnote)

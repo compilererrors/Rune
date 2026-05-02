@@ -5533,7 +5533,7 @@ public final class RuneAppViewModel: ObservableObject {
         return availableNamespaces[0]
     }
 
-    /// Namespaces whose names are a case-insensitive suffix of `contextName` (e.g. `demo-cluster` → `example-service`).
+    /// Namespaces whose names are a case-insensitive suffix of `contextName` (e.g. `cluster-example-service` → `example-service`).
     /// Picks the longest match so `example-service` wins over `service` when both exist. Skips known cluster/system namespaces.
     private func namespaceLongestSuffixOfContext(_ contextName: String, availableNamespaces: [String]) -> String? {
         let contextLower = contextName.lowercased()

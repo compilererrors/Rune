@@ -50,6 +50,80 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(bodyBlock.contains(".background(Color.clear)"))
     }
 
+    func testResourceInspectorsUseOverviewStyleInformationRows() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        let overviewDetails = try functionBlock(
+            named: "private var overviewDetails: some View {",
+            endingBefore: "private var workloadDetails",
+            in: source
+        )
+        XCTAssertTrue(overviewDetails.contains("inspectorInfoRow(\"Context\""))
+        XCTAssertTrue(overviewDetails.contains("inspectorActionButtonRow"))
+
+        let podOverview = try functionBlock(
+            named: "private func podOverviewSection",
+            endingBefore: "private func podOverviewRow",
+            in: source
+        )
+        XCTAssertTrue(podOverview.contains("inspectorInfoRow(\"Namespace\""))
+        XCTAssertTrue(podOverview.contains("podOverviewRow(title: \"Status\""))
+        XCTAssertTrue(podOverview.contains("RuneInspectorInfoRow(\"Containers\""))
+        XCTAssertFalse(podOverview.contains("inspectorInsetCard"))
+        XCTAssertFalse(podOverview.contains(".runeInsetCard()"))
+
+        let deploymentOverview = try functionBlock(
+            named: "private func deploymentOverviewSection",
+            endingBefore: "private func inspectorEmptyState",
+            in: source
+        )
+        XCTAssertTrue(deploymentOverview.contains("inspectorInfoRow(\"Namespace\""))
+        XCTAssertTrue(deploymentOverview.contains("inspectorActionButtonRow"))
+        XCTAssertFalse(deploymentOverview.contains("inspectorInsetCard"))
+        XCTAssertFalse(deploymentOverview.contains(".runeInsetCard()"))
+
+        let serviceDetails = try functionBlock(
+            named: "private var serviceDetails: some View {",
+            endingBefore: "private var eventDetails",
+            in: source
+        )
+        XCTAssertTrue(serviceDetails.contains("inspectorInfoRow(\"Namespace\""))
+        XCTAssertTrue(serviceDetails.contains("inspectorInfoRow(\"Type\""))
+        XCTAssertTrue(serviceDetails.contains("inspectorInfoRow(\"Cluster IP\""))
+        XCTAssertTrue(serviceDetails.contains("inspectorActionButtonRow"))
+        XCTAssertFalse(serviceDetails.contains("inspectorInsetCard"))
+        XCTAssertFalse(serviceDetails.contains(".runeInsetCard()"))
+    }
+
+    func testDetailPaneClipsSectionContentToRoundedShell() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let detailPane = try functionBlock(
+            named: "private var detailPane: some View {",
+            endingBefore: "private var overviewDetails",
+            in: source
+        )
+
+        XCTAssertTrue(detailPane.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)"))
+        XCTAssertTrue(detailPane.contains(".fill(panelFill)"))
+        XCTAssertTrue(detailPane.contains(".clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))"))
+        XCTAssertTrue(detailPane.contains(".strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)"))
+    }
+
+    func testSplitResizeHandleUsesFixedAffordanceCenteredByColumnOverlay() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let handle = try functionBlock(
+            named: "private var splitColumnResizeHandle: some View {",
+            endingBefore: "private var productionBanner",
+            in: source
+        )
+
+        XCTAssertFalse(handle.contains("Color.clear"))
+        XCTAssertFalse(handle.contains(".frame(maxHeight: .infinity)"))
+        XCTAssertTrue(handle.contains(".frame(width: 4, height: 44)"))
+        XCTAssertTrue(handle.contains(".frame(width: 14, height: 44)"))
+        XCTAssertFalse(handle.contains("Spacer(minLength: 0)"))
+    }
+
     func testSidebarContextListIsAConstrainedScrollableRegion() async throws {
         let state = RuneAppState()
         state.setContexts((1...80).map { KubeContext(name: String(format: "cluster-%03d", $0)) })
@@ -300,6 +374,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
+    private func functionBlock(named startMarker: String, endingBefore endMarker: String, in source: String) throws -> String {
+        guard let start = source.range(of: startMarker),
+              let end = source.range(of: endMarker, range: start.upperBound..<source.endIndex) else {
+            throw XCTSkip("Could not locate source block between \(startMarker) and \(endMarker)")
+        }
+        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func settle(window: NSWindow) async throws {

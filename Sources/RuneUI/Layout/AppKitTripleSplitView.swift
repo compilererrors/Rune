@@ -11,8 +11,20 @@ struct AppKitTripleSplitWidthState {
     private var pendingUserDrivenSidebarWidth: CGFloat?
     private var pendingUserDrivenDetailWidth: CGFloat?
 
-    mutating func shouldApplyOnLayout(containerWidth: CGFloat) -> Bool {
-        needsWidthRestore || !hasAppliedInitialRestore || abs(containerWidth - lastAppliedContainerWidth) > 1
+    mutating func shouldApplyOnLayout(
+        containerWidth: CGFloat,
+        actualSidebarWidth: CGFloat,
+        actualDetailWidth: CGFloat
+    ) -> Bool {
+        needsWidthRestore
+            || !hasAppliedInitialRestore
+            || abs(containerWidth - lastAppliedContainerWidth) > 1
+            || abs(actualSidebarWidth - desiredSidebarWidth) > 1
+            || abs(actualDetailWidth - desiredDetailWidth) > 1
+    }
+
+    mutating func noteProgrammaticContentUpdate() {
+        needsWidthRestore = true
     }
 
     mutating func registerRequestedWidths(
@@ -164,6 +176,8 @@ extension AppKitTripleSplitView {
         private var lastReportedDetailWidth: CGFloat?
         private var lastRequestedSidebarWidth: CGFloat?
         private var lastRequestedDetailWidth: CGFloat?
+        private var isUpdatingHostedContent = false
+        private var hostedContentUpdateReset: DispatchWorkItem?
 
         override func viewDidLoad() {
             super.viewDidLoad()
@@ -177,7 +191,11 @@ extension AppKitTripleSplitView {
         override func viewDidLayout() {
             super.viewDidLayout()
             guard hasReceivedInitialConfiguration else { return }
-            guard widthState.shouldApplyOnLayout(containerWidth: splitView.bounds.width) else { return }
+            guard widthState.shouldApplyOnLayout(
+                containerWidth: splitView.bounds.width,
+                actualSidebarWidth: sidebarController.view.frame.width,
+                actualDetailWidth: detailController.view.frame.width
+            ) else { return }
             applyDesiredWidthsIfNeeded()
         }
 
@@ -200,9 +218,11 @@ extension AppKitTripleSplitView {
             lastRequestedDetailWidth = detailWidth
 
             if isInitialConfiguration || !requestedWidthsChanged {
+                beginHostedContentUpdate()
                 sidebarController.rootView = sidebar
                 contentController.rootView = content
                 detailController.rootView = detail
+                widthState.noteProgrammaticContentUpdate()
             }
 
             guard widthState.registerRequestedWidths(
@@ -216,6 +236,12 @@ extension AppKitTripleSplitView {
         }
 
         override func splitViewDidResizeSubviews(_ notification: Notification) {
+            guard !pendingRestore, !isUpdatingHostedContent else {
+                guard widthState.hasAppliedInitialRestore else { return }
+                scheduleWidthReport()
+                return
+            }
+
             widthState.noteUserResize(
                 actualSidebarWidth: sidebarController.view.frame.width,
                 actualDetailWidth: detailController.view.frame.width,
@@ -223,6 +249,19 @@ extension AppKitTripleSplitView {
             )
             guard widthState.hasAppliedInitialRestore else { return }
             scheduleWidthReport()
+        }
+
+        private func beginHostedContentUpdate() {
+            isUpdatingHostedContent = true
+            hostedContentUpdateReset?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.hostedContentUpdateReset = nil
+                self?.isUpdatingHostedContent = false
+                self?.applyDesiredWidthsIfNeeded()
+            }
+            hostedContentUpdateReset = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         }
 
         private func applyDesiredWidthsIfNeeded() {

@@ -7,18 +7,24 @@ struct InspectorTextSurface<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        content()
-            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(.thinMaterial)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-            .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
+        GeometryReader { proxy in
+            content()
+                .frame(
+                    width: max(1, proxy.size.width),
+                    height: max(1, proxy.size.height),
+                    alignment: .topLeading
+                )
+                .background {
+                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                        .fill(.thinMaterial)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        }
+        .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

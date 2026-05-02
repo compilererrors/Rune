@@ -43,8 +43,45 @@ final class AppKitTripleSplitViewTests: XCTestCase {
         state.noteRestoreAttempt(containerWidth: 1440)
         state.noteRestoreSettled()
 
-        XCTAssertFalse(state.shouldApplyOnLayout(containerWidth: 1440))
-        XCTAssertTrue(state.shouldApplyOnLayout(containerWidth: 1280))
+        XCTAssertFalse(
+            state.shouldApplyOnLayout(
+                containerWidth: 1440,
+                actualSidebarWidth: 320,
+                actualDetailWidth: 500
+            )
+        )
+        XCTAssertTrue(
+            state.shouldApplyOnLayout(
+                containerWidth: 1280,
+                actualSidebarWidth: 320,
+                actualDetailWidth: 500
+            )
+        )
     }
 
+    func testWidthStateReappliesAfterProgrammaticContentChangesDriftSplitWidths() {
+        var state = AppKitTripleSplitWidthState()
+
+        _ = state.registerRequestedWidths(
+            sidebarWidth: 280,
+            detailWidth: 440,
+            actualSidebarWidth: 280,
+            actualDetailWidth: 440
+        )
+        state.noteRestoreAttempt(containerWidth: 1440)
+        state.noteRestoreSettled()
+
+        state.noteProgrammaticContentUpdate()
+
+        XCTAssertTrue(
+            state.shouldApplyOnLayout(
+                containerWidth: 1440,
+                actualSidebarWidth: 360,
+                actualDetailWidth: 440
+            ),
+            "Programmatic SwiftUI content updates must reapply desired split widths instead of accepting layout drift as user resize."
+        )
+        XCTAssertEqual(state.desiredSidebarWidth, 280, accuracy: 0.5)
+        XCTAssertEqual(state.desiredDetailWidth, 440, accuracy: 0.5)
+    }
 }

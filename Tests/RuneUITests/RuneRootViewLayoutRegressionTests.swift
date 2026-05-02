@@ -57,6 +57,58 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
     }
 
+    func testRootContentDoesNotJumpWhenWindowChromeInsetArrives() async throws {
+        let pod = PodSummary(
+            name: "demo-api-546d7f8768-rzv22",
+            namespace: "demo-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "6d"
+        )
+        let viewModel = makePodViewModel(pod: pod)
+        var snapshots: [RuneRootLayoutSnapshot] = []
+
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: { snapshots.append($0) },
+                debugDisableBootstrap: true,
+                initialPodInspectorTab: .overview,
+                shellVariant: .appKitSplitView,
+                initialSidebarWidthOverride: 280,
+                initialDetailWidthOverride: 520
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let observed = snapshots.filter {
+            $0.section == .workloads
+                && $0.workloadKind == .pod
+                && $0.contentMinY != nil
+                && $0.detailMinY != nil
+        }
+        XCTAssertGreaterThanOrEqual(observed.count, 2, "Expected multiple layout snapshots during first render")
+
+        let contentValues = observed.compactMap(\.contentMinY)
+        let detailValues = observed.compactMap(\.detailMinY)
+        let contentDrift = (contentValues.max() ?? 0) - (contentValues.min() ?? 0)
+        let detailDrift = (detailValues.max() ?? 0) - (detailValues.min() ?? 0)
+
+        XCTAssertLessThanOrEqual(contentDrift, 2.0, "content jumped vertically during first render: \(contentValues)")
+        XCTAssertLessThanOrEqual(detailDrift, 2.0, "detail jumped vertically during first render: \(detailValues)")
+    }
+
     func testWorkloadPodYAMLTabRemainsTopAligned() async throws {
         let pod = PodSummary(name: "sample-pod-7c9db", namespace: "team-alpha", status: "Running", totalRestarts: 1, ageDescription: "5m")
         for shellVariant in RuneRootShellVariant.allCases {
@@ -264,7 +316,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let resource = ClusterResourceSummary(
             kind: .configMap,
             name: "orders-config",
-            namespace: "example-backend",
+            namespace: "example-namespace",
             primaryText: "ConfigMap",
             secondaryText: "12 keys"
         )
@@ -307,6 +359,99 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 assertAligned(baseline: yaml, candidate: describe)
             }
         }
+    }
+
+    func testRBACYAMLAndDescribeRemainTopAligned() async throws {
+        let resource = ClusterResourceSummary(
+            kind: .clusterRole,
+            name: "demo-cluster-editor",
+            namespace: nil,
+            primaryText: "2 rules",
+            secondaryText: "Cluster role"
+        )
+        for shellVariant in RuneRootShellVariant.allCases {
+            for editorImplementation in ManifestInlineEditorImplementation.allCases {
+                let yaml = try await hostSnapshot(
+                    viewModel: makeRBACViewModel(resource: resource),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialGenericResourceManifestTab: .yaml,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation,
+                            initialYAMLInlineEditing: editorImplementation.supportsInlineEditing
+                        )
+                    },
+                    section: .rbac,
+                    kind: .clusterRole,
+                    settleNanoseconds: 250_000_000
+                )
+                let describe = try await hostSnapshot(
+                    viewModel: makeRBACViewModel(resource: resource),
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialGenericResourceManifestTab: .describe,
+                            shellVariant: shellVariant,
+                            manifestInlineEditorImplementation: editorImplementation
+                        )
+                    },
+                    section: .rbac,
+                    kind: .clusterRole,
+                    settleNanoseconds: 250_000_000
+                )
+
+                assertAligned(baseline: yaml, candidate: describe)
+            }
+        }
+    }
+
+    func testWorkloadDescribeTextViewportIsBoundedInsideDetailColumn() async throws {
+        let pod = PodSummary(
+            name: "demo-api-546d7f8768-rzv22",
+            namespace: "demo-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "6d"
+        )
+        let metrics = try await hostManifestTextViewportMetrics(
+            viewModel: makePodViewModel(pod: pod),
+            initialPodInspectorTab: .describe
+        )
+
+        XCTAssertGreaterThan(metrics.textViewport.height, 120)
+        XCTAssertGreaterThanOrEqual(metrics.textViewport.minX, metrics.detailBounds.minX - 1, "Describe text viewport should not render left of the detail column")
+        XCTAssertGreaterThanOrEqual(metrics.textViewport.minY, metrics.detailBounds.minY - 1, "Describe text viewport should not render below the detail column")
+        XCTAssertLessThanOrEqual(metrics.textViewport.maxX, metrics.detailBounds.maxX + 1, "Describe text viewport should not render right of the detail column")
+        XCTAssertLessThanOrEqual(metrics.textViewport.maxY, metrics.detailBounds.maxY + 1, "Describe text viewport should not render above the detail column")
+    }
+
+    func testWorkloadYAMLAndDescribeUseBoundedTextViewportModel() async throws {
+        let pod = PodSummary(
+            name: "demo-api-546d7f8768-rzv22",
+            namespace: "demo-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "6d"
+        )
+
+        let yaml = try await hostManifestTextViewportMetrics(
+            viewModel: makePodViewModel(pod: pod),
+            initialPodInspectorTab: .yaml
+        )
+        let describe = try await hostManifestTextViewportMetrics(
+            viewModel: makePodViewModel(pod: pod),
+            initialPodInspectorTab: .describe
+        )
+
+        XCTAssertLessThanOrEqual(yaml.textViewport.maxY, yaml.detailBounds.maxY + 1, "YAML text viewport should be bounded by the detail column")
+        XCTAssertLessThanOrEqual(describe.textViewport.maxY, describe.detailBounds.maxY + 1, "Describe text viewport should be bounded by the detail column")
+        XCTAssertEqual(yaml.textViewport.minX, describe.textViewport.minX, accuracy: 2.0, "YAML and Describe should share the same text surface leading edge")
+        XCTAssertEqual(yaml.textViewport.width, describe.textViewport.width, accuracy: 2.0, "YAML and Describe should share the same text surface width")
     }
 
     func testAppKitSplitViewRestoresPersistedSidebarWidthOnLaunch() async throws {
@@ -612,7 +757,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             memoryUsage: "64Mi",
             podIP: "10.42.0.15",
             hostIP: "10.0.0.24",
-            nodeName: "demo-cluster",
+            nodeName: "demo-node-001",
             qosClass: "Burstable",
             containersReady: "2/2",
             containerNamesLine: "web, sidecar"
@@ -709,6 +854,81 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 observationDuration: 1.5
             )
         }
+    }
+
+    func testAppKitSplitWidthsDoNotJumpAfterProgrammaticHydration() async throws {
+        let basePod = PodSummary(
+            name: "demo-api-546d7f8768-rzv22",
+            namespace: "demo-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "6d"
+        )
+        let enrichedPod = PodSummary(
+            name: basePod.name,
+            namespace: basePod.namespace,
+            status: basePod.status,
+            totalRestarts: basePod.totalRestarts,
+            ageDescription: basePod.ageDescription,
+            cpuUsage: "3m",
+            memoryUsage: "400Mi",
+            podIP: "10.244.4.11",
+            hostIP: "10.224.0.7",
+            nodeName: "demo-node-001",
+            qosClass: "Burstable",
+            containersReady: "1/1",
+            containerNamesLine: "demo-api"
+        )
+        let state = RuneAppState()
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedNamespace = basePod.namespace
+        state.isLoading = true
+
+        let viewModel = RuneAppViewModel(state: state)
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true,
+                initialPodInspectorTab: .overview,
+                shellVariant: .appKitSplitView,
+                initialSidebarWidthOverride: 280,
+                initialDetailWidthOverride: 520
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        window.contentView = container
+        let hostView: NSView = host.view
+        hostView.frame = container.bounds
+        hostView.autoresizingMask = [.width, .height]
+        container.addSubview(hostView)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let loading = try await waitForAppKitSplitSnapshot(in: container)
+
+        state.setPods(makePodLoadingRows(seed: basePod, count: 120))
+        state.isLoading = false
+        state.beginResourceDetailLoad()
+        state.setSelectedPod(basePod.mergingInspectorDetail(enrichedPod))
+        state.setResourceYAML(sampleYAML(named: basePod.name))
+        state.setResourceDescribe(sampleDescribe(named: basePod.name))
+        state.finishResourceDetailLoad()
+
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let hydrated = try await waitForAppKitSplitSnapshot(in: container)
+
+        XCTAssertEqual(hydrated.sidebarWidth, loading.sidebarWidth, accuracy: 1.5, "sidebar width jumped after programmatic hydration")
+        XCTAssertEqual(hydrated.detailWidth, loading.detailWidth, accuracy: 1.5, "detail width jumped after programmatic hydration")
+        XCTAssertEqual(hydrated.contentMinX, loading.contentMinX, accuracy: 1.5, "content divider jumped after programmatic hydration")
+        XCTAssertEqual(hydrated.detailMinX, loading.detailMinX, accuracy: 1.5, "detail divider jumped after programmatic hydration")
     }
 
     func testEventGoToResourceDoesNotDriftOrLeaveEventsBeforeTargetLoads() async throws {
@@ -1222,6 +1442,23 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         return RuneAppViewModel(state: state)
     }
 
+    private func makeRBACViewModel(resource: ClusterResourceSummary) -> RuneAppViewModel {
+        let state = RuneAppState()
+        state.selectedSection = .rbac
+        state.selectedWorkloadKind = resource.kind
+        state.selectedNamespace = resource.namespace ?? "default"
+        state.setRBACData(
+            roles: resource.kind == .role ? [resource] : [],
+            roleBindings: resource.kind == .roleBinding ? [resource] : [],
+            clusterRoles: resource.kind == .clusterRole ? [resource] : [],
+            clusterRoleBindings: resource.kind == .clusterRoleBinding ? [resource] : []
+        )
+        state.setSelectedRBACResource(resource)
+        state.setResourceYAML(sampleYAML(named: resource.name))
+        state.setResourceDescribe(sampleDescribe(named: resource.name))
+        return RuneAppViewModel(state: state)
+    }
+
     private func hostSnapshot(
         viewModel: RuneAppViewModel,
         rootView: (RuneAppViewModel, @escaping (RuneRootLayoutSnapshot) -> Void) -> RuneRootView,
@@ -1303,6 +1540,70 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
 
         return snapshot
+    }
+
+    private struct ManifestTextViewportMetrics {
+        let detailBounds: CGRect
+        let textViewport: CGRect
+    }
+
+    private func hostManifestTextViewportMetrics(
+        viewModel: RuneAppViewModel,
+        initialPodInspectorTab: PodInspectorTab,
+        settleNanoseconds: UInt64 = 500_000_000
+    ) async throws -> ManifestTextViewportMetrics {
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true,
+                initialPodInspectorTab: initialPodInspectorTab,
+                shellVariant: .appKitSplitView,
+                manifestInlineEditorImplementation: .appKitTextView,
+                initialYAMLInlineEditing: false,
+                initialSidebarWidthOverride: 280,
+                initialDetailWidthOverride: 520
+            )
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        window.contentView = container
+        let hostView: NSView = host.view
+        hostView.frame = container.bounds
+        hostView.autoresizingMask = [.width, .height]
+        container.addSubview(hostView)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await Task.sleep(nanoseconds: settleNanoseconds)
+        container.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        container.layoutSubtreeIfNeeded()
+
+        guard let splitView = firstThreePaneVerticalSplitView(in: container),
+              splitView.arrangedSubviews.count == 3
+        else {
+            XCTFail("Expected root AppKit split view")
+            throw CancellationError()
+        }
+
+        let detailView = splitView.arrangedSubviews[2]
+        guard let textScrollView = firstTextScrollView(in: detailView) else {
+            XCTFail("Expected manifest NSTextView-backed scroll view in detail pane")
+            throw CancellationError()
+        }
+
+        return ManifestTextViewportMetrics(
+            detailBounds: detailView.bounds,
+            textViewport: textScrollView.superview?.convert(textScrollView.frame, to: detailView)
+                ?? textScrollView.convert(textScrollView.bounds, to: detailView)
+        )
     }
 
     private struct AppKitSplitLaunchSnapshot {
@@ -1390,6 +1691,22 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         for subview in view.subviews {
             if let splitView = firstThreePaneVerticalSplitView(in: subview) {
                 return splitView
+            }
+        }
+
+        return nil
+    }
+
+    private func firstTextScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
+        if let scrollView = view as? NSScrollView,
+           scrollView.documentView is NSTextView {
+            return scrollView
+        }
+
+        for subview in view.subviews {
+            if let match = firstTextScrollView(in: subview) {
+                return match
             }
         }
 

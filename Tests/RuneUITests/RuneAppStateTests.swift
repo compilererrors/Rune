@@ -266,26 +266,26 @@ final class RuneAppStateTests: XCTestCase {
         state.appendPodLogRead(
             "first line\n",
             contextName: "demo-cluster",
-            namespace: "backend",
+            namespace: "demo-namespace",
             podName: "api-0",
             loadedAt: firstDate
         )
         state.appendPodLogRead(
             "second line\n",
             contextName: "demo-cluster",
-            namespace: "backend",
+            namespace: "demo-namespace",
             podName: "api-0",
             loadedAt: secondDate
         )
 
-        XCTAssertTrue(state.podLogs.contains("Pod  backend/api-0"))
+        XCTAssertTrue(state.podLogs.contains("Pod  demo-namespace/api-0"))
         XCTAssertTrue(state.podLogs.contains("Context: demo-cluster"))
         XCTAssertTrue(state.podLogs.contains("first line"))
         XCTAssertTrue(state.podLogs.contains("second line"))
         XCTAssertGreaterThanOrEqual(state.podLogs.components(separatedBy: "────────────────").count, 5)
 
         state.setPodLogs("")
-        state.showCachedPodLogs(contextName: "demo-cluster", namespace: "backend", podName: "api-0")
+        state.showCachedPodLogs(contextName: "demo-cluster", namespace: "demo-namespace", podName: "api-0")
         XCTAssertTrue(state.podLogs.contains("first line"))
         XCTAssertTrue(state.podLogs.contains("second line"))
     }

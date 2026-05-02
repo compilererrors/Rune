@@ -520,7 +520,8 @@ public struct RuneRootView: View {
 
             GeometryReader { geometry in
                 let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
-                let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
+                let resolvedBottomInset = RuneUILayoutMetrics.windowContentBottomInset(containerHeight: geometry.size.height)
+                let viewportHeight = max(0, geometry.size.height - resolvedTopInset - resolvedBottomInset)
 
                 configuredMainSplitContainer
                     .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
@@ -2427,31 +2428,41 @@ public struct RuneRootView: View {
 
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Group {
-                switch viewModel.state.selectedSection {
-                case .overview:
-                    overviewDetails
-                case .workloads:
-                    workloadDetails
-                case .networking:
-                    networkingDetails
-                case .config:
-                    configDetails
-                case .storage:
-                    storageDetails
-            case .events:
-                eventDetails
-            case .helm:
-                helmDetails
-            case .rbac:
-                rbacDetails
-                case .terminal:
-                    terminalDetails
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
+                    .fill(panelFill)
+
+                Group {
+                    switch viewModel.state.selectedSection {
+                    case .overview:
+                        overviewDetails
+                    case .workloads:
+                        workloadDetails
+                    case .networking:
+                        networkingDetails
+                    case .config:
+                        configDetails
+                    case .storage:
+                        storageDetails
+                    case .events:
+                        eventDetails
+                    case .helm:
+                        helmDetails
+                    case .rbac:
+                        rbacDetails
+                    case .terminal:
+                        terminalDetails
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(RuneUILayoutMetrics.paneInnerPadding)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(RuneUILayoutMetrics.paneInnerPadding)
-            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+            }
 
             if let error = viewModel.state.lastError {
                 Text(error)
@@ -2479,13 +2490,12 @@ public struct RuneRootView: View {
                 .font(.title2.weight(.bold))
 
             VStack(alignment: .leading, spacing: 8) {
-                Label("Context: \(viewModel.state.selectedContext?.name ?? "-")", systemImage: "network")
-                Label("Namespace: \(viewModel.state.selectedNamespace)", systemImage: "square.stack.3d.up")
-                Label("Mode: \(viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write")", systemImage: "lock.shield")
+                inspectorInfoRow("Context", value: viewModel.state.selectedContext?.name ?? "-", symbol: "network")
+                inspectorInfoRow("Namespace", value: viewModel.state.selectedNamespace, symbol: "square.stack.3d.up")
+                inspectorInfoRow("Mode", value: viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write", symbol: "lock.shield")
             }
-            .font(.subheadline.weight(.medium))
 
-            HStack(spacing: 10) {
+            inspectorActionButtonRow {
                 Button("Open Workloads") {
                     viewModel.setSection(.workloads)
                 }
@@ -2880,34 +2890,24 @@ public struct RuneRootView: View {
                         case .overview:
                             VStack(alignment: .leading, spacing: 12) {
                                 if shouldShowResourceNamespaceLabel(service.namespace) {
-                                    inspectorInsetCard {
-                                        Label("Namespace: \(service.namespace)", systemImage: "square.stack.3d.up")
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    inspectorInfoRow("Namespace", value: service.namespace, symbol: "square.stack.3d.up")
                                 }
-                                inspectorInsetCard {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Label("Type: \(service.type)", systemImage: "point.3.connected.trianglepath.dotted")
-                                            .font(.body.weight(.medium))
-                                        Label("Cluster IP: \(service.clusterIP)", systemImage: "network")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                        Divider().opacity(0.45)
-                                        inspectorActionButtonRow {
-                                            Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
-                                                .buttonStyle(.bordered)
-                                                .disabled(!viewModel.canApplyClusterMutations)
-                                            Button("Export…") { viewModel.saveCurrentResourceYAML() }
-                                                .buttonStyle(.bordered)
-                                            Spacer(minLength: 0)
-                                        }
-                                        Button("Delete", role: .destructive) {
-                                            viewModel.requestDeleteSelectedResource()
-                                        }
+
+                                inspectorInfoRow("Type", value: service.type, symbol: "point.3.connected.trianglepath.dotted")
+                                inspectorInfoRow("Cluster IP", value: service.clusterIP, symbol: "network")
+                                Divider().opacity(0.45)
+                                inspectorActionButtonRow {
+                                    Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
+                                        .buttonStyle(.bordered)
                                         .disabled(!viewModel.canApplyClusterMutations)
-                                    }
+                                    Button("Export…") { viewModel.saveCurrentResourceYAML() }
+                                        .buttonStyle(.bordered)
+                                    Spacer(minLength: 0)
                                 }
+                                Button("Delete", role: .destructive) {
+                                    viewModel.requestDeleteSelectedResource()
+                                }
+                                .disabled(!viewModel.canApplyClusterMutations)
                             }
 
                         case .unifiedLogs:
@@ -3026,12 +3026,11 @@ public struct RuneRootView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                            Label("Namespace: \(namespace)", systemImage: "square.stack.3d.up")
+                            inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
                         }
-                        Label(resource.primaryText, systemImage: "info.circle")
-                        Label(resource.secondaryText, systemImage: "text.alignleft")
+                        inspectorInfoRow("Primary", value: resource.primaryText, symbol: "info.circle")
+                        inspectorInfoRow("Status", value: resource.secondaryText, symbol: "text.alignleft")
                     }
-                    .font(.subheadline)
 
                     RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
                         ForEach(GenericResourceManifestTab.allCases) { tab in
@@ -4299,11 +4298,22 @@ public struct RuneRootView: View {
     }
 
     private func emitLayoutSnapshotIfNeeded() {
+        let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
+        if let contentMinY = layoutProbeFrames[.content]?.minY,
+           let headerMinY = layoutProbeFrames[.header]?.minY,
+           let detailMinY = layoutProbeFrames[.detail]?.minY {
+            let minVisibleProbeY = resolvedTopInset - 1
+            guard contentMinY >= minVisibleProbeY,
+                  headerMinY >= minVisibleProbeY,
+                  detailMinY >= minVisibleProbeY
+            else { return }
+        }
+
         let snapshot = RuneRootLayoutSnapshot(
             section: viewModel.state.selectedSection,
             workloadKind: viewModel.state.selectedWorkloadKind,
             measuredWindowTopInset: measuredWindowContentTopInset,
-            resolvedWindowTopInset: RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset),
+            resolvedWindowTopInset: resolvedTopInset,
             contentMinY: layoutProbeFrames[.content]?.minY,
             headerMinY: layoutProbeFrames[.header]?.minY,
             detailMinY: layoutProbeFrames[.detail]?.minY,
@@ -4403,22 +4413,18 @@ public struct RuneRootView: View {
 
     /// Visual resize affordance on column edges (`49c6517`); hit testing stays on the system split divider.
     private var splitColumnResizeHandle: some View {
-        VStack {
-            Spacer(minLength: 0)
-            RoundedRectangle(cornerRadius: 999, style: .continuous)
-                .fill(Color.secondary.opacity(0.42))
-                .frame(width: 4, height: 44)
-                .overlay {
-                    VStack(spacing: 4) {
-                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
-                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
-                        Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
-                    }
+        RoundedRectangle(cornerRadius: 999, style: .continuous)
+            .fill(Color.secondary.opacity(0.42))
+            .frame(width: 4, height: 44)
+            .overlay {
+                VStack(spacing: 4) {
+                    Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                    Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
+                    Circle().fill(Color.primary.opacity(0.18)).frame(width: 2, height: 2)
                 }
-                .allowsHitTesting(false)
-            Spacer(minLength: 0)
-        }
-        .frame(width: 14)
+            }
+            .frame(width: 14, height: 44)
+            .allowsHitTesting(false)
     }
 
     private var productionBanner: some View {
@@ -4598,22 +4604,8 @@ public struct RuneRootView: View {
         .background(color.opacity(0.14), in: Capsule())
     }
 
-    private func inspectorInsetCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .runeInsetCard()
-    }
-
-    @ViewBuilder
     private func inspectorActionButtonRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 8) {
-                content()
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                content()
-            }
-        }
-        .controlSize(.regular)
+        RuneInspectorActionRow(content: content)
     }
 
     private func normalizedCopyValue(_ value: String) -> String? {
@@ -4924,71 +4916,48 @@ public struct RuneRootView: View {
     }
 
     private func podOverviewSection(pod: PodSummary) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if shouldShowResourceNamespaceLabel(pod.namespace) {
-                inspectorInsetCard {
-                    Label("Namespace: \(pod.namespace)", systemImage: "square.stack.3d.up")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                inspectorInfoRow("Namespace", value: pod.namespace, symbol: "square.stack.3d.up")
+                Divider()
+                    .opacity(0.45)
+            }
+
+            podOverviewRow(title: "Status", value: pod.status, symbol: "waveform.path.ecg")
+            Divider()
+                .opacity(0.45)
+            podOverviewRow(title: "Ready", value: pod.containersReady ?? "—", symbol: "checkmark.circle")
+            podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
+            podOverviewRow(title: "Age", value: pod.ageDescription, symbol: "clock")
+            podOverviewRow(title: "CPU", value: pod.cpuDisplay, symbol: "cpu")
+            podOverviewRow(title: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
+            Divider()
+                .opacity(0.45)
+            podOverviewRow(title: "Node", value: pod.nodeName ?? "—", symbol: "server.rack")
+            podOverviewRow(title: "Pod IP", value: pod.podIP ?? "—", symbol: "network")
+            podOverviewRow(title: "Host IP", value: pod.hostIP ?? "—", symbol: "cable.connector")
+            podOverviewRow(title: "QoS class", value: pod.qosClass ?? "—", symbol: "slider.horizontal.3")
+            if let containers = pod.containerNamesLine, !containers.isEmpty {
+                RuneInspectorInfoRow("Containers", systemImage: "square.stack.3d.forward.dottedline") {
+                    Text(containers)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
-            inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    podOverviewRow(title: "Status", value: pod.status, symbol: "waveform.path.ecg")
-                    Divider()
-                        .opacity(0.45)
-                    podOverviewRow(title: "Ready", value: pod.containersReady ?? "—", symbol: "checkmark.circle")
-                    podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
-                    podOverviewRow(title: "Age", value: pod.ageDescription, symbol: "clock")
-                    podOverviewRow(title: "CPU", value: pod.cpuDisplay, symbol: "cpu")
-                    podOverviewRow(title: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
-                    Divider()
-                        .opacity(0.45)
-                    podOverviewRow(title: "Node", value: pod.nodeName ?? "—", symbol: "server.rack")
-                    podOverviewRow(title: "Pod IP", value: pod.podIP ?? "—", symbol: "network")
-                    podOverviewRow(title: "Host IP", value: pod.hostIP ?? "—", symbol: "cable.connector")
-                    podOverviewRow(title: "QoS class", value: pod.qosClass ?? "—", symbol: "slider.horizontal.3")
-                    if let containers = pod.containerNamesLine, !containers.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "square.stack.3d.forward.dottedline")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 14, alignment: .center)
-                                Text("Containers")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(containers)
-                                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
+            Divider()
+                .opacity(0.45)
 
-                    Divider()
-                        .opacity(0.45)
-
-                    Button("Delete", role: .destructive) {
-                        viewModel.requestDeleteSelectedResource()
-                    }
-                    .disabled(!viewModel.canApplyClusterMutations)
-                }
+            Button("Delete", role: .destructive) {
+                viewModel.requestDeleteSelectedResource()
             }
+            .disabled(!viewModel.canApplyClusterMutations)
         }
     }
 
     private func podOverviewRow(title: String, value: String, symbol: String) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                podOverviewRowLabel(title: title, symbol: symbol, fixedWidth: true)
-                copyableOverviewValue(value, label: title)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                podOverviewRowLabel(title: title, symbol: symbol, fixedWidth: false)
-                copyableOverviewValue(value, label: title)
-            }
-        }
+        inspectorInfoRow(title, value: value, symbol: symbol)
     }
 
     private func copyableOverviewValue(_ value: String, label: String) -> some View {
@@ -5005,95 +4974,83 @@ public struct RuneRootView: View {
         }
     }
 
-    private func podOverviewRowLabel(title: String, symbol: String, fixedWidth: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .foregroundStyle(.secondary)
-                .frame(width: 14, alignment: .center)
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private func inspectorInfoRow(_ title: String, value: String, symbol: String) -> some View {
+        RuneInspectorInfoRow(title, systemImage: symbol) {
+            copyableOverviewValue(value, label: title)
         }
-        .frame(width: fixedWidth ? 118 : nil, alignment: .leading)
     }
 
     private func deploymentOverviewSection(deployment: DeploymentSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if shouldShowResourceNamespaceLabel(deployment.namespace) {
-                inspectorInsetCard {
-                    Label("Namespace: \(deployment.namespace)", systemImage: "square.stack.3d.up")
+                inspectorInfoRow("Namespace", value: deployment.namespace, symbol: "square.stack.3d.up")
+                Divider()
+                    .opacity(0.45)
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(deploymentReplicaStatusColor(deployment))
+                    .frame(width: 8, height: 8)
+                Text(deploymentReplicaStatusText(deployment))
+                    .font(.body.weight(.semibold))
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Replicas")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
+                    Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
+                        Text("\(viewModel.scaleReplicaInput)")
+                            .monospacedDigit()
+                            .font(.body.weight(.medium))
+                            .frame(minWidth: 32, alignment: .trailing)
+                    }
+                    deploymentScaleButton(deployment: deployment)
+                    Spacer(minLength: 0)
                 }
-            }
-
-            inspectorInsetCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(deploymentReplicaStatusColor(deployment))
-                            .frame(width: 8, height: 8)
-                        Text(deploymentReplicaStatusText(deployment))
-                            .font(.body.weight(.semibold))
-                    }
-
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .center, spacing: 8) {
-                            Text("Replicas")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
-                            Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                                Text("\(viewModel.scaleReplicaInput)")
-                                    .monospacedDigit()
-                                    .font(.body.weight(.medium))
-                                    .frame(minWidth: 32, alignment: .trailing)
-                            }
-                            deploymentScaleButton(deployment: deployment)
-                            Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text("Replicas")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
+                            Text("\(viewModel.scaleReplicaInput)")
+                                .monospacedDigit()
+                                .font(.body.weight(.medium))
+                                .frame(minWidth: 32, alignment: .trailing)
                         }
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .center, spacing: 8) {
-                                Text("Replicas")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                                    Text("\(viewModel.scaleReplicaInput)")
-                                        .monospacedDigit()
-                                        .font(.body.weight(.medium))
-                                        .frame(minWidth: 32, alignment: .trailing)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            deploymentScaleButton(deployment: deployment)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-
-                    Divider()
-                        .opacity(0.45)
-
-                    inspectorActionButtonRow {
-                        Button("Restart Rollout") {
-                            viewModel.requestRolloutRestartSelectedDeployment()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.canApplyClusterMutations)
-
-                        Button("Apply YAML") {
-                            viewModel.requestApplySelectedResourceYAML()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.canApplyClusterMutations)
-
                         Spacer(minLength: 0)
                     }
-
-                    Button("Delete", role: .destructive) {
-                        viewModel.requestDeleteSelectedResource()
-                    }
-                    .disabled(!viewModel.canApplyClusterMutations)
+                    deploymentScaleButton(deployment: deployment)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+
+            Divider()
+                .opacity(0.45)
+
+            inspectorActionButtonRow {
+                Button("Restart Rollout") {
+                    viewModel.requestRolloutRestartSelectedDeployment()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.canApplyClusterMutations)
+
+                Button("Apply YAML") {
+                    viewModel.requestApplySelectedResourceYAML()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.canApplyClusterMutations)
+
+                Spacer(minLength: 0)
+            }
+
+            Button("Delete", role: .destructive) {
+                viewModel.requestDeleteSelectedResource()
+            }
+            .disabled(!viewModel.canApplyClusterMutations)
         }
     }
 

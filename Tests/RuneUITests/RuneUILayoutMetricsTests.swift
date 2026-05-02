@@ -10,7 +10,7 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         )
     }
 
-    func testResolvedWindowContentTopInsetClampsLowerBound() {
+    func testResolvedWindowContentTopInsetIgnoresLowerOutliers() {
         XCTAssertEqual(
             RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: -12),
             RuneUILayoutMetrics.windowContentTopInset
@@ -21,17 +21,17 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         )
     }
 
-    func testResolvedWindowContentTopInsetClampsUpperBound() {
+    func testResolvedWindowContentTopInsetIgnoresUpperOutliers() {
         XCTAssertEqual(
             RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: 200),
-            RuneUILayoutMetrics.maxWindowContentTopInset
+            RuneUILayoutMetrics.windowContentTopInset
         )
     }
 
-    func testResolvedWindowContentTopInsetKeepsMeasuredInRange() {
+    func testResolvedWindowContentTopInsetDoesNotChangeAfterMeasuredInsetArrives() {
         XCTAssertEqual(
             RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: 18),
-            18
+            RuneUILayoutMetrics.windowContentTopInset
         )
     }
 

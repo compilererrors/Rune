@@ -24,7 +24,7 @@ enum RuneSurfaceKind {
         case .panel:
             return Color(nsColor: .controlBackgroundColor).opacity(0.72)
         case .inset:
-            return Color(nsColor: .controlBackgroundColor)
+            return Color(nsColor: .controlBackgroundColor).opacity(0.72)
         case .editor:
             return Color(nsColor: .textBackgroundColor).opacity(0.92)
         case let .listRow(isSelected):
@@ -97,6 +97,92 @@ struct RuneChip<Content: View>: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(fill)
             )
+    }
+}
+
+struct RuneInspectorSection<Content: View>: View {
+    let padding: CGFloat
+    @ViewBuilder var content: Content
+
+    init(
+        padding: CGFloat = 14,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.padding = padding
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RuneSurfaceBackground(kind: .inset))
+    }
+}
+
+struct RuneInspectorInfoRow<Value: View>: View {
+    let title: String
+    let systemImage: String
+    let fixedLabelWidth: CGFloat?
+    @ViewBuilder var value: Value
+
+    init(
+        _ title: String,
+        systemImage: String,
+        fixedLabelWidth: CGFloat? = 118,
+        @ViewBuilder value: () -> Value
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.fixedLabelWidth = fixedLabelWidth
+        self.value = value()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                label
+                    .frame(width: fixedLabelWidth, alignment: .leading)
+                value
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                label
+                value
+            }
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 14, alignment: .center)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct RuneInspectorActionRow<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 8) {
+                content
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                content
+            }
+        }
+        .controlSize(.regular)
     }
 }
 
