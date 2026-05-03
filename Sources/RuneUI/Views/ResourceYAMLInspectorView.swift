@@ -53,10 +53,12 @@ struct ResourceYAMLInspectorPane: View {
     let canApplyMutations: Bool
     let validationIssues: [YAMLValidationIssue]
     let isValidating: Bool
+    let canUndoEdit: Bool
     @Binding var isInlineEditing: Bool
     let inlineEditorImplementation: ManifestInlineEditorImplementation
     let onApply: () -> Void
     let onOpenEditor: () -> Void
+    let onUndoEdit: () -> Void
     let onRevert: () -> Void
     let onImport: () -> Void
     let onExport: () -> Void
@@ -102,6 +104,13 @@ struct ResourceYAMLInspectorPane: View {
                     Button("Edit…", action: onOpenEditor)
                         .buttonStyle(.bordered)
                         .disabled(yamlText.isEmpty)
+
+                    Button("Undo") {
+                        onUndoEdit()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!canUndoEdit)
+                    .help("Restore the previous YAML draft where Rune has a local edit snapshot")
 
                     Button("Revert") {
                         onRevert()
@@ -171,7 +180,9 @@ struct ResourceYAMLEditorSheetView: View {
     let hasUnsavedEdits: Bool
     let validationIssues: [YAMLValidationIssue]
     let isValidating: Bool
+    let canUndoEdit: Bool
     let onApply: () -> Void
+    let onUndoEdit: () -> Void
     let onRevert: () -> Void
     let onImport: () -> Void
     let onExport: () -> Void
@@ -212,6 +223,10 @@ struct ResourceYAMLEditorSheetView: View {
                     Button("Revert", action: onRevert)
                         .buttonStyle(.bordered)
                         .disabled(!hasUnsavedEdits)
+
+                    Button("Undo", action: onUndoEdit)
+                        .buttonStyle(.bordered)
+                        .disabled(!canUndoEdit)
 
                     Button("Import…", action: onImport)
                         .buttonStyle(.bordered)

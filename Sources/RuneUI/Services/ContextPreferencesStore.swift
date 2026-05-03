@@ -3,6 +3,8 @@ import Foundation
 public protocol ContextPreferencesStoring {
     func loadFavoriteContextNames() -> Set<String>
     func saveFavoriteContextNames(_ names: Set<String>)
+    func loadFavoriteResourceIDs() -> Set<String>
+    func saveFavoriteResourceIDs(_ ids: Set<String>)
     func loadPreferredNamespace(for contextName: String) -> String?
     func savePreferredNamespace(_ namespace: String, for contextName: String)
 }
@@ -13,20 +15,29 @@ public extension ContextPreferencesStoring {
     }
 
     func savePreferredNamespace(_ namespace: String, for contextName: String) {}
+
+    func loadFavoriteResourceIDs() -> Set<String> {
+        []
+    }
+
+    func saveFavoriteResourceIDs(_ ids: Set<String>) {}
 }
 
 public final class UserDefaultsContextPreferencesStore: ContextPreferencesStoring {
     private let defaults: UserDefaults
     private let favoriteContextsKey: String
+    private let favoriteResourcesKey: String
     private let preferredNamespacesKey: String
 
     public init(
         defaults: UserDefaults = .standard,
         favoriteContextsKey: String = "rune.favorite.contexts",
+        favoriteResourcesKey: String = "rune.favorite.resources",
         preferredNamespacesKey: String = "rune.preferred.namespaces"
     ) {
         self.defaults = defaults
         self.favoriteContextsKey = favoriteContextsKey
+        self.favoriteResourcesKey = favoriteResourcesKey
         self.preferredNamespacesKey = preferredNamespacesKey
     }
 
@@ -37,6 +48,14 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
 
     public func saveFavoriteContextNames(_ names: Set<String>) {
         defaults.set(Array(names).sorted(), forKey: favoriteContextsKey)
+    }
+
+    public func loadFavoriteResourceIDs() -> Set<String> {
+        Set(defaults.stringArray(forKey: favoriteResourcesKey) ?? [])
+    }
+
+    public func saveFavoriteResourceIDs(_ ids: Set<String>) {
+        defaults.set(Array(ids).sorted(), forKey: favoriteResourcesKey)
     }
 
     public func loadPreferredNamespace(for contextName: String) -> String? {

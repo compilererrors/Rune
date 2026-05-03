@@ -30,6 +30,15 @@ public enum RuneSettingsKeys {
     public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
     /// Persisted detail/inspector width in the 3-column shell.
     public static let layoutDetailWidth = "rune.settings.layout.detailWidth"
+    /// Monospaced terminal font size used by pod shell transcripts and prompts.
+    public static let terminalFontSize = "rune.settings.terminal.fontSize"
+    public static let terminalFontSizeDefault = 12.0
+    public static let terminalFontSizeMinimum = 10.0
+    public static let terminalFontSizeMaximum = 20.0
+
+    public static func clampedTerminalFontSize(_ value: Double) -> Double {
+        min(terminalFontSizeMaximum, max(terminalFontSizeMinimum, value))
+    }
 
     public static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -54,7 +63,8 @@ public enum RuneSettingsKeys {
             keyBindingPortForward: RuneKeyBindingAction.portForward.defaultShortcut.storageValue,
             keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
             layoutSidebarWidth: 280.0,
-            layoutDetailWidth: 440.0
+            layoutDetailWidth: 440.0,
+            terminalFontSize: terminalFontSizeDefault
         ])
     }
 }
@@ -78,6 +88,17 @@ public extension UserDefaults {
     var runeBackgroundPrefetchOtherContexts: Bool {
         get { (object(forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) as? Bool) ?? false }
         set { set(newValue, forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) }
+    }
+
+    var runeTerminalFontSize: Double {
+        get {
+            let raw = (object(forKey: RuneSettingsKeys.terminalFontSize) as? Double)
+                ?? RuneSettingsKeys.terminalFontSizeDefault
+            return RuneSettingsKeys.clampedTerminalFontSize(raw)
+        }
+        set {
+            set(RuneSettingsKeys.clampedTerminalFontSize(newValue), forKey: RuneSettingsKeys.terminalFontSize)
+        }
     }
 
     func runeCustomLogPresetConfig(slot: RuneCustomLogPresetSlot) -> RuneCustomLogPresetConfig {

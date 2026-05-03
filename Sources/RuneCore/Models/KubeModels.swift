@@ -470,6 +470,69 @@ public struct PodExecResult: Codable, Sendable, Equatable {
     }
 }
 
+public struct WriteAuditEntry: Identifiable, Hashable, Codable, Sendable {
+    public let id: UUID
+    public let timestamp: Date
+    public let action: String
+    public let contextName: String
+    public let namespace: String
+    public let resource: String
+    public let status: String
+    public let message: String
+
+    public init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        action: String,
+        contextName: String,
+        namespace: String,
+        resource: String,
+        status: String,
+        message: String
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.action = action
+        self.contextName = contextName
+        self.namespace = namespace
+        self.resource = resource
+        self.status = status
+        self.message = message
+    }
+}
+
+public struct OperatorResourceSummary: Identifiable, Hashable, Codable, Sendable {
+    public let family: String
+    public let kind: String
+    public let apiPath: String
+    public let name: String
+    public let namespace: String?
+    public let status: String
+    public let message: String
+
+    public init(
+        family: String,
+        kind: String,
+        apiPath: String,
+        name: String,
+        namespace: String?,
+        status: String,
+        message: String
+    ) {
+        self.family = family
+        self.kind = kind
+        self.apiPath = apiPath
+        self.name = name
+        self.namespace = namespace
+        self.status = status
+        self.message = message
+    }
+
+    public var id: String {
+        "\(family)|\(kind)|\(namespace ?? "_cluster")|\(name)"
+    }
+}
+
 public enum PodTerminalSessionStatus: String, Codable, Sendable {
     case connecting
     case connected

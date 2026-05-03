@@ -9,6 +9,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var contexts: [KubeContext] = []
     @Published public private(set) var namespaces: [String] = []
     @Published public private(set) var favoriteContextNames: Set<String> = []
+    @Published public private(set) var favoriteResourceIDs: Set<String> = []
 
     @Published public var selectedContext: KubeContext?
     @Published public var selectedNamespace: String = "default"
@@ -54,6 +55,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var secrets: [ClusterResourceSummary] = []
     @Published public private(set) var nodes: [ClusterResourceSummary] = []
     @Published public private(set) var helmReleases: [HelmReleaseSummary] = []
+    @Published public private(set) var operatorResources: [OperatorResourceSummary] = []
     @Published public private(set) var rbacRoles: [ClusterResourceSummary] = []
     @Published public private(set) var rbacRoleBindings: [ClusterResourceSummary] = []
     @Published public private(set) var rbacClusterRoles: [ClusterResourceSummary] = []
@@ -79,6 +81,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var resourceYAML: String = ""
     /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
+    @Published public private(set) var resourceYAMLUndoSnapshot: String?
     @Published public private(set) var resourceYAMLValidationIssues: [YAMLValidationIssue] = []
     @Published public private(set) var isValidatingResourceYAML = false
     /// Read-only describe output Rune fetched for the selected resource (not user-editable).
@@ -90,7 +93,10 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var helmManifest: String = ""
     @Published public private(set) var helmHistory: [HelmReleaseRevision] = []
     @Published public private(set) var lastExecResult: PodExecResult?
+    @Published public private(set) var writeAuditLog: [WriteAuditEntry] = []
     @Published public private(set) var terminalSession: PodTerminalSession?
+    @Published public private(set) var terminalSessions: [PodTerminalSession] = []
+    @Published public private(set) var activeTerminalSessionID: String?
     @Published public private(set) var portForwardSessions: [PortForwardSession] = []
 
     @Published public var contextSearchQuery: String = ""
@@ -116,6 +122,10 @@ public final class RuneAppState: ObservableObject {
         favoriteContextNames = names
     }
 
+    public func setFavoriteResourceIDs(_ ids: Set<String>) {
+        favoriteResourceIDs = ids
+    }
+
     public func toggleFavoriteContext(named contextName: String) {
         if favoriteContextNames.contains(contextName) {
             favoriteContextNames.remove(contextName)
@@ -126,6 +136,18 @@ public final class RuneAppState: ObservableObject {
 
     public func isFavorite(_ context: KubeContext) -> Bool {
         favoriteContextNames.contains(context.name)
+    }
+
+    public func toggleFavoriteResource(id: String) {
+        if favoriteResourceIDs.contains(id) {
+            favoriteResourceIDs.remove(id)
+        } else {
+            favoriteResourceIDs.insert(id)
+        }
+    }
+
+    public func isFavoriteResource(id: String) -> Bool {
+        favoriteResourceIDs.contains(id)
     }
 
     public func setContexts(_ contexts: [KubeContext]) {
@@ -184,6 +206,10 @@ public final class RuneAppState: ObservableObject {
         helmReleases = releases
         if let selectedHelmRelease, releases.contains(selectedHelmRelease) { return }
         selectedHelmRelease = releases.first
+    }
+
+    public func setOperatorResources(_ resources: [OperatorResourceSummary]) {
+        operatorResources = resources
     }
 
     public func setStatefulSets(_ resources: [ClusterResourceSummary]) {
@@ -492,6 +518,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
         resourceYAMLBaseline = yaml
+        resourceYAMLUndoSnapshot = nil
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         lastResourceYAMLError = nil
@@ -499,6 +526,9 @@ public final class RuneAppState: ObservableObject {
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
     public func updateResourceYAMLDraft(_ yaml: String) {
+        if yaml != resourceYAML, resourceYAMLUndoSnapshot == nil {
+            resourceYAMLUndoSnapshot = resourceYAML
+        }
         resourceYAML = yaml
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
@@ -506,7 +536,20 @@ public final class RuneAppState: ObservableObject {
 
     /// Discards local edits and restores the last loaded cluster YAML.
     public func revertResourceYAMLToClusterSnapshot() {
+        resourceYAMLUndoSnapshot = resourceYAML
         resourceYAML = resourceYAMLBaseline
+        resourceYAMLValidationIssues = []
+        isValidatingResourceYAML = false
+    }
+
+    public var canUndoResourceYAMLEdit: Bool {
+        resourceYAMLUndoSnapshot != nil
+    }
+
+    public func undoResourceYAMLEdit() {
+        guard let previous = resourceYAMLUndoSnapshot else { return }
+        resourceYAMLUndoSnapshot = resourceYAML
+        resourceYAML = previous
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
     }
@@ -535,6 +578,7 @@ public final class RuneAppState: ObservableObject {
     public func beginResourceDetailLoad() {
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        resourceYAMLUndoSnapshot = nil
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         resourceDescribe = ""
@@ -551,6 +595,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAMLError(_ message: String?) {
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        resourceYAMLUndoSnapshot = nil
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         lastResourceYAMLError = message
@@ -569,12 +614,41 @@ public final class RuneAppState: ObservableObject {
         lastExecResult = result
     }
 
+    public func appendWriteAuditEntry(_ entry: WriteAuditEntry) {
+        writeAuditLog.insert(entry, at: 0)
+        if writeAuditLog.count > 200 {
+            writeAuditLog.removeLast(writeAuditLog.count - 200)
+        }
+    }
+
     public func setTerminalSession(_ session: PodTerminalSession?) {
+        guard let session else {
+            if let activeTerminalSessionID {
+                terminalSessions.removeAll { $0.id == activeTerminalSessionID }
+            }
+            activeTerminalSessionID = terminalSessions.first?.id
+            terminalSession = terminalSessions.first
+            return
+        }
+
+        if let index = terminalSessions.firstIndex(where: { $0.id == session.id }) {
+            terminalSessions[index] = session
+        } else {
+            terminalSessions.append(session)
+        }
+        activeTerminalSessionID = session.id
+        terminalSession = session
+    }
+
+    public func selectTerminalSession(id: String) {
+        guard let session = terminalSessions.first(where: { $0.id == id }) else { return }
+        activeTerminalSessionID = id
         terminalSession = session
     }
 
     public func appendTerminalSessionOutput(id: String, text: String) {
-        guard var session = terminalSession, session.id == id, !text.isEmpty else { return }
+        guard let index = terminalSessions.firstIndex(where: { $0.id == id }), !text.isEmpty else { return }
+        var session = terminalSessions[index]
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,
@@ -585,7 +659,10 @@ public final class RuneAppState: ObservableObject {
             status: session.status,
             lastExitCode: session.lastExitCode
         )
-        terminalSession = session
+        terminalSessions[index] = session
+        if activeTerminalSessionID == id {
+            terminalSession = session
+        }
     }
 
     public func appendTerminalSessionCommandEcho(id: String, command: String) {
@@ -594,7 +671,8 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func updateTerminalSessionStatus(id: String, status: PodTerminalSessionStatus, exitCode: Int32? = nil) {
-        guard var session = terminalSession, session.id == id else { return }
+        guard let index = terminalSessions.firstIndex(where: { $0.id == id }) else { return }
+        var session = terminalSessions[index]
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,
@@ -605,11 +683,17 @@ public final class RuneAppState: ObservableObject {
             status: status,
             lastExitCode: exitCode ?? session.lastExitCode
         )
-        terminalSession = session
+        terminalSessions[index] = session
+        if activeTerminalSessionID == id {
+            terminalSession = session
+        }
     }
 
     public func clearTerminalSessionTranscript() {
-        guard var session = terminalSession else { return }
+        guard let id = activeTerminalSessionID,
+              let index = terminalSessions.firstIndex(where: { $0.id == id })
+        else { return }
+        var session = terminalSessions[index]
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,
@@ -620,6 +704,7 @@ public final class RuneAppState: ObservableObject {
             status: session.status,
             lastExitCode: session.lastExitCode
         )
+        terminalSessions[index] = session
         terminalSession = session
     }
 

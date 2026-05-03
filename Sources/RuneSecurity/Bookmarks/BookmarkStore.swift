@@ -11,12 +11,12 @@ public struct BookmarkRecord: Codable, Hashable, Sendable {
     }
 }
 
-public protocol BookmarkStore {
+public protocol BookmarkStore: Sendable {
     func loadRecords() throws -> [BookmarkRecord]
     func saveRecords(_ records: [BookmarkRecord]) throws
 }
 
-public final class UserDefaultsBookmarkStore: BookmarkStore {
+public final class UserDefaultsBookmarkStore: BookmarkStore, @unchecked Sendable {
     private let defaults: UserDefaults
     private let storageKey: String
 
@@ -39,7 +39,7 @@ public final class UserDefaultsBookmarkStore: BookmarkStore {
     }
 }
 
-public final class BookmarkManager {
+public final class BookmarkManager: @unchecked Sendable {
     private let store: BookmarkStore
 
     public init(store: BookmarkStore) {

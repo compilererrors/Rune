@@ -77,6 +77,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoLines) private var customTwoLinesRaw = "99999"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw = "6"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
+    @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @State private var cacheClearStatus: String?
     @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
 
@@ -150,7 +151,45 @@ public struct RunePreferencesView: View {
                     }
                 }
             }
+
+            settingsSection("Terminal") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("Font size")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 12)
+                        Text("\(Int(clampedTerminalFontSize.rounded())) pt")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Slider(
+                            value: Binding(
+                                get: { clampedTerminalFontSize },
+                                set: { terminalFontSize = RuneSettingsKeys.clampedTerminalFontSize($0) }
+                            ),
+                            in: RuneSettingsKeys.terminalFontSizeMinimum...RuneSettingsKeys.terminalFontSizeMaximum,
+                            step: 1
+                        )
+
+                        Button("Reset") {
+                            terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Text("Applies to pod shell transcripts and the command prompt.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
+    }
+
+    private var clampedTerminalFontSize: Double {
+        RuneSettingsKeys.clampedTerminalFontSize(terminalFontSize)
     }
 
     private var keyBindingsSettingsForm: some View {

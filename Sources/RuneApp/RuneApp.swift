@@ -7,8 +7,6 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
     private var didScheduleActivation = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        RuneSettingsKeys.registerDefaults()
-        RuneLaunchEnvironment.applyProcessOverrides()
         NSApp.setActivationPolicy(.regular)
         scheduleForegroundActivation(reason: "didFinishLaunching")
     }
@@ -21,7 +19,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
         guard !didScheduleActivation else { return }
         didScheduleActivation = true
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
 
             if let window = NSApp.windows.first {
@@ -41,7 +39,13 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct RuneApplication: App {
     @NSApplicationDelegateAdaptor(RuneAppDelegate.self) private var appDelegate
-    @StateObject private var viewModel = RuneAppViewModel()
+    @StateObject private var viewModel: RuneAppViewModel
+
+    init() {
+        RuneSettingsKeys.registerDefaults()
+        RuneLaunchEnvironment.applyProcessOverrides()
+        _viewModel = StateObject(wrappedValue: RuneAppViewModel())
+    }
 
     var body: some Scene {
         WindowGroup("Rune") {
@@ -50,6 +54,10 @@ struct RuneApplication: App {
                     minWidth: RuneWindowLayoutDefaults.minimumWidth,
                     minHeight: RuneWindowLayoutDefaults.minimumHeight
                 )
+                .userActivity("com.rune.app.open") { activity in
+                    activity.title = "Rune"
+                    activity.isEligibleForSearch = true
+                }
         }
         Settings {
             RunePreferencesView()

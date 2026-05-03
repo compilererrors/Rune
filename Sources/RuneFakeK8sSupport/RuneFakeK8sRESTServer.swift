@@ -329,6 +329,30 @@ private struct RuneFakeK8sRouter {
                 return routeNetworkingNamespaced(pathParts: pathParts, namespace: namespace, query: query)
             }
 
+            if pathParts.count == 6,
+               pathParts[0] == "apis",
+               pathParts[3] == "namespaces",
+               cluster.namespaces.contains(where: { $0.name == pathParts[4] }),
+               cluster.operatorResources.contains(where: {
+                   $0.apiGroup == pathParts[1] &&
+                       $0.apiVersion == pathParts[2] &&
+                       $0.namespace == pathParts[4] &&
+                       $0.plural == pathParts[5]
+               }) {
+                return routeOperatorNamespaced(pathParts: pathParts, cluster: cluster, namespace: pathParts[4], query: query)
+            }
+
+            if pathParts.count == 4,
+               pathParts[0] == "apis",
+               cluster.operatorResources.contains(where: {
+                   $0.apiGroup == pathParts[1] &&
+                       $0.apiVersion == pathParts[2] &&
+                       $0.namespace == nil &&
+                       $0.plural == pathParts[3]
+               }) {
+                return routeOperatorClusterScoped(pathParts: pathParts, cluster: cluster, query: query)
+            }
+
             if pathParts.count >= 6,
                Array(pathParts[0...3]) == ["apis", "metrics.k8s.io", "v1beta1", "namespaces"],
                let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }),
@@ -450,6 +474,41 @@ private struct RuneFakeK8sRouter {
         }
     }
 
+    private func routeOperatorNamespaced(
+        pathParts: [String],
+        cluster: RuneFakeK8sCluster,
+        namespace: String,
+        query: [String: String]
+    ) -> RuneFakeK8sHTTPResponse {
+        let matches = cluster.operatorResources.filter { resource in
+            resource.apiGroup == pathParts[1] &&
+                resource.apiVersion == pathParts[2] &&
+                resource.namespace == namespace &&
+                resource.plural == pathParts[5]
+        }
+        guard !matches.isEmpty else {
+            return .json(status: 404, object: status(message: "Unsupported operator namespaced route."))
+        }
+        return .json(status: 200, object: operatorResourceListObject(matches, query: query))
+    }
+
+    private func routeOperatorClusterScoped(
+        pathParts: [String],
+        cluster: RuneFakeK8sCluster,
+        query: [String: String]
+    ) -> RuneFakeK8sHTTPResponse {
+        let matches = cluster.operatorResources.filter { resource in
+            resource.apiGroup == pathParts[1] &&
+                resource.apiVersion == pathParts[2] &&
+                resource.namespace == nil &&
+                resource.plural == pathParts[3]
+        }
+        guard !matches.isEmpty else {
+            return .json(status: 404, object: status(message: "Unsupported operator cluster route."))
+        }
+        return .json(status: 200, object: operatorResourceListObject(matches, query: query))
+    }
+
     private func routeNetworkingNamespaced(
         pathParts: [String],
         namespace: RuneFakeK8sNamespace,
@@ -561,6 +620,46 @@ private struct RuneFakeK8sRouter {
                 "clusterIP": service.clusterIP,
                 "selector": service.selector,
                 "ports": [["name": "http", "port": 80, "targetPort": 8080]]
+            ]
+        ]
+    }
+
+    private func operatorResourceListObject(
+        _ resources: [RuneFakeK8sOperatorResource],
+        query: [String: String]
+    ) -> [String: Any] {
+        let first = resources[0]
+        return listObject(
+            apiVersion: "\(first.apiGroup)/\(first.apiVersion)",
+            kind: "\(first.kind)List",
+            items: resources.map(operatorResourceObject),
+            query: query
+        )
+    }
+
+    private func operatorResourceObject(_ resource: RuneFakeK8sOperatorResource) -> [String: Any] {
+        var metadata: [String: Any] = [
+            "name": resource.name,
+            "uid": "fake-\(resource.kind.lowercased())-\(resource.name)",
+            "creationTimestamp": "2026-04-26T10:00:00Z"
+        ]
+        if let namespace = resource.namespace {
+            metadata["namespace"] = namespace
+        }
+
+        return [
+            "apiVersion": "\(resource.apiGroup)/\(resource.apiVersion)",
+            "kind": resource.kind,
+            "metadata": metadata,
+            "status": [
+                "conditions": [
+                    [
+                        "type": resource.conditionType,
+                        "status": resource.conditionStatus,
+                        "reason": resource.reason,
+                        "message": resource.message
+                    ]
+                ]
             ]
         ]
     }

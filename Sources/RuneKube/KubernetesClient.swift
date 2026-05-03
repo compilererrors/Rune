@@ -229,6 +229,57 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func listOperatorResources(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [OperatorResourceSummary] {
+        struct Definition {
+            let family: String
+            let kind: String
+            let apiPath: String
+        }
+
+        let ns = namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
+        let definitions = [
+            Definition(family: "cert-manager", kind: "Certificates", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/certificates"),
+            Definition(family: "cert-manager", kind: "CertificateRequests", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/certificaterequests"),
+            Definition(family: "cert-manager", kind: "Issuers", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/issuers"),
+            Definition(family: "cert-manager", kind: "ClusterIssuers", apiPath: "/apis/cert-manager.io/v1/clusterissuers"),
+            Definition(family: "Flux", kind: "GitRepositories", apiPath: "/apis/source.toolkit.fluxcd.io/v1/namespaces/\(ns)/gitrepositories"),
+            Definition(family: "Flux", kind: "Kustomizations", apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/\(ns)/kustomizations"),
+            Definition(family: "Flux", kind: "HelmReleases", apiPath: "/apis/helm.toolkit.fluxcd.io/v2/namespaces/\(ns)/helmreleases"),
+            Definition(family: "ArgoCD", kind: "Applications", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/applications"),
+            Definition(family: "ArgoCD", kind: "AppProjects", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/appprojects")
+        ]
+
+        let env = try kubeconfigEnvironment(from: sources)
+        var output: [OperatorResourceSummary] = []
+
+        for definition in definitions {
+            guard let raw = try? await restClient.customCollection(
+                environment: env,
+                contextName: context.name,
+                apiPath: definition.apiPath,
+                timeout: 20
+            ) else {
+                continue
+            }
+            output += Self.parseOperatorResources(
+                raw,
+                family: definition.family,
+                kind: definition.kind,
+                apiPath: definition.apiPath
+            )
+        }
+
+        return output.sorted {
+            if $0.family != $1.family { return $0.family < $1.family }
+            if $0.kind != $1.kind { return $0.kind < $1.kind }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
     public func listStatefulSets(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -2332,6 +2383,51 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             )
         }
     }
+
+    private static func parseOperatorResources(
+        _ raw: String,
+        family: String,
+        kind: String,
+        apiPath: String
+    ) -> [OperatorResourceSummary] {
+        guard
+            let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+            let items = root["items"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        return items.compactMap { item in
+            guard let metadata = item["metadata"] as? [String: Any],
+                  let name = metadata["name"] as? String,
+                  !name.isEmpty
+            else { return nil }
+
+            let namespace = metadata["namespace"] as? String
+            let statusObject = item["status"] as? [String: Any]
+            let condition = (statusObject?["conditions"] as? [[String: Any]])?.last
+            let conditionType = condition?["type"] as? String
+            let conditionStatus = condition?["status"] as? String
+            let reason = condition?["reason"] as? String
+            let message = condition?["message"] as? String
+
+            let status = [conditionType, conditionStatus]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+
+            return OperatorResourceSummary(
+                family: family,
+                kind: kind,
+                apiPath: apiPath,
+                name: name,
+                namespace: namespace,
+                status: status.isEmpty ? (reason ?? "Found") : status,
+                message: message ?? reason ?? ""
+            )
+        }
+    }
+
 }
 
 private struct HelmStorageObject {
@@ -2592,6 +2688,7 @@ private enum GzipInflator {
         }
         throw RuneError.parseError(message: "Helm release payload could not be decompressed.")
     }
+
 }
 
 private actor PortForwardRegistry {

@@ -94,6 +94,21 @@ public struct RuneFakeK8sCluster: Sendable {
     public let defaultNamespace: String
     public let namespaces: [RuneFakeK8sNamespace]
     public let nodes: [RuneFakeK8sNode]
+    public let operatorResources: [RuneFakeK8sOperatorResource]
+
+    public init(
+        contextName: String,
+        defaultNamespace: String,
+        namespaces: [RuneFakeK8sNamespace],
+        nodes: [RuneFakeK8sNode],
+        operatorResources: [RuneFakeK8sOperatorResource] = []
+    ) {
+        self.contextName = contextName
+        self.defaultNamespace = defaultNamespace
+        self.namespaces = namespaces
+        self.nodes = nodes
+        self.operatorResources = operatorResources
+    }
 }
 
 public struct RuneFakeK8sNamespace: Sendable {
@@ -134,4 +149,41 @@ public struct RuneFakeK8sNode: Sendable {
     public let internalIP: String
     public let cpu: String
     public let memory: String
+}
+
+public struct RuneFakeK8sOperatorResource: Sendable {
+    public let apiGroup: String
+    public let apiVersion: String
+    public let plural: String
+    public let kind: String
+    public let name: String
+    public let namespace: String?
+    public let conditionType: String
+    public let conditionStatus: String
+    public let reason: String
+    public let message: String
+
+    public init(
+        apiGroup: String,
+        apiVersion: String,
+        plural: String,
+        kind: String,
+        name: String,
+        namespace: String?,
+        conditionType: String,
+        conditionStatus: String,
+        reason: String,
+        message: String
+    ) {
+        self.apiGroup = apiGroup
+        self.apiVersion = apiVersion
+        self.plural = plural
+        self.kind = kind
+        self.name = name
+        self.namespace = namespace
+        self.conditionType = conditionType
+        self.conditionStatus = conditionStatus
+        self.reason = reason
+        self.message = message
+    }
 }

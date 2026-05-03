@@ -71,6 +71,89 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(items?.count, 1)
     }
 
+    func testOperatorResourceProbeReturnsEmptyWhenCRDsAreAbsent() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let resources = try await client.listOperatorResources(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone"
+        )
+
+        XCTAssertTrue(resources.isEmpty)
+    }
+
+    func testOperatorResourceProbeReadsCertManagerFluxAndArgoCDResources() async throws {
+        let base = RuneFakeK8sFixture.defaultContexts[0]
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: base.contextName,
+                defaultNamespace: base.defaultNamespace,
+                namespaces: base.namespaces,
+                nodes: base.nodes,
+                operatorResources: [
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "cert-manager.io",
+                        apiVersion: "v1",
+                        plural: "certificates",
+                        kind: "Certificate",
+                        name: "web-tls",
+                        namespace: "alpha-zone",
+                        conditionType: "Ready",
+                        conditionStatus: "True",
+                        reason: "Issued",
+                        message: "Certificate is up to date"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "source.toolkit.fluxcd.io",
+                        apiVersion: "v1",
+                        plural: "gitrepositories",
+                        kind: "GitRepository",
+                        name: "platform",
+                        namespace: "alpha-zone",
+                        conditionType: "Ready",
+                        conditionStatus: "False",
+                        reason: "FetchFailed",
+                        message: "Waiting for repository access"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "argoproj.io",
+                        apiVersion: "v1alpha1",
+                        plural: "applications",
+                        kind: "Application",
+                        name: "control-plane",
+                        namespace: "alpha-zone",
+                        conditionType: "Synced",
+                        conditionStatus: "True",
+                        reason: "Healthy",
+                        message: "Application is synced"
+                    )
+                ]
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let resources = try await client.listOperatorResources(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone"
+        )
+
+        XCTAssertEqual(Set(resources.map(\.family)), Set(["ArgoCD", "Flux", "cert-manager"]))
+        XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.kind, "Certificates")
+        XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.status, "Ready True")
+        XCTAssertEqual(resources.first(where: { $0.name == "platform" })?.message, "Waiting for repository access")
+        XCTAssertEqual(resources.first(where: { $0.name == "control-plane" })?.apiPath, "/apis/argoproj.io/v1alpha1/namespaces/alpha-zone/applications")
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-rest-fake-kubeconfig-\(UUID().uuidString).yaml")

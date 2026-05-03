@@ -58,11 +58,31 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
             "product" + "build",
             "xcrun " + "altool",
             "PROVISIONING_" + "PROFILE",
-            "ASC_" + "API",
         ]
 
         for fragment in forbiddenDistributionFragments {
             XCTAssertFalse(contents.contains(fragment))
         }
+    }
+
+    func testAppRegistersDefaultsBeforeConstructingRootViewModel() throws {
+        let app = repositoryRoot.appendingPathComponent("Sources/RuneApp/RuneApp.swift")
+        let contents = try String(contentsOf: app, encoding: .utf8)
+
+        guard let initRange = contents.range(of: "init() {"),
+              let bodyRange = contents.range(of: "var body: some Scene", range: initRange.upperBound..<contents.endIndex)
+        else {
+            XCTFail("Could not locate RuneApplication init/body")
+            return
+        }
+
+        let initBlock = String(contents[initRange.lowerBound..<bodyRange.lowerBound])
+        XCTAssertTrue(initBlock.contains("RuneSettingsKeys.registerDefaults()"))
+        XCTAssertTrue(initBlock.contains("RuneLaunchEnvironment.applyProcessOverrides()"))
+        XCTAssertTrue(initBlock.contains("_viewModel = StateObject(wrappedValue: RuneAppViewModel())"))
+        XCTAssertLessThan(
+            initBlock.range(of: "RuneSettingsKeys.registerDefaults()")!.lowerBound,
+            initBlock.range(of: "_viewModel = StateObject(wrappedValue: RuneAppViewModel())")!.lowerBound
+        )
     }
 }

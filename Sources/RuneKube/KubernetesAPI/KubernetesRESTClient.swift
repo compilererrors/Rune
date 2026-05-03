@@ -102,6 +102,23 @@ final class KubernetesRESTClient: @unchecked Sendable {
         ).body
     }
 
+    func customCollection(
+        environment: [String: String],
+        contextName: String,
+        apiPath: String,
+        timeout: TimeInterval
+    ) async throws -> String {
+        try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "GET",
+            apiPath: apiPath,
+            headers: ["Accept": "application/json"],
+            body: nil,
+            timeout: timeout
+        ).body
+    }
+
     func resourceJSON(
         environment: [String: String],
         contextName: String,

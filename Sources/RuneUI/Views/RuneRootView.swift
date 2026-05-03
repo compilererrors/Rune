@@ -528,6 +528,11 @@ public struct RuneRootView: View {
                     .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+
+            if shouldShowLaunchExperience {
+                launchExperienceOverlay
+                    .zIndex(10)
+            }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
@@ -577,6 +582,43 @@ public struct RuneRootView: View {
             persistPaneWidthsIfNeeded(paneWidths)
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
+        .animation(.easeOut(duration: 0.16), value: shouldShowLaunchExperience)
+    }
+
+    private var shouldShowLaunchExperience: Bool {
+        !debugDisableBootstrap && viewModel.isLaunchExperienceVisible
+    }
+
+    private var launchExperienceOverlay: some View {
+        ZStack {
+            RuneGlassPaneSurface(role: .window)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                Image("rune_logo_main", bundle: .module)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 76, height: 76)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 5) {
+                    Text("Rune")
+                        .font(.title2.weight(.bold))
+
+                    Text("Loading workspace")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.top, 2)
+            }
+            .padding(22)
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Rune loading workspace")
     }
 
     private var configuredMainSplitContainer: some View {
@@ -640,6 +682,12 @@ public struct RuneRootView: View {
                     }
                     .help("Reload")
                     .keyboardShortcut("r", modifiers: .command)
+
+                    Toggle(isOn: $viewModel.isLiveStatusUpdatesEnabled) {
+                        Image(systemName: viewModel.isLiveStatusUpdatesEnabled ? "dot.radiowaves.left.and.right" : "pause.circle")
+                    }
+                    .toggleStyle(.button)
+                    .help(viewModel.isLiveStatusUpdatesEnabled ? "Live status updates are on" : "Turn on live status updates")
 
                     Button {
                         viewModel.presentCommandPalette()
@@ -2108,6 +2156,10 @@ public struct RuneRootView: View {
                                 .padding(.vertical, 2)
                                 .background(Color.blue.opacity(0.22), in: Capsule())
                                 .foregroundStyle(.blue)
+                            if viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) {
+                                Image(systemName: "star.fill")
+                                    .foregroundStyle(Color.yellow)
+                            }
                         }
                         .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
                     }
@@ -2174,6 +2226,10 @@ public struct RuneRootView: View {
                                         .padding(.vertical, 2)
                                         .background(Color.purple.opacity(0.22), in: Capsule())
                                         .foregroundStyle(.purple)
+                                    if viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) {
+                                        Image(systemName: "star.fill")
+                                            .foregroundStyle(Color.yellow)
+                                    }
                                 }
                                 .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
                             }
@@ -2307,6 +2363,12 @@ public struct RuneRootView: View {
                 .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
                 .foregroundStyle(statusColor(for: pod.status))
                 .help("Pod phase from the cluster")
+
+            if viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(Color.yellow)
+                    .frame(width: 14)
+            }
         }
         .runeListRowCard(
             isSelected: viewModel.state.selectedPod?.id == pod.id,
@@ -2318,6 +2380,8 @@ public struct RuneRootView: View {
     private var helmPane: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                operatorResourceViews
+
                 if viewModel.state.isLoading, viewModel.visibleHelmReleases.isEmpty {
                     inspectorEmptyState("Loading Helm releases", symbol: "hourglass")
                 } else if viewModel.visibleHelmReleases.isEmpty {
@@ -2368,6 +2432,54 @@ public struct RuneRootView: View {
         }
         .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var operatorResourceViews: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Operator Views")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if viewModel.visibleOperatorResources.isEmpty {
+                Text("No cert-manager, Flux, or ArgoCD resources found in this namespace.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(viewModel.visibleOperatorResources) { resource in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("\(resource.family) · \(resource.kind)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(resource.status)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                        Text(resource.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .help(resource.name)
+                        if !resource.message.isEmpty {
+                            Text(resource.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .help(resource.message)
+                        }
+                    }
+                    .runeListRowCard(isSelected: false, verticalPadding: 5)
+                    .contextMenu {
+                        copyMenuItem(value: resource.name, label: "\(resource.kind) name")
+                        if let namespace = resource.namespace {
+                            copyMenuItem(value: namespace, label: "namespace")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.bottom, 8)
     }
 
     private var eventsPane: some View {
@@ -2513,6 +2625,40 @@ public struct RuneRootView: View {
 
                 Button("Save Bundle") {
                     viewModel.saveSupportBundle()
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Write Audit")
+                    .font(.headline)
+
+                if viewModel.state.writeAuditLog.isEmpty {
+                    Text("No write actions in this session.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(viewModel.state.writeAuditLog.prefix(8)) { entry in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(entry.action)
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer(minLength: 8)
+                                Text(entry.status)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(entry.status == "Succeeded" ? Color.green : Color.red)
+                            }
+                            Text(entry.resource)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .help(entry.resource)
+                            Text("\(entry.contextName) · \(entry.namespace) · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
             }
 
@@ -3192,7 +3338,9 @@ public struct RuneRootView: View {
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
+            canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onUndoEdit: { viewModel.undoResourceYAMLEdit() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
             onImport: { viewModel.importResourceYAMLFromFile() },
             onExport: { viewModel.saveCurrentResourceYAML() },
@@ -3211,10 +3359,12 @@ public struct RuneRootView: View {
             canApplyMutations: viewModel.canApplyClusterMutations,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
+            canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
             isInlineEditing: $yamlManifestIsEditing,
             inlineEditorImplementation: resolvedManifestInlineEditorImplementation,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onOpenEditor: { openYAMLEditorSheet() },
+            onUndoEdit: { viewModel.undoResourceYAMLEdit() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
             onImport: { viewModel.importResourceYAMLFromFile() },
             onExport: { viewModel.saveCurrentResourceYAML() },
@@ -3370,6 +3520,8 @@ public struct RuneRootView: View {
     private var terminalPane: some View {
         ResourceTerminalWorkspaceView(
             session: viewModel.state.terminalSession,
+            sessions: viewModel.state.terminalSessions,
+            activeSessionID: viewModel.state.activeTerminalSessionID,
             selectedPod: viewModel.state.selectedPod,
             availablePods: viewModel.state.pods,
             portForwardSessions: viewModel.state.portForwardSessions,
@@ -3381,6 +3533,9 @@ public struct RuneRootView: View {
             portForwardRemotePort: $viewModel.portForwardRemotePortInput,
             portForwardAddress: $viewModel.portForwardAddressInput,
             onStartSession: { pod in viewModel.startTerminalSession(for: pod) },
+            onReconnectSession: { session, pod in
+                viewModel.startTerminalSession(for: pod, replacingSessionID: session.id)
+            },
             onStartPortForward: { pod in
                 viewModel.startPortForward(targetKind: .pod, targetName: pod.name)
             },
@@ -3392,6 +3547,8 @@ public struct RuneRootView: View {
             },
             onSend: { viewModel.sendTerminalSessionInput() },
             onDisconnect: { viewModel.stopTerminalSession() },
+            onSelectSession: { id in viewModel.selectTerminalSession(id: id) },
+            onCloseSession: { id in viewModel.closeTerminalSession(id: id) },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
         )
         .id("terminal")
@@ -3500,6 +3657,11 @@ public struct RuneRootView: View {
                                     .lineLimit(1)
                             }
                             Spacer()
+                            if viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) {
+                                Image(systemName: "star.fill")
+                                    .foregroundStyle(Color.yellow)
+                                    .help("Favorite resource")
+                            }
                             if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
                                 RuneChip {
                                     Text(namespace)
@@ -4625,6 +4787,15 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func podResourceContextMenu(_ pod: PodSummary) -> some View {
         Button {
+            viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+        } label: {
+            Label(
+                viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) ? "Remove Favorite" : "Favorite Resource",
+                systemImage: viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) ? "star.slash" : "star"
+            )
+        }
+        Divider()
+        Button {
             viewModel.selectPod(pod)
             podInspectorTab = .logs
             viewModel.reloadLogsForSelection()
@@ -4664,6 +4835,15 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func deploymentResourceContextMenu(_ deployment: DeploymentSummary) -> some View {
         Button {
+            viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
+        } label: {
+            Label(
+                viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) ? "Remove Favorite" : "Favorite Resource",
+                systemImage: viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) ? "star.slash" : "star"
+            )
+        }
+        Divider()
+        Button {
             viewModel.selectDeployment(deployment)
             deploymentInspectorTab = .unifiedLogs
             viewModel.reloadLogsForSelection()
@@ -4702,6 +4882,15 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private func serviceResourceContextMenu(_ service: ServiceSummary) -> some View {
+        Button {
+            viewModel.toggleFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
+        } label: {
+            Label(
+                viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) ? "Remove Favorite" : "Favorite Resource",
+                systemImage: viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) ? "star.slash" : "star"
+            )
+        }
+        Divider()
         Button {
             viewModel.selectService(service)
             serviceInspectorTab = .unifiedLogs
@@ -4744,6 +4933,15 @@ public struct RuneRootView: View {
         _ resource: ClusterResourceSummary,
         action: @escaping (ClusterResourceSummary?) -> Void
     ) -> some View {
+        Button {
+            viewModel.toggleFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+        } label: {
+            Label(
+                viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) ? "Remove Favorite" : "Favorite Resource",
+                systemImage: viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) ? "star.slash" : "star"
+            )
+        }
+        Divider()
         Button {
             action(resource)
             genericResourceManifestTab = .describe
