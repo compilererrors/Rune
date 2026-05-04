@@ -34,19 +34,23 @@ You can also support development through PayPal:
 
 ## Screenshots
 
-### Core Workspace
+### Featured
+
+[Jump to the full screenshot grid](#full-screenshot-grid).
 
 <p>
-  <img src="assets/screenshot/ui/update260503/overview-context-overview.png" alt="Rune overview" width="49%">
-  <img src="assets/screenshot/ui/update260503/helm-release-overview.png" alt="Rune Helm release overview" width="49%">
+  <img src="assets/screenshot/ui/update260503/overview-context-overview.png" alt="Rune overview" width="100%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/events-pulled-go-to-pod.png" alt="Rune event linked to pod source" width="49%">
-  <img src="assets/screenshot/ui/update260503/terminal-port-forward-pod-shell.png" alt="Rune terminal with pod shell and port-forwarding" width="49%">
+  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune pod YAML editor with validation errors" width="100%">
 </p>
 
-### Workloads
+<p>
+  <img src="assets/screenshot/ui/update260503/terminal-port-forward-pod-shell.png" alt="Rune terminal with pod shell and port-forwarding" width="100%">
+</p>
+
+### Full Screenshot Grid
 
 <p>
   <img src="assets/screenshot/ui/update260503/workloads-pods-pod-overview.png" alt="Rune pod overview" width="49%">
@@ -88,23 +92,15 @@ You can also support development through PayPal:
   <img src="assets/screenshot/ui/update260503/workloads-replicasets-replicaset-yaml-errors.png" alt="Rune ReplicaSet YAML validation" width="49%">
 </p>
 
-### YAML Editing And Validation
-
 <p>
   <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-editor-modal.png" alt="Rune YAML editor" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune YAML validation in editor" width="49%">
-</p>
-
-<p>
   <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors.png" alt="Rune YAML validation error" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors-scrolled.png" alt="Rune YAML validation scrolled" width="49%">
 </p>
 
 <p>
+  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors-scrolled.png" alt="Rune YAML validation scrolled" width="49%">
   <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-from-event.png" alt="Rune pod YAML opened from an event" width="49%">
 </p>
-
-### Networking
 
 <p>
   <img src="assets/screenshot/ui/update260503/networking-services-service-overview.png" alt="Rune service overview" width="49%">
@@ -121,8 +117,6 @@ You can also support development through PayPal:
   <img src="assets/screenshot/ui/update260503/networking-networkpolicies-networkpolicy-yaml.png" alt="Rune network policy YAML" width="49%">
 </p>
 
-### Config, Storage, And RBAC
-
 <p>
   <img src="assets/screenshot/ui/update260503/config-configmaps-configmap-yaml.png" alt="Rune ConfigMap YAML" width="49%">
   <img src="assets/screenshot/ui/update260503/storage-pvcs-pvc-yaml.png" alt="Rune PVC YAML" width="49%">
@@ -130,16 +124,17 @@ You can also support development through PayPal:
 
 <p>
   <img src="assets/screenshot/ui/update260503/rbac-roles-role-yaml.png" alt="Rune RBAC role YAML" width="49%">
+  <img src="assets/screenshot/ui/update260503/helm-release-overview.png" alt="Rune Helm release overview" width="49%">
 </p>
-
-### Terminal And Port Forwarding
 
 <p>
+  <img src="assets/screenshot/ui/update260503/events-pulled-go-to-pod.png" alt="Rune event linked to pod source" width="49%">
   <img src="assets/screenshot/ui/update260503/terminal-port-forward-expanded.png" alt="Rune expanded port-forwarding" width="49%">
-  <img src="assets/screenshot/ui/update260503/terminal-pod-shell-session-picker.png" alt="Rune shell session picker" width="49%">
 </p>
 
-### Command Palette
+<p>
+  <img src="assets/screenshot/ui/update260503/terminal-pod-shell-session-picker.png" alt="Rune shell session picker" width="49%">
+</p>
 
 <p>
   <img src="assets/screenshot/ui/update260503/command-palette-default-actions.png" alt="Rune command palette actions" width="49%">
