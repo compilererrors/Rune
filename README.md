@@ -20,6 +20,18 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 - Move quickly with a command palette and k9s-style resource jumps.
 - Stay local: Rune does not use analytics, tracking, advertising, or telemetry.
 
+## Support Rune
+
+If you want to support Rune development, buy the app on the Mac App Store:
+
+- [Buy RuneApp on the Mac App Store](https://apps.apple.com/us/app/runeapp/id6762515322?mt=12)
+
+You can also support development through PayPal:
+
+- [Send 10 SEK](https://paypal.me/viktornyberg1/10SEK)
+- [Send 19 SEK](https://paypal.me/viktornyberg1/19SEK)
+- [Send 49 SEK](https://paypal.me/viktornyberg1/49SEK)
+
 ## Screenshots
 
 ### Resource Views

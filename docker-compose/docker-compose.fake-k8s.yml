@@ -94,12 +94,17 @@ services:
       - -ec
     volumes:
       - ./generated:/output
+      - ./manifests/common:/common:ro
       - ./manifests/orbit:/manifests:ro
     command:
       - |
           until kubectl --kubeconfig /output/orbit-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
             sleep 2
           done
+          until kubectl --kubeconfig /output/orbit-internal.yaml apply -f /common/operator-crds.yaml; do
+            sleep 4
+          done
+          kubectl --kubeconfig /output/orbit-internal.yaml wait --for=condition=Established crd --all --timeout=60s
           until kubectl --kubeconfig /output/orbit-internal.yaml apply -f /manifests/bootstrap.yaml; do
             sleep 4
           done
@@ -198,12 +203,17 @@ services:
       - -ec
     volumes:
       - ./generated:/output
+      - ./manifests/common:/common:ro
       - ./manifests/lattice:/manifests:ro
     command:
       - |
           until kubectl --kubeconfig /output/lattice-internal.yaml get --raw=/readyz >/dev/null 2>&1; do
             sleep 2
           done
+          until kubectl --kubeconfig /output/lattice-internal.yaml apply -f /common/operator-crds.yaml; do
+            sleep 4
+          done
+          kubectl --kubeconfig /output/lattice-internal.yaml wait --for=condition=Established crd --all --timeout=60s
           until kubectl --kubeconfig /output/lattice-internal.yaml apply -f /manifests/bootstrap.yaml; do
             sleep 4
           done

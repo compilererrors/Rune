@@ -16,6 +16,7 @@ assets/readme/kubeconfig.fake-cluster.yaml
 
 # Local fake-k8s runtime state, wrappers, kubeconfig, and shell env exports.
 .rune-fake-k8s/
+.rune-compose-fake-k8s/
 
 # Generated test reports / local CI exports.
 rune-smoke-swift-testing.xml

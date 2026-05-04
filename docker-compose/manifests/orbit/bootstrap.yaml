@@ -798,3 +798,198 @@ spec:
                 name: charlie-gate
                 port:
                   number: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sh.helm.release.v1.orbit-lens.v3
+  namespace: alpha-zone
+  labels:
+    owner: helm
+    name: orbit-lens
+    status: deployed
+    version: "3"
+data:
+  release: |
+    {
+      "name": "orbit-lens",
+      "namespace": "alpha-zone",
+      "version": 3,
+      "info": {
+        "last_deployed": "2026-04-26T10:00:00Z",
+        "status": "deployed",
+        "description": "Synthetic screenshot release"
+      },
+      "chart": {
+        "metadata": {
+          "name": "orbit-lens-chart",
+          "version": "1.4.2",
+          "appVersion": "2.8.0"
+        }
+      },
+      "config": {
+        "replicaCount": 6,
+        "image": {
+          "repository": "nginx",
+          "tag": "1.27-alpine"
+        },
+        "service": {
+          "port": 8080
+        },
+        "resources": {
+          "requests": {
+            "cpu": "50m",
+            "memory": "64Mi"
+          }
+        }
+      },
+      "manifest": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: orbit-lens\n  namespace: alpha-zone\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: orbit-lens\n  namespace: alpha-zone\n"
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sh.helm.release.v1.cinder-pulse.v2
+  namespace: bravo-zone
+  labels:
+    owner: helm
+    name: cinder-pulse
+    status: deployed
+    version: "2"
+data:
+  release: |
+    {
+      "name": "cinder-pulse",
+      "namespace": "bravo-zone",
+      "version": 2,
+      "info": {
+        "last_deployed": "2026-04-26T10:05:00Z",
+        "status": "deployed",
+        "description": "Synthetic screenshot release"
+      },
+      "chart": {
+        "metadata": {
+          "name": "cinder-pulse-chart",
+          "version": "0.9.5",
+          "appVersion": "1.6.1"
+        }
+      },
+      "config": {
+        "replicaCount": 5,
+        "featureFlags": {
+          "shadowTraffic": true,
+          "auditTrail": true
+        },
+        "service": {
+          "port": 8080
+        }
+      },
+      "manifest": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: cinder-pulse\n  namespace: bravo-zone\n---\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: cinder-pulse\n  namespace: bravo-zone\n"
+    }
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: rune-root-ca
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Bootstrapped
+      message: Synthetic root issuer for Rune screenshots.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: alpha-selfsigned
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Verified
+      message: Issuer is ready for alpha-zone test certificates.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: orbit-lens-tls
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Issued
+      message: Certificate is available.
+---
+apiVersion: cert-manager.io/v1
+kind: CertificateRequest
+metadata:
+  name: orbit-lens-tls-3
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Approved
+      status: "True"
+      reason: PolicyApproved
+      message: Request approved by synthetic policy.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: orbit-platform
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Succeeded
+      message: Stored artifact for main branch.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: orbit-workloads
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconciliationSucceeded
+      message: Applied alpha-zone manifests.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: orbit-lens
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: InstallSucceeded
+      message: Release orbit-lens is deployed.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: orbit-control-plane
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Synced
+      status: "True"
+      reason: ComparisonSucceeded
+      message: Application is synchronized.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: orbit-project
+  namespace: alpha-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Valid
+      message: Project destinations and sources are valid.

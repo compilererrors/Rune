@@ -824,3 +824,189 @@ spec:
                 name: foxtrot-orchestrator
                 port:
                   number: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sh.helm.release.v1.foxtrot-orchestrator.v4
+  namespace: foxtrot-zone
+  labels:
+    owner: helm
+    name: foxtrot-orchestrator
+    status: deployed
+    version: "4"
+data:
+  release: |
+    {
+      "name": "foxtrot-orchestrator",
+      "namespace": "foxtrot-zone",
+      "version": 4,
+      "info": {
+        "last_deployed": "2026-04-26T10:10:00Z",
+        "status": "deployed",
+        "description": "Synthetic screenshot release"
+      },
+      "chart": {
+        "metadata": {
+          "name": "foxtrot-orchestrator-chart",
+          "version": "2.1.0",
+          "appVersion": "3.3.7"
+        }
+      },
+      "config": {
+        "replicaCount": 4,
+        "image": {
+          "repository": "busybox",
+          "tag": "1.36"
+        },
+        "jobs": {
+          "nightlyKnot": true,
+          "deltaReplay": true
+        }
+      },
+      "manifest": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: foxtrot-orchestrator\n  namespace: foxtrot-zone\n---\napiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: nightly-knot-loop\n  namespace: foxtrot-zone\n"
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sh.helm.release.v1.echo-bridge.v1
+  namespace: echo-zone
+  labels:
+    owner: helm
+    name: echo-bridge
+    status: deployed
+    version: "1"
+data:
+  release: |
+    {
+      "name": "echo-bridge",
+      "namespace": "echo-zone",
+      "version": 1,
+      "info": {
+        "last_deployed": "2026-04-26T10:15:00Z",
+        "status": "deployed",
+        "description": "Synthetic screenshot release"
+      },
+      "chart": {
+        "metadata": {
+          "name": "echo-bridge-chart",
+          "version": "0.4.0",
+          "appVersion": "1.0.0"
+        }
+      },
+      "config": {
+        "replicaCount": 3,
+        "networking": {
+          "ingress": true
+        }
+      },
+      "manifest": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: echo-bridge\n  namespace: echo-zone\n"
+    }
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: lattice-root-ca
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Bootstrapped
+      message: Synthetic root issuer for Rune screenshots.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: delta-selfsigned
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Verified
+      message: Issuer is ready for delta-zone test certificates.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aurora-signal-tls
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Issued
+      message: Certificate is available.
+---
+apiVersion: cert-manager.io/v1
+kind: CertificateRequest
+metadata:
+  name: aurora-signal-tls-4
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Approved
+      status: "True"
+      reason: PolicyApproved
+      message: Request approved by synthetic policy.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: lattice-platform
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Succeeded
+      message: Stored artifact for release branch.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: lattice-workloads
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconciliationSucceeded
+      message: Applied delta-zone manifests.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: aurora-signal-weaver
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: InstallSucceeded
+      message: Release aurora-signal-weaver is deployed.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lattice-control-plane
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Synced
+      status: "True"
+      reason: ComparisonSucceeded
+      message: Application is synchronized.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: lattice-project
+  namespace: delta-zone
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Valid
+      message: Project destinations and sources are valid.
