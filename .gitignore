@@ -27,6 +27,8 @@ test-reports/
 assets/screenshot/ui/*
 !assets/screenshot/ui/update260429/
 !assets/screenshot/ui/update260429/*.png
+!assets/screenshot/ui/update260503/
+!assets/screenshot/ui/update260503/*.png
 
 # Environment files should stay local; commit examples instead.
 .env
