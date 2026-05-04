@@ -20,18 +20,6 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 - Move quickly with a command palette and k9s-style resource jumps.
 - Stay local: Rune does not use analytics, tracking, advertising, or telemetry.
 
-## Support Rune
-
-If you want to support Rune development, buy the app on the Mac App Store:
-
-- [Buy RuneApp on the Mac App Store](https://apps.apple.com/us/app/runeapp/id6762515322?mt=12)
-
-You can also support development through PayPal:
-
-- [☕ Send 1 USD](https://paypal.me/viktornyberg1/1USD)
-- [🍺 Send 2.99 USD](https://paypal.me/viktornyberg1/2.99USD)
-- [🍻 Send 4.99 USD](https://paypal.me/viktornyberg1/4.99USD)
-
 ## Screenshots
 
 ### Featured
@@ -114,6 +102,18 @@ swift test
 Rune is source-available. Personal and other non-commercial use is free.
 Business use requires a paid commercial license or an authorized Mac App Store
 purchase. See [LICENSE](LICENSE).
+
+## Support Rune
+
+If you want to support Rune development, buy the app on the Mac App Store:
+
+- [Buy RuneApp on the Mac App Store](https://apps.apple.com/us/app/runeapp/id6762515322?mt=12)
+
+You can also support development through PayPal:
+
+- [☕ Send 1 USD](https://paypal.me/viktornyberg1/1USD)
+- [🍺 Send 2.99 USD](https://paypal.me/viktornyberg1/2.99USD)
+- [🍻 Send 4.99 USD](https://paypal.me/viktornyberg1/4.99USD)
 
 <a id="full-screenshot-grid"></a>
 
