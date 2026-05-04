@@ -37,6 +37,15 @@ else
   echo "Warning: no app icon found at ${ICON_SOURCE}; continuing without an icon." >&2
 fi
 
+for resource_bundle in "${BIN_DIR}"/*.bundle; do
+  [[ -d "${resource_bundle}" ]] || continue
+  cp -R "${resource_bundle}" "${APP_BUNDLE}/Contents/Resources/"
+done
+
+if [[ -f "${ROOT_DIR}/assets/rune_logo_main.png" ]]; then
+  cp "${ROOT_DIR}/assets/rune_logo_main.png" "${APP_BUNDLE}/Contents/Resources/rune_logo_main.png"
+fi
+
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">

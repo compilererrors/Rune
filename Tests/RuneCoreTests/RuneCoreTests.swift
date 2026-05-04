@@ -31,8 +31,25 @@ final class RuneCoreTests: XCTestCase {
         ) ?? true)
     }
 
+    func testRuneKeyboardShortcutParsesControlBinding() {
+        let shortcut = RuneKeyboardShortcut(storageValue: "control-d")
+
+        XCTAssertEqual(shortcut?.key, "d")
+        XCTAssertEqual(shortcut?.storageValue, "control-d")
+        XCTAssertEqual(shortcut?.displayValue, "⌃D")
+        XCTAssertTrue(shortcut?.matches(
+            baseKey: "d",
+            requiresShift: false,
+            requiresControl: true
+        ) ?? false)
+        XCTAssertFalse(shortcut?.matches(
+            baseKey: "d",
+            requiresShift: false
+        ) ?? true)
+    }
+
     func testRuneKeyboardShortcutRejectsUnsupportedValues() {
-        XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-/"))
+        XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift--"))
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "describe"))
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift-shift-f"))
         XCTAssertNil(RuneKeyboardShortcut(key: "-", requiresShift: false))

@@ -108,6 +108,70 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkloadKindSwitchDefersDetailsWhenSnapshotReloadIsNeeded() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+
+        viewModel.setWorkloadKind(.deployment)
+
+        XCTAssertEqual(state.selectedWorkloadKind, .deployment)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+    }
+
+    @MainActor
+    func testCompositeSectionAndKindNavigationDefersDetailsUntilRefreshCompletes() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic")
+        state.selectedNamespace = "default"
+        state.setServices([
+            ServiceSummary(
+                name: "sample-service",
+                namespace: "default",
+                type: "ClusterIP",
+                clusterIP: "10.0.0.10"
+            )
+        ])
+
+        viewModel.setSection(.networking)
+        viewModel.setWorkloadKind(.service)
+
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .service)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+    }
+
+    @MainActor
+    func testWorkloadKindNavigationSkipsDetailsForSectionsWithoutInspectors() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedSection = .overview
+        state.isLoadingResourceDetails = true
+
+        viewModel.setWorkloadKind(.pod)
+
+        XCTAssertEqual(state.selectedSection, .overview)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+    }
+
+    @MainActor
+    func testEmptySelectionDoesNotStartInspectorDetailsLoad() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.isLoadingResourceDetails = true
+
+        viewModel.selectPod(nil)
+
+        XCTAssertNil(state.selectedPod)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+    }
+
+    @MainActor
     func testStoppingPortForwardMarksStartingSessionStoppedImmediately() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
@@ -291,7 +355,7 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testResourceYAMLUndoRestoresPreviousDraftSnapshot() {
+    func testResourceYAMLUndoWalksDraftHistoryOneStepAtATime() {
         let state = RuneAppState()
         state.setResourceYAML(
             """
@@ -312,17 +376,35 @@ final class RuneAppStateTests: XCTestCase {
                 app: demo
             """
         )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              labels:
+                app: demo
+            data:
+              enabled: "true"
+            """
+        )
 
-        XCTAssertTrue(state.canUndoResourceYAMLEdit)
-
-        state.undoResourceYAMLEdit()
-
-        XCTAssertFalse(state.resourceYAML.contains("labels:"))
         XCTAssertTrue(state.canUndoResourceYAMLEdit)
 
         state.undoResourceYAMLEdit()
 
         XCTAssertTrue(state.resourceYAML.contains("labels:"))
+        XCTAssertFalse(state.resourceYAML.contains("enabled:"))
+        XCTAssertTrue(state.canUndoResourceYAMLEdit)
+
+        state.undoResourceYAMLEdit()
+
+        XCTAssertFalse(state.resourceYAML.contains("labels:"))
+        XCTAssertFalse(state.canUndoResourceYAMLEdit)
+
+        state.undoResourceYAMLEdit()
+
+        XCTAssertFalse(state.resourceYAML.contains("labels:"))
     }
 
     @MainActor

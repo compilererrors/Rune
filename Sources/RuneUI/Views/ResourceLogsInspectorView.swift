@@ -158,15 +158,94 @@ private struct ResourceLogsOutputSurface: View {
                             ResourceLogsSearchSummaryBar(searchResult: searchResult)
                         }
 
-                        InspectorReadOnlyTextView(
-                            text: searchResult.displayedText,
-                            resetID: "\(readOnlyResetID):\(searchResult.scrollIdentityToken)",
-                            resetScrollOnExternalChange: false
-                        )
+                        let outputResetID = "\(readOnlyResetID):\(searchResult.scrollIdentityToken)"
+                        if shouldDeferOutputMount {
+                            DeferredResourceLogsTextView(
+                                text: searchResult.displayedText,
+                                resetID: outputResetID
+                            )
+                        } else {
+                            InspectorReadOnlyTextView(
+                                text: searchResult.displayedText,
+                                resetID: outputResetID,
+                                resetScrollOnExternalChange: false
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    private var shouldDeferOutputMount: Bool {
+        ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: searchResult)
+    }
+}
+
+enum ResourceLogsDeferredRenderingPolicy {
+    static let deferredOutputThreshold = 250_000
+
+    static func shouldDeferOutputMount(for searchResult: ResourceLogSearchResult) -> Bool {
+        !searchResult.isFiltering && searchResult.displayedText.utf8.count > deferredOutputThreshold
+    }
+}
+
+private struct DeferredResourceLogsTextView: View {
+    let text: String
+    let resetID: String
+    @State private var isReady = false
+    @State private var renderTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if isReady {
+                InspectorReadOnlyTextView(
+                    text: text,
+                    resetID: resetID,
+                    resetScrollOnExternalChange: false
+                )
+            } else {
+                ResourceLogsPreparingPlaceholder()
+            }
+        }
+        .onAppear {
+            scheduleRender()
+        }
+        .onChange(of: resetID) {
+            scheduleRender()
+        }
+        .onDisappear {
+            renderTask?.cancel()
+            renderTask = nil
+            isReady = false
+        }
+    }
+
+    private func scheduleRender() {
+        renderTask?.cancel()
+        isReady = false
+        let expectedResetID = resetID
+        renderTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard expectedResetID == resetID else { return }
+                isReady = true
+            }
+        }
+    }
+}
+
+private struct ResourceLogsPreparingPlaceholder: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Preparing log output…")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(10)
     }
 }
 

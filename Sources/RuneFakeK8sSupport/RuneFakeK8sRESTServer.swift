@@ -8,18 +8,21 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
     private let fixture: RuneFakeK8sFixture
     private let contextName: String
     private let queue: DispatchQueue
+    private let requestRecorder: RuneFakeK8sRequestRecorder
 
     private init(
         listener: NWListener,
         port: UInt16,
         fixture: RuneFakeK8sFixture,
-        contextName: String
+        contextName: String,
+        requestRecorder: RuneFakeK8sRequestRecorder
     ) {
         self.listener = listener
         self.port = port
         self.fixture = fixture
         self.contextName = contextName
         self.queue = DispatchQueue(label: "rune.fake-k8s.rest-server")
+        self.requestRecorder = requestRecorder
     }
 
     public static func start(
@@ -40,10 +43,12 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         _ = host
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port) ?? 0)
+        let requestRecorder = RuneFakeK8sRequestRecorder()
         let serverBox = ServerBox(
             listener: listener,
             fixture: fixture,
-            contextName: contextName
+            contextName: contextName,
+            requestRecorder: requestRecorder
         )
         listener.newConnectionHandler = { connection in
             serverBox.receive(connection: connection)
@@ -61,7 +66,8 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
                     listener: listener,
                     port: port,
                     fixture: fixture,
-                    contextName: contextName
+                    contextName: contextName,
+                    requestRecorder: requestRecorder
                 )))
             case let .failed(error):
                 resultBox.resume(.failure(error))
@@ -77,6 +83,14 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
         listener.cancel()
     }
 
+    public func requestLines() -> [String] {
+        requestRecorder.snapshot()
+    }
+
+    public func resetRequestLines() {
+        requestRecorder.removeAll()
+    }
+
     public func kubeconfigYAML(serverURL: String? = nil) -> String {
         let endpoint = serverURL ?? "http://127.0.0.1:\(port)"
         return RuneFakeK8sKubeconfig.render(
@@ -84,6 +98,30 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
             currentContext: contextName,
             serverURL: endpoint
         )
+    }
+}
+
+private final class RuneFakeK8sRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        let value = lines
+        lock.unlock()
+        return value
+    }
+
+    func removeAll() {
+        lock.lock()
+        lines.removeAll(keepingCapacity: true)
+        lock.unlock()
     }
 }
 
@@ -159,16 +197,23 @@ private final class ServerBox: @unchecked Sendable {
     private let listener: NWListener
     private let fixture: RuneFakeK8sFixture
     private let contextName: String
+    private let requestRecorder: RuneFakeK8sRequestRecorder
 
-    init(listener: NWListener, fixture: RuneFakeK8sFixture, contextName: String) {
+    init(
+        listener: NWListener,
+        fixture: RuneFakeK8sFixture,
+        contextName: String,
+        requestRecorder: RuneFakeK8sRequestRecorder
+    ) {
         self.listener = listener
         self.fixture = fixture
         self.contextName = contextName
+        self.requestRecorder = requestRecorder
     }
 
     func receive(connection: NWConnection) {
         connection.start(queue: DispatchQueue(label: "rune.fake-k8s.rest-connection"))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [fixture, contextName] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [fixture, contextName, requestRecorder] data, _, _, _ in
             guard
                 let data,
                 let request = String(data: data, encoding: .utf8),
@@ -177,6 +222,7 @@ private final class ServerBox: @unchecked Sendable {
                 connection.cancel()
                 return
             }
+            requestRecorder.append(String(line))
             let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName)
                 .route(requestLine: String(line))
             connection.sendHTTP(response)

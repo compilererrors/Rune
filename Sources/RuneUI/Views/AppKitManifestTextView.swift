@@ -14,6 +14,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     var contentStyle: ContentStyle = .plainText
     var externalValidationIssues: [YAMLValidationIssue] = []
     var navigationRequest: YAMLTextNavigationRequest?
+    @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AppKitManifestTextView
@@ -52,6 +53,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
         let textView = PlainManifestTextView(frame: .zero)
         textView.configure(
             isEditable: isEditable,
+            fontSize: clampedFontSize,
             contentStyle: contentStyle,
             externalValidationIssues: externalValidationIssues
         )
@@ -68,6 +70,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? PlainManifestTextView else { return }
         textView.configure(
             isEditable: isEditable,
+            fontSize: clampedFontSize,
             contentStyle: contentStyle,
             externalValidationIssues: externalValidationIssues
         )
@@ -86,18 +89,39 @@ struct AppKitManifestTextView: NSViewRepresentable {
         textView.refreshViewportGeometry()
         textView.navigateIfNeeded(navigationRequest)
     }
+
+    private var clampedFontSize: CGFloat {
+        CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
+    }
 }
 
 private final class PlainManifestTextView: NSTextView {
-    private static let baseFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private static let yamlIndentWidth = 2
     private static let largeDocumentRenderPadding = 8_000
 
+    private struct DocumentLineMetrics {
+        let lineCount: Int
+        let maxLineUTF16Length: Int
+    }
+
+    private struct DocumentSizeCacheKey: Equatable {
+        let revision: Int
+        let fontSizeTenths: Int
+        let visibleWidth: Int
+        let visibleHeight: Int
+        let usesEstimatedLargeYAMLSize: Bool
+    }
+
     private var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    private var configuredFontSize = CGFloat(RuneSettingsKeys.terminalFontSizeDefault)
     private var externalValidationIssues: [YAMLValidationIssue] = []
     private var activeValidationIssues: [YAMLValidationIssue] = []
     private var lastNavigationRequest: YAMLTextNavigationRequest?
     private var didApplyStaticConfiguration = false
+    private var tabKeyMonitor: Any?
+    private var documentRevision = 0
+    private var documentLineMetricsCache: (revision: Int, metrics: DocumentLineMetrics)?
+    private var documentSizeCache: (key: DocumentSizeCacheKey, size: NSSize)?
 
     override var isOpaque: Bool { false }
 
@@ -112,12 +136,15 @@ private final class PlainManifestTextView: NSTextView {
 
     func configure(
         isEditable: Bool,
+        fontSize: CGFloat,
         contentStyle: AppKitManifestTextView.ContentStyle,
         externalValidationIssues: [YAMLValidationIssue]
     ) {
         let styleChanged = self.contentStyle != contentStyle
+        let fontSizeChanged = self.configuredFontSize != fontSize
         let issuesChanged = self.externalValidationIssues != externalValidationIssues
         self.contentStyle = contentStyle
+        self.configuredFontSize = fontSize
         self.externalValidationIssues = externalValidationIssues
 
         if self.isEditable != isEditable {
@@ -125,8 +152,12 @@ private final class PlainManifestTextView: NSTextView {
         }
 
         applyStaticConfigurationIfNeeded()
+        if fontSizeChanged {
+            documentSizeCache = nil
+            applyFontConfiguration()
+        }
 
-        if styleChanged || issuesChanged {
+        if styleChanged || fontSizeChanged || issuesChanged {
             refreshLayout()
         } else {
             refreshViewportGeometry()
@@ -163,14 +194,7 @@ private final class PlainManifestTextView: NSTextView {
         selectedTextAttributes = [
             .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.22)
         ]
-        font = Self.baseFont
-        textColor = .labelColor
-        defaultParagraphStyle = Self.yamlParagraphStyle(font: Self.baseFont)
-        typingAttributes = [
-            .font: Self.baseFont,
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: Self.yamlParagraphStyle(font: Self.baseFont)
-        ]
+        applyFontConfiguration()
 
         if let container = textContainer {
             container.widthTracksTextView = false
@@ -183,9 +207,22 @@ private final class PlainManifestTextView: NSTextView {
         }
     }
 
+    private func applyFontConfiguration() {
+        let baseFont = currentBaseFont
+        font = baseFont
+        textColor = .labelColor
+        defaultParagraphStyle = Self.yamlParagraphStyle(font: baseFont)
+        typingAttributes = [
+            .font: baseFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: Self.yamlParagraphStyle(font: baseFont)
+        ]
+    }
+
     func setStringKeepingSelection(_ newValue: String) {
         let selected = selectedRanges
         string = newValue
+        invalidateDocumentMetrics()
         refreshLayout()
         if !selected.isEmpty {
             selectedRanges = selected
@@ -199,11 +236,12 @@ private final class PlainManifestTextView: NSTextView {
         let source = storage.string
         let usesViewportAnalysis = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
         let styleRange = usesViewportAnalysis ? yamlViewportAnalysisRange(in: source) : fullRange
+        let baseFont = currentBaseFont
         storage.beginEditing()
         storage.setAttributes([
-            .font: Self.baseFont,
+            .font: baseFont,
             .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: Self.yamlParagraphStyle(font: Self.baseFont)
+            .paragraphStyle: Self.yamlParagraphStyle(font: baseFont)
         ], range: styleRange)
 
         if contentStyle == .yaml, storage.length > 0 {
@@ -239,6 +277,10 @@ private final class PlainManifestTextView: NSTextView {
         return nsSource.lineRange(for: padded)
     }
 
+    private var currentBaseFont: NSFont {
+        NSFont.monospacedSystemFont(ofSize: configuredFontSize, weight: .regular)
+    }
+
     func refreshViewportGeometry() {
         updateDocumentSize()
         invalidateIntrinsicContentSize()
@@ -260,7 +302,15 @@ private final class PlainManifestTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        invalidateDocumentMetrics()
         refreshLayout()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if handleYAMLTabKey(event) {
+            return
+        }
+        super.keyDown(with: event)
     }
 
     override func insertTab(_ sender: Any?) {
@@ -269,6 +319,30 @@ private final class PlainManifestTextView: NSTextView {
             return
         }
 
+        insertSoftTabOrIndentSelection()
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        guard isEditable, contentStyle == .yaml else {
+            super.insertBacktab(sender)
+            return
+        }
+
+        outdentSelectedLines()
+    }
+
+    private func handleYAMLTabKey(_ event: NSEvent) -> Bool {
+        guard shouldHandleYAMLTabKey(event) else { return false }
+
+        if event.modifierFlags.contains(.shift) {
+            outdentSelectedLines()
+        } else {
+            insertSoftTabOrIndentSelection()
+        }
+        return true
+    }
+
+    private func insertSoftTabOrIndentSelection() {
         let selection = selectedRange()
         guard selection.length == 0 else {
             indentSelectedLines()
@@ -279,13 +353,37 @@ private final class PlainManifestTextView: NSTextView {
         insertText(YAMLLanguageService.softTabWhitespace(forColumn: column), replacementRange: selection)
     }
 
-    override func insertBacktab(_ sender: Any?) {
-        guard isEditable, contentStyle == .yaml else {
-            super.insertBacktab(sender)
-            return
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            removeTabKeyMonitor()
+        } else {
+            installTabKeyMonitorIfNeeded()
         }
+    }
 
-        outdentSelectedLines()
+    private func installTabKeyMonitorIfNeeded() {
+        guard tabKeyMonitor == nil else { return }
+        tabKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            guard self.window === event.window else { return event }
+            guard self.window?.firstResponder === self else { return event }
+            guard self.handleYAMLTabKey(event) else { return event }
+            return nil
+        }
+    }
+
+    private func removeTabKeyMonitor() {
+        if let tabKeyMonitor {
+            NSEvent.removeMonitor(tabKeyMonitor)
+            self.tabKeyMonitor = nil
+        }
+    }
+
+    private func shouldHandleYAMLTabKey(_ event: NSEvent) -> Bool {
+        guard isEditable, contentStyle == .yaml, event.keyCode == 48 else { return false }
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
+        return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
 
     override func insertNewline(_ sender: Any?) {
@@ -309,6 +407,7 @@ private final class PlainManifestTextView: NSTextView {
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
+        documentSizeCache = nil
         updateDocumentSize()
     }
 
@@ -318,23 +417,95 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     private func updateDocumentSize() {
-        guard let layoutManager, let textContainer else { return }
-        layoutManager.ensureLayout(for: textContainer)
-
-        let usedRect = layoutManager.usedRect(for: textContainer)
+        guard let layoutManager, let textContainer, let storage = textStorage else { return }
         let visibleSize = enclosingScrollView?.contentSize ?? bounds.size
-        let targetWidth = max(
-            visibleSize.width,
-            ceil(usedRect.width + textContainerInset.width * 2 + 40)
-        )
-        let targetHeight = max(
-            visibleSize.height,
-            ceil(usedRect.height + textContainerInset.height * 2 + 24)
+        let source = storage.string
+        let usesEstimatedLargeYAMLSize = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
+        let cacheKey = DocumentSizeCacheKey(
+            revision: documentRevision,
+            fontSizeTenths: Int((configuredFontSize * 10).rounded()),
+            visibleWidth: Int(visibleSize.width.rounded(.up)),
+            visibleHeight: Int(visibleSize.height.rounded(.up)),
+            usesEstimatedLargeYAMLSize: usesEstimatedLargeYAMLSize
         )
 
-        if abs(frame.width - targetWidth) > 1 || abs(frame.height - targetHeight) > 1 {
-            frame.size = NSSize(width: targetWidth, height: targetHeight)
+        if let cached = documentSizeCache, cached.key == cacheKey {
+            applyDocumentSizeIfNeeded(cached.size)
+            return
         }
+
+        let targetSize: NSSize
+        if usesEstimatedLargeYAMLSize {
+            let metrics = documentLineMetrics(for: source)
+            let lineHeight = max(1, layoutManager.defaultLineHeight(for: currentBaseFont))
+            let columnWidth = widthOfSingleSpace()
+            targetSize = NSSize(
+                width: max(
+                    visibleSize.width,
+                    ceil(CGFloat(metrics.maxLineUTF16Length) * columnWidth + textContainerInset.width * 2 + 40)
+                ),
+                height: max(
+                    visibleSize.height,
+                    ceil(CGFloat(max(1, metrics.lineCount)) * lineHeight + textContainerInset.height * 2 + 24)
+                )
+            )
+        } else {
+            layoutManager.ensureLayout(for: textContainer)
+            let usedRect = layoutManager.usedRect(for: textContainer)
+            targetSize = NSSize(
+                width: max(
+                    visibleSize.width,
+                    ceil(usedRect.width + textContainerInset.width * 2 + 40)
+                ),
+                height: max(
+                    visibleSize.height,
+                    ceil(usedRect.height + textContainerInset.height * 2 + 24)
+                )
+            )
+        }
+
+        documentSizeCache = (cacheKey, targetSize)
+        applyDocumentSizeIfNeeded(targetSize)
+    }
+
+    private func applyDocumentSizeIfNeeded(_ size: NSSize) {
+        if abs(frame.width - size.width) > 1 || abs(frame.height - size.height) > 1 {
+            frame.size = size
+        }
+    }
+
+    private func invalidateDocumentMetrics() {
+        documentRevision += 1
+        documentLineMetricsCache = nil
+        documentSizeCache = nil
+    }
+
+    private func documentLineMetrics(for source: String) -> DocumentLineMetrics {
+        if let cached = documentLineMetricsCache, cached.revision == documentRevision {
+            return cached.metrics
+        }
+
+        var lineCount = source.isEmpty ? 0 : 1
+        var currentLineLength = 0
+        var maxLineLength = 0
+
+        for character in source.utf16 {
+            switch character {
+            case 10:
+                maxLineLength = max(maxLineLength, currentLineLength)
+                currentLineLength = 0
+                lineCount += 1
+            case 13:
+                continue
+            default:
+                currentLineLength += 1
+            }
+        }
+
+        maxLineLength = max(maxLineLength, currentLineLength)
+        let metrics = DocumentLineMetrics(lineCount: lineCount, maxLineUTF16Length: maxLineLength)
+        documentLineMetricsCache = (documentRevision, metrics)
+        return metrics
     }
 
     private func applyYAMLHighlighting(in storage: NSTextStorage, fullRange: NSRange, analysis: YAMLTextAnalysis) {
@@ -460,7 +631,7 @@ private final class PlainManifestTextView: NSTextView {
 
     private func widthOfSingleSpace() -> CGFloat {
         let sample = " " as NSString
-        let size = sample.size(withAttributes: [.font: Self.baseFont])
+        let size = sample.size(withAttributes: [.font: currentBaseFont])
         return max(1, size.width)
     }
 

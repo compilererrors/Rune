@@ -163,12 +163,24 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootSource.contains("private var shouldShowLaunchExperience"))
         XCTAssertTrue(rootSource.contains("viewModel.isLaunchExperienceVisible"))
         XCTAssertTrue(rootSource.contains("private var launchExperienceOverlay"))
-        XCTAssertTrue(rootSource.contains("Image(\"rune_logo_main\", bundle: .module)"))
+        XCTAssertTrue(rootSource.contains("private var launchLogo: some View"))
+        XCTAssertTrue(rootSource.contains("Bundle.module.url(forResource: \"rune_logo_main\", withExtension: \"png\")"))
+        XCTAssertTrue(rootSource.contains("Bundle.main.url(forResource: \"rune_logo_main\", withExtension: \"png\")"))
+        XCTAssertTrue(rootSource.contains("NSApp.applicationIconImage"))
+        XCTAssertTrue(rootSource.contains("Image(nsImage: image)"))
+        XCTAssertTrue(rootSource.contains(".frame(width: 112, height: 112)"))
+        XCTAssertTrue(rootSource.contains("workspaceChromeMountDelayNanoseconds: UInt64 = 120_000_000"))
         XCTAssertTrue(rootSource.contains(".allowsHitTesting(false)"))
         XCTAssertTrue(rootSource.contains("viewModel.bootstrapIfNeeded()"))
+        let launchBlock = try functionBlock(
+            named: "private var launchExperienceOverlay",
+            endingBefore: "private var configuredMainSplitContainer",
+            in: rootSource
+        )
+        XCTAssertFalse(launchBlock.contains("Text(\"Rune\")"))
 
         XCTAssertTrue(viewModelSource.contains("@Published public private(set) var isLaunchExperienceVisible = true"))
-        XCTAssertTrue(viewModelSource.contains("launchExperienceMinimumNanoseconds: UInt64 = 140_000_000"))
+        XCTAssertTrue(viewModelSource.contains("launchExperienceMinimumNanoseconds: UInt64 = 320_000_000"))
         XCTAssertTrue(viewModelSource.contains("finishLaunchExperience()"))
         XCTAssertLessThan(
             viewModelSource.range(of: "await Task.yield()")!.lowerBound,
@@ -250,7 +262,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("textView.scrollRangeToVisible(activeRange)"))
         XCTAssertTrue(source.contains("TerminalSearchCursorModifier"))
         XCTAssertTrue(source.contains(".terminalSearchCursor(.arrow)"))
-        XCTAssertTrue(source.contains(".terminalSearchCursor(.iBeam)"))
+        XCTAssertFalse(source.contains(".terminalSearchCursor(.iBeam)"))
         XCTAssertTrue(source.contains("cursor.push()"))
     }
 
@@ -305,10 +317,23 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("clampedTerminalFontSize"))
 
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.terminalFontSize)"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Appearance\")"))
         XCTAssertTrue(preferencesSource.contains("Text(\"Font size\")"))
         XCTAssertTrue(preferencesSource.contains("Slider("))
         XCTAssertTrue(preferencesSource.contains("Button(\"Reset\")"))
         XCTAssertTrue(preferencesSource.contains("terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault"))
+    }
+
+    func testFontSizePreferenceScalesRootInterfaceAndManifestText() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let textViewSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.terminalFontSize)"))
+        XCTAssertTrue(rootViewSource.contains(".dynamicTypeSize(appDynamicTypeSize)"))
+        XCTAssertTrue(rootViewSource.contains("private var appDynamicTypeSize: DynamicTypeSize"))
+        XCTAssertTrue(textViewSource.contains("@AppStorage(RuneSettingsKeys.terminalFontSize)"))
+        XCTAssertTrue(textViewSource.contains("fontSize: clampedFontSize"))
+        XCTAssertTrue(textViewSource.contains("NSFont.monospacedSystemFont(ofSize: configuredFontSize"))
     }
 
     func testResourceInspectorsUseOverviewStyleInformationRows() throws {
@@ -486,6 +511,18 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(textViewSource.contains("textView.scrollRangeToVisible(NSRange(location: 0, length: 0))"))
     }
 
+    func testYAMLEditorHandlesTabKeyBeforeFocusTraversal() throws {
+        let textViewSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
+
+        XCTAssertTrue(textViewSource.contains("override func keyDown(with event: NSEvent)"))
+        XCTAssertTrue(textViewSource.contains("handleYAMLTabKey(event)"))
+        XCTAssertTrue(textViewSource.contains("event.keyCode == 48"))
+        XCTAssertTrue(textViewSource.contains("NSEvent.addLocalMonitorForEvents(matching: .keyDown)"))
+        XCTAssertTrue(textViewSource.contains("self.window?.firstResponder === self"))
+        XCTAssertTrue(textViewSource.contains("insertSoftTabOrIndentSelection()"))
+        XCTAssertTrue(textViewSource.contains("outdentSelectedLines()"))
+    }
+
     func testSidebarExposesAddClusterProviderFlow() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
@@ -581,11 +618,25 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
 
         XCTAssertTrue(logsViewSource.contains("Toggle(\"Tail\""))
+        XCTAssertTrue(logsViewSource.contains("DeferredResourceLogsTextView"))
+        XCTAssertTrue(logsViewSource.contains("deferredOutputThreshold"))
+        XCTAssertTrue(logsViewSource.contains("renderTask?.cancel()"))
         XCTAssertTrue(viewModelSource.contains("isLogTailModeEnabled"))
         XCTAssertTrue(viewModelSource.contains("tailLogsReloadNanoseconds"))
         XCTAssertTrue(stateSource.contains("sessionLogCache"))
         XCTAssertTrue(stateSource.contains("appendPodLogRead"))
         XCTAssertTrue(stateSource.contains("appendUnifiedServiceLogRead"))
+    }
+
+    func testLaunchExperienceDefersWorkspaceChromeUntilAfterFirstRender() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("@State private var hasMountedWorkspaceChrome = false"))
+        XCTAssertTrue(rootViewSource.contains("if shouldMountWorkspaceChrome"))
+        XCTAssertTrue(rootViewSource.contains("private var shouldMountWorkspaceChrome"))
+        XCTAssertTrue(rootViewSource.contains("private func scheduleWorkspaceChromeMount()"))
+        XCTAssertTrue(rootViewSource.contains("try? await Task.sleep(nanoseconds: workspaceChromeMountDelayNanoseconds)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.bootstrapIfNeeded()"))
     }
 
     func testCenterResourceRowsExposeOperationalContextMenus() throws {
@@ -630,7 +681,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("return \"left\""))
         XCTAssertTrue(rootViewSource.contains("case 124:"))
         XCTAssertTrue(rootViewSource.contains("return \"right\""))
-        XCTAssertTrue(rootViewSource.contains("let disallowedModifiers: NSEvent.ModifierFlags = [.control]"))
+        XCTAssertTrue(rootViewSource.contains("let disallowedModifiers: NSEvent.ModifierFlags = [.function]"))
     }
 
     func testPreferencesExposeArrowKeysForHistoryBindings() throws {
@@ -642,7 +693,36 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let preferencesPath = root.appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift").path
         let preferencesSource = try String(contentsOfFile: preferencesPath, encoding: .utf8)
 
-        XCTAssertTrue(preferencesSource.contains("[\"[\", \"]\", \"left\", \"right\"]"))
+        XCTAssertTrue(preferencesSource.contains("[\"[\", \"]\", \"/\", \":\", \"?\", \"left\", \"right\"]"))
+    }
+
+    func testPreferencesExposeSupportedK9sStyleActionBindings() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let preferencesPath = root.appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift").path
+        let keyBindingsPath = root.appendingPathComponent("Sources/RuneCore/Models/RuneKeyBindings.swift").path
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let preferencesSource = try String(contentsOfFile: preferencesPath, encoding: .utf8)
+        let keyBindingsSource = try String(contentsOfFile: keyBindingsPath, encoding: .utf8)
+
+        XCTAssertTrue(preferencesSource.contains("Button(\"Reset to default\")"))
+        XCTAssertFalse(preferencesSource.contains("Reset to k9s-style defaults"))
+        XCTAssertTrue(preferencesSource.contains("Toggle(\"⌃\""))
+        XCTAssertTrue(keyBindingsSource.contains("case commandPalette"))
+        XCTAssertTrue(keyBindingsSource.contains("case filterResources"))
+        XCTAssertTrue(keyBindingsSource.contains("case edit"))
+        XCTAssertTrue(keyBindingsSource.contains("case delete"))
+        XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \":\", requiresShift: false)"))
+        XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \"/\", requiresShift: false)"))
+        XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \"e\", requiresShift: false)"))
+        XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \"d\", requiresShift: false, requiresControl: true)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.presentCommandPalette()"))
+        XCTAssertTrue(rootViewSource.contains("return focusResourceFilterFromKeyBinding()"))
+        XCTAssertTrue(rootViewSource.contains("return openYAMLEditorForSelection()"))
+        XCTAssertTrue(rootViewSource.contains("return deleteSelectionFromKeyBinding()"))
     }
 
     func testAppCommandsExposeHistoryArrowShortcuts() throws {
@@ -673,6 +753,19 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(rootViewSource.contains("viewModel.selectDeployment(deployment)\n            viewModel.requestDeleteSelectedResource()"))
         XCTAssertFalse(rootViewSource.contains("viewModel.selectService(service)\n            viewModel.requestDeleteSelectedResource()"))
         XCTAssertFalse(rootViewSource.contains("action(resource)\n            viewModel.requestDeleteSelectedResource()"))
+    }
+
+    func testWriteRefreshDoesNotDuplicateInspectorDetailsLoad() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let confirmBlock = try functionBlock(
+            named: "public func confirmPendingWriteAction()",
+            endingBefore: "private func auditDetails",
+            in: viewModelSource
+        )
+
+        XCTAssertTrue(confirmBlock.contains("try await loadResourceSnapshot("))
+        XCTAssertFalse(confirmBlock.contains("shouldReloadResourceInspectorAfterWrite"))
+        XCTAssertFalse(confirmBlock.contains("loadResourceDetailsForCurrentSelection()"))
     }
 
     private var runeRootViewPath: String {

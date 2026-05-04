@@ -18,19 +18,23 @@ public enum RuneSettingsKeys {
     public static let logsCustomPresetTwoLines = "rune.settings.logs.customPresetTwo.lines"
     public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
     public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
+    public static let keyBindingCommandPalette = "rune.settings.keybindings.commandPalette"
+    public static let keyBindingFilterResources = "rune.settings.keybindings.filterResources"
     public static let keyBindingDescribe = "rune.settings.keybindings.describe"
     public static let keyBindingHistoryBack = "rune.settings.keybindings.historyBack"
     public static let keyBindingHistoryForward = "rune.settings.keybindings.historyForward"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
+    public static let keyBindingEdit = "rune.settings.keybindings.edit"
     public static let keyBindingYAML = "rune.settings.keybindings.yaml"
+    public static let keyBindingDelete = "rune.settings.keybindings.delete"
     public static let keyBindingPortForward = "rune.settings.keybindings.portForward"
     public static let keyBindingRollout = "rune.settings.keybindings.rollout"
     /// Persisted sidebar width in the 3-column shell.
     public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
     /// Persisted detail/inspector width in the 3-column shell.
     public static let layoutDetailWidth = "rune.settings.layout.detailWidth"
-    /// Monospaced terminal font size used by pod shell transcripts and prompts.
+    /// Base font size used by Rune's interface and monospaced terminal/editor surfaces.
     public static let terminalFontSize = "rune.settings.terminal.fontSize"
     public static let terminalFontSizeDefault = 12.0
     public static let terminalFontSizeMinimum = 10.0
@@ -54,12 +58,16 @@ public enum RuneSettingsKeys {
             logsCustomPresetTwoLines: "99999",
             logsCustomPresetTwoTimeValue: "6",
             logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue,
+            keyBindingCommandPalette: RuneKeyBindingAction.commandPalette.defaultShortcut.storageValue,
+            keyBindingFilterResources: RuneKeyBindingAction.filterResources.defaultShortcut.storageValue,
             keyBindingDescribe: RuneKeyBindingAction.describe.defaultShortcut.storageValue,
             keyBindingHistoryBack: RuneKeyBindingAction.historyBack.defaultShortcut.storageValue,
             keyBindingHistoryForward: RuneKeyBindingAction.historyForward.defaultShortcut.storageValue,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
+            keyBindingEdit: RuneKeyBindingAction.edit.defaultShortcut.storageValue,
             keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,
+            keyBindingDelete: RuneKeyBindingAction.delete.defaultShortcut.storageValue,
             keyBindingPortForward: RuneKeyBindingAction.portForward.defaultShortcut.storageValue,
             keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
             layoutSidebarWidth: 280.0,

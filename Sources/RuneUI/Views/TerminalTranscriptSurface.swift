@@ -80,7 +80,7 @@ struct TerminalTranscriptSurface: View {
                 .onSubmit {
                     advanceSearch(by: 1)
                 }
-                .terminalSearchCursor(.iBeam)
+                .terminalSearchCursor(.arrow)
 
             Text(searchIndex.statusText(selectedIndex: resolvedSearchMatchIndex))
                 .font(.caption.weight(.medium))

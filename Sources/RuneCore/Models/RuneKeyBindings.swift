@@ -4,18 +4,21 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
     public let key: String
     public let requiresCommand: Bool
     public let requiresOption: Bool
+    public let requiresControl: Bool
     public let requiresShift: Bool
 
     public init?(
         key: String,
         requiresShift: Bool,
         requiresCommand: Bool = false,
-        requiresOption: Bool = false
+        requiresOption: Bool = false,
+        requiresControl: Bool = false
     ) {
         guard let normalizedKey = Self.normalizeKey(key) else { return nil }
         self.key = normalizedKey
         self.requiresCommand = requiresCommand
         self.requiresOption = requiresOption
+        self.requiresControl = requiresControl
         self.requiresShift = requiresShift
     }
 
@@ -27,6 +30,7 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
         self.key = key
         self.requiresCommand = modifiers.contains("command")
         self.requiresOption = modifiers.contains("option")
+        self.requiresControl = modifiers.contains("control")
         self.requiresShift = modifiers.contains("shift")
     }
 
@@ -38,6 +42,7 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
         let modifiers = [
             requiresCommand ? "⌘" : nil,
             requiresOption ? "⌥" : nil,
+            requiresControl ? "⌃" : nil,
             requiresShift ? "⇧" : nil
         ].compactMap { $0 }.joined()
         return modifiers + displayKey
@@ -47,13 +52,15 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
         baseKey: String,
         requiresShift: Bool,
         requiresCommand: Bool = false,
-        requiresOption: Bool = false
+        requiresOption: Bool = false,
+        requiresControl: Bool = false
     ) -> Bool {
         guard let normalizedBaseKey = Self.normalizeKey(baseKey) else { return false }
         return key == normalizedBaseKey
             && self.requiresShift == requiresShift
             && self.requiresCommand == requiresCommand
             && self.requiresOption == requiresOption
+            && self.requiresControl == requiresControl
     }
 
     public static func normalizeStorageValue(_ rawValue: String) -> String? {
@@ -65,11 +72,11 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
 
         var seenModifiers = Set<String>()
         for modifier in parts.dropLast() {
-            guard ["command", "option", "shift"].contains(modifier) else { return nil }
+            guard ["command", "option", "control", "shift"].contains(modifier) else { return nil }
             guard seenModifiers.insert(modifier).inserted else { return nil }
         }
 
-        let orderedModifiers = ["command", "option", "shift"].filter { seenModifiers.contains($0) }
+        let orderedModifiers = ["command", "option", "control", "shift"].filter { seenModifiers.contains($0) }
         return orderedModifiers.joined(separator: "-") + (orderedModifiers.isEmpty ? "" : "-") + normalizedKey
     }
 
@@ -79,7 +86,7 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
             return trimmed
         }
         guard trimmed.count == 1, let scalar = trimmed.unicodeScalars.first else { return nil }
-        guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]"].contains(trimmed) else { return nil }
+        guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]", "/", ":", "?"].contains(trimmed) else { return nil }
         return trimmed
     }
 
@@ -87,6 +94,7 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
         [
             requiresCommand ? "command" : nil,
             requiresOption ? "option" : nil,
+            requiresControl ? "control" : nil,
             requiresShift ? "shift" : nil
         ].compactMap { $0 }
     }
@@ -103,12 +111,16 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
 }
 
 public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
+    case commandPalette
+    case filterResources
     case historyBack
     case historyForward
     case describe
     case logs
     case shell
+    case edit
     case yaml
+    case delete
     case portForward
     case rollout
 
@@ -116,12 +128,16 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
+        case .commandPalette: return "Command Palette"
+        case .filterResources: return "Filter Resources"
         case .historyBack: return "History Back"
         case .historyForward: return "History Forward"
         case .describe: return "Describe"
         case .logs: return "Logs"
-        case .shell: return "Shell / Exec"
+        case .shell: return "Shell / Scale"
+        case .edit: return "Edit"
         case .yaml: return "YAML"
+        case .delete: return "Delete"
         case .portForward: return "Port Forward"
         case .rollout: return "Rollout"
         }
@@ -129,6 +145,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var detail: String {
         switch self {
+        case .commandPalette:
+            return "Open Rune's command palette for resource, context, namespace, and action navigation."
+        case .filterResources:
+            return "Focus the current resource filter field."
         case .historyBack:
             return "Move back in Rune's navigation history."
         case .historyForward:
@@ -138,9 +158,13 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .logs:
             return "Open pod logs or unified service/deployment logs."
         case .shell:
-            return "Open the pod exec pane. Mirrors the shell-style workflow where Rune supports it."
+            return "Open pod exec, or deployment scale controls where Rune supports the k9s `s` workflow."
+        case .edit:
+            return "Open the editable YAML manifest sheet for the selected resource."
         case .yaml:
             return "Open the YAML manifest inspector for the selected resource."
+        case .delete:
+            return "Arm delete confirmation for the selected resource."
         case .portForward:
             return "Open the port-forward pane for the selected pod or service."
         case .rollout:
@@ -150,6 +174,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var defaultShortcut: RuneKeyboardShortcut {
         switch self {
+        case .commandPalette:
+            return RuneKeyboardShortcut(key: ":", requiresShift: false)!
+        case .filterResources:
+            return RuneKeyboardShortcut(key: "/", requiresShift: false)!
         case .historyBack:
             return RuneKeyboardShortcut(key: "left", requiresShift: false, requiresCommand: true, requiresOption: true)!
         case .historyForward:
@@ -160,8 +188,12 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "l", requiresShift: false)!
         case .shell:
             return RuneKeyboardShortcut(key: "s", requiresShift: false)!
+        case .edit:
+            return RuneKeyboardShortcut(key: "e", requiresShift: false)!
         case .yaml:
             return RuneKeyboardShortcut(key: "y", requiresShift: false)!
+        case .delete:
+            return RuneKeyboardShortcut(key: "d", requiresShift: false, requiresControl: true)!
         case .portForward:
             return RuneKeyboardShortcut(key: "f", requiresShift: true)!
         case .rollout:
@@ -171,12 +203,16 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
 
     public var settingsKey: String {
         switch self {
+        case .commandPalette: return RuneSettingsKeys.keyBindingCommandPalette
+        case .filterResources: return RuneSettingsKeys.keyBindingFilterResources
         case .historyBack: return RuneSettingsKeys.keyBindingHistoryBack
         case .historyForward: return RuneSettingsKeys.keyBindingHistoryForward
         case .describe: return RuneSettingsKeys.keyBindingDescribe
         case .logs: return RuneSettingsKeys.keyBindingLogs
         case .shell: return RuneSettingsKeys.keyBindingShell
+        case .edit: return RuneSettingsKeys.keyBindingEdit
         case .yaml: return RuneSettingsKeys.keyBindingYAML
+        case .delete: return RuneSettingsKeys.keyBindingDelete
         case .portForward: return RuneSettingsKeys.keyBindingPortForward
         case .rollout: return RuneSettingsKeys.keyBindingRollout
         }

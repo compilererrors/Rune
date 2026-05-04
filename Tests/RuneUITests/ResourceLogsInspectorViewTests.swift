@@ -58,4 +58,31 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertNotEqual(first.scrollIdentityToken, second.scrollIdentityToken)
     }
+
+    func testLargeUnfilteredLogsDeferInitialTextMount() {
+        let text = String(repeating: "INFO synthetic benchmark line\n", count: 12_000)
+        let result = ResourceLogSearchResult.make(text: text, query: "")
+
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
+
+    func testSmallUnfilteredLogsRenderImmediately() {
+        let result = ResourceLogSearchResult.make(text: "INFO ready\nINFO steady", query: "")
+
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
+
+    func testFilteredLogsRenderMatchesImmediately() {
+        let text = (0..<12_000)
+            .map { index in
+                index.isMultiple(of: 1_000)
+                    ? "ERROR synthetic line \(index)"
+                    : "INFO synthetic line \(index)"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.make(text: text, query: "error")
+
+        XCTAssertTrue(result.isFiltering)
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
 }

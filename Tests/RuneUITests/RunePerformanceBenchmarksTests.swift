@@ -1,9 +1,12 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
 import XCTest
 @testable import RuneCore
+@testable import RuneFakeK8sSupport
 @testable import RuneSecurity
+@testable import RuneStore
 @testable import RuneUI
 
 final class RunePerformanceBenchmarksTests: XCTestCase {
@@ -30,6 +33,58 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         XCTAssertEqual(result.matchingLineCount, 500)
         XCTAssertLessThan(seconds(elapsed), 0.25)
+    }
+
+    @MainActor
+    func testLargeLogInspectorInitialMountBenchmarkKPI() {
+        let text = (0..<20_000)
+            .map { index in
+                "INFO request-id=\(String(format: "%06d", index)) component=worker message=synthetic output"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.make(text: text, query: "")
+
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let controller = NSHostingController(
+                rootView: PodLogsInspectorPane(
+                    selectedLogPreset: .constant(.recentLines),
+                    includePreviousLogs: .constant(false),
+                    isTailModeEnabled: .constant(false),
+                    isLoadingLogs: false,
+                    isLoadingResources: false,
+                    errorMessage: nil,
+                    logText: text,
+                    readOnlyResetID: "benchmark:logs",
+                    onReload: {},
+                    onSave: {}
+                )
+            )
+            controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+
+        let started = ContinuousClock.now
+        let controller = NSHostingController(
+            rootView: PodLogsInspectorPane(
+                selectedLogPreset: .constant(.recentLines),
+                includePreviousLogs: .constant(false),
+                isTailModeEnabled: .constant(false),
+                isLoadingLogs: false,
+                isLoadingResources: false,
+                errorMessage: nil,
+                logText: text,
+                readOnlyResetID: "benchmark:logs",
+                onReload: {},
+                onSave: {}
+            )
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        controller.view.layoutSubtreeIfNeeded()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(seconds(elapsed), 0.12)
     }
 
     func testYAMLAnalysisBenchmarkKPI() {
@@ -127,8 +182,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
         let elapsed = started.duration(to: .now)
 
-        XCTAssertGreaterThanOrEqual(seconds(elapsed), 0.10)
-        XCTAssertLessThan(seconds(elapsed), 0.30)
+        XCTAssertGreaterThanOrEqual(seconds(elapsed), 0.28)
+        XCTAssertLessThan(seconds(elapsed), 0.50)
         XCTAssertFalse(state.isLoading)
     }
 
@@ -192,6 +247,79 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsed = started.duration(to: .now)
 
         XCTAssertLessThan(seconds(elapsed), 0.30)
+    }
+
+    @MainActor
+    func testColdStartLaunchShellInitialMountKPI() {
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+            let controller = NSHostingController(
+                rootView: RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: nil
+                )
+            )
+            controller.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+
+        let started = ContinuousClock.now
+        let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        let controller = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil
+            )
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        controller.view.layoutSubtreeIfNeeded()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(seconds(elapsed), 0.12)
+    }
+
+    @MainActor
+    func testFakeRESTRapidViewSwitchBenchmarkKPI() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        try await viewModel.reloadContexts()
+        server.resetRequestLines()
+
+        let started = ContinuousClock.now
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.setSection(.networking)
+        viewModel.setWorkloadKind(.service)
+        viewModel.setSection(.config)
+        viewModel.setWorkloadKind(.configMap)
+        try await waitUntil {
+            state.selectedSection == .config
+                && state.selectedWorkloadKind == .configMap
+                && state.configMaps.count == 2
+                && !state.isLoading
+                && !state.isLoadingResourceDetails
+        }
+        let elapsed = started.duration(to: .now)
+
+        let resourcePath = "/api/v1/namespaces/alpha-zone/configmaps/ember-gate-settings"
+        let finalResourceGETs = server.requestLines().filter { line in
+            line.hasPrefix("GET \(resourcePath)") || line.hasPrefix("GET \(resourcePath)?")
+        }
+
+        XCTAssertEqual(finalResourceGETs.count, 2)
+        XCTAssertNil(state.lastError)
+        XCTAssertLessThan(seconds(elapsed), 0.75)
     }
 
     @MainActor
@@ -441,5 +569,28 @@ private final class CountingKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         callCount += 1
         return []
+    }
+}
+
+private func writeKubeconfig(_ contents: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("rune-ui-performance-kubeconfig-\(UUID().uuidString).yaml")
+    try contents.write(to: url, atomically: true, encoding: .utf8)
+    return url
+}
+
+private func waitUntil(
+    timeout: TimeInterval = 2,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    predicate: @escaping @MainActor () -> Bool
+) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !(await predicate()) {
+        if Date() >= deadline {
+            XCTFail("Timed out waiting for condition", file: file, line: line)
+            return
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
     }
 }

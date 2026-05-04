@@ -104,6 +104,42 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testRapidViewSwitchCoalescesFinalInspectorRequests() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+        harness.viewModel.setSection(.networking)
+        harness.viewModel.setWorkloadKind(.service)
+        harness.viewModel.setSection(.config)
+        harness.viewModel.setWorkloadKind(.configMap)
+
+        try await waitUntil {
+            harness.state.selectedSection == .config
+                && harness.state.selectedWorkloadKind == .configMap
+                && harness.state.configMaps.map(\.name) == ["ember-gate-settings", "orbit-lens-settings"]
+                && !harness.state.isLoading
+                && !harness.state.isLoadingResourceDetails
+                && harness.state.lastResourceYAMLError == nil
+                && harness.state.lastResourceDescribeError == nil
+        }
+
+        let requestLines = harness.server.requestLines()
+        let resourcePath = "/api/v1/namespaces/alpha-zone/configmaps/ember-gate-settings"
+        let finalResourceGETs = requestLines.filter { line in
+            line.hasPrefix("GET \(resourcePath)") || line.hasPrefix("GET \(resourcePath)?")
+        }
+
+        XCTAssertEqual(harness.state.selectedConfigMap?.name, "ember-gate-settings")
+        XCTAssertEqual(finalResourceGETs.count, 2)
+        XCTAssertFalse(requestLines.contains { $0.contains("/deployments/ember-gate") })
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let server: RuneFakeK8sRESTServer
         let kubeconfigURL: URL

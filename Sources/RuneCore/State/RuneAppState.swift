@@ -82,6 +82,7 @@ public final class RuneAppState: ObservableObject {
     /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
     @Published public private(set) var resourceYAMLUndoSnapshot: String?
+    private var resourceYAMLUndoStack: [String] = []
     @Published public private(set) var resourceYAMLValidationIssues: [YAMLValidationIssue] = []
     @Published public private(set) var isValidatingResourceYAML = false
     /// Read-only describe output Rune fetched for the selected resource (not user-editable).
@@ -518,7 +519,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAML(_ yaml: String) {
         resourceYAML = yaml
         resourceYAMLBaseline = yaml
-        resourceYAMLUndoSnapshot = nil
+        clearResourceYAMLUndoHistory()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         lastResourceYAMLError = nil
@@ -526,9 +527,7 @@ public final class RuneAppState: ObservableObject {
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
     public func updateResourceYAMLDraft(_ yaml: String) {
-        if yaml != resourceYAML, resourceYAMLUndoSnapshot == nil {
-            resourceYAMLUndoSnapshot = resourceYAML
-        }
+        pushResourceYAMLUndoSnapshotIfNeeded(for: yaml)
         resourceYAML = yaml
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
@@ -536,22 +535,33 @@ public final class RuneAppState: ObservableObject {
 
     /// Discards local edits and restores the last loaded cluster YAML.
     public func revertResourceYAMLToClusterSnapshot() {
-        resourceYAMLUndoSnapshot = resourceYAML
+        pushResourceYAMLUndoSnapshotIfNeeded(for: resourceYAMLBaseline)
         resourceYAML = resourceYAMLBaseline
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
     }
 
     public var canUndoResourceYAMLEdit: Bool {
-        resourceYAMLUndoSnapshot != nil
+        !resourceYAMLUndoStack.isEmpty
     }
 
     public func undoResourceYAMLEdit() {
-        guard let previous = resourceYAMLUndoSnapshot else { return }
-        resourceYAMLUndoSnapshot = resourceYAML
+        guard let previous = resourceYAMLUndoStack.popLast() else { return }
+        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
         resourceYAML = previous
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
+    }
+
+    private func pushResourceYAMLUndoSnapshotIfNeeded(for nextYAML: String) {
+        guard nextYAML != resourceYAML else { return }
+        resourceYAMLUndoStack.append(resourceYAML)
+        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
+    }
+
+    private func clearResourceYAMLUndoHistory() {
+        resourceYAMLUndoStack = []
+        resourceYAMLUndoSnapshot = nil
     }
 
     public func beginResourceYAMLValidation() {
@@ -578,7 +588,7 @@ public final class RuneAppState: ObservableObject {
     public func beginResourceDetailLoad() {
         resourceYAML = ""
         resourceYAMLBaseline = ""
-        resourceYAMLUndoSnapshot = nil
+        clearResourceYAMLUndoHistory()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         resourceDescribe = ""
@@ -595,7 +605,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceYAMLError(_ message: String?) {
         resourceYAML = ""
         resourceYAMLBaseline = ""
-        resourceYAMLUndoSnapshot = nil
+        clearResourceYAMLUndoHistory()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         lastResourceYAMLError = message
@@ -746,6 +756,7 @@ public final class RuneAppState: ObservableObject {
         unifiedServiceLogPods = []
         resourceYAML = ""
         resourceYAMLBaseline = ""
+        clearResourceYAMLUndoHistory()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         resourceDescribe = ""

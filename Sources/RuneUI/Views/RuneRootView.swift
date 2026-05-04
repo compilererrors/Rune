@@ -442,9 +442,11 @@ public struct RuneRootView: View {
     private let forcedManifestInlineEditorImplementation: ManifestInlineEditorImplementation?
     private let forcedInitialSidebarWidth: Double?
     private let forcedInitialDetailWidth: Double?
+    private let workspaceChromeMountDelayNanoseconds: UInt64 = 120_000_000
 
     @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
+    @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
@@ -464,6 +466,7 @@ public struct RuneRootView: View {
     @State private var localKeyEventMonitor: Any?
     @State private var addClusterPopoverPresented = false
     @State private var selectedAddClusterProvider: RuneAddClusterProvider?
+    @State private var hasMountedWorkspaceChrome = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -522,11 +525,13 @@ public struct RuneRootView: View {
                 let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
                 let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
 
-                configuredMainSplitContainer
-                    .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
-                    .offset(y: resolvedTopInset)
-                    .clipped()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if shouldMountWorkspaceChrome {
+                    configuredMainSplitContainer
+                        .frame(width: geometry.size.width, height: viewportHeight, alignment: .topLeading)
+                        .offset(y: resolvedTopInset)
+                        .clipped()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
 
             if shouldShowLaunchExperience {
@@ -535,6 +540,13 @@ public struct RuneRootView: View {
             }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
+        .dynamicTypeSize(appDynamicTypeSize)
+        .onAppear {
+            handleRootAppear()
+        }
+        .onDisappear {
+            handleRootDisappear()
+        }
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
             layoutProbeFrames = frames.compactMapValues { frame in
                 guard frame.generation == layoutGeneration else { return nil }
@@ -585,8 +597,64 @@ public struct RuneRootView: View {
         .animation(.easeOut(duration: 0.16), value: shouldShowLaunchExperience)
     }
 
+    private var appDynamicTypeSize: DynamicTypeSize {
+        switch Int(RuneSettingsKeys.clampedTerminalFontSize(appFontSize).rounded()) {
+        case ...10: return .small
+        case 11: return .medium
+        case 12: return .large
+        case 13: return .xLarge
+        case 14: return .xxLarge
+        case 15: return .xxxLarge
+        case 16: return .accessibility1
+        case 17: return .accessibility2
+        case 18: return .accessibility3
+        case 19: return .accessibility4
+        default: return .accessibility5
+        }
+    }
+
     private var shouldShowLaunchExperience: Bool {
         !debugDisableBootstrap && viewModel.isLaunchExperienceVisible
+    }
+
+    private var shouldMountWorkspaceChrome: Bool {
+        debugDisableBootstrap || hasMountedWorkspaceChrome || !shouldShowLaunchExperience
+    }
+
+    private func handleRootAppear() {
+        keyboardPaneFocus = .sidebarSections
+        textInputFocus = nil
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+        installLocalKeyboardMonitorIfNeeded()
+        scheduleWorkspaceChromeMount()
+        if RuneRootLayoutDebug.isEnabled {
+            NSLog(
+                "[Rune][Layout] configured shell=%@ editor=%@",
+                resolvedShellVariant.debugLabel,
+                resolvedManifestInlineEditorImplementation.debugLabel
+            )
+        }
+        startLiveDebugScenarioIfNeeded()
+        guard !debugDisableBootstrap else { return }
+        viewModel.bootstrapIfNeeded()
+    }
+
+    private func handleRootDisappear() {
+        removeLocalKeyboardMonitor()
+    }
+
+    private func scheduleWorkspaceChromeMount() {
+        guard !debugDisableBootstrap else {
+            hasMountedWorkspaceChrome = true
+            return
+        }
+        guard !hasMountedWorkspaceChrome else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: workspaceChromeMountDelayNanoseconds)
+            hasMountedWorkspaceChrome = true
+        }
     }
 
     private var launchExperienceOverlay: some View {
@@ -595,16 +663,9 @@ public struct RuneRootView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 16) {
-                Image("rune_logo_main", bundle: .module)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 76, height: 76)
-                    .accessibilityHidden(true)
+                launchLogo
 
                 VStack(spacing: 5) {
-                    Text("Rune")
-                        .font(.title2.weight(.bold))
-
                     Text("Loading workspace")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -619,6 +680,40 @@ public struct RuneRootView: View {
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Rune loading workspace")
+    }
+
+    @ViewBuilder
+    private var launchLogo: some View {
+        if let image = launchLogoImage {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 112, height: 112)
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: "hexagon")
+                .font(.system(size: 58, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 112, height: 112)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var launchLogoImage: NSImage? {
+        if let url = Bundle.module.url(forResource: "rune_logo_main", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        if let url = Bundle.main.url(forResource: "rune_logo_main", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        if let applicationIcon = NSApp.applicationIconImage,
+           applicationIcon.size.width > 0,
+           applicationIcon.size.height > 0 {
+            return applicationIcon
+        }
+        return NSImage(named: "rune_logo_main")
     }
 
     private var configuredMainSplitContainer: some View {
@@ -756,27 +851,6 @@ public struct RuneRootView: View {
                 }
             } message: {
                 Text(viewModel.pendingWriteActionMessage)
-            }
-            .onAppear {
-                keyboardPaneFocus = .sidebarSections
-                textInputFocus = nil
-                DispatchQueue.main.async {
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
-                installLocalKeyboardMonitorIfNeeded()
-                if RuneRootLayoutDebug.isEnabled {
-                    NSLog(
-                        "[Rune][Layout] configured shell=%@ editor=%@",
-                        resolvedShellVariant.debugLabel,
-                        resolvedManifestInlineEditorImplementation.debugLabel
-                    )
-                }
-                startLiveDebugScenarioIfNeeded()
-                guard !debugDisableBootstrap else { return }
-                viewModel.bootstrapIfNeeded()
-            }
-            .onDisappear {
-                removeLocalKeyboardMonitor()
             }
     }
 
@@ -4066,7 +4140,7 @@ public struct RuneRootView: View {
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
         guard !keyboardNavigationSuspended else { return false }
         guard textInputFocus == nil else { return false }
-        let disallowedModifiers: NSEvent.ModifierFlags = [.control]
+        let disallowedModifiers: NSEvent.ModifierFlags = [.function]
         return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
 
@@ -4076,12 +4150,14 @@ public struct RuneRootView: View {
         let requiresShift = event.modifierFlags.contains(.shift)
         let requiresCommand = event.modifierFlags.contains(.command)
         let requiresOption = event.modifierFlags.contains(.option)
+        let requiresControl = event.modifierFlags.contains(.control)
         return RuneKeyBindingAction.allCases.first {
             UserDefaults.standard.runeKeyBindingShortcut(for: $0).matches(
                 baseKey: baseKey,
                 requiresShift: requiresShift,
                 requiresCommand: requiresCommand,
-                requiresOption: requiresOption
+                requiresOption: requiresOption,
+                requiresControl: requiresControl
             )
         }
     }
@@ -4119,6 +4195,11 @@ public struct RuneRootView: View {
 
     private func performConfiguredAction(_ action: RuneKeyBindingAction) -> Bool {
         switch action {
+        case .commandPalette:
+            viewModel.presentCommandPalette()
+            return true
+        case .filterResources:
+            return focusResourceFilterFromKeyBinding()
         case .historyBack:
             guard viewModel.canNavigateBack else { return false }
             viewModel.navigateBack()
@@ -4132,14 +4213,25 @@ public struct RuneRootView: View {
         case .logs:
             return openLogsInspectorForSelection()
         case .shell:
-            return openShellInspectorForSelection()
+            return openShellOrScaleInspectorForSelection()
+        case .edit:
+            return openYAMLEditorForSelection()
         case .yaml:
             return openYAMLInspectorForSelection()
+        case .delete:
+            return deleteSelectionFromKeyBinding()
         case .portForward:
             return openPortForwardInspectorForSelection()
         case .rollout:
             return openRolloutInspectorForSelection()
         }
+    }
+
+    private func focusResourceFilterFromKeyBinding() -> Bool {
+        guard showsNamespaceAndFilterControls else { return false }
+        textInputFocus = .resourceFilter
+        keyboardPaneFocus = .content
+        return true
     }
 
     private func openDescribeInspectorForSelection() -> Bool {
@@ -4212,6 +4304,18 @@ public struct RuneRootView: View {
         return true
     }
 
+    private func openYAMLEditorForSelection() -> Bool {
+        guard openYAMLInspectorForSelection() else { return false }
+        openYAMLEditorSheet()
+        return true
+    }
+
+    private func deleteSelectionFromKeyBinding() -> Bool {
+        guard hasDeletableSelection else { return false }
+        viewModel.requestDeleteSelectedResource()
+        return true
+    }
+
     private func openLogsInspectorForSelection() -> Bool {
         switch viewModel.state.selectedSection {
         case .workloads:
@@ -4237,13 +4341,22 @@ public struct RuneRootView: View {
         return true
     }
 
-    private func openShellInspectorForSelection() -> Bool {
-        guard viewModel.state.selectedSection == .workloads,
-              viewModel.state.selectedWorkloadKind == .pod,
-              viewModel.state.selectedPod != nil else {
+    private func openShellOrScaleInspectorForSelection() -> Bool {
+        guard viewModel.state.selectedSection == .workloads else {
             return false
         }
-        podInspectorTab = .exec
+
+        switch viewModel.state.selectedWorkloadKind {
+        case .pod:
+            guard viewModel.state.selectedPod != nil else { return false }
+            podInspectorTab = .exec
+        case .deployment:
+            guard viewModel.state.selectedDeployment != nil else { return false }
+            deploymentInspectorTab = .overview
+        default:
+            return false
+        }
+
         yamlManifestIsEditing = false
         keyboardPaneFocus = .detail
         return true
@@ -4330,6 +4443,31 @@ public struct RuneRootView: View {
             }
         case .rbac:
             return viewModel.state.selectedRBACResource != nil
+        case .overview, .events, .helm, .terminal:
+            return false
+        }
+    }
+
+    private var hasDeletableSelection: Bool {
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                return viewModel.state.selectedPod != nil
+            case .deployment:
+                return viewModel.state.selectedDeployment != nil
+            default:
+                return hasGenericManifestSelection
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                return viewModel.state.selectedService != nil
+            default:
+                return hasGenericManifestSelection
+            }
+        case .config, .storage, .rbac:
+            return hasGenericManifestSelection
         case .overview, .events, .helm, .terminal:
             return false
         }

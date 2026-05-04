@@ -452,6 +452,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Retries for `navigateToEventSource` when lists were not loaded for the Events-only snapshot (e.g. pods empty until workloads refresh).
     private var navigateFromEventFetchAttempts = 0
     private var scheduledRefreshTask: Task<Void, Never>?
+    private var pendingCurrentViewRefreshID: UUID?
     private var resourceDetailsTask: Task<Void, Never>?
     private var scheduledLogsReloadTask: Task<Void, Never>?
     private var logsReloadTask: Task<Void, Never>?
@@ -483,7 +484,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let terminalOutputFlushNanoseconds: UInt64 = 33_000_000
     private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     private let liveStatusUpdateNanoseconds: UInt64 = 12_000_000_000
-    private let launchExperienceMinimumNanoseconds: UInt64 = 140_000_000
+    private let launchExperienceMinimumNanoseconds: UInt64 = 320_000_000
     /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
     private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
     /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.
@@ -1108,7 +1109,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// List data comes from ``refreshCurrentView`` / ``loadResourceSnapshot`` (driven by ``SnapshotLoadPlan`` per section, e.g. workloads → pods loads only pod list).
     public func refreshResourceInspectorOnly() {
         guard state.selectedContext != nil else { return }
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
     }
 
     private func scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: Bool, debounced: Bool) {
@@ -1118,13 +1119,20 @@ public final class RuneAppViewModel: ObservableObject {
 
         scheduledRefreshTask?.cancel()
         let delay = debounced ? refreshDebounceNanoseconds : 0
+        let refreshID = UUID()
+        pendingCurrentViewRefreshID = refreshID
 
         scheduledRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.pendingCurrentViewRefreshID == refreshID {
+                    self.pendingCurrentViewRefreshID = nil
+                }
+            }
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: delay)
             }
             guard !Task.isCancelled else { return }
-            guard let self else { return }
             let forceNamespaceMetadataRefresh = self.pendingForcedNamespaceRefresh
             self.pendingForcedNamespaceRefresh = false
             await self.performRefreshCurrentView(forceNamespaceMetadataRefresh: forceNamespaceMetadataRefresh)
@@ -1238,8 +1246,13 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.trace("workloadKind", "setWorkloadKind kind=\(kind.rawValue) willReload=\(willReload)")
         if willReload {
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
+        } else if !shouldLoadResourceDetailsForCurrentSection {
+            state.clearResourceDetails()
+        } else if pendingCurrentViewRefreshID == nil {
+            loadResourceDetailsForCurrentSelectionIfNeeded()
+        } else {
+            diagnostics.trace("workloadKind", "deferred resource details until current view refresh completes")
         }
-        loadResourceDetailsForCurrentSelection()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1664,7 +1677,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPod(pod)
         state.selectedWorkloadKind = .pod
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1681,7 +1694,7 @@ public final class RuneAppViewModel: ObservableObject {
         if let deployment {
             scaleReplicaInput = max(0, deployment.desiredReplicas)
         }
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1695,7 +1708,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedService(service)
         state.selectedWorkloadKind = .service
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1734,7 +1747,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedStatefulSet(resource)
         state.selectedWorkloadKind = .statefulSet
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1748,7 +1761,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedDaemonSet(resource)
         state.selectedWorkloadKind = .daemonSet
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1762,7 +1775,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedJob(resource)
         state.selectedWorkloadKind = .job
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1776,7 +1789,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedCronJob(resource)
         state.selectedWorkloadKind = .cronJob
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1790,7 +1803,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedReplicaSet(resource)
         state.selectedWorkloadKind = .replicaSet
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1804,7 +1817,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPersistentVolumeClaim(resource)
         state.selectedWorkloadKind = .persistentVolumeClaim
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1818,7 +1831,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedPersistentVolume(resource)
         state.selectedWorkloadKind = .persistentVolume
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1832,7 +1845,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedStorageClass(resource)
         state.selectedWorkloadKind = .storageClass
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1846,7 +1859,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedHorizontalPodAutoscaler(resource)
         state.selectedWorkloadKind = .horizontalPodAutoscaler
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1860,7 +1873,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedNetworkPolicy(resource)
         state.selectedWorkloadKind = .networkPolicy
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1920,7 +1933,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedIngress(resource)
         state.selectedWorkloadKind = .ingress
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1934,7 +1947,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedConfigMap(resource)
         state.selectedWorkloadKind = .configMap
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1948,7 +1961,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedSecret(resource)
         state.selectedWorkloadKind = .secret
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1962,7 +1975,7 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedNode(resource)
         state.selectedWorkloadKind = .node
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -1978,7 +1991,7 @@ public final class RuneAppViewModel: ObservableObject {
         if let resource {
             state.selectedWorkloadKind = resource.kind
         }
-        loadResourceDetailsForCurrentSelection()
+        loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
         }
@@ -2674,11 +2687,8 @@ public final class RuneAppViewModel: ObservableObject {
                 guard let context = state.selectedContext else { return }
                 let audit = auditDetails(for: action, context: context, namespace: state.selectedNamespace)
 
-                let shouldReloadResourceInspectorAfterWrite: Bool
-
                 switch action {
                 case let .delete(kind, name):
-                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.deleteResource(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2687,7 +2697,6 @@ public final class RuneAppViewModel: ObservableObject {
                         name: name
                     )
                 case let .apply(_, _, yaml, _):
-                    shouldReloadResourceInspectorAfterWrite = true
                     try await kubeClient.applyYAML(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2695,7 +2704,6 @@ public final class RuneAppViewModel: ObservableObject {
                         yaml: yaml
                     )
                 case let .scale(deploymentName, replicas):
-                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.scaleDeployment(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2704,7 +2712,6 @@ public final class RuneAppViewModel: ObservableObject {
                         replicas: replicas
                     )
                 case let .rolloutRestart(deploymentName):
-                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.restartDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2712,7 +2719,6 @@ public final class RuneAppViewModel: ObservableObject {
                         deploymentName: deploymentName
                     )
                 case let .rolloutUndo(deploymentName, revision):
-                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.rollbackDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2721,7 +2727,6 @@ public final class RuneAppViewModel: ObservableObject {
                         revision: revision
                     )
                 case let .exec(podName, command):
-                    shouldReloadResourceInspectorAfterWrite = false
                     state.isExecutingCommand = true
                     defer { state.isExecutingCommand = false }
 
@@ -2737,7 +2742,6 @@ public final class RuneAppViewModel: ObservableObject {
                     appendWriteAudit(audit, status: "Succeeded", message: "Command exited \(result.exitCode)")
                     return
                 case let .createJobFromCronJob(cronJobName, jobName):
-                    shouldReloadResourceInspectorAfterWrite = false
                     try await kubeClient.createJobFromCronJob(
                         from: state.kubeConfigSources,
                         context: context,
@@ -2758,9 +2762,6 @@ public final class RuneAppViewModel: ObservableObject {
                     namespace: state.selectedNamespace,
                     requestID: requestID
                 )
-                if shouldReloadResourceInspectorAfterWrite {
-                    loadResourceDetailsForCurrentSelection()
-                }
                 appendWriteAudit(audit, status: "Succeeded", message: "Write action completed")
             } catch {
                 if let context = state.selectedContext {
@@ -4078,6 +4079,61 @@ public final class RuneAppViewModel: ObservableObject {
             if self.isCurrentResourceDetailsRequest(requestID) {
                 self.resourceDetailsTask = nil
             }
+        }
+    }
+
+    private func loadResourceDetailsForCurrentSelectionIfNeeded() {
+        guard shouldLoadResourceDetailsForCurrentSection else {
+            state.clearResourceDetails()
+            return
+        }
+        guard hasCurrentResourceSelectionForDetails else {
+            state.clearResourceDetails()
+            return
+        }
+        loadResourceDetailsForCurrentSelection()
+    }
+
+    private var hasCurrentResourceSelectionForDetails: Bool {
+        switch state.selectedWorkloadKind {
+        case .pod:
+            return state.selectedPod != nil
+        case .deployment:
+            return state.selectedDeployment != nil
+        case .service:
+            return state.selectedService != nil
+        case .statefulSet:
+            return state.selectedStatefulSet != nil
+        case .daemonSet:
+            return state.selectedDaemonSet != nil
+        case .job:
+            return state.selectedJob != nil
+        case .cronJob:
+            return state.selectedCronJob != nil
+        case .replicaSet:
+            return state.selectedReplicaSet != nil
+        case .persistentVolumeClaim:
+            return state.selectedPersistentVolumeClaim != nil
+        case .persistentVolume:
+            return state.selectedPersistentVolume != nil
+        case .storageClass:
+            return state.selectedStorageClass != nil
+        case .horizontalPodAutoscaler:
+            return state.selectedHorizontalPodAutoscaler != nil
+        case .networkPolicy:
+            return state.selectedNetworkPolicy != nil
+        case .ingress:
+            return state.selectedIngress != nil
+        case .configMap:
+            return state.selectedConfigMap != nil
+        case .secret:
+            return state.selectedSecret != nil
+        case .node:
+            return state.selectedNode != nil
+        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return state.selectedRBACResource != nil
+        case .event:
+            return false
         }
     }
 
@@ -5605,6 +5661,7 @@ public final class RuneAppViewModel: ObservableObject {
         overviewPrefetchTask?.cancel()
         contextOverviewPrefetchTask?.cancel()
         scheduledRefreshTask?.cancel()
+        pendingCurrentViewRefreshID = nil
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
 

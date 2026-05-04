@@ -65,6 +65,16 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         }
     }
 
+    func testBuildScriptCopiesSwiftPackageResourcesIntoAppBundle() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("for resource_bundle in \"${BIN_DIR}\"/*.bundle"))
+        XCTAssertTrue(contents.contains("cp -R \"${resource_bundle}\" \"${APP_BUNDLE}/Contents/Resources/\""))
+        XCTAssertTrue(contents.contains("assets/rune_logo_main.png"))
+        XCTAssertTrue(contents.contains("Contents/Resources/rune_logo_main.png"))
+    }
+
     func testAppRegistersDefaultsBeforeConstructingRootViewModel() throws {
         let app = repositoryRoot.appendingPathComponent("Sources/RuneApp/RuneApp.swift")
         let contents = try String(contentsOf: app, encoding: .utf8)
