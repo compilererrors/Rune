@@ -39,10 +39,6 @@ You can also support development through PayPal:
 [Jump to the full screenshot grid](#full-screenshot-grid).
 
 <p>
-  <img src="assets/screenshot/ui/update260503/overview-context-overview.png" alt="Rune overview" width="100%">
-</p>
-
-<p>
   <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune pod YAML editor with validation errors" width="100%">
 </p>
 
