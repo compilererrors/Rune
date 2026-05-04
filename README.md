@@ -50,7 +50,78 @@ You can also support development through PayPal:
   <img src="assets/screenshot/ui/update260503/terminal-port-forward-pod-shell.png" alt="Rune terminal with pod shell and port-forwarding" width="100%">
 </p>
 
-### Full Screenshot Grid
+## Navigation
+
+- **Main sections:** use the sidebar or **Cmd+1** through **Cmd+9**: Overview, Workloads, Networking, Storage, Config, RBAC, Events, Helm, and Terminal.
+- **Toolbar:** choose the Kubernetes context and namespace for the data you browse.
+- **History:** use **Cmd+Option+Left Arrow** and **Cmd+Option+Right Arrow** to move back and forward in the navigation stack.
+- **Reload:** use **Cmd+R** to refresh the current view.
+
+## Command Palette
+
+Open the palette with **Cmd+K**, or click the **Palette** button in the toolbar. Search by free text across contexts, namespaces, resources, and actions, or type a `:` prefix to run command-style jumps.
+
+- **Syntax:** `:command` or `:command filter`, for example `:po api`, `:svc billing`, or `:ns kube-system`.
+- **Cluster and scope:** `:ctx` switches context and `:ns` switches namespace.
+- **Workloads:** `:po` / `:pod`, `:deploy`, `:sts`, `:ds`, and `:wl`.
+- **Networking:** `:svc` / `:service` / `:services`, `:ing`, and `:net`.
+- **Configuration:** `:cm`, `:sec`, and `:cfg`.
+- **RBAC:** `:rbac`, `:role`, `:rb`, `:cr`, and `:crb`.
+- **Helm:** `:helm` / `:hr` opens Helm releases and can filter by release name.
+- **More:** `:ev`, `:reload`, `:import`, `:ro`, and `:readonly`.
+
+Type `:` by itself to see the built-in command cheat sheet.
+
+## Privacy
+
+Rune does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.
+
+The only network traffic is the traffic required for Rune to communicate with the Kubernetes clusters and services you choose to connect to. Kubeconfig files, cluster endpoints, credentials, Keychain items, and security-scoped bookmarks are handled locally on your Mac.
+
+See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+
+## Requirements
+
+- macOS 14 or later
+- Swift 6, for example via Xcode
+- Rune talks to Kubernetes through its native in-app Kubernetes client.
+
+## Build and Run
+
+```bash
+swift build
+swift run RuneApp
+```
+
+Release build:
+
+```bash
+swift build -c release --product RuneApp
+```
+
+## App Bundle
+
+```bash
+./scripts/build-macos-app.sh
+```
+
+Produces `dist/Rune.app`.
+
+## Development
+
+```bash
+swift test
+```
+
+## License
+
+Rune is source-available. Personal and other non-commercial use is free.
+Business use requires a paid commercial license or an authorized Mac App Store
+purchase. See [LICENSE](LICENSE).
+
+<a id="full-screenshot-grid"></a>
+
+## Full Screenshot Grid
 
 <p>
   <img src="assets/screenshot/ui/update260503/workloads-pods-pod-overview.png" alt="Rune pod overview" width="49%">
@@ -150,72 +221,3 @@ You can also support development through PayPal:
   <img src="assets/screenshot/ui/update260503/command-palette-namespaces-search-results.png" alt="Rune command palette namespaces" width="49%">
   <img src="assets/screenshot/ui/update260503/command-palette-cronjobs-shortcut.png" alt="Rune command palette CronJobs" width="49%">
 </p>
-
-## Navigation
-
-- **Main sections:** use the sidebar or **Cmd+1** through **Cmd+9**: Overview, Workloads, Networking, Storage, Config, RBAC, Events, Helm, and Terminal.
-- **Toolbar:** choose the Kubernetes context and namespace for the data you browse.
-- **History:** use **Cmd+Option+Left Arrow** and **Cmd+Option+Right Arrow** to move back and forward in the navigation stack.
-- **Reload:** use **Cmd+R** to refresh the current view.
-
-## Command Palette
-
-Open the palette with **Cmd+K**, or click the **Palette** button in the toolbar. Search by free text across contexts, namespaces, resources, and actions, or type a `:` prefix to run command-style jumps.
-
-- **Syntax:** `:command` or `:command filter`, for example `:po api`, `:svc billing`, or `:ns kube-system`.
-- **Cluster and scope:** `:ctx` switches context and `:ns` switches namespace.
-- **Workloads:** `:po` / `:pod`, `:deploy`, `:sts`, `:ds`, and `:wl`.
-- **Networking:** `:svc` / `:service` / `:services`, `:ing`, and `:net`.
-- **Configuration:** `:cm`, `:sec`, and `:cfg`.
-- **RBAC:** `:rbac`, `:role`, `:rb`, `:cr`, and `:crb`.
-- **Helm:** `:helm` / `:hr` opens Helm releases and can filter by release name.
-- **More:** `:ev`, `:reload`, `:import`, `:ro`, and `:readonly`.
-
-Type `:` by itself to see the built-in command cheat sheet.
-
-## Privacy
-
-Rune does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.
-
-The only network traffic is the traffic required for Rune to communicate with the Kubernetes clusters and services you choose to connect to. Kubeconfig files, cluster endpoints, credentials, Keychain items, and security-scoped bookmarks are handled locally on your Mac.
-
-See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
-
-## Requirements
-
-- macOS 14 or later
-- Swift 6, for example via Xcode
-- Rune talks to Kubernetes through its native in-app Kubernetes client.
-
-## Build and Run
-
-```bash
-swift build
-swift run RuneApp
-```
-
-Release build:
-
-```bash
-swift build -c release --product RuneApp
-```
-
-## App Bundle
-
-```bash
-./scripts/build-macos-app.sh
-```
-
-Produces `dist/Rune.app`.
-
-## Development
-
-```bash
-swift test
-```
-
-## License
-
-Rune is source-available. Personal and other non-commercial use is free.
-Business use requires a paid commercial license or an authorized Mac App Store
-purchase. See [LICENSE](LICENSE).
