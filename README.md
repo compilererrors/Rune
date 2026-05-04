@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/ui/update260429/overview.png)
+![Rune overview](assets/screenshot/ui/update260503/overview-context-overview.png)
 
 ## Why Rune
 
@@ -39,95 +39,95 @@ You can also support development through PayPal:
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/overview.png" alt="Rune overview">
+      <img src="assets/screenshot/ui/update260503/overview-context-overview.png" alt="Rune overview">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadOverview.png" alt="Rune workload overview">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsPodYaml.png" alt="Rune pod YAML">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlEdit.png" alt="Rune pod YAML editor">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-overview.png" alt="Rune workload overview">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlEditError.png" alt="Rune pod YAML edit validation">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml.png" alt="Rune pod YAML">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsPodsYamlError.png" alt="Rune pod YAML validation error">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadDeployments.png" alt="Rune deployments">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsStateful.png" alt="Rune StatefulSets">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-editor-modal.png" alt="Rune pod YAML editor">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsDaemon.png" alt="Rune DaemonSets">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune pod YAML edit validation">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsJobs.png" alt="Rune jobs">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsCronjobs.png" alt="Rune CronJobs">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsHPA.png" alt="Rune HPAs">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors.png" alt="Rune pod YAML validation error">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/workloadsHPAYaml.png" alt="Rune HPA YAML">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-describe.png" alt="Rune deployments">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/servicesOverview.png" alt="Rune services">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/networkingIngress.png" alt="Rune ingress">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogs.png" alt="Rune unified logs">
+      <img src="assets/screenshot/ui/update260503/workloads-statefulsets-statefulset-describe.png" alt="Rune StatefulSets">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogsLarge.png" alt="Rune expanded unified logs">
+      <img src="assets/screenshot/ui/update260503/workloads-daemonsets-daemonset-describe.png" alt="Rune DaemonSets">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/servicesUnifiedlogsSearch.png" alt="Rune log search">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/configmaps.png" alt="Rune config maps">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/ui/update260429/rbacroles.png" alt="Rune RBAC roles">
+      <img src="assets/screenshot/ui/update260503/workloads-jobs-job-yaml.png" alt="Rune jobs">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/storage.png" alt="Rune storage">
+      <img src="assets/screenshot/ui/update260503/workloads-cronjobs-cronjob-yaml.png" alt="Rune CronJobs">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/events.png" alt="Rune events">
+      <img src="assets/screenshot/ui/update260503/workloads-hpas-hpa-describe.png" alt="Rune HPAs">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/ui/update260429/terminal.png" alt="Rune terminal">
+      <img src="assets/screenshot/ui/update260503/workloads-hpas-hpa-yaml.png" alt="Rune HPA YAML">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/networking-services-service-overview.png" alt="Rune services">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/networking-ingresses-ingress-yaml.png" alt="Rune ingress">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/networking-services-service-unified-logs.png" alt="Rune unified logs">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-unified-logs-wide-panel.png" alt="Rune expanded unified logs">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-unified-logs.png" alt="Rune log search">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/config-configmaps-configmap-yaml.png" alt="Rune config maps">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/rbac-roles-role-yaml.png" alt="Rune RBAC roles">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/storage-pvcs-pvc-yaml.png" alt="Rune storage">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/events-pulled-go-to-pod.png" alt="Rune events">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/terminal-port-forward-pod-shell.png" alt="Rune terminal">
     </td>
     <td width="50%"></td>
   </tr>
@@ -138,18 +138,18 @@ You can also support development through PayPal:
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/EditYaml.png" alt="Rune YAML editor">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-editor-modal.png" alt="Rune YAML editor">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/YamlEditError.png" alt="Rune YAML validation in editor">
+      <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune YAML validation in editor">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/YamlError.png" alt="Rune YAML validation error">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors.png" alt="Rune YAML validation error">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/DeploymentYaml.png" alt="Rune deployment YAML">
+      <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors-scrolled.png" alt="Rune deployment YAML">
     </td>
   </tr>
 </table>
@@ -159,26 +159,26 @@ You can also support development through PayPal:
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/41-command-palette-pods.png" alt="Rune command palette pods">
+      <img src="assets/screenshot/ui/update260503/command-palette-pods-search-results.png" alt="Rune command palette pods">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/42-command-palette-deployments.png" alt="Rune command palette deployments">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshot/readme/43-command-palette-services.png" alt="Rune command palette services">
-    </td>
-    <td width="50%">
-      <img src="assets/screenshot/readme/44-command-palette-configmaps.png" alt="Rune command palette config maps">
+      <img src="assets/screenshot/ui/update260503/command-palette-deployments-search-results.png" alt="Rune command palette deployments">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/screenshot/readme/45-command-palette-rbac.png" alt="Rune command palette RBAC">
+      <img src="assets/screenshot/ui/update260503/command-palette-services-search-results.png" alt="Rune command palette services">
     </td>
     <td width="50%">
-      <img src="assets/screenshot/readme/46-command-palette-reload.png" alt="Rune command palette reload">
+      <img src="assets/screenshot/ui/update260503/command-palette-namespaces-search-results.png" alt="Rune command palette namespaces">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/command-palette-cronjobs-shortcut.png" alt="Rune command palette CronJobs">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshot/ui/update260503/command-palette-default-actions.png" alt="Rune command palette actions">
     </td>
   </tr>
 </table>
