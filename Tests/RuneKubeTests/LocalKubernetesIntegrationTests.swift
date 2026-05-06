@@ -44,6 +44,17 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             previous: false
         )
         XCTAssertEqual(multiContainerLogs, "main line\nsidecar line\n")
+
+        let selectedContainerLogs = try await client.podLogs(
+            from: sources,
+            context: context,
+            namespace: "default",
+            podName: "multi-0",
+            container: "sidecar",
+            filter: .tailLines(200),
+            previous: false
+        )
+        XCTAssertEqual(selectedContainerLogs, "sidecar line\n")
     }
 
     func testNativeRESTClientDoesNotForceTextPlainAcceptHeaderForPodLogs() throws {
@@ -1367,6 +1378,9 @@ private final class LocalKubernetesAPIServer: @unchecked Sendable {
         case "/api/v1/namespaces/default/pods/api-0/log":
             return (200, "text/plain", "line one\nline two\n")
         case "/api/v1/namespaces/default/pods/multi-0/log":
+            if target.contains("container=sidecar") {
+                return (200, "text/plain", "sidecar line\n")
+            }
             if target.contains("allContainers=true") {
                 return (200, "text/plain", "main line\nsidecar line\n")
             }

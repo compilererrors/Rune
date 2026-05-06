@@ -69,6 +69,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.diagnosticsLogging) private var diagnosticsLogging = true
     @AppStorage(RuneSettingsKeys.verboseDebugTrace) private var verboseDebugTrace = false
     @AppStorage(RuneSettingsKeys.backgroundPrefetchOtherContexts) private var backgroundPrefetchOtherContexts = false
+    @AppStorage(RuneSettingsKeys.enableDemoCluster) private var enableDemoCluster = true
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneMode) private var customOneModeRaw = RuneCustomLogPresetMode.lines.rawValue
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneLines) private var customOneLinesRaw = "5000"
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeValue) private var customOneTimeValueRaw = "15"
@@ -184,6 +185,14 @@ public struct RunePreferencesView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            settingsSection("Demo cluster") {
+                settingsToggleRow(
+                    "Enable demo cluster action",
+                    help: "Shows a small in-memory cluster from the Rune menu for screenshots and first-run evaluation. It does not start a server or keep background resources alive.",
+                    isOn: $enableDemoCluster
+                )
             }
         }
     }

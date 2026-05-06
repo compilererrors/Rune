@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import RuneCore
 
@@ -15,12 +16,16 @@ struct TerminalShellPanelView: View {
     let onStartSession: (PodSummary) -> Void
     let onReconnectSession: (PodTerminalSession, PodSummary) -> Void
     let onSend: () -> Void
+    let onSendControlSequence: (String) -> Void
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
     let onComposeNewSession: () -> Void
     let onClearTranscript: () -> Void
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
+    @State private var isInputFocused = false
+    @State private var commandHistory: [String] = []
+    @State private var commandHistoryIndex: Int?
 
     private var terminalFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(storedTerminalFontSize))
@@ -133,18 +138,26 @@ struct TerminalShellPanelView: View {
                 text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : transcriptPlaceholder,
                 height: transcriptHeight,
                 resetID: "terminal:\(session?.id ?? "empty")",
-                fontSize: terminalFontSize
+                fontSize: terminalFontSize,
+                onPasteText: pasteIntoPrompt
             )
 
             inputRow
         }
         .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
-        .onAppear(perform: syncShellPodSelectionToActiveSession)
+        .onAppear {
+            syncShellPodSelectionToActiveSession()
+            focusPromptIfConnected()
+        }
         .onChange(of: activeSessionID) { _, _ in
             syncShellPodSelectionToActiveSession()
+            focusPromptIfConnected()
         }
         .onChange(of: selectedShellPodID) { _, newValue in
             handleShellPodSelectionChange(newValue)
+        }
+        .onChange(of: session?.status) { _, _ in
+            focusPromptIfConnected()
         }
     }
 
@@ -184,14 +197,40 @@ struct TerminalShellPanelView: View {
                 .font(.system(size: terminalFontSize, weight: .semibold, design: .monospaced))
                 .foregroundStyle(canSendInput ? Color.accentColor : .secondary)
 
-            TextField("Type a shell command and press Return", text: $terminalInput)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: terminalFontSize, weight: .regular, design: .monospaced))
-                .onSubmit(onSend)
-                .disabled(!canSendInput)
+            ZStack(alignment: .leading) {
+                TerminalPromptTextEditor(
+                    text: $terminalInput,
+                    fontSize: terminalFontSize,
+                    isEnabled: canSendInput,
+                    isFocused: $isInputFocused,
+                    onSubmit: sendPrompt,
+                    onHistoryUp: recallPreviousCommand,
+                    onHistoryDown: recallNextCommand,
+                    onSendControlSequence: onSendControlSequence,
+                    onClearTranscript: onClearTranscript
+                )
+
+                if terminalInput.isEmpty {
+                    Text("Type a shell command and press Return")
+                        .font(.system(size: terminalFontSize, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(nsColor: canSendInput ? .textBackgroundColor : .controlBackgroundColor).opacity(0.72))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color.primary.opacity(canSendInput ? 0.16 : 0.08), lineWidth: 1)
+            )
+            .opacity(canSendInput ? 1 : 0.62)
 
             Button("Send") {
-                onSend()
+                sendPrompt()
             }
             .disabled(!canSendInput || terminalInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -225,6 +264,65 @@ struct TerminalShellPanelView: View {
         }
     }
 
+    private func focusPromptIfConnected() {
+        guard canSendInput else { return }
+        Task { @MainActor in
+            isInputFocused = true
+        }
+    }
+
+    private func pasteIntoPrompt(_ text: String) {
+        guard canSendInput else { return }
+        let normalizedText = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        guard !normalizedText.isEmpty else { return }
+        terminalInput += normalizedText
+        isInputFocused = true
+    }
+
+    private func sendPrompt() {
+        let command = terminalInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !command.isEmpty {
+            rememberCommand(command)
+        }
+        commandHistoryIndex = nil
+        onSend()
+    }
+
+    private func rememberCommand(_ command: String) {
+        if commandHistory.last != command {
+            commandHistory.append(command)
+        }
+        if commandHistory.count > 100 {
+            commandHistory.removeFirst(commandHistory.count - 100)
+        }
+    }
+
+    private func recallPreviousCommand() {
+        guard !commandHistory.isEmpty else { return }
+        let nextIndex: Int
+        if let commandHistoryIndex {
+            nextIndex = max(commandHistory.startIndex, commandHistoryIndex - 1)
+        } else {
+            nextIndex = commandHistory.index(before: commandHistory.endIndex)
+        }
+        commandHistoryIndex = nextIndex
+        terminalInput = commandHistory[nextIndex]
+    }
+
+    private func recallNextCommand() {
+        guard let commandHistoryIndex else { return }
+        let nextIndex = commandHistoryIndex + 1
+        guard nextIndex < commandHistory.endIndex else {
+            self.commandHistoryIndex = nil
+            terminalInput = ""
+            return
+        }
+        self.commandHistoryIndex = nextIndex
+        terminalInput = commandHistory[nextIndex]
+    }
+
     private func handleShellPodSelectionChange(_ podID: String) {
         guard !podID.isEmpty else { return }
         if let session, podID == "\(session.namespace)/\(session.podName)" {
@@ -254,4 +352,240 @@ struct TerminalShellPanelView: View {
         }
     }
 
+}
+
+private struct TerminalPromptTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let isEnabled: Bool
+    @Binding var isFocused: Bool
+    let onSubmit: () -> Void
+    let onHistoryUp: () -> Void
+    let onHistoryDown: () -> Void
+    let onSendControlSequence: (String) -> Void
+    let onClearTranscript: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView(frame: .zero)
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets()
+
+        let textView = TerminalPromptTextView(frame: .zero)
+        textView.delegate = context.coordinator
+        textView.onSubmit = onSubmit
+        textView.onHistoryUp = onHistoryUp
+        textView.onHistoryDown = onHistoryDown
+        textView.onSendControlSequence = onSendControlSequence
+        textView.onClearTranscript = onClearTranscript
+        textView.onTextReplacement = { value in
+            context.coordinator.parent.text = value
+        }
+        configure(textView)
+        textView.string = text
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? TerminalPromptTextView else { return }
+        textView.onSubmit = onSubmit
+        textView.onHistoryUp = onHistoryUp
+        textView.onHistoryDown = onHistoryDown
+        textView.onSendControlSequence = onSendControlSequence
+        textView.onClearTranscript = onClearTranscript
+        textView.onTextReplacement = { value in
+            context.coordinator.parent.text = value
+        }
+        configure(textView)
+        if textView.string != text {
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+        }
+
+        if isFocused, isEnabled, textView.window?.firstResponder !== textView {
+            Task { @MainActor in
+                textView.window?.makeFirstResponder(textView)
+            }
+        } else if !isEnabled, textView.window?.firstResponder === textView {
+            textView.window?.makeFirstResponder(nil)
+        }
+    }
+
+    private func configure(_ textView: TerminalPromptTextView) {
+        textView.isEditable = isEnabled
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.usesFontPanel = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = false
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24)
+        textView.autoresizingMask = [.width]
+        textView.textContainerInset = NSSize(width: 7, height: 3)
+        textView.backgroundColor = .clear
+        textView.drawsBackground = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        textView.textColor = isEnabled ? .labelColor : .secondaryLabelColor
+        textView.insertionPointColor = .controlAccentColor
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: TerminalPromptTextEditor
+
+        init(_ parent: TerminalPromptTextEditor) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.isFocused = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.isFocused = false
+        }
+    }
+}
+
+private final class TerminalPromptTextView: NSTextView {
+    var onSubmit: (() -> Void)?
+    var onHistoryUp: (() -> Void)?
+    var onHistoryDown: (() -> Void)?
+    var onSendControlSequence: ((String) -> Void)?
+    var onClearTranscript: (() -> Void)?
+    var onTextReplacement: ((String) -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if handleTerminalControlEvent(event) {
+            return
+        }
+
+        switch event.keyCode {
+        case 36, 76:
+            onSubmit?()
+        case 126:
+            onHistoryUp?()
+        case 125:
+            onHistoryDown?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        onSubmit?()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        if key == "k" {
+            onClearTranscript?()
+            return true
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func handleTerminalControlEvent(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.control),
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return false
+        }
+
+        switch key {
+        case "c":
+            onSendControlSequence?("\u{3}")
+            replaceText("")
+            return true
+        case "d":
+            if string.isEmpty {
+                onSendControlSequence?("\u{4}")
+                return true
+            }
+            return false
+        case "l":
+            onClearTranscript?()
+            onSendControlSequence?("\u{c}")
+            return true
+        case "u":
+            replaceText("")
+            return true
+        case "w":
+            deletePreviousWord()
+            return true
+        case "a":
+            setSelectedRange(NSRange(location: 0, length: 0))
+            return true
+        case "e":
+            setSelectedRange(NSRange(location: string.utf16.count, length: 0))
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func deletePreviousWord() {
+        let range = selectedRange()
+        let nsString = string as NSString
+        if range.length > 0 {
+            replaceCharacters(in: range, with: "")
+            onTextReplacement?(string)
+            return
+        }
+
+        guard range.location > 0 else { return }
+        var index = range.location
+        while index > 0, CharacterSet.whitespacesAndNewlines.contains(character(at: index - 1, in: nsString)) {
+            index -= 1
+        }
+        while index > 0, !CharacterSet.whitespacesAndNewlines.contains(character(at: index - 1, in: nsString)) {
+            index -= 1
+        }
+        let deleteRange = NSRange(location: index, length: range.location - index)
+        replaceCharacters(in: deleteRange, with: "")
+        onTextReplacement?(string)
+    }
+
+    private func character(at index: Int, in string: NSString) -> Unicode.Scalar {
+        Unicode.Scalar(string.character(at: index)) ?? " "
+    }
+
+    private func replaceText(_ newValue: String) {
+        string = newValue
+        setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
+        onTextReplacement?(newValue)
+    }
 }

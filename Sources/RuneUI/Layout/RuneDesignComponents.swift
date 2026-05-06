@@ -1,4 +1,5 @@
 import AppKit
+import RuneCore
 import SwiftUI
 
 enum RuneSurfaceKind {
@@ -97,6 +98,209 @@ struct RuneChip<Content: View>: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(fill)
             )
+    }
+}
+
+struct RuneSelectionCheckboxButton: View {
+    let isSelected: Bool
+    let accessibilityLabel: String
+    let selectedHelp: String
+    let deselectedHelp: String
+    let onToggle: () -> Void
+
+    init(
+        isSelected: Bool,
+        accessibilityLabel: String,
+        selectedHelp: String,
+        deselectedHelp: String,
+        onToggle: @escaping () -> Void
+    ) {
+        self.isSelected = isSelected
+        self.accessibilityLabel = accessibilityLabel
+        self.selectedHelp = selectedHelp
+        self.deselectedHelp = deselectedHelp
+        self.onToggle = onToggle
+    }
+
+    var body: some View {
+        Toggle(
+            isOn: Binding(
+                get: { isSelected },
+                set: { _ in onToggle() }
+            )
+        ) {
+            Text(accessibilityLabel)
+        }
+        .toggleStyle(.checkbox)
+        .labelsHidden()
+        .controlSize(.small)
+        .frame(width: 22, height: 22, alignment: .center)
+        .contentShape(Rectangle())
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .help(isSelected ? selectedHelp : deselectedHelp)
+    }
+}
+
+struct RuneBulkSelectionBar<Actions: View>: View {
+    let selectedCount: Int
+    let visibleCount: Int
+    let allVisibleSelected: Bool
+    let onToggleVisibleSelection: () -> Void
+    @ViewBuilder var actions: Actions
+
+    init(
+        selectedCount: Int,
+        visibleCount: Int,
+        allVisibleSelected: Bool,
+        onToggleVisibleSelection: @escaping () -> Void,
+        @ViewBuilder actions: () -> Actions
+    ) {
+        self.selectedCount = selectedCount
+        self.visibleCount = visibleCount
+        self.allVisibleSelected = allVisibleSelected
+        self.onToggleVisibleSelection = onToggleVisibleSelection
+        self.actions = actions()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                selectionCountChip
+                selectVisibleButton
+                separator
+                actions
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    selectionCountChip
+                    selectVisibleButton
+                }
+                HStack(spacing: 8) {
+                    actions
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var selectionCountChip: some View {
+        RuneChip(
+            horizontalPadding: 8,
+            verticalPadding: 3,
+            fill: selectedCount > 0 ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.10)
+        ) {
+            Label(selectedCountText, systemImage: selectedCount > 0 ? "checkmark.square.fill" : "square")
+                .font(.caption.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .imageScale(.small)
+                .foregroundStyle(selectedCount > 0 ? Color.accentColor : Color.secondary)
+        }
+        .frame(height: RuneUILayoutMetrics.headerChipHeight)
+        .accessibilityLabel(selectedCountText)
+    }
+
+    private var selectVisibleButton: some View {
+        Button {
+            onToggleVisibleSelection()
+        } label: {
+            Label(toggleTitle, systemImage: allVisibleSelected ? "xmark.square" : "checklist")
+        }
+        .disabled(visibleCount == 0)
+        .help(allVisibleSelected ? "Deselect all visible pods" : "Select all visible pods")
+        .accessibilityLabel(toggleTitle)
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.45))
+            .frame(width: 1, height: RuneUILayoutMetrics.headerChipHeight - 8)
+            .accessibilityHidden(true)
+    }
+
+    private var toggleTitle: String {
+        allVisibleSelected ? "Deselect All" : "Select All"
+    }
+
+    private var selectedCountText: String {
+        "\(selectedCount) selected"
+    }
+}
+
+struct RuneNoticeBanner: View {
+    let notice: RuneUserNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbolName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 18, height: 18)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(notice.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(notice.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss notice")
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .fill(tint.opacity(0.11))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .strokeBorder(tint.opacity(0.28), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var symbolName: String {
+        switch notice.severity {
+        case .info:
+            return "info.circle.fill"
+        case .warning:
+            return "exclamationmark.triangle.fill"
+        case .error:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch notice.severity {
+        case .info:
+            return .blue
+        case .warning:
+            return .orange
+        case .error:
+            return .red
+        }
     }
 }
 

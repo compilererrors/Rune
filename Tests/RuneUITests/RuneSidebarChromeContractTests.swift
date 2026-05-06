@@ -71,6 +71,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                     session: session,
                     sessions: [session],
                     activeSessionID: session.id,
+                    contextName: "benchmark",
                     selectedPod: pods[0],
                     availablePods: pods,
                     portForwardSessions: [],
@@ -86,7 +87,11 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                     onStartPortForward: { _ in },
                     onStopPortForward: { _ in },
                     onOpenPortForwardInBrowser: { _ in },
+                    onRetryPortForward: { _ in },
+                    onClearPortForward: { _ in },
+                    onClearInactivePortForwards: {},
                     onSend: {},
+                    onSendControlSequence: { _ in },
                     onDisconnect: {},
                     onSelectSession: { _ in },
                     onCloseSession: { _ in },
@@ -266,6 +271,110 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("cursor.push()"))
     }
 
+    func testTerminalTranscriptSupportsNativeClipboardAndContextMenu() throws {
+        let source = try String(contentsOfFile: terminalTranscriptSurfacePath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("final class TerminalTranscriptInteractionTextView: NSTextView"))
+        XCTAssertTrue(source.contains("override func performKeyEquivalent(with event: NSEvent) -> Bool"))
+        XCTAssertTrue(source.contains("case \"a\":"))
+        XCTAssertTrue(source.contains("case \"c\":"))
+        XCTAssertTrue(source.contains("case \"v\":"))
+        XCTAssertTrue(source.contains("NSPasteboard.general.string(forType: .string)"))
+        XCTAssertTrue(source.contains("onPasteText?(paste)"))
+        XCTAssertTrue(source.contains("override func paste(_ sender: Any?)"))
+        XCTAssertTrue(source.contains("override func menu(for event: NSEvent) -> NSMenu?"))
+        XCTAssertTrue(source.contains("NSMenuItem(title: \"Copy\""))
+        XCTAssertTrue(source.contains("NSMenuItem(title: \"Paste to Prompt\""))
+        XCTAssertTrue(source.contains("NSMenuItem(title: \"Select All\""))
+        XCTAssertTrue(source.contains("NSMenuItem(title: \"Clear Selection\""))
+        XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
+    }
+
+    func testTerminalPromptUsesNativeFocusPasteAndSendHistory() throws {
+        let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
+        let sessionControlSource = try String(contentsOfFile: terminalSessionControlRowPath, encoding: .utf8)
+
+        XCTAssertTrue(shellSource.contains("@State private var isInputFocused = false"))
+        XCTAssertTrue(shellSource.contains("@State private var commandHistory: [String] = []"))
+        XCTAssertTrue(shellSource.contains("onPasteText: pasteIntoPrompt"))
+        XCTAssertTrue(shellSource.contains("TerminalPromptTextEditor("))
+        XCTAssertTrue(shellSource.contains("onSubmit: sendPrompt"))
+        XCTAssertTrue(shellSource.contains("onHistoryUp: recallPreviousCommand"))
+        XCTAssertTrue(shellSource.contains("onHistoryDown: recallNextCommand"))
+        XCTAssertTrue(shellSource.contains("private func pasteIntoPrompt(_ text: String)"))
+        XCTAssertTrue(shellSource.contains("terminalInput += normalizedText"))
+        XCTAssertTrue(shellSource.contains("private func rememberCommand(_ command: String)"))
+        XCTAssertTrue(shellSource.contains("private func recallPreviousCommand()"))
+        XCTAssertTrue(shellSource.contains("private func recallNextCommand()"))
+        XCTAssertTrue(sessionControlSource.contains(".keyboardShortcut(\"k\", modifiers: [.command])"))
+    }
+
+    func testTerminalPromptHandlesStandardControlSequences() throws {
+        let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
+        let workspaceSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(shellSource.contains("private final class TerminalPromptTextView: NSTextView"))
+        XCTAssertTrue(shellSource.contains("override func keyDown(with event: NSEvent)"))
+        XCTAssertTrue(shellSource.contains("override func performKeyEquivalent(with event: NSEvent) -> Bool"))
+        XCTAssertTrue(shellSource.contains("case \"c\":"))
+        XCTAssertTrue(shellSource.contains("onSendControlSequence?(\"\\u{3}\")"))
+        XCTAssertTrue(shellSource.contains("case \"d\":"))
+        XCTAssertTrue(shellSource.contains("onSendControlSequence?(\"\\u{4}\")"))
+        XCTAssertTrue(shellSource.contains("case \"l\":"))
+        XCTAssertTrue(shellSource.contains("onSendControlSequence?(\"\\u{c}\")"))
+        XCTAssertTrue(shellSource.contains("case \"u\":"))
+        XCTAssertTrue(shellSource.contains("case \"w\":"))
+        XCTAssertTrue(shellSource.contains("case \"a\":"))
+        XCTAssertTrue(shellSource.contains("case \"e\":"))
+        XCTAssertTrue(shellSource.contains("case 126:"))
+        XCTAssertTrue(shellSource.contains("case 125:"))
+        XCTAssertTrue(workspaceSource.contains("let onSendControlSequence: (String) -> Void"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.sendTerminalControlSequence(text)"))
+        XCTAssertTrue(viewModelSource.contains("public func sendTerminalControlSequence(_ text: String)"))
+        XCTAssertTrue(viewModelSource.contains("try await kubeClient.writeToPodTerminalSession(id: session.id, text: text)"))
+    }
+
+    func testTerminalAndPortForwardExposeCopyKubectlCommands() throws {
+        let terminalViewSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+        let portForwardSource = try String(contentsOfFile: terminalPortForwardPanelViewPath, encoding: .utf8)
+        let builderSource = try String(contentsOfFile: terminalKubectlCommandBuilderPath, encoding: .utf8)
+
+        XCTAssertTrue(terminalViewSource.contains("copySuggestedCommand(command)"))
+        XCTAssertTrue(terminalViewSource.contains("TerminalKubectlCommandBuilder.exec("))
+        XCTAssertTrue(portForwardSource.contains("copyDraftKubectlButton"))
+        XCTAssertTrue(portForwardSource.contains("copyPortForwardCommandButton(session)"))
+        XCTAssertTrue(portForwardSource.contains("TerminalKubectlCommandBuilder.portForward("))
+        XCTAssertTrue(builderSource.contains("enum TerminalKubectlCommandBuilder"))
+        XCTAssertTrue(builderSource.contains("static func copyToPasteboard"))
+        XCTAssertTrue(builderSource.contains("kubectl"))
+        XCTAssertTrue(builderSource.contains("port-forward"))
+        XCTAssertTrue(builderSource.contains("exec"))
+
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.exec(
+                contextName: "dev",
+                namespace: "default",
+                podName: "api",
+                command: "printenv | sort"
+            ),
+            "kubectl --context dev --namespace default exec -it api -- sh -lc 'printenv | sort'"
+        )
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.portForward(
+                contextName: "dev",
+                namespace: "default",
+                targetKind: .pod,
+                targetName: "api",
+                localPort: 8080,
+                remotePort: 80,
+                address: "127.0.0.1"
+            ),
+            "kubectl --context dev --namespace default port-forward --address 127.0.0.1 pod/api 8080:80"
+        )
+    }
+
     func testTerminalAndPortForwardLifetimeStopsBackingSessions() throws {
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
         let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
@@ -276,6 +385,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPodTerminalSession(id: sessionID)"))
         XCTAssertTrue(viewModelSource.contains("public func stopPortForward(_ session: PortForwardSession)"))
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPortForward(sessionID: session.id)"))
+        XCTAssertTrue(viewModelSource.contains("public func clearPortForwardSession(_ session: PortForwardSession)"))
+        XCTAssertTrue(viewModelSource.contains("public func clearInactivePortForwardSessions()"))
+        XCTAssertTrue(viewModelSource.contains("public func clearInactivePortForwardSessions(targetKind: PortForwardTargetKind, targetName: String, namespace: String)"))
         XCTAssertTrue(viewModelSource.contains("let existing = state.terminalSessions.first(where:"))
         XCTAssertTrue(viewModelSource.contains("state.selectTerminalSession(id: existing.id)"))
 
@@ -365,8 +477,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         XCTAssertTrue(deploymentOverview.contains("inspectorInfoRow(\"Namespace\""))
         XCTAssertTrue(deploymentOverview.contains("inspectorActionButtonRow"))
+        XCTAssertTrue(deploymentOverview.contains("Button(\"Export Pod Logs ZIP\")"))
+        XCTAssertTrue(deploymentOverview.contains("viewModel.saveDeploymentPodLogsZip()"))
         XCTAssertFalse(deploymentOverview.contains("inspectorInsetCard"))
         XCTAssertFalse(deploymentOverview.contains(".runeInsetCard()"))
+
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        XCTAssertTrue(viewModelSource.contains("public func saveDeploymentPodLogsZip()"))
+        XCTAssertTrue(viewModelSource.contains("let pods = try await self.kubeClient.podsForDeployment"))
+        XCTAssertTrue(viewModelSource.contains("baseName = \"deployment-\\(deployment.name)-pod-logs\""))
+        XCTAssertTrue(viewModelSource.contains("fullPodLogsZipData("))
 
         let serviceDetails = try functionBlock(
             named: "private var serviceDetails: some View {",
@@ -474,11 +594,51 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(terminalViewSource.contains("let onOpenPortForwardInBrowser: (PortForwardSession) -> Void"))
         XCTAssertTrue(terminalViewSource.contains("let onStopPortForward: (PortForwardSession) -> Void"))
+        XCTAssertTrue(terminalViewSource.contains("let onRetryPortForward: (PortForwardSession) -> Void"))
+        XCTAssertTrue(terminalViewSource.contains("let onClearPortForward: (PortForwardSession) -> Void"))
+        XCTAssertTrue(portForwardPanelSource.contains("Clear Inactive"))
+        XCTAssertTrue(portForwardPanelSource.contains("Label(\"Retry\", systemImage: \"arrow.clockwise\")"))
+        XCTAssertTrue(portForwardPanelSource.contains("onClearPortForward(session)"))
         XCTAssertTrue(portForwardPanelSource.contains("if session.status == .active, session.browserURL != nil"))
-        XCTAssertTrue(portForwardPanelSource.contains("if session.status == .starting || session.status == .active || session.status == .failed"))
+        XCTAssertTrue(portForwardPanelSource.contains("if session.isActiveOrStarting"))
         XCTAssertTrue(portForwardPanelSource.contains("Label(\"Open in Browser\", systemImage: \"safari\")"))
         XCTAssertTrue(portForwardPanelSource.contains("onOpenPortForwardInBrowser(session)"))
         XCTAssertTrue(portForwardPanelSource.contains("onStopPortForward(session)"))
+    }
+
+    func testPodBulkSelectionUsesSharedNativeSelectionComponents() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let designSource = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("RuneBulkSelectionBar("))
+        XCTAssertTrue(rootViewSource.contains("RuneSelectionCheckboxButton("))
+        XCTAssertTrue(rootViewSource.contains("genericResourceBulkSelectionControls"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.requestDeleteSelectedGenericResources()"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Export\", systemImage: \"square.and.arrow.up\")"))
+        XCTAssertTrue(rootViewSource.contains("Menu {"))
+        XCTAssertTrue(designSource.contains("struct RuneBulkSelectionBar"))
+        XCTAssertTrue(designSource.contains("struct RuneSelectionCheckboxButton"))
+        XCTAssertTrue(designSource.contains(".toggleStyle(.checkbox)"))
+        XCTAssertTrue(designSource.contains("allVisibleSelected ? \"Deselect All\" : \"Select All\""))
+    }
+
+    func testGlobalErrorsRenderAsStructuredNoticesNotLooseRedFooterText() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let designSource = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
+
+        guard let detailPaneStart = rootViewSource.range(of: "private var detailPane: some View {"),
+              let overviewDetailsStart = rootViewSource.range(of: "private var overviewDetails: some View {", range: detailPaneStart.upperBound..<rootViewSource.endIndex)
+        else {
+            XCTFail("Could not locate detail pane block")
+            return
+        }
+
+        let detailPaneBlock = String(rootViewSource[detailPaneStart.lowerBound..<overviewDetailsStart.lowerBound])
+        XCTAssertTrue(detailPaneBlock.contains("RuneNoticeBanner(notice: notice)"))
+        XCTAssertTrue(detailPaneBlock.contains("viewModel.state.activeNotice"))
+        XCTAssertFalse(detailPaneBlock.contains("Text(error)"))
+        XCTAssertFalse(detailPaneBlock.contains(".foregroundStyle(.red)"))
+        XCTAssertTrue(designSource.contains("struct RuneNoticeBanner"))
     }
 
     func testTerminalSectionRefreshLoadsPodsForShellAndPortForwardSelectors() throws {
@@ -586,12 +746,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(unwrapBlock.contains("warnings.append"))
 
         guard let namespaceFailure = viewModelSource.range(of: "case let .failure(error):\n                if Self.isBenignCancellationError(error)"),
-              let namespaceWarning = viewModelSource.range(of: "warnings.append(\"namespaces: \\(error.localizedDescription)\")")
+              let manualNamespaceMode = viewModelSource.range(of: "state.setManualNamespaceMode")
         else {
             XCTFail("Namespace snapshot cancellation handling was not found")
             return
         }
-        XCTAssertLessThan(namespaceFailure.lowerBound, namespaceWarning.lowerBound)
+        XCTAssertLessThan(namespaceFailure.lowerBound, manualNamespaceMode.lowerBound)
+        XCTAssertFalse(viewModelSource.contains("warnings.append(\"namespaces: \\(error.localizedDescription)\")"))
 
         XCTAssertTrue(viewModelSource.contains("private nonisolated static func isBenignCancellationError"))
         XCTAssertTrue(viewModelSource.contains("normalized.contains(\"cancelled\") || normalized.contains(\"canceled\")"))
@@ -618,11 +779,19 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
 
         XCTAssertTrue(logsViewSource.contains("Toggle(\"Tail\""))
+        XCTAssertTrue(logsViewSource.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
+        XCTAssertTrue(logsViewSource.contains("contentStyle: .ansiLogs"))
+        XCTAssertTrue(logsViewSource.contains("Menu(\"Export ZIP\")"))
+        XCTAssertTrue(logsViewSource.contains("Visible Results ZIP"))
+        XCTAssertTrue(logsViewSource.contains("Full Unfiltered ZIP"))
+        XCTAssertTrue(logsViewSource.contains("All Pods Full ZIP"))
         XCTAssertTrue(logsViewSource.contains("DeferredResourceLogsTextView"))
         XCTAssertTrue(logsViewSource.contains("deferredOutputThreshold"))
         XCTAssertTrue(logsViewSource.contains("renderTask?.cancel()"))
         XCTAssertTrue(viewModelSource.contains("isLogTailModeEnabled"))
+        XCTAssertTrue(viewModelSource.contains("isLogStreamPaused"))
         XCTAssertTrue(viewModelSource.contains("tailLogsReloadNanoseconds"))
+        XCTAssertTrue(viewModelSource.contains("guard isLogTailModeEnabled, !isLogStreamPaused else { return }"))
         XCTAssertTrue(stateSource.contains("sessionLogCache"))
         XCTAssertTrue(stateSource.contains("appendPodLogRead"))
         XCTAssertTrue(stateSource.contains("appendUnifiedServiceLogRead"))
@@ -768,6 +937,37 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(confirmBlock.contains("loadResourceDetailsForCurrentSelection()"))
     }
 
+    func testProductionDestructiveWriteHasSecondConfirmationGate() throws {
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let confirmBlock = try functionBlock(
+            named: "public func confirmPendingWriteAction()",
+            endingBefore: "private func auditDetails",
+            in: viewModelSource
+        )
+
+        XCTAssertTrue(viewModelSource.contains("@Published public private(set) var pendingProductionDestructiveConfirmation"))
+        XCTAssertTrue(viewModelSource.contains("Destructive production actions require a second confirmation"))
+        XCTAssertTrue(confirmBlock.contains("isProductionContext"))
+        XCTAssertTrue(confirmBlock.contains("action.isDestructive"))
+        XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation != action"))
+        XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation = action"))
+    }
+
+    func testCustomResourceBrowserUsesPaginationAndPinnedColumns() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
+
+        XCTAssertTrue(viewModelSource.contains("private static let operatorResourcePageSize = 40"))
+        XCTAssertTrue(viewModelSource.contains("public var pagedOperatorResources"))
+        XCTAssertTrue(rootViewSource.contains("ForEach(viewModel.pagedOperatorResources)"))
+        XCTAssertTrue(rootViewSource.contains("operatorPinnedColumn(resource.namespace ?? \"Cluster\""))
+        XCTAssertTrue(rootViewSource.contains("operatorPinnedColumn(resource.apiPath"))
+        XCTAssertTrue(kubeClientSource.contains(".prefix(48)"))
+        XCTAssertTrue(kubeClientSource.contains(".prefix(16)"))
+        XCTAssertTrue(kubeClientSource.contains("if output.count >= 500 { return output }"))
+    }
+
     private var runeRootViewPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -889,6 +1089,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalTranscriptSurface.swift").path
     }
 
+    private var terminalKubectlCommandBuilderPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalKubectlCommandBuilder.swift").path
+    }
+
     private var kubernetesClientPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -905,6 +1114,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneGlassShell.swift").path
+    }
+
+    private var runeDesignComponentsPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneDesignComponents.swift").path
     }
 
     private var appKitManifestTextViewPath: String {

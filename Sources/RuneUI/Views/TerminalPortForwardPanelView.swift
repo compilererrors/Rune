@@ -3,6 +3,7 @@ import RuneCore
 
 struct TerminalPortForwardPanelView: View {
     @Binding var isExpanded: Bool
+    let contextName: String?
     let selectedPod: PodSummary?
     let availablePods: [PodSummary]
     let portForwardSessions: [PortForwardSession]
@@ -14,11 +15,18 @@ struct TerminalPortForwardPanelView: View {
     let onStartPortForward: (PodSummary) -> Void
     let onStopPortForward: (PortForwardSession) -> Void
     let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
+    let onRetryPortForward: (PortForwardSession) -> Void
+    let onClearPortForward: (PortForwardSession) -> Void
+    let onClearInactivePortForwards: () -> Void
     private let compactStatusHeight: CGFloat = 54
     private let activeSessionListHeight: CGFloat = 128
 
     private var activeOrStartingSessions: [PortForwardSession] {
-        portForwardSessions.filter { $0.status == .active || $0.status == .starting }
+        portForwardSessions.filter(\.isActiveOrStarting)
+    }
+
+    private var inactiveSessions: [PortForwardSession] {
+        portForwardSessions.filter(\.isInactive)
     }
 
     private var primarySession: PortForwardSession? {
@@ -31,7 +39,7 @@ struct TerminalPortForwardPanelView: View {
             $0.targetKind == .pod
                 && $0.targetName == selectedPod.name
                 && $0.namespace == selectedPod.namespace
-                && ($0.status == .starting || $0.status == .active || $0.status == .failed)
+                && $0.isActiveOrStarting
         }
     }
 
@@ -79,6 +87,7 @@ struct TerminalPortForwardPanelView: View {
     private var headerActions: some View {
         HStack(spacing: 6) {
             startButton
+            copyDraftKubectlButton
 
             Button {
                 isExpanded.toggle()
@@ -110,6 +119,19 @@ struct TerminalPortForwardPanelView: View {
         }
         .controlSize(.small)
         .frame(width: 74)
+    }
+
+    private var copyDraftKubectlButton: some View {
+        Button {
+            copyDraftPortForwardCommand()
+        } label: {
+            Label("Copy kubectl", systemImage: "doc.on.doc")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .frame(width: 126)
+        .disabled(selectedPod == nil)
+        .help("Copy kubectl port-forward command")
     }
 
     private var expandedControls: some View {
@@ -148,8 +170,14 @@ struct TerminalPortForwardPanelView: View {
                     if session.status == .active, session.browserURL != nil {
                         openInBrowserButton(session)
                     }
-                    if session.status == .starting || session.status == .active || session.status == .failed {
+                    copyPortForwardCommandButton(session)
+                    if session.isActiveOrStarting {
                         stopButton(session)
+                    } else if session.status == .failed {
+                        retryButton(session)
+                    }
+                    if session.isInactive {
+                        clearButton(session)
                     }
                 } else {
                     statusDot(.stopped)
@@ -199,8 +227,19 @@ struct TerminalPortForwardPanelView: View {
 
     private var activeSessionList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Active Port Forwards")
-                .font(.subheadline.weight(.semibold))
+            HStack {
+                Text(activeOrStartingSessions.isEmpty && !inactiveSessions.isEmpty ? "Recent Port Forwards" : "Port Forwards")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                if !inactiveSessions.isEmpty {
+                    Button("Clear Inactive") {
+                        onClearInactivePortForwards()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Remove stopped and failed port-forward rows from this list")
+                }
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -225,11 +264,17 @@ struct TerminalPortForwardPanelView: View {
                                         .help("\(session.contextName) - \(session.namespace) - \(session.status.rawValue.capitalized)")
                                 }
                                 Spacer(minLength: 0)
-                                if session.status == .starting || session.status == .active || session.status == .failed {
+                                if session.isActiveOrStarting {
                                     stopButton(session)
+                                } else if session.status == .failed {
+                                    retryButton(session)
                                 }
                                 if session.status == .active, session.browserURL != nil {
                                     openInBrowserButton(session)
+                                }
+                                copyPortForwardCommandButton(session)
+                                if session.isInactive {
+                                    clearButton(session)
                                 }
                             }
                             .padding(.horizontal, 8)
@@ -269,6 +314,64 @@ struct TerminalPortForwardPanelView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
+    }
+
+    private func retryButton(_ session: PortForwardSession) -> some View {
+        Button {
+            onRetryPortForward(session)
+        } label: {
+            Label("Retry", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Try this port-forward again")
+    }
+
+    private func clearButton(_ session: PortForwardSession) -> some View {
+        Button {
+            onClearPortForward(session)
+        } label: {
+            Label("Clear", systemImage: "xmark.circle")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Remove this inactive port-forward row")
+    }
+
+    private func copyPortForwardCommandButton(_ session: PortForwardSession) -> some View {
+        Button {
+            TerminalKubectlCommandBuilder.copyToPasteboard(
+                TerminalKubectlCommandBuilder.portForward(
+                    contextName: session.contextName,
+                    namespace: session.namespace,
+                    targetKind: session.targetKind,
+                    targetName: session.targetName,
+                    localPort: session.localPort,
+                    remotePort: session.remotePort,
+                    address: session.address
+                )
+            )
+        } label: {
+            Label("Copy kubectl", systemImage: "doc.on.doc")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Copy kubectl port-forward command")
+    }
+
+    private func copyDraftPortForwardCommand() {
+        guard let selectedPod else { return }
+        TerminalKubectlCommandBuilder.copyToPasteboard(
+            TerminalKubectlCommandBuilder.portForward(
+                contextName: contextName,
+                namespace: selectedPod.namespace,
+                targetKind: .pod,
+                targetName: selectedPod.name,
+                localPort: localPort,
+                remotePort: remotePort,
+                address: address
+            )
+        )
     }
 
     private func statusDot(_ status: PortForwardStatus) -> some View {

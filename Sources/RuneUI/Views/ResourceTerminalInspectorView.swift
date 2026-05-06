@@ -5,6 +5,7 @@ struct ResourceTerminalWorkspaceView: View {
     let session: PodTerminalSession?
     let sessions: [PodTerminalSession]
     let activeSessionID: String?
+    let contextName: String?
     let selectedPod: PodSummary?
     let availablePods: [PodSummary]
     let portForwardSessions: [PortForwardSession]
@@ -20,7 +21,11 @@ struct ResourceTerminalWorkspaceView: View {
     let onStartPortForward: (PodSummary) -> Void
     let onStopPortForward: (PortForwardSession) -> Void
     let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
+    let onRetryPortForward: (PortForwardSession) -> Void
+    let onClearPortForward: (PortForwardSession) -> Void
+    let onClearInactivePortForwards: () -> Void
     let onSend: () -> Void
+    let onSendControlSequence: (String) -> Void
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
@@ -54,6 +59,7 @@ struct ResourceTerminalWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     TerminalPortForwardPanelView(
                         isExpanded: $isPortForwardExpanded,
+                        contextName: contextName,
                         selectedPod: portForwardPod,
                         availablePods: availablePods,
                         portForwardSessions: portForwardSessions,
@@ -64,7 +70,10 @@ struct ResourceTerminalWorkspaceView: View {
                         address: $portForwardAddress,
                         onStartPortForward: onStartPortForward,
                         onStopPortForward: onStopPortForward,
-                        onOpenPortForwardInBrowser: onOpenPortForwardInBrowser
+                        onOpenPortForwardInBrowser: onOpenPortForwardInBrowser,
+                        onRetryPortForward: onRetryPortForward,
+                        onClearPortForward: onClearPortForward,
+                        onClearInactivePortForwards: onClearInactivePortForwards
                     )
 
                     TerminalShellPanelView(
@@ -84,6 +93,7 @@ struct ResourceTerminalWorkspaceView: View {
                         onStartSession: startShellSession,
                         onReconnectSession: reconnectShellSession,
                         onSend: onSend,
+                        onSendControlSequence: onSendControlSequence,
                         onDisconnect: onDisconnect,
                         onSelectSession: selectShellSession,
                         onCloseSession: closeShellSession,
@@ -232,6 +242,14 @@ struct ResourceTerminalDetailsView: View {
                         }
                         .buttonStyle(.bordered)
                         .help("Insert into terminal prompt")
+
+                        Button {
+                            copySuggestedCommand(command)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.bordered)
+                        .help(session == nil ? "Copy shell command" : "Copy kubectl exec command")
                     }
                 }
             }
@@ -254,5 +272,20 @@ struct ResourceTerminalDetailsView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func copySuggestedCommand(_ command: String) {
+        guard let session else {
+            TerminalKubectlCommandBuilder.copyToPasteboard(command)
+            return
+        }
+        TerminalKubectlCommandBuilder.copyToPasteboard(
+            TerminalKubectlCommandBuilder.exec(
+                contextName: session.contextName,
+                namespace: session.namespace,
+                podName: session.podName,
+                command: command
+            )
+        )
     }
 }

@@ -1,14 +1,27 @@
 import Foundation
+import struct RuneSharedCore.RuneLargeTextIndex
+import RuneCore
 import SwiftUI
 
 struct ResourceLogsToolbar: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
+    @Binding var selectedContainer: String
     @Binding var isTailModeEnabled: Bool
+    @Binding var isStreamPaused: Bool
     @Binding var searchQuery: String
+    @Binding var selectedSearchMatchIndex: Int
     let searchSummary: ResourceLogSearchResult?
+    let statusText: String
+    let containerOptions: [String]
     let onReload: () -> Void
     let onSave: () -> Void
+    let onSaveVisibleZip: (String) -> Void
+    let onSaveFullZip: () -> Void
+    let onSaveAllPodsZip: () -> Void
+    let onCopySelection: () -> Void
+    let onCopyAll: () -> Void
+    let onToggleStreamPause: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,17 +35,60 @@ struct ResourceLogsToolbar: View {
 
                 Toggle("Previous", isOn: $includePreviousLogs)
 
+                if !containerOptions.isEmpty {
+                    Picker("Container", selection: $selectedContainer) {
+                        Text("All containers").tag("")
+                        ForEach(containerOptions, id: \.self) { container in
+                            Text(container).tag(container)
+                        }
+                    }
+                    .frame(maxWidth: 180)
+                    .help("Choose one container for pod logs, or keep all containers merged.")
+                }
+
                 Toggle("Tail", isOn: $isTailModeEnabled)
                     .help("Keep reloading logs and append each read to the session cache.")
+
+                if isTailModeEnabled {
+                    Button(isStreamPaused ? "Resume" : "Pause", action: onToggleStreamPause)
+                        .help(isStreamPaused ? "Resume live log refresh." : "Pause live log refresh without leaving tail mode.")
+                }
 
                 Spacer()
 
                 Button("Reload", action: onReload)
                 Button("Save Logs", action: onSave)
+                Menu("Export ZIP") {
+                    Button("Visible Results ZIP") {
+                        onSaveVisibleZip(searchSummary?.displayedText ?? "")
+                    }
+                    Button("Full Unfiltered ZIP", action: onSaveFullZip)
+                    Button("All Pods Full ZIP", action: onSaveAllPodsZip)
+                }
+                Button("Copy Selection", action: onCopySelection)
+                Button("Copy All", action: onCopyAll)
+            }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusText.lowercased().contains("failed") ? Color.red : (statusText.lowercased().contains("loading") ? Color.blue : Color.green))
+                    .frame(width: 7, height: 7)
+                Text(statusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if includePreviousLogs {
+                Label("Previous logs are returned only for restarted containers; empty previous output can be normal.", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
             ResourceLogsSearchBar(
                 query: $searchQuery,
+                selectedMatchIndex: $selectedSearchMatchIndex,
                 searchSummary: searchSummary
             )
         }
@@ -42,28 +98,52 @@ struct ResourceLogsToolbar: View {
 struct PodLogsInspectorPane: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
+    @Binding var selectedContainer: String
     @Binding var isTailModeEnabled: Bool
+    @Binding var isStreamPaused: Bool
     let isLoadingLogs: Bool
     let isLoadingResources: Bool
     let errorMessage: String?
+    let statusText: String
+    let containerOptions: [String]
     let logText: String
     let readOnlyResetID: String
     let onReload: () -> Void
     let onSave: () -> Void
+    let onSaveVisibleZip: (String) -> Void
+    let onSaveFullZip: () -> Void
+    let onSaveAllPodsZip: () -> Void
+    let onCopySelection: () -> Void
+    let onCopyAll: () -> Void
+    let onToggleStreamPause: () -> Void
     @State private var searchQuery = ""
+    @State private var selectedSearchMatchIndex = 0
+    @State private var searchNavigationSequence = 0
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.make(text: logText, query: searchQuery)
+        let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
+        let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
 
         VStack(alignment: .leading, spacing: 10) {
             ResourceLogsToolbar(
                 selectedLogPreset: $selectedLogPreset,
                 includePreviousLogs: $includePreviousLogs,
+                selectedContainer: $selectedContainer,
                 isTailModeEnabled: $isTailModeEnabled,
+                isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
+                selectedSearchMatchIndex: $selectedSearchMatchIndex,
                 searchSummary: searchResult,
+                statusText: statusText,
+                containerOptions: containerOptions,
                 onReload: onReload,
-                onSave: onSave
+                onSave: onSave,
+                onSaveVisibleZip: onSaveVisibleZip,
+                onSaveFullZip: onSaveFullZip,
+                onSaveAllPodsZip: onSaveAllPodsZip,
+                onCopySelection: onCopySelection,
+                onCopyAll: onCopyAll,
+                onToggleStreamPause: onToggleStreamPause
             )
 
             ResourceLogsOutputSurface(
@@ -71,12 +151,21 @@ struct PodLogsInspectorPane: View {
                 isLoadingResources: isLoadingResources,
                 errorMessage: errorMessage,
                 searchResult: searchResult,
+                selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                searchNavigationSequence: searchNavigationSequence,
                 emptyTitle: "No log output",
                 emptyMessage: "The pod may be idle, or the current filter returned no lines.",
                 noMatchesMessage: "No log lines matched the current search.",
                 readOnlyResetID: readOnlyResetID,
                 onReload: onReload
             )
+        }
+        .onChange(of: searchQuery) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+        }
+        .onChange(of: logText) { _, _ in
+            selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
     }
 }
@@ -85,28 +174,50 @@ struct UnifiedResourceLogsInspectorPane: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
     @Binding var isTailModeEnabled: Bool
+    @Binding var isStreamPaused: Bool
     let isLoadingLogs: Bool
     let isLoadingResources: Bool
     let errorMessage: String?
+    let statusText: String
     let podNames: [String]
     let logText: String
     let readOnlyResetID: String
     let onReload: () -> Void
     let onSave: () -> Void
+    let onSaveVisibleZip: (String) -> Void
+    let onSaveFullZip: () -> Void
+    let onSaveAllPodsZip: () -> Void
+    let onCopySelection: () -> Void
+    let onCopyAll: () -> Void
+    let onToggleStreamPause: () -> Void
     @State private var searchQuery = ""
+    @State private var selectedSearchMatchIndex = 0
+    @State private var searchNavigationSequence = 0
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.make(text: logText, query: searchQuery)
+        let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
+        let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
 
         VStack(alignment: .leading, spacing: 10) {
             ResourceLogsToolbar(
                 selectedLogPreset: $selectedLogPreset,
                 includePreviousLogs: $includePreviousLogs,
+                selectedContainer: .constant(""),
                 isTailModeEnabled: $isTailModeEnabled,
+                isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
+                selectedSearchMatchIndex: $selectedSearchMatchIndex,
                 searchSummary: searchResult,
+                statusText: statusText,
+                containerOptions: [],
                 onReload: onReload,
-                onSave: onSave
+                onSave: onSave,
+                onSaveVisibleZip: onSaveVisibleZip,
+                onSaveFullZip: onSaveFullZip,
+                onSaveAllPodsZip: onSaveAllPodsZip,
+                onCopySelection: onCopySelection,
+                onCopyAll: onCopyAll,
+                onToggleStreamPause: onToggleStreamPause
             )
 
             if !podNames.isEmpty {
@@ -120,12 +231,21 @@ struct UnifiedResourceLogsInspectorPane: View {
                 isLoadingResources: isLoadingResources,
                 errorMessage: errorMessage,
                 searchResult: searchResult,
+                selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                searchNavigationSequence: searchNavigationSequence,
                 emptyTitle: "No log output",
                 emptyMessage: "No lines were returned for the selected pods and the current filter. Pods may be idle or produce no output for this time window.",
                 noMatchesMessage: "No unified log lines matched the current search.",
                 readOnlyResetID: readOnlyResetID,
                 onReload: onReload
             )
+        }
+        .onChange(of: searchQuery) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+        }
+        .onChange(of: logText) { _, _ in
+            selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
     }
 }
@@ -135,6 +255,8 @@ private struct ResourceLogsOutputSurface: View {
     let isLoadingResources: Bool
     let errorMessage: String?
     let searchResult: ResourceLogSearchResult
+    let selectedSearchMatchIndex: Int
+    let searchNavigationSequence: Int
     let emptyTitle: String
     let emptyMessage: String
     let noMatchesMessage: String
@@ -150,8 +272,6 @@ private struct ResourceLogsOutputSurface: View {
                     ResourceLogsErrorView(message: errorMessage, onReload: onReload)
                 } else if searchResult.originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ResourceLogsEmptyPlaceholder(title: emptyTitle, message: emptyMessage)
-                } else if searchResult.isFiltering, searchResult.displayedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    ResourceLogsEmptyPlaceholder(title: "No search matches", message: noMatchesMessage)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         if searchResult.isFiltering {
@@ -159,16 +279,23 @@ private struct ResourceLogsOutputSurface: View {
                         }
 
                         let outputResetID = "\(readOnlyResetID):\(searchResult.scrollIdentityToken)"
+                        let navigationRequest = searchResult.navigationRequest(
+                            selectedIndex: selectedSearchMatchIndex,
+                            sequence: searchNavigationSequence
+                        )
                         if shouldDeferOutputMount {
                             DeferredResourceLogsTextView(
                                 text: searchResult.displayedText,
-                                resetID: outputResetID
+                                resetID: outputResetID,
+                                navigationRequest: navigationRequest
                             )
                         } else {
                             InspectorReadOnlyTextView(
                                 text: searchResult.displayedText,
                                 resetID: outputResetID,
-                                resetScrollOnExternalChange: false
+                                resetScrollOnExternalChange: false,
+                                contentStyle: .ansiLogs,
+                                navigationRequest: navigationRequest
                             )
                         }
                     }
@@ -185,14 +312,19 @@ private struct ResourceLogsOutputSurface: View {
 enum ResourceLogsDeferredRenderingPolicy {
     static let deferredOutputThreshold = 250_000
 
+    static func shouldDeferOutputMount(text: String, query: String) -> Bool {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.utf8.count > deferredOutputThreshold
+    }
+
     static func shouldDeferOutputMount(for searchResult: ResourceLogSearchResult) -> Bool {
-        !searchResult.isFiltering && searchResult.displayedText.utf8.count > deferredOutputThreshold
+        searchResult.displayedText.utf8.count > deferredOutputThreshold
     }
 }
 
 private struct DeferredResourceLogsTextView: View {
     let text: String
     let resetID: String
+    let navigationRequest: YAMLTextNavigationRequest?
     @State private var isReady = false
     @State private var renderTask: Task<Void, Never>?
 
@@ -202,7 +334,9 @@ private struct DeferredResourceLogsTextView: View {
                 InspectorReadOnlyTextView(
                     text: text,
                     resetID: resetID,
-                    resetScrollOnExternalChange: false
+                    resetScrollOnExternalChange: false,
+                    contentStyle: .ansiLogs,
+                    navigationRequest: navigationRequest
                 )
             } else {
                 ResourceLogsPreparingPlaceholder()
@@ -251,6 +385,7 @@ private struct ResourceLogsPreparingPlaceholder: View {
 
 private struct ResourceLogsSearchBar: View {
     @Binding var query: String
+    @Binding var selectedMatchIndex: Int
     let searchSummary: ResourceLogSearchResult?
 
     var body: some View {
@@ -283,6 +418,24 @@ private struct ResourceLogsSearchBar: View {
             }
 
             if let searchSummary, searchSummary.isFiltering {
+                Button {
+                    selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .buttonStyle(.plain)
+                .disabled(searchSummary.matchRanges.isEmpty)
+                .help("Previous match")
+
+                Button {
+                    selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .buttonStyle(.plain)
+                .disabled(searchSummary.matchRanges.isEmpty)
+                .help("Next match")
+
                 Text(searchSummary.badgeText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(searchSummary.matchingLineCount == 0 ? .secondary : .primary)
@@ -324,13 +477,14 @@ struct ResourceLogSearchResult: Equatable {
     let query: String
     let totalLineCount: Int
     let matchingLineCount: Int
+    let matchRanges: [NSRange]
 
     var isFiltering: Bool {
         !query.isEmpty
     }
 
     var scrollIdentityToken: String {
-        "query:\(query)"
+        "logs"
     }
 
     var badgeText: String {
@@ -339,139 +493,79 @@ struct ResourceLogSearchResult: Equatable {
 
     var summaryText: String {
         if matchingLineCount == 0 {
-            return "No matching lines in \(totalLineCount) total lines."
+            return "No matches in \(totalLineCount) total lines."
         }
-        return "Showing \(matchingLineCount) matching lines out of \(totalLineCount)."
+        return "\(matchingLineCount) matches in \(totalLineCount) total lines."
     }
 
     static func make(text: String, query: String) -> ResourceLogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let textIndex = RuneLargeTextIndex(text: text)
 
         guard !trimmedQuery.isEmpty else {
-            let lineCount = lineCount(in: text)
             return ResourceLogSearchResult(
                 originalText: text,
                 displayedText: text,
                 query: "",
-                totalLineCount: lineCount,
-                matchingLineCount: lineCount
+                totalLineCount: textIndex.lineCount,
+                matchingLineCount: textIndex.lineCount,
+                matchRanges: []
             )
         }
 
-        let isASCIIQuery = trimmedQuery.unicodeScalars.allSatisfy(\.isASCII)
-        if isASCIIQuery, text.utf8.allSatisfy({ $0 != 13 }) {
-            return makeFastASCIIFilteredResult(text: text, query: trimmedQuery)
-        }
-
-        let options = NSString.CompareOptions([.caseInsensitive, .diacriticInsensitive])
-        var totalLineCount = 0
-        var matchingLineCount = 0
-        var displayedText = ""
-
-        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
-            totalLineCount += 1
-            let isMatch = line.range(of: trimmedQuery, options: options) != nil
-
-            if isMatch {
-                if matchingLineCount > 0 {
-                    displayedText.append("\n")
-                }
-                displayedText.append(contentsOf: line)
-                matchingLineCount += 1
-            }
-        }
+        let searchResult = textIndex.search(query: trimmedQuery)
+        let matchRanges = searchResult.matches.map(\.range)
 
         return ResourceLogSearchResult(
             originalText: text,
-            displayedText: displayedText,
+            displayedText: text,
             query: trimmedQuery,
-            totalLineCount: totalLineCount,
-            matchingLineCount: matchingLineCount
+            totalLineCount: searchResult.totalLineCount,
+            matchingLineCount: searchResult.matchingLineCount,
+            matchRanges: matchRanges
         )
     }
 
-    private static func makeFastASCIIFilteredResult(text: String, query: String) -> ResourceLogSearchResult {
-        let nsText = text as NSString
-        let textLength = nsText.length
-        let totalLineCount = lineCount(in: text)
-        var matchingLineCount = 0
-        var displayedText = ""
-        displayedText.reserveCapacity(min(text.utf8.count, 1_048_576))
+    func clampedMatchIndex(_ index: Int) -> Int {
+        guard !matchRanges.isEmpty else { return 0 }
+        return min(max(index, 0), matchRanges.count - 1)
+    }
 
-        var searchLocation = 0
-        while searchLocation < textLength {
-            let searchRange = NSRange(location: searchLocation, length: textLength - searchLocation)
-            let matchRange = nsText.range(
-                of: query,
-                options: [.caseInsensitive],
-                range: searchRange
-            )
-            guard matchRange.location != NSNotFound else { break }
+    func nextMatchIndex(from index: Int) -> Int {
+        guard !matchRanges.isEmpty else { return 0 }
+        return (clampedMatchIndex(index) + 1) % matchRanges.count
+    }
 
-            let beforeMatch = NSRange(location: 0, length: matchRange.location)
-            let previousLineBreak = nsText.range(
-                of: "\n",
-                options: [.backwards],
-                range: beforeMatch
-            )
-            let lineStart = previousLineBreak.location == NSNotFound
-                ? 0
-                : previousLineBreak.location + previousLineBreak.length
+    func previousMatchIndex(from index: Int) -> Int {
+        guard !matchRanges.isEmpty else { return 0 }
+        return (clampedMatchIndex(index) - 1 + matchRanges.count) % matchRanges.count
+    }
 
-            let afterMatch = NSRange(
-                location: matchRange.location,
-                length: textLength - matchRange.location
-            )
-            let nextLineBreak = nsText.range(of: "\n", range: afterMatch)
-            let lineEnd = nextLineBreak.location == NSNotFound ? textLength : nextLineBreak.location
-            let nextSearchLocation = nextLineBreak.location == NSNotFound
-                ? textLength
-                : nextLineBreak.location + nextLineBreak.length
+    func navigationRequest(selectedIndex: Int, sequence: Int) -> YAMLTextNavigationRequest? {
+        guard !matchRanges.isEmpty else { return nil }
+        let range = matchRanges[clampedMatchIndex(selectedIndex)]
+        return YAMLTextNavigationRequest(
+            issueID: "resource-log-search:\(query):\(selectedIndex)",
+            sequence: sequence,
+            range: YAMLValidationRange(location: range.location, length: range.length),
+            line: nil,
+            column: nil
+        )
+    }
 
-            if matchingLineCount > 0 {
-                displayedText.append("\n")
-            }
-            displayedText.append(nsText.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart)))
-            matchingLineCount += 1
-            searchLocation = nextSearchLocation
+    static func makeForInspector(text: String, query: String) -> ResourceLogSearchResult {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(text: text, query: trimmedQuery) else {
+            return make(text: text, query: trimmedQuery)
         }
-
         return ResourceLogSearchResult(
             originalText: text,
-            displayedText: displayedText,
-            query: query,
-            totalLineCount: totalLineCount,
-            matchingLineCount: matchingLineCount
+            displayedText: text,
+            query: "",
+            totalLineCount: 0,
+            matchingLineCount: 0,
+            matchRanges: []
         )
-    }
-
-    private static func lineCount(in text: String) -> Int {
-        guard !text.isEmpty else { return 0 }
-        guard text.utf8.allSatisfy({ $0 < 128 }) else {
-            return text.reduce(1) { count, character in
-                character.isNewline ? count + 1 : count
-            }
-        }
-
-        var count = 1
-        var previousWasCarriageReturn = false
-        for byte in text.utf8 {
-            switch byte {
-            case 10:
-                if previousWasCarriageReturn {
-                    previousWasCarriageReturn = false
-                } else {
-                    count += 1
-                }
-            case 13:
-                count += 1
-                previousWasCarriageReturn = true
-            default:
-                previousWasCarriageReturn = false
-            }
-        }
-
-        return count
     }
 }
 

@@ -175,6 +175,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         contextName: String,
         namespace: String,
         podName: String,
+        container: String?,
         filter: LogTimeFilter,
         previous: Bool,
         timeout: TimeInterval,
@@ -202,7 +203,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
             }
         }
-        items.append(URLQueryItem(name: "allContainers", value: "true"))
+        if let container = container?.trimmingCharacters(in: .whitespacesAndNewlines), !container.isEmpty {
+            items.append(URLQueryItem(name: "container", value: container))
+        } else {
+            items.append(URLQueryItem(name: "allContainers", value: "true"))
+        }
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))
         }
@@ -295,6 +300,61 @@ final class KubernetesRESTClient: @unchecked Sendable {
             body: nil,
             timeout: timeout
         ).body
+    }
+
+    func selfSubjectAccessReview(
+        environment: [String: String],
+        contextName: String,
+        namespace: String?,
+        verb: String,
+        resource: String,
+        subresource: String?,
+        timeout: TimeInterval
+    ) async throws -> Bool {
+        var attributes: [String: Any] = [
+            "verb": verb,
+            "resource": resource
+        ]
+        if let namespace = namespace?.trimmingCharacters(in: .whitespacesAndNewlines), !namespace.isEmpty {
+            attributes["namespace"] = namespace
+        }
+        if let subresource = subresource?.trimmingCharacters(in: .whitespacesAndNewlines), !subresource.isEmpty {
+            attributes["subresource"] = subresource
+        }
+
+        let request: [String: Any] = [
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectAccessReview",
+            "spec": ["resourceAttributes": attributes]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: request, options: [])
+        guard let body = String(data: bodyData, encoding: .utf8) else {
+            throw RuneError.invalidInput(message: "Could not encode SelfSubjectAccessReview request")
+        }
+        let response = try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "POST",
+            apiPath: "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            headers: [
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            ],
+            body: body,
+            timeout: timeout
+        ).body
+        return try Self.selfSubjectAccessReviewAllowed(from: response)
+    }
+
+    static func selfSubjectAccessReviewAllowed(from raw: String) throws -> Bool {
+        guard let data = raw.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let status = object["status"] as? [String: Any],
+              let allowed = status["allowed"] as? Bool
+        else {
+            throw RuneError.parseError(message: "SelfSubjectAccessReview response did not include status.allowed")
+        }
+        return allowed
     }
 
     func deleteResource(

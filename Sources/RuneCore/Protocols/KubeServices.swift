@@ -132,6 +132,7 @@ public protocol PodLogService: Sendable {
         context: KubeContext,
         namespace: String,
         podName: String,
+        container: String?,
         filter: LogTimeFilter,
         previous: Bool
     ) async throws -> String

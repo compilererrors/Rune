@@ -114,6 +114,8 @@ struct AppKitTripleSplitView: NSViewControllerRepresentable {
     let sidebar: AnyView
     let content: AnyView
     let detail: AnyView
+    let sidebarVisible: Bool
+    let detailVisible: Bool
     let sidebarWidth: CGFloat
     let detailWidth: CGFloat
     let onSidebarWidthChange: (CGFloat) -> Void
@@ -128,6 +130,8 @@ struct AppKitTripleSplitView: NSViewControllerRepresentable {
             sidebar: sidebar,
             content: content,
             detail: detail,
+            sidebarVisible: sidebarVisible,
+            detailVisible: detailVisible,
             sidebarWidth: sidebarWidth,
             detailWidth: detailWidth,
             onSidebarWidthChange: onSidebarWidthChange,
@@ -147,7 +151,7 @@ extension AppKitTripleSplitView {
             let item = NSSplitViewItem(viewController: sidebarController)
             item.minimumThickness = RuneUILayoutMetrics.splitSidebarMinWidth
             item.maximumThickness = RuneUILayoutMetrics.splitSidebarMaxWidth
-            item.canCollapse = false
+            item.canCollapse = true
             return item
         }()
 
@@ -162,7 +166,7 @@ extension AppKitTripleSplitView {
             let item = NSSplitViewItem(viewController: detailController)
             item.minimumThickness = RuneUILayoutMetrics.splitDetailColumnMinWidth
             item.maximumThickness = RuneUILayoutMetrics.splitDetailColumnMaxWidth
-            item.canCollapse = false
+            item.canCollapse = true
             return item
         }()
 
@@ -176,6 +180,8 @@ extension AppKitTripleSplitView {
         private var lastReportedDetailWidth: CGFloat?
         private var lastRequestedSidebarWidth: CGFloat?
         private var lastRequestedDetailWidth: CGFloat?
+        private var sidebarVisible = true
+        private var detailVisible = true
         private var isUpdatingHostedContent = false
         private var hostedContentUpdateReset: DispatchWorkItem?
 
@@ -213,6 +219,8 @@ extension AppKitTripleSplitView {
             sidebar: AnyView,
             content: AnyView,
             detail: AnyView,
+            sidebarVisible: Bool,
+            detailVisible: Bool,
             sidebarWidth: CGFloat,
             detailWidth: CGFloat,
             onSidebarWidthChange: @escaping (CGFloat) -> Void,
@@ -223,11 +231,15 @@ extension AppKitTripleSplitView {
             let isInitialConfiguration = !hasReceivedInitialConfiguration
             let requestedWidthsChanged = abs(sidebarWidth - (lastRequestedSidebarWidth ?? sidebarWidth)) > 1
                 || abs(detailWidth - (lastRequestedDetailWidth ?? detailWidth)) > 1
+            let visibilityChanged = sidebarVisible != self.sidebarVisible || detailVisible != self.detailVisible
             hasReceivedInitialConfiguration = true
             lastRequestedSidebarWidth = sidebarWidth
             lastRequestedDetailWidth = detailWidth
+            self.sidebarVisible = sidebarVisible
+            self.detailVisible = detailVisible
+            applyVisibility()
 
-            if isInitialConfiguration || !requestedWidthsChanged {
+            if isInitialConfiguration || !requestedWidthsChanged || visibilityChanged {
                 beginHostedContentUpdate()
                 sidebarController.rootView = sidebar
                 contentController.rootView = content
@@ -243,6 +255,15 @@ extension AppKitTripleSplitView {
             ) else { return }
 
             applyDesiredWidthsIfNeeded()
+        }
+
+        private func applyVisibility() {
+            if sidebarItem.isCollapsed == sidebarVisible {
+                sidebarItem.isCollapsed = !sidebarVisible
+            }
+            if detailItem.isCollapsed == detailVisible {
+                detailItem.isCollapsed = !detailVisible
+            }
         }
 
         override func splitViewDidResizeSubviews(_ notification: Notification) {
@@ -281,6 +302,7 @@ extension AppKitTripleSplitView {
 
         private func applyDesiredWidthsIfNeeded() {
             guard splitViewItems.count == 3 else { return }
+            applyVisibility()
 
             let totalWidth = splitView.bounds.width
             guard totalWidth > 0 else { return }
@@ -292,13 +314,19 @@ extension AppKitTripleSplitView {
 
             let sidebar = targetSidebarWidth(for: availableWidth)
             let detail = targetDetailWidth(for: availableWidth, sidebarWidth: sidebar)
-            sidebarItem.preferredThicknessFraction = sidebar / totalWidth
-            detailItem.preferredThicknessFraction = detail / totalWidth
+            if sidebarVisible {
+                sidebarItem.preferredThicknessFraction = sidebar / totalWidth
+            }
+            if detailVisible {
+                detailItem.preferredThicknessFraction = detail / totalWidth
+            }
 
             let actualSidebar = sidebarController.view.frame.width
             let actualDetail = detailController.view.frame.width
 
-            guard abs(actualSidebar - sidebar) > 1 || abs(actualDetail - detail) > 1 else {
+            let sidebarNeedsResize = sidebarVisible && abs(actualSidebar - sidebar) > 1
+            let detailNeedsResize = detailVisible && abs(actualDetail - detail) > 1
+            guard sidebarNeedsResize || detailNeedsResize else {
                 widthState.noteRestoreSettled()
                 reportWidthsIfNeeded()
                 return
@@ -306,8 +334,12 @@ extension AppKitTripleSplitView {
 
             guard !pendingRestore else { return }
             pendingRestore = true
-            splitView.setPosition(sidebar, ofDividerAt: 0)
-            splitView.setPosition(totalWidth - dividerThickness - detail, ofDividerAt: 1)
+            if sidebarVisible {
+                splitView.setPosition(sidebar, ofDividerAt: 0)
+            }
+            if detailVisible {
+                splitView.setPosition(totalWidth - dividerThickness - detail, ofDividerAt: 1)
+            }
             splitView.adjustSubviews()
 
             DispatchQueue.main.async { [weak self] in

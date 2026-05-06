@@ -7,6 +7,17 @@ public protocol FileExporting {
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL
 }
 
+public enum FileExportError: LocalizedError, Equatable {
+    case userCancelled
+
+    public var errorDescription: String? {
+        switch self {
+        case .userCancelled:
+            return "Save cancelled."
+        }
+    }
+}
+
 public final class SavePanelExporter: FileExporting {
     public init() {}
 
@@ -19,7 +30,7 @@ public final class SavePanelExporter: FileExporting {
 
         let result = panel.runModal()
         guard result == .OK, let destination = panel.url else {
-            throw NSError(domain: "RuneExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "The user cancelled the save operation."])
+            throw FileExportError.userCancelled
         }
 
         try data.write(to: destination)

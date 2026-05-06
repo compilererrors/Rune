@@ -6,6 +6,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     enum ContentStyle: Sendable {
         case yaml
         case plainText
+        case ansiLogs
     }
 
     @Binding var text: String
@@ -75,7 +76,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
             externalValidationIssues: externalValidationIssues
         )
 
-        if textView.string != text {
+        if textView.representedText != text {
             context.coordinator.isUpdatingFromSwiftUI = true
             textView.setStringKeepingSelection(text)
             context.coordinator.isUpdatingFromSwiftUI = false
@@ -113,6 +114,7 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     private var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
+    var representedText = ""
     private var configuredFontSize = CGFloat(RuneSettingsKeys.terminalFontSizeDefault)
     private var externalValidationIssues: [YAMLValidationIssue] = []
     private var activeValidationIssues: [YAMLValidationIssue] = []
@@ -150,8 +152,11 @@ private final class PlainManifestTextView: NSTextView {
         if self.isEditable != isEditable {
             self.isEditable = isEditable
         }
-
         applyStaticConfigurationIfNeeded()
+        let shouldUseRichText = contentStyle == .ansiLogs
+        if isRichText != shouldUseRichText {
+            isRichText = shouldUseRichText
+        }
         if fontSizeChanged {
             documentSizeCache = nil
             applyFontConfiguration()
@@ -221,11 +226,19 @@ private final class PlainManifestTextView: NSTextView {
 
     func setStringKeepingSelection(_ newValue: String) {
         let selected = selectedRanges
-        string = newValue
+        representedText = newValue
+        if contentStyle != .ansiLogs {
+            string = newValue
+        }
         invalidateDocumentMetrics()
         refreshLayout()
         if !selected.isEmpty {
-            selectedRanges = selected
+            selectedRanges = selected.map { range in
+                NSValue(range: NSRange(
+                    location: min(range.rangeValue.location, string.utf16.count),
+                    length: min(range.rangeValue.length, max(0, string.utf16.count - range.rangeValue.location))
+                ))
+            }
         }
     }
 
@@ -234,6 +247,18 @@ private final class PlainManifestTextView: NSTextView {
 
         let fullRange = NSRange(location: 0, length: storage.length)
         let source = storage.string
+        if contentStyle == .ansiLogs {
+            storage.setAttributedString(ResourceLogANSIFormatter.attributedString(
+                from: representedText,
+                font: currentBaseFont
+            ))
+            activeValidationIssues = []
+            updateDocumentSize()
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
+            return
+        }
+
         let usesViewportAnalysis = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
         let styleRange = usesViewportAnalysis ? yamlViewportAnalysisRange(in: source) : fullRange
         let baseFont = currentBaseFont
@@ -302,6 +327,7 @@ private final class PlainManifestTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        representedText = string
         invalidateDocumentMetrics()
         refreshLayout()
     }

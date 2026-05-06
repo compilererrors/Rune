@@ -26,6 +26,72 @@ public struct KubeContext: Identifiable, Hashable, Codable, Sendable {
     public var id: String { name }
 }
 
+public enum RuneHealthCheckStatus: String, Codable, Sendable {
+    case running
+    case passed
+    case warning
+    case failed
+}
+
+public struct RuneHealthCheck: Identifiable, Hashable, Codable, Sendable {
+    public let id: String
+    public let title: String
+    public let status: RuneHealthCheckStatus
+    public let message: String
+
+    public init(id: String, title: String, status: RuneHealthCheckStatus, message: String) {
+        self.id = id
+        self.title = title
+        self.status = status
+        self.message = message
+    }
+}
+
+public enum RuneSnapshotFreshnessStatus: String, Codable, Sendable {
+    case idle
+    case refreshing
+    case live
+    case stale
+    case failed
+}
+
+public struct RuneSnapshotFreshness: Hashable, Codable, Sendable {
+    public let status: RuneSnapshotFreshnessStatus
+    public let updatedAt: Date?
+    public let message: String
+
+    public init(status: RuneSnapshotFreshnessStatus = .idle, updatedAt: Date? = nil, message: String = "No data loaded") {
+        self.status = status
+        self.updatedAt = updatedAt
+        self.message = message
+    }
+}
+
+public enum RuneUserNoticeSeverity: String, Codable, Sendable {
+    case info
+    case warning
+    case error
+}
+
+public struct RuneUserNotice: Identifiable, Hashable, Codable, Sendable {
+    public let id: UUID
+    public let severity: RuneUserNoticeSeverity
+    public let title: String
+    public let message: String
+
+    public init(
+        id: UUID = UUID(),
+        severity: RuneUserNoticeSeverity,
+        title: String,
+        message: String
+    ) {
+        self.id = id
+        self.severity = severity
+        self.title = title
+        self.message = message
+    }
+}
+
 public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifiable {
     case pod
     case deployment
@@ -202,6 +268,12 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
 
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
+    public var containerNames: [String] {
+        containerNamesLine?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+    }
 
     /// Merge a detail fetch into the table row: keep list metrics and age, fill IP, node, QoS, and readiness from the richer snapshot.
     public func mergingInspectorDetail(_ detail: PodSummary) -> PodSummary {
@@ -637,6 +709,14 @@ public struct PortForwardSession: Identifiable, Hashable, Codable, Sendable {
 
     public var resourceLabel: String {
         "\(targetKind.kubernetesResourcePathName)/\(targetName)"
+    }
+
+    public var isActiveOrStarting: Bool {
+        status == .active || status == .starting
+    }
+
+    public var isInactive: Bool {
+        !isActiveOrStarting
     }
 
     public var browserURL: URL? {

@@ -3,7 +3,9 @@ import Combine
 import Foundation
 import SwiftUI
 import XCTest
+import struct RuneSharedCore.RuneLargeTextIndex
 @testable import RuneCore
+@testable import RuneExport
 @testable import RuneFakeK8sSupport
 @testable import RuneSecurity
 @testable import RuneStore
@@ -32,7 +34,137 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsed = started.duration(to: .now)
 
         XCTAssertEqual(result.matchingLineCount, 500)
+        XCTAssertTrue(result.displayedText.contains("level=info"))
         XCTAssertLessThan(seconds(elapsed), 0.25)
+    }
+
+    func testLogSearchNavigationBenchmarkKPI() {
+        let text = (0..<20_000)
+            .map { index in
+                index.isMultiple(of: 40)
+                    ? "ts=\(index) level=error component=api message=synthetic failure"
+                    : "ts=\(index) level=info component=worker message=synthetic ok"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.make(text: text, query: "error")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            var index = 0
+            for _ in 0..<1_000 {
+                index = result.nextMatchIndex(from: index)
+                _ = result.navigationRequest(selectedIndex: index, sequence: index)
+            }
+        }
+
+        let started = ContinuousClock.now
+        var index = 0
+        for _ in 0..<1_000 {
+            index = result.nextMatchIndex(from: index)
+            _ = result.navigationRequest(selectedIndex: index, sequence: index)
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(result.matchingLineCount, 500)
+        XCTAssertLessThan(seconds(elapsed), 0.02)
+    }
+
+    func testLargeTextLineIndexBenchmarkKPI() {
+        let text = (0..<60_000)
+            .map { index in
+                index.isMultiple(of: 40)
+                    ? "ts=\(index) level=error component=api message=synthetic failure"
+                    : "ts=\(index) level=info component=worker message=synthetic ok"
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let index = RuneLargeTextIndex(text: text)
+            _ = index.viewport(startLine: 55_000, lineLimit: 80)
+            _ = index.search(query: "error")
+        }
+
+        let started = ContinuousClock.now
+        let index = RuneLargeTextIndex(text: text)
+        let viewport = index.viewport(startLine: 55_000, lineLimit: 80)
+        let result = index.search(query: "error")
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(index.lineCount, 60_000)
+        XCTAssertEqual(viewport.lines.first?.text, "ts=54999 level=info component=worker message=synthetic ok")
+        XCTAssertEqual(result.matches.count, 1_500)
+        XCTAssertLessThan(seconds(elapsed), 0.35)
+    }
+
+    func testLogZipExportBenchmarkKPI() throws {
+        let pods = (0..<12).map { "api-\($0)" }
+        let text = (0..<24_000)
+            .map { index in
+                "[\(pods[index % pods.count])] 2026-05-05T10:00:\(String(format: "%02d", index % 60))Z message=\(index)"
+            }
+            .joined(separator: "\n")
+
+        let started = ContinuousClock.now
+        let zip = try LogArchiveBuilder.buildZip(
+            mergedText: text,
+            podNames: pods,
+            baseName: "benchmark-logs",
+            generatedAt: "20260505T100000Z"
+        )
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertGreaterThan(zip.count, text.utf8.count / 2)
+        XCTAssertLessThan(seconds(elapsed), 0.45, "KPI: exporting a 24k-line, 12-pod log archive should stay below 450ms on local benchmark runs.")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = try? LogArchiveBuilder.buildZip(
+                mergedText: text,
+                podNames: pods,
+                baseName: "benchmark-logs",
+                generatedAt: "20260505T100000Z"
+            )
+        }
+    }
+
+    func testDeploymentPodLogZipExportBenchmarkKPI() throws {
+        let records = (0..<12).flatMap { podIndex in
+            ["app", "sidecar"].map { (containerName: String) in
+                PodLogArchiveRecord(
+                    podName: "api-\(podIndex)",
+                    containerName: containerName,
+                    logs: (0..<1_000)
+                        .map { lineIndex in
+                            "2026-05-06T10:00:\(String(format: "%02d", lineIndex % 60))Z pod=\(podIndex) container=\(containerName) message=\(lineIndex)"
+                        }
+                        .joined(separator: "\n")
+                )
+            }
+        }
+
+        let warmup = try LogArchiveBuilder.buildPodContainerZip(
+            records: records,
+            baseName: "deployment-api-pod-logs",
+            generatedAt: "20260506T100000Z"
+        )
+        XCTAssertGreaterThan(warmup.count, 0)
+
+        let started = ContinuousClock.now
+        let zip = try LogArchiveBuilder.buildPodContainerZip(
+            records: records,
+            baseName: "deployment-api-pod-logs",
+            generatedAt: "20260506T100000Z"
+        )
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertGreaterThan(zip.count, 0)
+        XCTAssertLessThan(seconds(elapsed), 0.45, "KPI: exporting a 24k-line, 12-pod, 24-container deployment log archive should stay below 450ms on local benchmark runs.")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = try? LogArchiveBuilder.buildPodContainerZip(
+                records: records,
+                baseName: "deployment-api-pod-logs",
+                generatedAt: "20260506T100000Z"
+            )
+        }
     }
 
     @MainActor
@@ -51,14 +183,24 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 rootView: PodLogsInspectorPane(
                     selectedLogPreset: .constant(.recentLines),
                     includePreviousLogs: .constant(false),
+                    selectedContainer: .constant(""),
                     isTailModeEnabled: .constant(false),
+                    isStreamPaused: .constant(false),
                     isLoadingLogs: false,
                     isLoadingResources: false,
                     errorMessage: nil,
+                    statusText: "Last updated 12:00:00",
+                    containerOptions: [],
                     logText: text,
                     readOnlyResetID: "benchmark:logs",
                     onReload: {},
-                    onSave: {}
+                    onSave: {},
+                    onSaveVisibleZip: { _ in },
+                    onSaveFullZip: {},
+                    onSaveAllPodsZip: {},
+                    onCopySelection: {},
+                    onCopyAll: {},
+                    onToggleStreamPause: {}
                 )
             )
             controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
@@ -70,14 +212,24 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             rootView: PodLogsInspectorPane(
                 selectedLogPreset: .constant(.recentLines),
                 includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
                 isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
                 isLoadingLogs: false,
                 isLoadingResources: false,
                 errorMessage: nil,
+                statusText: "Last updated 12:00:00",
+                containerOptions: [],
                 logText: text,
                 readOnlyResetID: "benchmark:logs",
                 onReload: {},
-                onSave: {}
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
             )
         )
         controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
@@ -365,6 +517,90 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testFavoriteNamespaceSortingBenchmarkKPI() {
+        let state = RuneAppState()
+        let suiteName = "RunePerformanceBenchmarksTests.favoriteNamespaces.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let viewModel = RuneAppViewModel(
+            state: state,
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
+        )
+        state.selectedContext = KubeContext(name: "benchmark")
+        state.setNamespaces((0..<2_000).map { "namespace-\(String(format: "%04d", 1_999 - $0))" })
+        state.selectedNamespace = "namespace-0000"
+        for index in stride(from: 0, to: 2_000, by: 200) {
+            viewModel.toggleFavoriteNamespace("namespace-\(String(format: "%04d", index))")
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.namespaceOptions
+        }
+
+        let started = ContinuousClock.now
+        let visible = viewModel.namespaceOptions
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(visible.count, 2_000)
+        XCTAssertEqual(visible.prefix(3), ["namespace-0000", "namespace-0200", "namespace-0400"])
+        XCTAssertLessThan(seconds(elapsed), 0.2)
+    }
+
+    @MainActor
+    func testPodLogContainerOptionsBenchmarkKPI() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.setSelectedPod(PodSummary(
+            name: "api",
+            namespace: "default",
+            status: "Running",
+            containerNamesLine: (0..<200).map { "container-\($0)" }.joined(separator: ", ")
+        ))
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.podLogContainerOptions
+        }
+
+        let started = ContinuousClock.now
+        let options = viewModel.podLogContainerOptions
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(options.count, 200)
+        XCTAssertEqual(options.first, "container-0")
+        XCTAssertLessThan(seconds(elapsed), 0.02)
+    }
+
+    @MainActor
+    func testPodBulkSelectionBenchmarkKPI() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "benchmark")
+        state.selectedNamespace = "default"
+        state.setPods((0..<5_000).map { index in
+            PodSummary(
+                name: "pod-\(String(format: "%04d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 10) ? "Pending" : "Running"
+            )
+        })
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            viewModel.selectAllVisiblePodsForBulkActions()
+            _ = viewModel.selectedPodsForBulkActions
+            viewModel.clearPodBulkSelection()
+        }
+
+        let started = ContinuousClock.now
+        viewModel.selectAllVisiblePodsForBulkActions()
+        let selected = viewModel.selectedPodsForBulkActions
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(selected.count, 5_000)
+        XCTAssertEqual(selected.first?.name, "pod-0000")
+        XCTAssertLessThan(seconds(elapsed), 0.35)
+    }
+
+    @MainActor
     func testTerminalSessionAppendBenchmarkKPI() {
         let state = RuneAppState()
         state.setTerminalSession(PodTerminalSession(
@@ -463,6 +699,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     onStartSession: { _ in },
                     onReconnectSession: { _, _ in },
                     onSend: {},
+                    onSendControlSequence: { _ in },
                     onDisconnect: {},
                     onSelectSession: { _ in },
                     onCloseSession: { _ in },
@@ -488,6 +725,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 onStartSession: { _ in },
                 onReconnectSession: { _, _ in },
                 onSend: {},
+                onSendControlSequence: { _ in },
                 onDisconnect: {},
                 onSelectSession: { _ in },
                 onCloseSession: { _ in },
@@ -536,6 +774,66 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(state.writeAuditLog.count, 200)
         XCTAssertEqual(state.writeAuditLog.first?.resource, "configmap/settings-999")
         XCTAssertLessThan(seconds(elapsed), 0.20)
+    }
+
+    @MainActor
+    func testWriteAuditSearchBenchmarkKPI() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        for index in 0..<200 {
+            state.appendWriteAuditEntry(WriteAuditEntry(
+                action: index.isMultiple(of: 10) ? "Delete" : "Apply YAML",
+                contextName: "benchmark",
+                namespace: "default",
+                resource: "configmap/settings-\(index)",
+                status: index.isMultiple(of: 10) ? "Failed" : "Succeeded",
+                message: index.isMultiple(of: 10) ? "forbidden" : "ok"
+            ))
+        }
+        viewModel.writeAuditSearchQuery = "failed forbidden"
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.visibleWriteAuditEntries
+        }
+
+        let started = ContinuousClock.now
+        let visible = viewModel.visibleWriteAuditEntries
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(visible.count, 20)
+        XCTAssertLessThan(seconds(elapsed), 0.01)
+    }
+
+    @MainActor
+    func testUnifiedLogSelectedPodScopeBenchmarkKPI() {
+        let podNames = (0..<120).map { "pod-\($0)" }
+        let text = (0..<24_000)
+            .map { index in
+                "[pod-\(index % podNames.count)] line \(index)"
+            }
+            .joined(separator: "\n")
+        let selected = Set((0..<12).map { "pod-\($0)" })
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = RuneAppViewModel.scopedUnifiedLogResult(
+                mergedText: text,
+                podNames: podNames,
+                selectedPodNames: selected
+            )
+        }
+
+        let started = ContinuousClock.now
+        let result = RuneAppViewModel.scopedUnifiedLogResult(
+            mergedText: text,
+            podNames: podNames,
+            selectedPodNames: selected
+        )
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(result.podNames.count, 12)
+        XCTAssertTrue(result.mergedText.contains("[pod-0]"))
+        XCTAssertFalse(result.mergedText.contains("[pod-12]"))
+        XCTAssertLessThan(seconds(elapsed), 0.08)
     }
 
     func testYAMLDiffPreviewBenchmarkKPI() {

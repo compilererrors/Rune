@@ -437,7 +437,7 @@ private struct RuneFakeK8sRouter {
             guard let pod = namespace.pods.first(where: { $0.name == pathParts[5] }) else {
                 return .json(status: 404, object: status(message: "Pod \(pathParts[5]) was not found."))
             }
-            return .text(status: 200, body: logLines(for: pod, namespace: namespace.name))
+            return .text(status: 200, body: logLines(for: pod, namespace: namespace.name, container: query["container"]))
         case "services" where pathParts.count == 5:
             return .json(status: 200, object: listObject(
                 apiVersion: "v1",
@@ -890,8 +890,10 @@ private struct RuneFakeK8sRouter {
         }
     }
 
-    private func logLines(for pod: RuneFakeK8sPod, namespace: String) -> String {
-        pod.containers.enumerated().map { index, container in
+    private func logLines(for pod: RuneFakeK8sPod, namespace: String, container selectedContainer: String? = nil) -> String {
+        let containers = selectedContainer
+            .map { selected in pod.containers.filter { $0 == selected } } ?? pod.containers
+        return containers.enumerated().map { index, container in
             "2026-04-26T10:00:0\(index)Z \(container) namespace=\(namespace) pod=\(pod.name) synthetic REST fake log"
         }.joined(separator: "\n") + "\n"
     }

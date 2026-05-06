@@ -82,6 +82,16 @@ struct RuneApplication: App {
 
                 Divider()
 
+                Button("Run Auth Doctor") {
+                    viewModel.runAuthDoctor()
+                }
+
+                Button("Load Demo Cluster") {
+                    viewModel.loadDemoCluster()
+                }
+
+                Divider()
+
                 Button(viewModel.state.isReadOnlyMode ? "Disable Read-only Mode" : "Enable Read-only Mode") {
                     viewModel.setReadOnlyMode(!viewModel.state.isReadOnlyMode)
                 }

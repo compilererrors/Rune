@@ -8,6 +8,7 @@ struct ResourceDescribeInspectorPane: View {
     let yamlText: String
     let hasUnsavedEdits: Bool
     let validationIssues: [YAMLValidationIssue]
+    let statusText: String
     let onApply: () -> Void
     let onOpenYAMLEditor: () -> Void
     let readOnlyResetID: String
@@ -38,7 +39,10 @@ struct ResourceDescribeInspectorPane: View {
                 }
             }
         } status: {
-            EmptyView()
+            Text(statusText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         } surface: {
             DescribeTextSurface(
                 text: describeText,

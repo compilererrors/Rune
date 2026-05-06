@@ -10,6 +10,12 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var namespaces: [String] = []
     @Published public private(set) var favoriteContextNames: Set<String> = []
     @Published public private(set) var favoriteResourceIDs: Set<String> = []
+    @Published public private(set) var favoriteNamespaceIDs: Set<String> = []
+    @Published public private(set) var authDoctorChecks: [RuneHealthCheck] = []
+    @Published public private(set) var isRunningAuthDoctor = false
+    @Published public private(set) var snapshotFreshness = RuneSnapshotFreshness()
+    @Published public private(set) var isManualNamespaceMode = false
+    @Published public private(set) var namespaceAccessWarning: String?
 
     @Published public var selectedContext: KubeContext?
     @Published public var selectedNamespace: String = "default"
@@ -17,6 +23,8 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedWorkloadKind: KubeResourceKind = .pod
 
     @Published public var selectedPod: PodSummary?
+    @Published public private(set) var selectedPodIDs: Set<String> = []
+    @Published public private(set) var selectedGenericResourceIDs: Set<String> = []
     @Published public var selectedDeployment: DeploymentSummary?
     @Published public var selectedService: ServiceSummary?
     @Published public var selectedEvent: EventSummary?
@@ -78,6 +86,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var sessionLogCache: [String: String] = [:]
     /// Set when the latest log stream failed (timeout or error). Cleared on successful load or when a new fetch starts.
     @Published public private(set) var lastLogFetchError: String?
+    @Published public private(set) var lastLogUpdatedAt: Date?
     @Published public private(set) var resourceYAML: String = ""
     /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
@@ -89,6 +98,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var resourceDescribe: String = ""
     @Published public private(set) var lastResourceYAMLError: String?
     @Published public private(set) var lastResourceDescribeError: String?
+    @Published public private(set) var lastResourceDetailsUpdatedAt: Date?
     @Published public private(set) var deploymentRolloutHistory: String = ""
     @Published public private(set) var helmValues: String = ""
     @Published public private(set) var helmManifest: String = ""
@@ -112,6 +122,7 @@ public final class RuneAppState: ObservableObject {
     @Published public var isExecutingCommand: Bool = false
     @Published public var isStartingPortForward: Bool = false
     @Published public var lastError: String?
+    @Published public private(set) var activeNotice: RuneUserNotice?
 
     public init() {}
 
@@ -125,6 +136,32 @@ public final class RuneAppState: ObservableObject {
 
     public func setFavoriteResourceIDs(_ ids: Set<String>) {
         favoriteResourceIDs = ids
+    }
+
+    public func setFavoriteNamespaceIDs(_ ids: Set<String>) {
+        favoriteNamespaceIDs = ids
+    }
+
+    public func setAuthDoctorChecks(_ checks: [RuneHealthCheck]) {
+        authDoctorChecks = checks
+    }
+
+    public func setAuthDoctorRunning(_ running: Bool) {
+        isRunningAuthDoctor = running
+    }
+
+    public func setSnapshotFreshness(_ freshness: RuneSnapshotFreshness) {
+        snapshotFreshness = freshness
+    }
+
+    public func setManualNamespaceMode(_ enabled: Bool, warning: String? = nil) {
+        isManualNamespaceMode = enabled
+        namespaceAccessWarning = warning
+    }
+
+    public func clearManualNamespaceMode() {
+        isManualNamespaceMode = false
+        namespaceAccessWarning = nil
     }
 
     public func toggleFavoriteContext(named contextName: String) {
@@ -151,6 +188,18 @@ public final class RuneAppState: ObservableObject {
         favoriteResourceIDs.contains(id)
     }
 
+    public func toggleFavoriteNamespace(id: String) {
+        if favoriteNamespaceIDs.contains(id) {
+            favoriteNamespaceIDs.remove(id)
+        } else {
+            favoriteNamespaceIDs.insert(id)
+        }
+    }
+
+    public func isFavoriteNamespace(id: String) -> Bool {
+        favoriteNamespaceIDs.contains(id)
+    }
+
     public func setContexts(_ contexts: [KubeContext]) {
         self.contexts = contexts
         if selectedContext == nil || !contexts.contains(selectedContext!) {
@@ -171,6 +220,7 @@ public final class RuneAppState: ObservableObject {
 
     public func setPods(_ pods: [PodSummary]) {
         self.pods = pods
+        selectedPodIDs.formIntersection(Set(pods.map(\.id)))
         if let current = selectedPod,
            let match = pods.first(where: { $0.id == current.id }) {
             selectedPod = match
@@ -373,6 +423,41 @@ public final class RuneAppState: ObservableObject {
         selectedPod = pod
     }
 
+    public func setSelectedPodIDs(_ ids: Set<String>) {
+        let validIDs = Set(pods.map(\.id))
+        selectedPodIDs = ids.intersection(validIDs)
+    }
+
+    public func toggleSelectedPodID(_ id: String) {
+        guard pods.contains(where: { $0.id == id }) else { return }
+        if selectedPodIDs.contains(id) {
+            selectedPodIDs.remove(id)
+        } else {
+            selectedPodIDs.insert(id)
+        }
+    }
+
+    public func clearSelectedPodIDs() {
+        selectedPodIDs = []
+    }
+
+    public func setSelectedGenericResourceIDs(_ ids: Set<String>, validIDs: Set<String>) {
+        selectedGenericResourceIDs = ids.intersection(validIDs)
+    }
+
+    public func toggleSelectedGenericResourceID(_ id: String, validIDs: Set<String>) {
+        guard validIDs.contains(id) else { return }
+        if selectedGenericResourceIDs.contains(id) {
+            selectedGenericResourceIDs.remove(id)
+        } else {
+            selectedGenericResourceIDs.insert(id)
+        }
+    }
+
+    public func clearSelectedGenericResourceIDs() {
+        selectedGenericResourceIDs = []
+    }
+
     public func setSelectedDeployment(_ deployment: DeploymentSummary?) {
         selectedDeployment = deployment
     }
@@ -444,6 +529,7 @@ public final class RuneAppState: ObservableObject {
     public func setPodLogs(_ logs: String) {
         podLogs = logs
         lastLogFetchError = nil
+        lastLogUpdatedAt = Date()
     }
 
     public func showCachedPodLogs(contextName: String, namespace: String, podName: String) {
@@ -467,12 +553,14 @@ public final class RuneAppState: ObservableObject {
             loadedAt: loadedAt
         )
         lastLogFetchError = nil
+        lastLogUpdatedAt = loadedAt
     }
 
     public func setUnifiedServiceLogs(_ logs: String, pods: [String]) {
         unifiedServiceLogs = logs
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
+        lastLogUpdatedAt = Date()
     }
 
     public func showCachedUnifiedLogs(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) {
@@ -500,6 +588,7 @@ public final class RuneAppState: ObservableObject {
         )
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
+        lastLogUpdatedAt = loadedAt
     }
 
     public func clearUnifiedServiceLogs() {
@@ -523,6 +612,7 @@ public final class RuneAppState: ObservableObject {
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
         lastResourceYAMLError = nil
+        lastResourceDetailsUpdatedAt = Date()
     }
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
@@ -583,6 +673,7 @@ public final class RuneAppState: ObservableObject {
     public func setResourceDescribe(_ text: String) {
         resourceDescribe = text
         lastResourceDescribeError = nil
+        lastResourceDetailsUpdatedAt = Date()
     }
 
     public func beginResourceDetailLoad() {
@@ -594,6 +685,7 @@ public final class RuneAppState: ObservableObject {
         resourceDescribe = ""
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil
+        lastResourceDetailsUpdatedAt = nil
         deploymentRolloutHistory = ""
         isLoadingResourceDetails = true
     }
@@ -734,6 +826,19 @@ public final class RuneAppState: ObservableObject {
         portForwardSessions.removeAll { $0.id == id }
     }
 
+    public func removeInactivePortForwardSessions() {
+        portForwardSessions.removeAll { $0.isInactive }
+    }
+
+    public func removeInactivePortForwardSessions(targetKind: PortForwardTargetKind, targetName: String, namespace: String) {
+        portForwardSessions.removeAll {
+            $0.isInactive
+                && $0.targetKind == targetKind
+                && $0.targetName == targetName
+                && $0.namespace == namespace
+        }
+    }
+
     public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
         selectedHelmRelease = release
     }
@@ -769,18 +874,86 @@ public final class RuneAppState: ObservableObject {
         isLoadingLogs = false
         isLoadingResourceDetails = false
         lastLogFetchError = nil
+        lastLogUpdatedAt = nil
+        lastResourceDetailsUpdatedAt = nil
     }
 
     public func setError(_ error: Error) {
-        lastError = error.localizedDescription
+        if Self.isUserCancelled(error) {
+            logNotice("suppressed cancelled action: \(error.localizedDescription)")
+            clearError()
+            return
+        }
+
+        let message = error.localizedDescription
+        lastError = message
+        activeNotice = RuneUserNotice(
+            severity: Self.noticeSeverity(for: error),
+            title: Self.noticeTitle(for: error),
+            message: message
+        )
+        logNotice("notice \(activeNotice?.severity.rawValue ?? "unknown"): \(message)")
     }
 
     public func clearError() {
         lastError = nil
+        activeNotice = nil
     }
 
     public func setErrorMessage(_ message: String?) {
         lastError = message
+        activeNotice = message.map {
+            RuneUserNotice(
+                severity: .warning,
+                title: "Cluster data needs attention",
+                message: $0
+            )
+        }
+        if let message {
+            logNotice("notice warning: \(message)")
+        }
+    }
+
+    private static func isUserCancelled(_ error: Error) -> Bool {
+        if let runeError = error as? RuneError, runeError == .userCancelled {
+            return true
+        }
+        return error is CancellationError
+    }
+
+    private static func noticeSeverity(for error: Error) -> RuneUserNoticeSeverity {
+        guard let runeError = error as? RuneError else { return .error }
+        switch runeError {
+        case .readOnlyMode, .invalidInput, .missingKubeConfig:
+            return .warning
+        case .commandFailed, .parseError:
+            return .error
+        case .userCancelled:
+            return .info
+        }
+    }
+
+    private static func noticeTitle(for error: Error) -> String {
+        guard let runeError = error as? RuneError else { return "Action failed" }
+        switch runeError {
+        case .missingKubeConfig:
+            return "Kubeconfig needed"
+        case .commandFailed:
+            return "Kubernetes command failed"
+        case .parseError:
+            return "Could not read Kubernetes data"
+        case .readOnlyMode:
+            return "Read-only mode"
+        case .invalidInput:
+            return "Check the action"
+        case .userCancelled:
+            return "Action cancelled"
+        }
+    }
+
+    private func logNotice(_ message: String) {
+        guard UserDefaults.standard.runeDiagnosticsLogging else { return }
+        NSLog("[Rune] %@", message)
     }
 
     private func appendSessionLogSegment(

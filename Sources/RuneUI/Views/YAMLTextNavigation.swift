@@ -8,6 +8,20 @@ struct YAMLTextNavigationRequest: Equatable {
     let line: Int?
     let column: Int?
 
+    init(
+        issueID: String,
+        sequence: Int,
+        range: YAMLValidationRange?,
+        line: Int? = nil,
+        column: Int? = nil
+    ) {
+        self.issueID = issueID
+        self.sequence = sequence
+        self.range = range
+        self.line = line
+        self.column = column
+    }
+
     init(issue: YAMLValidationIssue, sequence: Int) {
         self.issueID = issue.id
         self.sequence = sequence

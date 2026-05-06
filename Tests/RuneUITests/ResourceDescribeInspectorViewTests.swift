@@ -97,6 +97,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
                 yamlText: "apiVersion: v1\nkind: Pod\n",
                 hasUnsavedEdits: true,
                 validationIssues: [],
+                statusText: "Last updated 12:00:00",
                 onApply: {},
                 onOpenYAMLEditor: {},
                 readOnlyResetID: "describe-scroll-test"

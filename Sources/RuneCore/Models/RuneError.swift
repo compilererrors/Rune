@@ -1,6 +1,6 @@
 import Foundation
 
-public enum RuneError: LocalizedError, Sendable {
+public enum RuneError: LocalizedError, Equatable, Sendable {
     case missingKubeConfig
     case commandFailed(command: String, message: String)
     case parseError(message: String)

@@ -68,6 +68,26 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         return try await restClient.contextNamespace(environment: env, contextName: context.name)
     }
 
+    public func canI(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?,
+        verb: String,
+        resource: String,
+        subresource: String? = nil
+    ) async throws -> Bool {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await restClient.selfSubjectAccessReview(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            verb: verb,
+            resource: resource,
+            subresource: subresource,
+            timeout: commandTimeout
+        )
+    }
+
     public func listPods(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -250,7 +270,18 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             Definition(family: "Flux", kind: "Kustomizations", apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/\(ns)/kustomizations"),
             Definition(family: "Flux", kind: "HelmReleases", apiPath: "/apis/helm.toolkit.fluxcd.io/v2/namespaces/\(ns)/helmreleases"),
             Definition(family: "ArgoCD", kind: "Applications", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/applications"),
-            Definition(family: "ArgoCD", kind: "AppProjects", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/appprojects")
+            Definition(family: "ArgoCD", kind: "AppProjects", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/appprojects"),
+            Definition(family: "External Secrets", kind: "ExternalSecrets", apiPath: "/apis/external-secrets.io/v1beta1/namespaces/\(ns)/externalsecrets"),
+            Definition(family: "External Secrets", kind: "SecretStores", apiPath: "/apis/external-secrets.io/v1beta1/namespaces/\(ns)/secretstores"),
+            Definition(family: "External Secrets", kind: "ClusterSecretStores", apiPath: "/apis/external-secrets.io/v1beta1/clustersecretstores"),
+            Definition(family: "Crossplane", kind: "Compositions", apiPath: "/apis/apiextensions.crossplane.io/v1/compositions"),
+            Definition(family: "Crossplane", kind: "CompositeResourceDefinitions", apiPath: "/apis/apiextensions.crossplane.io/v1/compositeresourcedefinitions"),
+            Definition(family: "Crossplane", kind: "Providers", apiPath: "/apis/pkg.crossplane.io/v1/providers"),
+            Definition(family: "Crossplane", kind: "Configurations", apiPath: "/apis/pkg.crossplane.io/v1/configurations"),
+            Definition(family: "Gateway API", kind: "GatewayClasses", apiPath: "/apis/gateway.networking.k8s.io/v1/gatewayclasses"),
+            Definition(family: "Gateway API", kind: "Gateways", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/gateways"),
+            Definition(family: "Gateway API", kind: "HTTPRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/httproutes"),
+            Definition(family: "Gateway API", kind: "GRPCRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/grpcroutes")
         ]
 
         let env = try kubeconfigEnvironment(from: sources)
@@ -272,6 +303,13 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 apiPath: definition.apiPath
             )
         }
+
+        output += await discoverGenericCustomResources(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            alreadyListedPaths: Set(definitions.map(\.apiPath))
+        )
 
         return output.sorted {
             if $0.family != $1.family { return $0.family < $1.family }
@@ -830,6 +868,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         context: KubeContext,
         namespace: String,
         podName: String,
+        container: String? = nil,
         filter: LogTimeFilter,
         previous: Bool
     ) async throws -> String {
@@ -838,6 +877,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             context: context,
             namespace: namespace,
             podName: podName,
+            container: container,
             filter: filter,
             previous: previous,
             timeoutOverride: nil,
@@ -850,6 +890,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         context: KubeContext,
         namespace: String,
         podName: String,
+        container: String?,
         filter: LogTimeFilter,
         previous: Bool,
         timeoutOverride: TimeInterval?,
@@ -862,6 +903,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             context: context,
             namespace: namespace,
             podName: podName,
+            container: container,
             filter: filter,
             previous: previous,
             timeout: timeoutBudget,
@@ -1004,6 +1046,42 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func podsForDeployment(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deployment: DeploymentSummary
+    ) async throws -> [PodSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        let selectorMap: [String: String]
+        if let cachedSelector = deployment.selector, !cachedSelector.isEmpty {
+            selectorMap = cachedSelector
+        } else {
+            selectorMap = try await requiredDeploymentSelectorViaREST(
+                environment: env,
+                context: context,
+                namespace: namespace,
+                deploymentName: deployment.name
+            )
+        }
+
+        guard !selectorMap.isEmpty else {
+            throw RuneError.parseError(message: "Deployment \(deployment.name) is missing a matchLabels selector.")
+        }
+
+        let selector = selectorMap
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+
+        return try await requiredPodsBySelectorViaREST(
+            environment: env,
+            context: context,
+            namespace: namespace,
+            selector: selector
+        )
+    }
+
     private func selectPodsForUnifiedLogs(_ pods: [PodSummary]) -> [PodSummary] {
         guard !pods.isEmpty else { return [] }
         let active = pods.filter { pod in
@@ -1040,6 +1118,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                             context: context,
                             namespace: namespace,
                             podName: pod.name,
+                            container: nil,
                             filter: filter,
                             previous: previous,
                             timeoutOverride: self.unifiedLogsPerPodTimeout,
@@ -1072,6 +1151,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                                 context: context,
                                 namespace: namespace,
                                 podName: pod.name,
+                                container: nil,
                                 filter: filter,
                                 previous: previous,
                                 timeoutOverride: self.unifiedLogsPerPodTimeout,
@@ -1723,6 +1803,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         context: KubeContext,
         namespace: String,
         podName: String,
+        container: String?,
         filter: LogTimeFilter,
         previous: Bool,
         timeout: TimeInterval,
@@ -1734,6 +1815,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 contextName: context.name,
                 namespace: namespace,
                 podName: podName,
+                container: container,
                 filter: filter,
                 previous: previous,
                 timeout: timeout,
@@ -2405,16 +2487,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
             let namespace = metadata["namespace"] as? String
             let statusObject = item["status"] as? [String: Any]
-            let condition = (statusObject?["conditions"] as? [[String: Any]])?.last
-            let conditionType = condition?["type"] as? String
-            let conditionStatus = condition?["status"] as? String
-            let reason = condition?["reason"] as? String
-            let message = condition?["message"] as? String
-
-            let status = [conditionType, conditionStatus]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
+            let conditionSummary = Self.operatorConditionSummary(statusObject?["conditions"] as? [[String: Any]])
 
             return OperatorResourceSummary(
                 family: family,
@@ -2422,9 +2495,153 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 apiPath: apiPath,
                 name: name,
                 namespace: namespace,
-                status: status.isEmpty ? (reason ?? "Found") : status,
-                message: message ?? reason ?? ""
+                status: conditionSummary.status,
+                message: conditionSummary.message
             )
+        }
+    }
+
+    private static func operatorConditionSummary(_ conditions: [[String: Any]]?) -> (status: String, message: String) {
+        let conditions = conditions ?? []
+        let priority = [
+            "Ready",
+            "Synced",
+            "Healthy",
+            "Reconciled",
+            "Available",
+            "Established",
+            "Accepted",
+            "Programmed",
+            "Reconciling",
+            "Stalled"
+        ]
+        let selected = priority.compactMap { wanted in
+            conditions.first { condition in
+                (condition["type"] as? String)?.caseInsensitiveCompare(wanted) == .orderedSame
+            }
+        }.first ?? conditions.last
+
+        let conditionType = selected?["type"] as? String
+        let conditionStatus = selected?["status"] as? String
+        let reason = selected?["reason"] as? String
+        let message = selected?["message"] as? String
+        let status = [conditionType, conditionStatus]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return (
+            status: status.isEmpty ? (reason ?? "Found") : status,
+            message: message ?? reason ?? ""
+        )
+    }
+
+    private func discoverGenericCustomResources(
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        alreadyListedPaths: Set<String>
+    ) async -> [OperatorResourceSummary] {
+        guard let groupsRaw = try? await restClient.rawGET(
+            environment: environment,
+            contextName: contextName,
+            apiPath: "/apis",
+            timeout: 15
+        ) else { return [] }
+
+        let preferredVersions = Self.parsePreferredAPIGroupVersions(groupsRaw)
+            .filter { version in
+                !version.group.starts(with: "metrics.k8s.io")
+            }
+            .prefix(48)
+
+        let ns = namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
+        var output: [OperatorResourceSummary] = []
+        var listedKinds = Set<String>()
+
+        for version in preferredVersions {
+            guard let resourceRaw = try? await restClient.rawGET(
+                environment: environment,
+                contextName: contextName,
+                apiPath: "/apis/\(version.groupVersion)",
+                timeout: 15
+            ) else { continue }
+
+            let resources = Self.parseNamespacedAPIResources(resourceRaw)
+                .filter { resource in
+                    !resource.name.contains("/")
+                        && !Self.isLikelyBuiltInAPIGroup(version.group)
+                        && listedKinds.insert("\(version.groupVersion)/\(resource.name)").inserted
+                }
+                .prefix(16)
+
+            for resource in resources {
+                let path = "/apis/\(version.groupVersion)/namespaces/\(ns)/\(resource.name)"
+                guard !alreadyListedPaths.contains(path),
+                      let raw = try? await restClient.customCollection(
+                        environment: environment,
+                        contextName: contextName,
+                        apiPath: path,
+                        timeout: 12
+                      )
+                else { continue }
+                output += Self.parseOperatorResources(
+                    raw,
+                    family: "Custom Resources",
+                    kind: resource.kind,
+                    apiPath: path
+                )
+                if output.count >= 500 { return output }
+            }
+        }
+
+        return output
+    }
+
+    private static func isLikelyBuiltInAPIGroup(_ group: String) -> Bool {
+        let builtIns = [
+            "apps",
+            "autoscaling",
+            "batch",
+            "coordination.k8s.io",
+            "discovery.k8s.io",
+            "events.k8s.io",
+            "networking.k8s.io",
+            "node.k8s.io",
+            "policy",
+            "rbac.authorization.k8s.io",
+            "scheduling.k8s.io",
+            "storage.k8s.io"
+        ]
+        return builtIns.contains(group)
+    }
+
+    private static func parsePreferredAPIGroupVersions(_ raw: String) -> [(group: String, groupVersion: String)] {
+        guard let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let groups = root["groups"] as? [[String: Any]]
+        else { return [] }
+
+        return groups.compactMap { group in
+            guard let name = group["name"] as? String,
+                  let preferred = group["preferredVersion"] as? [String: Any],
+                  let groupVersion = preferred["groupVersion"] as? String
+            else { return nil }
+            return (name, groupVersion)
+        }
+    }
+
+    private static func parseNamespacedAPIResources(_ raw: String) -> [(name: String, kind: String)] {
+        guard let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let resources = root["resources"] as? [[String: Any]]
+        else { return [] }
+
+        return resources.compactMap { resource in
+            guard (resource["namespaced"] as? Bool) == true,
+                  let name = resource["name"] as? String,
+                  let kind = resource["kind"] as? String,
+                  !name.isEmpty,
+                  !kind.isEmpty
+            else { return nil }
+            return (name, kind)
         }
     }
 

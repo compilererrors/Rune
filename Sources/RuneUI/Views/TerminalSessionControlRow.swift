@@ -77,6 +77,7 @@ struct TerminalSessionControlRow: View {
                 .frame(width: 64)
                 .disabled(isClearDisabled)
                 .help("Clear active terminal output")
+                .keyboardShortcut("k", modifiers: [.command])
         }
         .fixedSize(horizontal: true, vertical: false)
     }

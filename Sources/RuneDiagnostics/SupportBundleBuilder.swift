@@ -19,6 +19,8 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let recentEvents: [EventSummary]
     public let portForwardSessions: [PortForwardSession]
     public let lastExecResult: PodExecResult?
+    public let authDoctorChecks: [RuneHealthCheck]
+    public let writeAuditLog: [WriteAuditEntry]
 
     public init(
         generatedAt: String,
@@ -37,7 +39,9 @@ public struct SupportBundleRequest: Codable, Sendable {
         deploymentRolloutHistory: String,
         recentEvents: [EventSummary],
         portForwardSessions: [PortForwardSession],
-        lastExecResult: PodExecResult?
+        lastExecResult: PodExecResult?,
+        authDoctorChecks: [RuneHealthCheck],
+        writeAuditLog: [WriteAuditEntry]
     ) {
         self.generatedAt = generatedAt
         self.contextName = contextName
@@ -56,6 +60,8 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.recentEvents = recentEvents
         self.portForwardSessions = portForwardSessions
         self.lastExecResult = lastExecResult
+        self.authDoctorChecks = authDoctorChecks
+        self.writeAuditLog = writeAuditLog
     }
 }
 
@@ -100,7 +106,28 @@ public extension SupportBundleRequest {
             deploymentRolloutHistory: state.deploymentRolloutHistory,
             recentEvents: Array(state.events.prefix(25)),
             portForwardSessions: state.portForwardSessions,
-            lastExecResult: state.lastExecResult
+            lastExecResult: state.lastExecResult,
+            authDoctorChecks: state.authDoctorChecks.map(sanitizedAuthDoctorCheck),
+            writeAuditLog: state.writeAuditLog
         )
+    }
+
+    private static func sanitizedAuthDoctorCheck(_ check: RuneHealthCheck) -> RuneHealthCheck {
+        RuneHealthCheck(
+            id: check.id,
+            title: check.title,
+            status: check.status,
+            message: sanitizedSupportText(check.message)
+        )
+    }
+
+    private static func sanitizedSupportText(_ text: String) -> String {
+        var sanitized = text
+        for token in sanitized.components(separatedBy: .whitespacesAndNewlines) {
+            let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:()[]{}\"'"))
+            guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { continue }
+            sanitized = sanitized.replacingOccurrences(of: trimmed, with: "<local-path>")
+        }
+        return sanitized
     }
 }

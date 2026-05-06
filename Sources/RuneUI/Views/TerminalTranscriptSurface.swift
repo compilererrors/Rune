@@ -6,6 +6,7 @@ struct TerminalTranscriptSurface: View {
     let height: CGFloat
     let resetID: String
     let fontSize: CGFloat
+    var onPasteText: (String) -> Void = { _ in }
     @State private var isSearchVisible = false
     @State private var searchQuery = ""
     @State private var searchMatchCase = false
@@ -26,7 +27,8 @@ struct TerminalTranscriptSurface: View {
                 fontSize: fontSize,
                 searchQuery: searchQuery,
                 searchMatchCase: searchMatchCase,
-                selectedSearchMatchIndex: resolvedSearchMatchIndex
+                selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                onPasteText: onPasteText
             )
                 .id(resetID)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -55,6 +57,7 @@ struct TerminalTranscriptSurface: View {
                 .padding(10)
                 .help("Find in terminal")
                 .accessibilityLabel("Find in terminal")
+                .keyboardShortcut("f", modifiers: [.command])
             }
         }
         .onChange(of: searchQuery) { _, _ in
@@ -251,6 +254,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
     let searchQuery: String
     let searchMatchCase: Bool
     let selectedSearchMatchIndex: Int
+    let onPasteText: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -269,7 +273,8 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         scrollView.horizontalScrollElasticity = .allowed
         scrollView.verticalScrollElasticity = .allowed
 
-        let textView = NSTextView(frame: .zero)
+        let textView = TerminalTranscriptInteractionTextView(frame: .zero)
+        textView.onPasteText = onPasteText
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -313,6 +318,9 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        if let terminalTextView = textView as? TerminalTranscriptInteractionTextView {
+            terminalTextView.onPasteText = onPasteText
+        }
         updateFontIfNeeded(in: textView, coordinator: context.coordinator)
 
         if let container = textView.textContainer {
@@ -428,5 +436,83 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         textView.invalidateIntrinsicContentSize()
         textView.needsLayout = true
         coordinator.lastAppliedSearchKey = ""
+    }
+}
+
+private final class TerminalTranscriptInteractionTextView: NSTextView {
+    var onPasteText: ((String) -> Void)?
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        switch key {
+        case "a":
+            selectAll(nil)
+            return true
+        case "c":
+            guard selectedRange().length > 0 else { return false }
+            copy(nil)
+            return true
+        case "v":
+            guard let paste = NSPasteboard.general.string(forType: .string),
+                  !paste.isEmpty else {
+                return false
+            }
+            onPasteText?(paste)
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let paste = NSPasteboard.general.string(forType: .string),
+              !paste.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        onPasteText?(paste)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let hasSelection = selectedRange().length > 0
+        let hasPasteText = NSPasteboard.general.string(forType: .string)?.isEmpty == false
+
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.isEnabled = hasSelection
+        menu.addItem(copyItem)
+
+        let pasteItem = NSMenuItem(title: "Paste to Prompt", action: #selector(paste(_:)), keyEquivalent: "")
+        pasteItem.target = self
+        pasteItem.isEnabled = hasPasteText && onPasteText != nil
+        menu.addItem(pasteItem)
+
+        menu.addItem(.separator())
+
+        let selectAllItem = NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "")
+        selectAllItem.target = self
+        selectAllItem.isEnabled = !string.isEmpty
+        menu.addItem(selectAllItem)
+
+        let clearSelectionItem = NSMenuItem(title: "Clear Selection", action: #selector(clearSelection(_:)), keyEquivalent: "")
+        clearSelectionItem.target = self
+        clearSelectionItem.isEnabled = hasSelection
+        menu.addItem(clearSelectionItem)
+
+        return menu
+    }
+
+    @objc private func clearSelection(_ sender: Any?) {
+        setSelectedRange(NSRange(location: selectedRange().location, length: 0))
     }
 }

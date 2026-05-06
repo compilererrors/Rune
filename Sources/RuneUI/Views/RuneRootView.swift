@@ -467,6 +467,8 @@ public struct RuneRootView: View {
     @State private var addClusterPopoverPresented = false
     @State private var selectedAddClusterProvider: RuneAddClusterProvider?
     @State private var hasMountedWorkspaceChrome = false
+    @State private var isManualNamespaceSheetPresented = false
+    @State private var manualNamespaceInput = ""
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -766,6 +768,20 @@ public struct RuneRootView: View {
                                 viewModel.setNamespace(namespace)
                             }
                         }
+                        Divider()
+                        Button {
+                            viewModel.toggleFavoriteNamespace(viewModel.state.selectedNamespace)
+                        } label: {
+                            Label(
+                                viewModel.isFavoriteNamespace(viewModel.state.selectedNamespace) ? "Remove Namespace Favorite" : "Favorite Namespace",
+                                systemImage: viewModel.isFavoriteNamespace(viewModel.state.selectedNamespace) ? "star.slash" : "star"
+                            )
+                        }
+                        .disabled(viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Enter Namespace...") {
+                            manualNamespaceInput = viewModel.state.selectedNamespace
+                            isManualNamespaceSheetPresented = true
+                        }
                     }
                 }
 
@@ -824,12 +840,19 @@ public struct RuneRootView: View {
                         Button("Cancel", role: .cancel) {
                             viewModel.cancelPendingWriteAction()
                         }
+
+                        Button("Copy kubectl command") {
+                            viewModel.copyPendingWriteActionKubectlCommand()
+                        }
                     } message: {
-                        Text(viewModel.pendingWriteActionMessage)
+                        Text(pendingWriteActionDialogMessage)
                     }
             }
             .sheet(item: $selectedAddClusterProvider) { provider in
                 addClusterProviderSheet(provider)
+            }
+            .sheet(isPresented: $isManualNamespaceSheetPresented) {
+                manualNamespaceSheet
             }
             .confirmationDialog(
                 viewModel.pendingWriteActionTitle,
@@ -849,9 +872,19 @@ public struct RuneRootView: View {
                 Button("Cancel", role: .cancel) {
                     viewModel.cancelPendingWriteAction()
                 }
+
+                Button("Copy kubectl command") {
+                    viewModel.copyPendingWriteActionKubectlCommand()
+                }
             } message: {
-                Text(viewModel.pendingWriteActionMessage)
+                Text(pendingWriteActionDialogMessage)
             }
+    }
+
+    private var pendingWriteActionDialogMessage: String {
+        let command = viewModel.pendingWriteActionKubectlCommand
+        guard !command.isEmpty else { return viewModel.pendingWriteActionMessage }
+        return viewModel.pendingWriteActionMessage + "\n\nkubectl preview:\n" + command
     }
 
     private var resolvedShellVariant: RuneRootShellVariant {
@@ -860,6 +893,35 @@ public struct RuneRootView: View {
 
     private var resolvedManifestInlineEditorImplementation: ManifestInlineEditorImplementation {
         ManifestInlineEditorImplementation.resolved(override: forcedManifestInlineEditorImplementation)
+    }
+
+    private var manualNamespaceSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Enter Namespace")
+                .font(.title3.weight(.semibold))
+            Text("Use this when RBAC does not allow listing namespaces, or when the namespace is not in the cached menu yet.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("namespace", text: $manualNamespaceInput)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isManualNamespaceSheetPresented = false
+                }
+                Button("Use Namespace") {
+                    viewModel.setNamespace(manualNamespaceInput)
+                    isManualNamespaceSheetPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manualNamespaceInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 420)
     }
 
     private func startLiveDebugScenarioIfNeeded() {
@@ -1300,11 +1362,11 @@ public struct RuneRootView: View {
     /// Three-column workspace — shell can be tested under both native `NavigationSplitView` and AppKit-backed split behavior.
     @ViewBuilder
     private var mainSplitContainer: some View {
-        if !viewModel.isSidebarVisible || !viewModel.isDetailPaneVisible {
-            compactPanelSplitContainer
-        } else {
-            switch resolvedShellVariant {
-            case .navigationSplitView:
+        switch resolvedShellVariant {
+        case .navigationSplitView:
+            if !viewModel.isSidebarVisible || !viewModel.isDetailPaneVisible {
+                compactPanelSplitContainer
+            } else {
                 NavigationSplitView {
                     sidebar
                         .runeAppKitFrameReporter("sidebar")
@@ -1341,39 +1403,41 @@ public struct RuneRootView: View {
                         )
                 }
                 .navigationSplitViewStyle(.balanced)
-            case .appKitSplitView:
-                AppKitTripleSplitView(
-                    sidebar: AnyView(
-                        sidebar
-                            .runeAppKitFrameReporter("sidebar")
-                            .overlay(alignment: .trailing) {
-                                splitColumnResizeHandle
-                                    .offset(x: 7)
-                            }
-                    ),
-                    content: AnyView(
-                        contentPane
-                            .runeAppKitFrameReporter("content")
-                            .overlay(alignment: .trailing) {
-                                splitColumnResizeHandle
-                                    .offset(x: 7)
-                            }
-                    ),
-                    detail: AnyView(
-                        detailPane
-                            .runeAppKitFrameReporter("detail")
-                    ),
-                    sidebarWidth: resolvedSidebarWidth,
-                    detailWidth: resolvedDetailWidth,
-                    onSidebarWidthChange: { width in
-                        persistSidebarWidthIfNeeded(width)
-                    },
-                    onDetailWidthChange: { width in
-                        persistDetailWidthIfNeeded(width)
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+        case .appKitSplitView:
+            AppKitTripleSplitView(
+                sidebar: AnyView(
+                    sidebar
+                        .runeAppKitFrameReporter("sidebar")
+                        .overlay(alignment: .trailing) {
+                            splitColumnResizeHandle
+                                .offset(x: 7)
+                        }
+                ),
+                content: AnyView(
+                    contentPane
+                        .runeAppKitFrameReporter("content")
+                        .overlay(alignment: .trailing) {
+                            splitColumnResizeHandle
+                                .offset(x: 7)
+                        }
+                ),
+                detail: AnyView(
+                    detailPane
+                        .runeAppKitFrameReporter("detail")
+                ),
+                sidebarVisible: viewModel.isSidebarVisible,
+                detailVisible: viewModel.isDetailPaneVisible,
+                sidebarWidth: resolvedSidebarWidth,
+                detailWidth: resolvedDetailWidth,
+                onSidebarWidthChange: { width in
+                    persistSidebarWidthIfNeeded(width)
+                },
+                onDetailWidthChange: { width in
+                    persistDetailWidthIfNeeded(width)
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1978,6 +2042,52 @@ public struct RuneRootView: View {
         .accessibilityLabel("Resource kind")
     }
 
+    private var podBulkSelectionControls: some View {
+        RuneBulkSelectionBar(
+            selectedCount: viewModel.selectedPodCount,
+            visibleCount: viewModel.visiblePods.count,
+            allVisibleSelected: viewModel.areAllVisiblePodsSelectedForBulkActions,
+            onToggleVisibleSelection: viewModel.toggleAllVisiblePodsForBulkActions
+        ) {
+            Menu {
+                Button {
+                    viewModel.saveSelectedPodLogsZip()
+                } label: {
+                    Label("Full Logs ZIP", systemImage: "archivebox")
+                }
+                .disabled(viewModel.state.isLoadingLogs)
+
+                Button {
+                    viewModel.saveSelectedPodYAMLZip()
+                } label: {
+                    Label("YAML ZIP", systemImage: "doc.zipper")
+                }
+                .disabled(viewModel.state.isLoadingResourceDetails)
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+            .disabled(viewModel.selectedPodCount == 0)
+            .help("Export selected pods")
+        }
+    }
+
+    private var genericResourceBulkSelectionControls: some View {
+        RuneBulkSelectionBar(
+            selectedCount: viewModel.selectedGenericResourceCount,
+            visibleCount: viewModel.visibleGenericResourcesForBulkActions.count,
+            allVisibleSelected: viewModel.areAllVisibleGenericResourcesSelectedForBulkActions,
+            onToggleVisibleSelection: viewModel.toggleAllVisibleGenericResourcesForBulkActions
+        ) {
+            Button(role: .destructive) {
+                viewModel.requestDeleteSelectedGenericResources()
+            } label: {
+                Label("Delete Selected", systemImage: "trash")
+            }
+            .disabled(!viewModel.canApplyClusterMutations || viewModel.selectedGenericResourceCount == 0)
+            .help("Delete selected resources in the active context and namespace scope")
+        }
+    }
+
     private var overviewCardModules: [OverviewModule] {
         [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes, .events]
     }
@@ -2013,6 +2123,8 @@ public struct RuneRootView: View {
                 }
 
                 overviewStatusBanner
+                manualNamespaceBanner
+                authDoctorPanel
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
                     overviewStatCard(
@@ -2181,36 +2293,38 @@ public struct RuneRootView: View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
             case .pod:
-                GeometryReader { proxy in
-                    let tableWidth = max(
-                        PodTableLayout.minimumScrollableWidth,
-                        proxy.size.width - (PodTableLayout.listRowEdgeInset * 2)
-                    )
-
-                    ScrollView([.horizontal, .vertical]) {
-                        LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
-                            Section {
-                                ForEach(viewModel.visiblePods) { pod in
-                                    Button {
-                                        viewModel.selectPod(pod)
-                                    } label: {
-                                        podTableRow(pod)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .contextMenu {
-                                        podResourceContextMenu(pod)
-                                    }
-                                }
-                            } header: {
-                                podTableHeader
-                                    .background(panelFill)
-                            }
-                        }
-                        .frame(width: tableWidth, alignment: .topLeading)
-                        .padding(.horizontal, PodTableLayout.listRowEdgeInset)
-                        .padding(.vertical, 2)
+                VStack(alignment: .leading, spacing: 8) {
+                    if !viewModel.visiblePods.isEmpty || viewModel.selectedPodCount > 0 {
+                        podBulkSelectionControls
                     }
-                    .defaultScrollAnchor(.topLeading)
+
+                    GeometryReader { proxy in
+                        let tableWidth = max(
+                            PodTableLayout.minimumScrollableWidth,
+                            proxy.size.width - (PodTableLayout.listRowEdgeInset * 2)
+                        )
+
+                        ScrollView([.horizontal, .vertical]) {
+                            LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
+                                Section {
+                                    ForEach(viewModel.visiblePods) { pod in
+                                        podTableRow(pod)
+                                        .contextMenu {
+                                            podResourceContextMenu(pod)
+                                        }
+                                    }
+                                } header: {
+                                    podTableHeader
+                                        .background(panelFill)
+                                }
+                            }
+                            .frame(width: tableWidth, alignment: .topLeading)
+                            .padding(.horizontal, PodTableLayout.listRowEdgeInset)
+                            .padding(.vertical, 2)
+                        }
+                        .defaultScrollAnchor(.topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
@@ -2407,45 +2521,62 @@ public struct RuneRootView: View {
     }
 
     private func podTableRow(_ pod: PodSummary) -> some View {
-        HStack(spacing: PodTableLayout.metricsSpacing) {
-            Text(pod.name)
-                .font(.body.weight(.medium))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let isSelectedForBulkAction = viewModel.isPodSelectedForBulkAction(pod)
 
-            HStack(spacing: PodTableLayout.metricsSpacing) {
-                Text(pod.cpuDisplay)
-                    .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
-                Text(pod.memoryDisplay)
-                    .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
-                Text("\(pod.totalRestarts)")
-                    .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
-                Text(pod.ageDescription)
-                    .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
+        return HStack(spacing: 8) {
+            RuneSelectionCheckboxButton(
+                isSelected: isSelectedForBulkAction,
+                accessibilityLabel: "Select \(pod.name)",
+                selectedHelp: "Remove from bulk selection",
+                deselectedHelp: "Add to bulk selection",
+                onToggle: { viewModel.togglePodBulkSelection(pod) }
+            )
+
+            Button {
+                viewModel.selectPod(pod)
+            } label: {
+                HStack(spacing: PodTableLayout.metricsSpacing) {
+                    Text(pod.name)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack(spacing: PodTableLayout.metricsSpacing) {
+                        Text(pod.cpuDisplay)
+                            .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
+                        Text(pod.memoryDisplay)
+                            .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
+                        Text("\(pod.totalRestarts)")
+                            .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
+                        Text(pod.ageDescription)
+                            .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
+                    }
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                    Text(pod.status)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .multilineTextAlignment(.center)
+                        .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
+                        .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
+                        .padding(.vertical, 2)
+                        .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
+                        .foregroundStyle(statusColor(for: pod.status))
+                        .help("Pod phase from the cluster")
+
+                    if viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(Color.yellow)
+                            .frame(width: 14)
+                    }
+                }
             }
-            .font(.system(size: 11, weight: .regular, design: .monospaced))
-            .foregroundStyle(.secondary)
-
-            Text(pod.status)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-                .multilineTextAlignment(.center)
-                .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
-                .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
-                .padding(.vertical, 2)
-                .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
-                .foregroundStyle(statusColor(for: pod.status))
-                .help("Pod phase from the cluster")
-
-            if viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) {
-                Image(systemName: "star.fill")
-                    .foregroundStyle(Color.yellow)
-                    .frame(width: 14)
-            }
+            .buttonStyle(.plain)
         }
         .runeListRowCard(
-            isSelected: viewModel.state.selectedPod?.id == pod.id,
+            isSelected: viewModel.state.selectedPod?.id == pod.id || isSelectedForBulkAction,
             horizontalPadding: PodTableLayout.rowHorizontalPadding,
             verticalPadding: PodTableLayout.rowVerticalPadding
         )
@@ -2515,17 +2646,42 @@ public struct RuneRootView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if viewModel.visibleOperatorResources.isEmpty {
-                Text("No cert-manager, Flux, or ArgoCD resources found in this namespace.")
+                Text("No profiled or generic custom resources found in this namespace.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                ForEach(viewModel.visibleOperatorResources) { resource in
+                HStack(spacing: 8) {
+                    Text(viewModel.operatorResourcePageSummary)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        viewModel.pageOperatorResourcesBackward()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!viewModel.canPageOperatorResourcesBackward)
+                    Button {
+                        viewModel.pageOperatorResourcesForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!viewModel.canPageOperatorResourcesForward)
+                }
+
+                ForEach(viewModel.pagedOperatorResources) { resource in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("\(resource.family) · \(resource.kind)")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
+                            if viewModel.isFavoriteOperatorResource(resource) {
+                                Image(systemName: "star.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.yellow)
+                                    .accessibilityLabel("Favorite")
+                            }
                             Spacer()
                             Text(resource.status)
                                 .font(.caption.weight(.semibold))
@@ -2542,9 +2698,22 @@ public struct RuneRootView: View {
                                 .lineLimit(2)
                                 .help(resource.message)
                         }
+                        HStack(spacing: 6) {
+                            operatorPinnedColumn(resource.namespace ?? "Cluster", systemImage: "square.stack.3d.up")
+                            operatorPinnedColumn(resource.status, systemImage: "checkmark.seal")
+                            operatorPinnedColumn(resource.apiPath, systemImage: "curlybraces")
+                        }
                     }
                     .runeListRowCard(isSelected: false, verticalPadding: 5)
                     .contextMenu {
+                        Button {
+                            viewModel.toggleFavoriteOperatorResource(resource)
+                        } label: {
+                            Label(
+                                viewModel.isFavoriteOperatorResource(resource) ? "Remove Favorite" : "Favorite Resource",
+                                systemImage: viewModel.isFavoriteOperatorResource(resource) ? "star.slash" : "star"
+                            )
+                        }
                         copyMenuItem(value: resource.name, label: "\(resource.kind) name")
                         if let namespace = resource.namespace {
                             copyMenuItem(value: namespace, label: "namespace")
@@ -2554,6 +2723,17 @@ public struct RuneRootView: View {
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private func operatorPinnedColumn(_ value: String, systemImage: String) -> some View {
+        Label(value, systemImage: systemImage)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
     }
 
     private var eventsPane: some View {
@@ -2613,6 +2793,12 @@ public struct RuneRootView: View {
 
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let notice = viewModel.state.activeNotice {
+                RuneNoticeBanner(notice: notice) {
+                    viewModel.state.clearError()
+                }
+            }
+
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
                     .fill(panelFill)
@@ -2647,13 +2833,6 @@ public struct RuneRootView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-            }
-
-            if let error = viewModel.state.lastError {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.top, 8)
             }
         }
         // `minWidth: 0` lets split columns shrink correctly; without it, nested scroll views can force odd horizontal alignment.
@@ -2705,15 +2884,37 @@ public struct RuneRootView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Write Audit")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text("Write Audit")
+                        .font(.headline)
+                    Spacer(minLength: 0)
+                    Button {
+                        viewModel.saveVisibleWriteAuditLog()
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(viewModel.state.writeAuditLog.isEmpty)
+                    .help("Export visible write audit entries")
+                }
 
                 if viewModel.state.writeAuditLog.isEmpty {
                     Text("No write actions in this session.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(viewModel.state.writeAuditLog.prefix(8)) { entry in
+                    TextField("Search audit", text: $viewModel.writeAuditSearchQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+
+                    if viewModel.visibleWriteAuditEntries.isEmpty {
+                        Text("No audit entries match the current search.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ForEach(viewModel.visibleWriteAuditEntries.prefix(8)) { entry in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {
                                 Text(entry.action)
@@ -2967,14 +3168,24 @@ public struct RuneRootView: View {
                             PodLogsInspectorPane(
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
+                                selectedContainer: $viewModel.selectedLogContainer,
                                 isTailModeEnabled: $viewModel.isLogTailModeEnabled,
+                                isStreamPaused: $viewModel.isLogStreamPaused,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
+                                statusText: logStatusText,
+                                containerOptions: viewModel.podLogContainerOptions,
                                 logText: viewModel.state.podLogs,
-                                readOnlyResetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
+                                readOnlyResetID: "podlogs:\(viewModel.state.selectedPod?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs):\(viewModel.selectedLogContainer)",
                                 onReload: { viewModel.reloadLogsForSelection() },
-                                onSave: { viewModel.saveCurrentLogs() }
+                                onSave: { viewModel.saveCurrentLogs() },
+                                onSaveVisibleZip: { viewModel.saveVisibleLogsZip(visibleText: $0) },
+                                onSaveFullZip: { viewModel.saveCurrentLogsZip() },
+                                onSaveAllPodsZip: { viewModel.saveAllPodsLogsZip() },
+                                onCopySelection: { copySelectedTextFromFocusedTextView() },
+                                onCopyAll: { viewModel.copyCurrentLogsToClipboard() },
+                                onToggleStreamPause: { viewModel.toggleLogStreamPause() }
                             )
 
                         case .exec:
@@ -3029,14 +3240,22 @@ public struct RuneRootView: View {
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
                                 isTailModeEnabled: $viewModel.isLogTailModeEnabled,
+                                isStreamPaused: $viewModel.isLogStreamPaused,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
+                                statusText: logStatusText,
                                 podNames: viewModel.state.unifiedServiceLogPods,
                                 logText: viewModel.state.unifiedServiceLogs,
                                 readOnlyResetID: "unifiedlogs:\(viewModel.state.selectedDeployment?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
                                 onReload: { viewModel.reloadLogsForSelection() },
-                                onSave: { viewModel.saveCurrentLogs() }
+                                onSave: { viewModel.saveCurrentLogs() },
+                                onSaveVisibleZip: { viewModel.saveVisibleLogsZip(visibleText: $0) },
+                                onSaveFullZip: { viewModel.saveCurrentLogsZip() },
+                                onSaveAllPodsZip: { viewModel.saveAllPodsLogsZip() },
+                                onCopySelection: { copySelectedTextFromFocusedTextView() },
+                                onCopyAll: { viewModel.copyCurrentLogsToClipboard() },
+                                onToggleStreamPause: { viewModel.toggleLogStreamPause() }
                             )
 
                         case .rollout:
@@ -3134,14 +3353,22 @@ public struct RuneRootView: View {
                                 selectedLogPreset: $viewModel.selectedLogPreset,
                                 includePreviousLogs: $viewModel.includePreviousLogs,
                                 isTailModeEnabled: $viewModel.isLogTailModeEnabled,
+                                isStreamPaused: $viewModel.isLogStreamPaused,
                                 isLoadingLogs: viewModel.state.isLoadingLogs,
                                 isLoadingResources: viewModel.state.isLoading,
                                 errorMessage: viewModel.state.lastLogFetchError,
+                                statusText: logStatusText,
                                 podNames: viewModel.state.unifiedServiceLogPods,
                                 logText: viewModel.state.unifiedServiceLogs,
                                 readOnlyResetID: "unifiedlogs:\(viewModel.state.selectedService?.name ?? ""):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs)",
                                 onReload: { viewModel.reloadLogsForSelection() },
-                                onSave: { viewModel.saveCurrentLogs() }
+                                onSave: { viewModel.saveCurrentLogs() },
+                                onSaveVisibleZip: { viewModel.saveVisibleLogsZip(visibleText: $0) },
+                                onSaveFullZip: { viewModel.saveCurrentLogsZip() },
+                                onSaveAllPodsZip: { viewModel.saveAllPodsLogsZip() },
+                                onCopySelection: { copySelectedTextFromFocusedTextView() },
+                                onCopyAll: { viewModel.copyCurrentLogsToClipboard() },
+                                onToggleStreamPause: { viewModel.toggleLogStreamPause() }
                             )
 
                         case .portForward:
@@ -3303,6 +3530,47 @@ public struct RuneRootView: View {
         return "No describe output available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or describe returned no output."
     }
 
+    private var logStatusText: String {
+        if viewModel.state.isLoadingLogs {
+            return "Refreshing logs"
+        }
+        if let error = viewModel.state.lastLogFetchError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+            return "Reconnect failed"
+        }
+        if let date = viewModel.state.lastLogUpdatedAt {
+            if viewModel.isLogTailModeEnabled {
+                if viewModel.isLogStreamPaused {
+                    return "Paused - last updated \(date.formatted(date: .omitted, time: .standard))"
+                }
+                return "Live tailing - updated \(date.formatted(date: .omitted, time: .standard))"
+            }
+            return "Tail off - last updated \(date.formatted(date: .omitted, time: .standard))"
+        }
+        if viewModel.isLogTailModeEnabled {
+            if viewModel.isLogStreamPaused {
+                return "Paused"
+            }
+            return "Live tailing"
+        }
+        if viewModel.includePreviousLogs {
+            return "Previous logs requested"
+        }
+        return "No log read yet"
+    }
+
+    private var manifestStatusText: String {
+        if viewModel.state.isLoadingResourceDetails {
+            return "Refreshing details"
+        }
+        if viewModel.state.lastResourceYAMLError != nil || viewModel.state.lastResourceDescribeError != nil {
+            return "Stale details"
+        }
+        if let date = viewModel.state.lastResourceDetailsUpdatedAt {
+            return "Last updated \(date.formatted(date: .omitted, time: .standard))"
+        }
+        return "No detail read yet"
+    }
+
     private var yamlDraftBinding: Binding<String> {
         Binding(
             get: { viewModel.state.resourceYAML },
@@ -3433,6 +3701,7 @@ public struct RuneRootView: View {
             canApplyMutations: viewModel.canApplyClusterMutations,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
+            statusText: manifestStatusText,
             canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
             isInlineEditing: $yamlManifestIsEditing,
             inlineEditorImplementation: resolvedManifestInlineEditorImplementation,
@@ -3466,6 +3735,7 @@ public struct RuneRootView: View {
             yamlText: viewModel.state.resourceYAML,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
+            statusText: manifestStatusText,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onOpenYAMLEditor: { openYAMLEditorSheet() },
             readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
@@ -3576,14 +3846,33 @@ public struct RuneRootView: View {
                 }
             }
 
+            let matchingNamespace = viewModel.state.selectedNamespace
             let matchingSessions = viewModel.state.portForwardSessions.filter {
-                $0.targetKind == targetKind && $0.targetName == targetName
+                $0.targetKind == targetKind
+                    && $0.targetName == targetName
+                    && $0.namespace == matchingNamespace
             }
 
             if matchingSessions.isEmpty {
-                Text("No active or recent port-forward sessions for this \(targetKind.title.lowercased()).")
+                Text("No port-forward sessions for this \(targetKind.title.lowercased()).")
                     .foregroundStyle(.secondary)
             } else {
+                HStack {
+                    Text(matchingSessions.contains(where: \.isActiveOrStarting) ? "Port forwards for this \(targetKind.title.lowercased())" : "Recent port forwards for this \(targetKind.title.lowercased())")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    if matchingSessions.contains(where: \.isInactive) {
+                        Button("Clear Inactive") {
+                            viewModel.clearInactivePortForwardSessions(
+                                targetKind: targetKind,
+                                targetName: targetName,
+                                namespace: matchingNamespace
+                            )
+                        }
+                        .controlSize(.small)
+                        .help("Remove stopped and failed port-forward rows")
+                    }
+                }
                 ForEach(matchingSessions) { session in
                     portForwardSessionRow(session)
                 }
@@ -3596,6 +3885,7 @@ public struct RuneRootView: View {
             session: viewModel.state.terminalSession,
             sessions: viewModel.state.terminalSessions,
             activeSessionID: viewModel.state.activeTerminalSessionID,
+            contextName: viewModel.state.selectedContext?.name,
             selectedPod: viewModel.state.selectedPod,
             availablePods: viewModel.state.pods,
             portForwardSessions: viewModel.state.portForwardSessions,
@@ -3619,7 +3909,17 @@ public struct RuneRootView: View {
             onOpenPortForwardInBrowser: { session in
                 viewModel.openPortForwardInBrowser(session)
             },
+            onRetryPortForward: { session in
+                viewModel.retryPortForward(session)
+            },
+            onClearPortForward: { session in
+                viewModel.clearPortForwardSession(session)
+            },
+            onClearInactivePortForwards: {
+                viewModel.clearInactivePortForwardSessions()
+            },
             onSend: { viewModel.sendTerminalSessionInput() },
+            onSendControlSequence: { text in viewModel.sendTerminalControlSequence(text) },
             onDisconnect: { viewModel.stopTerminalSession() },
             onSelectSession: { id in viewModel.selectTerminalSession(id: id) },
             onCloseSession: { id in viewModel.closeTerminalSession(id: id) },
@@ -3683,7 +3983,7 @@ public struct RuneRootView: View {
                     .textSelection(.enabled)
             }
 
-            if session.status == .starting || session.status == .active || session.status == .failed {
+            if session.isActiveOrStarting || session.isInactive {
                 HStack(spacing: 8) {
                     if session.status == .active, session.browserURL != nil {
                         Button {
@@ -3694,10 +3994,28 @@ public struct RuneRootView: View {
                         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
                     }
 
-                    Button("Stop") {
-                        viewModel.stopPortForward(session)
+                    if session.isActiveOrStarting {
+                        Button(session.status == .starting ? "Cancel" : "Stop") {
+                            viewModel.stopPortForward(session)
+                        }
+                        .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
+                    } else if session.status == .failed {
+                        Button {
+                            viewModel.retryPortForward(session)
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .help("Try this port-forward again")
                     }
-                    .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
+
+                    if session.isInactive {
+                        Button {
+                            viewModel.clearPortForwardSession(session)
+                        } label: {
+                            Label("Clear", systemImage: "xmark.circle")
+                        }
+                        .help("Remove this inactive port-forward row")
+                    }
                 }
             }
         }
@@ -3712,41 +4030,56 @@ public struct RuneRootView: View {
     ) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                if !resources.isEmpty {
+                    genericResourceBulkSelectionControls
+                }
+
                 ForEach(resources) { resource in
-                    Button {
-                        action(resource)
-                    } label: {
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(resource.name)
-                                    .font(.body.weight(.medium))
-                                    .lineLimit(1)
-                                    .help(resource.name)
-                                Text(resource.primaryText)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(resource.secondaryText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            if viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(Color.yellow)
-                                    .help("Favorite resource")
-                            }
-                            if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                                RuneChip {
-                                    Text(namespace)
-                                        .font(.caption2.weight(.semibold))
+                    let isSelectedForBulkAction = viewModel.isGenericResourceSelectedForBulkAction(resource)
+                    HStack(alignment: .top, spacing: 8) {
+                        RuneSelectionCheckboxButton(
+                            isSelected: isSelectedForBulkAction,
+                            accessibilityLabel: "Select \(resource.name)",
+                            selectedHelp: "Remove from bulk selection",
+                            deselectedHelp: "Add to bulk selection",
+                            onToggle: { viewModel.toggleGenericResourceBulkSelection(resource) }
+                        )
+
+                        Button {
+                            action(resource)
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(resource.name)
+                                        .font(.body.weight(.medium))
+                                        .lineLimit(1)
+                                        .help(resource.name)
+                                    Text(resource.primaryText)
+                                        .font(.caption.weight(.semibold))
                                         .foregroundStyle(.secondary)
+                                    Text(resource.secondaryText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) {
+                                    Image(systemName: "star.fill")
+                                        .foregroundStyle(Color.yellow)
+                                        .help("Favorite resource")
+                                }
+                                if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
+                                    RuneChip {
+                                        Text(namespace)
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
-                        .runeListRowCard(isSelected: selection == resource)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .runeListRowCard(isSelected: selection == resource || isSelectedForBulkAction)
                     .contextMenu {
                         genericResourceContextMenu(resource, action: action)
                     }
@@ -4768,6 +5101,15 @@ public struct RuneRootView: View {
             Text(viewModel.isProductionContext ? "Production context active" : "Non-production context")
                 .font(.subheadline.weight(.semibold))
             Spacer()
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(snapshotFreshnessColor)
+                    .frame(width: 7, height: 7)
+                Text(snapshotFreshnessText)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .help(viewModel.state.snapshotFreshness.message)
             Text(viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write")
                 .font(.caption.weight(.bold))
                 .padding(.horizontal, 8)
@@ -4776,6 +5118,105 @@ public struct RuneRootView: View {
         }
         .padding(12)
         .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var manualNamespaceBanner: some View {
+        if viewModel.state.isManualNamespaceMode {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "square.and.pencil")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Manual namespace mode")
+                        .font(.subheadline.weight(.semibold))
+                    Text(viewModel.state.namespaceAccessWarning ?? "You cannot list namespaces, but you can work in a namespace manually.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button("Enter Namespace...") {
+                    manualNamespaceInput = viewModel.state.selectedNamespace
+                    isManualNamespaceSheetPresented = true
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(12)
+            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private var authDoctorPanel: some View {
+        if viewModel.state.isRunningAuthDoctor || !viewModel.state.authDoctorChecks.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("Auth Doctor", systemImage: "stethoscope")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button(viewModel.state.isRunningAuthDoctor ? "Running..." : "Run Again") {
+                        viewModel.runAuthDoctor()
+                    }
+                    .disabled(viewModel.state.isRunningAuthDoctor)
+                }
+
+                ForEach(viewModel.state.authDoctorChecks) { check in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: authDoctorSymbol(for: check.status))
+                            .foregroundStyle(authDoctorColor(for: check.status))
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(check.title)
+                                .font(.caption.weight(.semibold))
+                            Text(check.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
+        }
+    }
+
+    private func authDoctorSymbol(for status: RuneHealthCheckStatus) -> String {
+        switch status {
+        case .running: return "arrow.triangle.2.circlepath"
+        case .passed: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .failed: return "xmark.octagon.fill"
+        }
+    }
+
+    private func authDoctorColor(for status: RuneHealthCheckStatus) -> Color {
+        switch status {
+        case .running: return .blue
+        case .passed: return .green
+        case .warning: return .orange
+        case .failed: return .red
+        }
+    }
+
+    private var snapshotFreshnessText: String {
+        switch viewModel.state.snapshotFreshness.status {
+        case .idle: return "No data"
+        case .refreshing: return "Refreshing"
+        case .live: return "Live"
+        case .stale: return "Stale"
+        case .failed: return "Failed"
+        }
+    }
+
+    private var snapshotFreshnessColor: Color {
+        switch viewModel.state.snapshotFreshness.status {
+        case .idle: return .secondary
+        case .refreshing: return .blue
+        case .live: return .green
+        case .stale: return .orange
+        case .failed: return .red
+        }
     }
 
     private func contextUsageBadge(label: String, value: String) -> some View {
@@ -4920,6 +5361,16 @@ public struct RuneRootView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(copyValue, forType: .string)
+    }
+
+    private func copySelectedTextFromFocusedTextView() {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+        let text = textView.string as NSString
+        let selectedRange = textView.selectedRange()
+        guard selectedRange.length > 0, NSMaxRange(selectedRange) <= text.length else { return }
+        let lineRange = text.lineRange(for: selectedRange)
+        let selectedLines = text.substring(with: lineRange).trimmingCharacters(in: .newlines)
+        copyToClipboard(selectedLines)
     }
 
     @ViewBuilder
@@ -5378,6 +5829,18 @@ public struct RuneRootView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(!viewModel.canApplyClusterMutations)
+
+                Button("Export Pod Logs ZIP") {
+                    viewModel.saveDeploymentPodLogsZip()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.state.isLoadingLogs)
+
+                Button("Export Pod YAML ZIP") {
+                    viewModel.saveDeploymentPodYAMLZip()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.state.isLoadingResourceDetails)
 
                 Spacer(minLength: 0)
             }

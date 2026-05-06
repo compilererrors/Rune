@@ -13,11 +13,16 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 - Browse contexts, namespaces, workloads, networking, storage, config, RBAC, events, Helm releases, and a terminal view.
 - Inspect full pod logs and unified logs across related workloads.
 - Search through multi-pod logs without constantly changing log limits or jumping between panes.
+- Save full logs as `.log`, choose a pod container when needed, multi-select pods for bulk log/YAML ZIP export, copy all logs, or copy selected log lines.
 - Edit YAML with syntax highlighting plus validation feedback for errors and warnings.
+- Apply YAML with a server dry-run before the write, plus a diff preview and copyable `kubectl` command.
 - Port-forward pods and services from the resource you are already inspecting.
 - Open exec and terminal workflows in context.
 - Check pod and node metrics when your cluster exposes metrics.
 - Move quickly with a command palette and k9s-style resource jumps.
+- Enter namespaces manually and favorite namespaces per context when RBAC prevents listing namespaces.
+- Run Auth Doctor to check kubeconfig, context, namespace, pod/log/exec/port-forward permissions, and API transport.
+- Load a small in-memory demo cluster from the Rune menu without starting a server.
 - Stay local: Rune does not use analytics, tracking, advertising, or telemetry.
 
 ## Screenshots
@@ -38,8 +43,11 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 
 - **Main sections:** use the sidebar or **Cmd+1** through **Cmd+9**: Overview, Workloads, Networking, Storage, Config, RBAC, Events, Helm, and Terminal.
 - **Toolbar:** choose the Kubernetes context and namespace for the data you browse.
+- **Manual namespace:** choose **Enter Namespace...** from the namespace menu, or type `:ns <name>` in the command palette when namespace listing is blocked by RBAC.
+- **Namespace favorites:** favorite the current namespace from the namespace menu; favorites sort first per context.
 - **History:** use **Cmd+Option+Left Arrow** and **Cmd+Option+Right Arrow** to move back and forward in the navigation stack.
 - **Reload:** use **Cmd+R** to refresh the current view.
+- **Live state:** the overview banner shows whether the current snapshot is live, refreshing, stale, failed, or not loaded yet.
 
 ## Command Palette
 
@@ -55,6 +63,22 @@ Open the palette with **Cmd+K**, or click the **Palette** button in the toolbar.
 - **More:** `:ev`, `:reload`, `:import`, `:ro`, and `:readonly`.
 
 Type `:` by itself to see the built-in command cheat sheet.
+
+## Logs
+
+Rune treats logs as a primary workflow, not a side panel. Pod logs and unified service/deployment logs support search, time presets, previous logs, tail mode, stable text selection, pod container selection, `.log` export, ZIP export, selected-pod ZIP export, copy selected lines, and copy all.
+
+ZIP exports include a merged log file plus one file per pod when Rune can split prefixed unified logs.
+
+## Safety
+
+Rune blocks writes in read-only mode, warns when a production-like context is active, records write audit entries, shows YAML diffs before apply, runs server dry-run validation before applying YAML, and exposes a copyable `kubectl` command in write confirmations.
+
+## Auth Doctor and Demo
+
+Run **Rune > Run Auth Doctor** to check the active kubeconfig path, context list, context namespace, namespace listing, API transport, pod listing, pod logs, pod exec permission, and pod port-forward permission. Auth Doctor does not start exec shells or port-forward sessions.
+
+Run **Rune > Load Demo Cluster** to explore Rune with a small in-memory cluster. It does not start a background server or contact a Kubernetes API. The action can be disabled in Settings.
 
 ## Privacy
 

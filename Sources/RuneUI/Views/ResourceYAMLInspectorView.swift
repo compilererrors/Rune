@@ -53,6 +53,7 @@ struct ResourceYAMLInspectorPane: View {
     let canApplyMutations: Bool
     let validationIssues: [YAMLValidationIssue]
     let isValidating: Bool
+    let statusText: String
     let canUndoEdit: Bool
     @Binding var isInlineEditing: Bool
     let inlineEditorImplementation: ManifestInlineEditorImplementation
@@ -135,11 +136,17 @@ struct ResourceYAMLInspectorPane: View {
                 }
             }
         } status: {
-            YAMLValidationSummaryView(
-                issues: presentedIssues,
-                isValidating: isValidating,
-                onSelectIssue: navigateToIssue
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text(statusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                YAMLValidationSummaryView(
+                    issues: presentedIssues,
+                    isValidating: isValidating,
+                    onSelectIssue: navigateToIssue
+                )
+            }
         } surface: {
             ResourceYAMLEditorSurface(
                 text: $yamlText,

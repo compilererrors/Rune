@@ -5,6 +5,18 @@ import XCTest
 @testable import RuneKube
 
 final class RuneFakeK8sRESTServerTests: XCTestCase {
+    func testSelfSubjectAccessReviewAllowedParserReadsStatusAllowed() throws {
+        let allowed = try KubernetesRESTClient.selfSubjectAccessReviewAllowed(
+            from: #"{"apiVersion":"authorization.k8s.io/v1","status":{"allowed":true}}"#
+        )
+        let denied = try KubernetesRESTClient.selfSubjectAccessReviewAllowed(
+            from: #"{"apiVersion":"authorization.k8s.io/v1","status":{"allowed":false}}"#
+        )
+
+        XCTAssertTrue(allowed)
+        XCTAssertFalse(denied)
+    }
+
     func testNativeClientReadsScriptlessRESTFakeCluster() async throws {
         let server = try await RuneFakeK8sRESTServer.start()
         defer { server.stop() }
@@ -131,6 +143,42 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
                         conditionStatus: "True",
                         reason: "Healthy",
                         message: "Application is synced"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "external-secrets.io",
+                        apiVersion: "v1beta1",
+                        plural: "externalsecrets",
+                        kind: "ExternalSecret",
+                        name: "payments-api",
+                        namespace: "alpha-zone",
+                        conditionType: "Ready",
+                        conditionStatus: "True",
+                        reason: "SecretSynced",
+                        message: "Secret is synced"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "apiextensions.crossplane.io",
+                        apiVersion: "v1",
+                        plural: "compositions",
+                        kind: "Composition",
+                        name: "postgresql",
+                        namespace: nil,
+                        conditionType: "Established",
+                        conditionStatus: "True",
+                        reason: "Active",
+                        message: "Composition is available"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "gateway.networking.k8s.io",
+                        apiVersion: "v1",
+                        plural: "gateways",
+                        kind: "Gateway",
+                        name: "edge",
+                        namespace: "alpha-zone",
+                        conditionType: "Programmed",
+                        conditionStatus: "True",
+                        reason: "ListenersValid",
+                        message: "Gateway listeners are programmed"
                     )
                 ]
             )
@@ -147,11 +195,14 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             namespace: "alpha-zone"
         )
 
-        XCTAssertEqual(Set(resources.map(\.family)), Set(["ArgoCD", "Flux", "cert-manager"]))
+        XCTAssertEqual(Set(resources.map(\.family)), Set(["ArgoCD", "Crossplane", "External Secrets", "Flux", "Gateway API", "cert-manager"]))
         XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.kind, "Certificates")
         XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.status, "Ready True")
         XCTAssertEqual(resources.first(where: { $0.name == "platform" })?.message, "Waiting for repository access")
         XCTAssertEqual(resources.first(where: { $0.name == "control-plane" })?.apiPath, "/apis/argoproj.io/v1alpha1/namespaces/alpha-zone/applications")
+        XCTAssertEqual(resources.first(where: { $0.name == "payments-api" })?.family, "External Secrets")
+        XCTAssertEqual(resources.first(where: { $0.name == "postgresql" })?.namespace, nil)
+        XCTAssertEqual(resources.first(where: { $0.name == "edge" })?.status, "Programmed True")
     }
 
     private func writeKubeconfig(_ contents: String) throws -> URL {

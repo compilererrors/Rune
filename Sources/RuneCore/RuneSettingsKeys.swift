@@ -10,6 +10,8 @@ public enum RuneSettingsKeys {
     public static let verboseDebugTrace = "rune.settings.verboseDebugTrace"
     /// When true, after the active context snapshot finishes, Rune may warm overview cache for a few other contexts in the background (bounded).
     public static let backgroundPrefetchOtherContexts = "rune.settings.backgroundPrefetchOtherContexts"
+    /// When true, Rune exposes a small in-memory demo cluster action for screenshots and first-run evaluation.
+    public static let enableDemoCluster = "rune.settings.enableDemoCluster"
     public static let logsCustomPresetOneMode = "rune.settings.logs.customPresetOne.mode"
     public static let logsCustomPresetOneLines = "rune.settings.logs.customPresetOne.lines"
     public static let logsCustomPresetOneTimeValue = "rune.settings.logs.customPresetOne.timeValue"
@@ -50,6 +52,7 @@ public enum RuneSettingsKeys {
             diagnosticsLogging: true,
             verboseDebugTrace: false,
             backgroundPrefetchOtherContexts: false,
+            enableDemoCluster: true,
             logsCustomPresetOneMode: RuneCustomLogPresetMode.lines.rawValue,
             logsCustomPresetOneLines: "5000",
             logsCustomPresetOneTimeValue: "15",
@@ -96,6 +99,11 @@ public extension UserDefaults {
     var runeBackgroundPrefetchOtherContexts: Bool {
         get { (object(forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) as? Bool) ?? false }
         set { set(newValue, forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts) }
+    }
+
+    var runeEnableDemoCluster: Bool {
+        get { (object(forKey: RuneSettingsKeys.enableDemoCluster) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.enableDemoCluster) }
     }
 
     var runeTerminalFontSize: Double {
