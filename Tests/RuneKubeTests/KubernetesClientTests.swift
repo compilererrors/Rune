@@ -4,6 +4,43 @@ import XCTest
 @testable import RuneKube
 
 final class KubernetesClientTests: XCTestCase {
+    func testRESTRequestCoalescerSharesIdenticalInFlightReads() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = RESTRequestCoalescerCounter()
+        let key = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"]
+        )
+
+        async let first = coalescer.value(for: key) {
+            let count = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "body-\(count)", contentType: "application/json")
+        }
+        async let second = coalescer.value(for: key) {
+            let count = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "body-\(count)", contentType: "application/json")
+        }
+
+        let responses = try await [first, second]
+        let operationCount = await counter.currentValue()
+
+        XCTAssertEqual(responses.map(\.body), ["body-1", "body-1"])
+        XCTAssertEqual(operationCount, 1)
+    }
+
+    func testRESTRequestCoalescingOnlyAllowsBodylessSafeReads() {
+        XCTAssertTrue(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "GET", body: nil))
+        XCTAssertTrue(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "head", body: nil))
+        XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "GET", body: "{}"))
+        XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "POST", body: nil))
+        XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "PATCH", body: "{}"))
+    }
+
     func testRESTClientLoadsContextsDirectlyFromKubeconfig() async throws {
         let kubeconfig = try writeKubeconfig(
             """
@@ -151,5 +188,18 @@ final class KubernetesClientTests: XCTestCase {
             .appendingPathComponent("rune-native-kubeconfig-\(UUID().uuidString).yaml")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+}
+
+private actor RESTRequestCoalescerCounter {
+    private var count = 0
+
+    func increment() -> Int {
+        count += 1
+        return count
+    }
+
+    func currentValue() -> Int {
+        count
     }
 }

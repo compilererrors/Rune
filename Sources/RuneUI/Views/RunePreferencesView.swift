@@ -79,6 +79,8 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw = "6"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
+    @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
+        RuneSettingsKeys.terminalScrollbackLineLimitDefault
     @State private var cacheClearStatus: String?
     @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
 
@@ -370,7 +372,50 @@ public struct RunePreferencesView: View {
                     isOn: $backgroundPrefetchOtherContexts
                 )
             }
+
+            settingsSection("Terminal") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("Scrollback")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 12)
+                        Text("\(clampedTerminalScrollbackLineLimit) lines")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Stepper(
+                            "Terminal scrollback line limit",
+                            value: Binding(
+                                get: { clampedTerminalScrollbackLineLimit },
+                                set: {
+                                    terminalScrollbackLineLimit =
+                                        RuneSettingsKeys.clampedTerminalScrollbackLineLimit($0)
+                                }
+                            ),
+                            in: RuneSettingsKeys.terminalScrollbackLineLimitMinimum...RuneSettingsKeys.terminalScrollbackLineLimitMaximum,
+                            step: 5_000
+                        )
+                        .labelsHidden()
+
+                        Button("Reset") {
+                            terminalScrollbackLineLimit = RuneSettingsKeys.terminalScrollbackLineLimitDefault
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Text("Keeps recent shell output bounded while preserving the latest context for long-running sessions.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
+    }
+
+    private var clampedTerminalScrollbackLineLimit: Int {
+        RuneSettingsKeys.clampedTerminalScrollbackLineLimit(terminalScrollbackLineLimit)
     }
 
     @ViewBuilder

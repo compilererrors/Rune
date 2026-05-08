@@ -75,6 +75,56 @@ final class RuneCoreTests: XCTestCase {
         )
     }
 
+    func testDefaultRuneKeyBindingsResolveExactActions() {
+        let resolver = RuneKeyBindingResolver()
+
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: ":", modifiers: [])), .commandPalette)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "/", modifiers: [])), .filterResources)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "left", modifiers: [.command, .option])), .historyBack)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "right", modifiers: [.command, .option])), .historyForward)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [])), .describe)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "l", modifiers: [])), .logs)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command])), .saveLogs)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [])), .shell)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "e", modifiers: [])), .edit)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "y", modifiers: [])), .yaml)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [.control])), .delete)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "f", modifiers: [.shift])), .portForward)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "r", modifiers: [])), .rollout)
+    }
+
+    func testRuneKeyBindingResolverRejectsTextInputFunctionAndExtraModifiers() {
+        let resolver = RuneKeyBindingResolver()
+
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [], isTextInputFocused: true)))
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [.function])))
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [.shift])))
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command, .shift])))
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "left", modifiers: [.command])))
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "", modifiers: [])))
+    }
+
+    func testRuneKeyBindingResolverUsesCustomShortcutProvider() {
+        let resolver = RuneKeyBindingResolver { action in
+            if action == .describe {
+                return RuneKeyboardShortcut(key: "x", requiresShift: true)!
+            }
+            return action.defaultShortcut
+        }
+
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "x", modifiers: [.shift])), .describe)
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [])))
+    }
+
+    func testDefaultRuneKeyBindingsHaveUniqueShortcuts() {
+        let grouped = Dictionary(grouping: RuneKeyBindingAction.allCases) { action in
+            action.defaultShortcut.storageValue
+        }
+        let conflicts = grouped.filter { $0.value.count > 1 }
+
+        XCTAssertTrue(conflicts.isEmpty, "Conflicting default shortcuts: \(conflicts)")
+    }
+
     func testLogTimeFilterUsesSinceTimeOnlyForAbsoluteDate() {
         XCTAssertFalse(LogTimeFilter.lastMinutes(15).usesSinceTime)
         XCTAssertFalse(LogTimeFilter.lastHours(1).usesSinceTime)
@@ -110,6 +160,150 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(first, "hello ")
         XCTAssertEqual(second, "world")
         XCTAssertTrue(pendingEscape.isEmpty)
+    }
+
+    func testTerminalTranscriptSanitizerHandlesCarriageReturnProgressUpdates() {
+        let raw = "pulling layer 10%\rpulling layer 20%\nready\n"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "pulling layer 20%\nready\n")
+    }
+
+    func testTerminalTranscriptSanitizerDropsCharsetAndSingleCharacterEscapes() {
+        let raw = "\u{001B}(Bhello\u{001B}7world\u{001B}8"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "helloworld")
+    }
+
+    func testTerminalTranscriptSanitizerCarriesSplitCharsetEscapeSequences() {
+        var pendingEscape = ""
+
+        let first = TerminalTranscriptSanitizer.sanitize("hello \u{001B}(", pendingEscape: &pendingEscape)
+        let second = TerminalTranscriptSanitizer.sanitize("Bworld", pendingEscape: &pendingEscape)
+
+        XCTAssertEqual(first, "hello ")
+        XCTAssertEqual(second, "world")
+        XCTAssertTrue(pendingEscape.isEmpty)
+    }
+
+    func testTerminalFailureDiagnosticClassifiesRbacDenial() {
+        let diagnostic = PodTerminalSessionDiagnostic.classify(
+            errorMessage: "pods \"pod-0\" is forbidden: User cannot create resource \"pods/exec\" in namespace \"default\"",
+            podName: "pod-0",
+            containerName: "app",
+            shell: "sh"
+        )
+
+        XCTAssertEqual(diagnostic.category, .rbacDenied)
+        XCTAssertTrue(diagnostic.summary.contains("RBAC denied"))
+        XCTAssertTrue(diagnostic.recoveryHint.contains("pods/exec"))
+    }
+
+    func testTerminalFailureDiagnosticClassifiesMissingShell() {
+        let diagnostic = PodTerminalSessionDiagnostic.classify(
+            errorMessage: #"exec: "bash": executable file not found in $PATH"#,
+            podName: "pod-0",
+            containerName: nil,
+            shell: "bash"
+        )
+
+        XCTAssertEqual(diagnostic.category, .missingShell)
+        XCTAssertTrue(diagnostic.summary.contains("Shell not found"))
+        XCTAssertTrue(diagnostic.recoveryHint.contains("sh"))
+    }
+
+    func testTerminalFailureDiagnosticClassifiesPodOrContainerUnavailable() {
+        let diagnostic = PodTerminalSessionDiagnostic.classify(
+            errorMessage: #"container "worker" not found in pod "pod-0""#,
+            podName: "pod-0",
+            containerName: "worker",
+            shell: "sh"
+        )
+
+        XCTAssertEqual(diagnostic.category, .podOrContainerUnavailable)
+        XCTAssertTrue(diagnostic.summary.contains("Pod or container unavailable"))
+        XCTAssertTrue(diagnostic.recoveryHint.contains("Refresh"))
+    }
+
+    func testTerminalFailureDiagnosticClassifiesTransportDisconnect() {
+        let diagnostic = PodTerminalSessionDiagnostic.classify(
+            errorMessage: "The network connection was lost while opening the exec stream.",
+            podName: "pod-0",
+            containerName: nil,
+            shell: "sh"
+        )
+
+        XCTAssertEqual(diagnostic.category, .transportDisconnected)
+        XCTAssertTrue(diagnostic.summary.contains("Terminal stream disconnected"))
+        XCTAssertTrue(diagnostic.recoveryHint.contains("Reconnect"))
+    }
+
+    func testTerminalScrollbackRetentionKeepsRecentLinesWithMarker() {
+        let transcript = (0..<6).map { "line \($0)" }.joined(separator: "\n")
+
+        let retained = TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 3)
+
+        XCTAssertTrue(retained.hasPrefix(TerminalScrollbackRetention.truncationMarker))
+        XCTAssertFalse(retained.contains("line 0"))
+        XCTAssertFalse(retained.contains("line 2"))
+        XCTAssertTrue(retained.contains("line 3"))
+        XCTAssertTrue(retained.contains("line 5"))
+    }
+
+    func testTerminalScrollbackRetentionDoesNotTrimWithinLimit() {
+        let transcript = "line 0\nline 1\nline 2"
+
+        XCTAssertEqual(
+            TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 3),
+            transcript
+        )
+    }
+
+    func testKubernetesRequestRetryPolicyClassifiesTransientHTTPStatuses() {
+        let throttled = KubernetesRequestRetryPolicy.classifyHTTPStatus(429, retryAfterHeader: "2")
+        let unavailable = KubernetesRequestRetryPolicy.classifyHTTPStatus(503)
+        let unauthorized = KubernetesRequestRetryPolicy.classifyHTTPStatus(401)
+
+        XCTAssertTrue(throttled.isRetryable)
+        XCTAssertEqual(throttled.category, .throttled)
+        XCTAssertEqual(throttled.suggestedDelayNanoseconds, 2_000_000_000)
+        XCTAssertTrue(unavailable.isRetryable)
+        XCTAssertEqual(unavailable.category, .serverUnavailable)
+        XCTAssertFalse(unauthorized.isRetryable)
+        XCTAssertEqual(unauthorized.category, .notRetryable)
+    }
+
+    func testKubernetesRequestRetryPolicyClassifiesNetworkErrors() {
+        let timedOut = KubernetesRequestRetryPolicy.classifyNetworkError(URLError(.timedOut))
+        let disconnected = KubernetesRequestRetryPolicy.classifyNetworkError(URLError(.networkConnectionLost))
+        let cancelled = KubernetesRequestRetryPolicy.classifyNetworkError(URLError(.cancelled))
+
+        XCTAssertTrue(timedOut.isRetryable)
+        XCTAssertEqual(timedOut.category, .networkTransient)
+        XCTAssertTrue(disconnected.isRetryable)
+        XCTAssertFalse(cancelled.isRetryable)
+        XCTAssertEqual(cancelled.category, .cancelled)
+    }
+
+    func testKubernetesRequestRetryPolicyAllowsOnlySafeReadRetries() {
+        let transient = KubernetesRequestRetryPolicy.classifyHTTPStatus(503)
+        let permanent = KubernetesRequestRetryPolicy.classifyHTTPStatus(404)
+
+        XCTAssertTrue(KubernetesRequestRetryPolicy.shouldRetry(method: "GET", decision: transient, attempt: 1))
+        XCTAssertTrue(KubernetesRequestRetryPolicy.shouldRetry(method: "head", decision: transient, attempt: 1))
+        XCTAssertFalse(KubernetesRequestRetryPolicy.shouldRetry(method: "POST", decision: transient, attempt: 1))
+        XCTAssertFalse(KubernetesRequestRetryPolicy.shouldRetry(method: "PATCH", decision: transient, attempt: 1))
+        XCTAssertFalse(KubernetesRequestRetryPolicy.shouldRetry(method: "GET", decision: permanent, attempt: 1))
+        XCTAssertFalse(KubernetesRequestRetryPolicy.shouldRetry(method: "GET", decision: transient, attempt: 3))
+    }
+
+    func testKubernetesRequestRetryPolicyBackoffIsBoundedAndDeterministic() {
+        let throttled = KubernetesRequestRetryPolicy.classifyHTTPStatus(429, retryAfterHeader: "10")
+        let transient = KubernetesRequestRetryPolicy.classifyNetworkError(URLError(.timedOut))
+
+        XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: throttled, attempt: 1), 2_000_000_000)
+        XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 1), 500_000_000)
+        XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 2), 1_000_000_000)
+        XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 3), 2_000_000_000)
     }
 
     @MainActor

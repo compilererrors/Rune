@@ -11,6 +11,7 @@ struct ResourceLogsToolbar: View {
     @Binding var isStreamPaused: Bool
     @Binding var searchQuery: String
     @Binding var selectedSearchMatchIndex: Int
+    let searchPulseID: Int
     let searchSummary: ResourceLogSearchResult?
     let statusText: String
     let containerOptions: [String]
@@ -24,74 +25,392 @@ struct ResourceLogsToolbar: View {
     let onToggleStreamPause: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 9) {
+            LogToolbarScrollRow {
+                sourceControls
+            }
+            .controlSize(.small)
+
+            LogToolbarScrollRow {
+                modeControls
+                toolbarActions
+            }
+            .controlSize(.small)
+
+            ResourceLogsStatusPanel(
+                statusText: statusText,
+                showsPreviousHint: includePreviousLogs
+            )
+
+            ResourceLogsSearchBar(
+                query: $searchQuery,
+                selectedMatchIndex: $selectedSearchMatchIndex,
+                searchPulseID: searchPulseID,
+                searchSummary: searchSummary
+            )
+        }
+    }
+
+    private var sourceControls: some View {
+        LogToolbarGroup {
+            LogToolbarPickerField(title: "Window") {
                 Picker("Log window", selection: $selectedLogPreset) {
                     ForEach(PodLogPreset.allCases) { preset in
                         Text(preset.title).tag(preset)
                     }
                 }
-                .frame(maxWidth: 220)
+                .labelsHidden()
+                .frame(width: 158)
+            }
 
-                Toggle("Previous", isOn: $includePreviousLogs)
-
-                if !containerOptions.isEmpty {
+            if !containerOptions.isEmpty {
+                LogToolbarPickerField(title: "Container") {
                     Picker("Container", selection: $selectedContainer) {
                         Text("All containers").tag("")
                         ForEach(containerOptions, id: \.self) { container in
                             Text(container).tag(container)
                         }
                     }
-                    .frame(maxWidth: 180)
+                    .labelsHidden()
+                    .frame(width: 166)
                     .help("Choose one container for pod logs, or keep all containers merged.")
                 }
-
-                Toggle("Tail", isOn: $isTailModeEnabled)
-                    .help("Keep reloading logs and append each read to the session cache.")
-
-                if isTailModeEnabled {
-                    Button(isStreamPaused ? "Resume" : "Pause", action: onToggleStreamPause)
-                        .help(isStreamPaused ? "Resume live log refresh." : "Pause live log refresh without leaving tail mode.")
-                }
-
-                Spacer()
-
-                Button("Reload", action: onReload)
-                Button("Save Logs", action: onSave)
-                Menu("Export ZIP") {
-                    Button("Visible Results ZIP") {
-                        onSaveVisibleZip(searchSummary?.displayedText ?? "")
-                    }
-                    Button("Full Unfiltered ZIP", action: onSaveFullZip)
-                    Button("All Pods Full ZIP", action: onSaveAllPodsZip)
-                }
-                Button("Copy Selection", action: onCopySelection)
-                Button("Copy All", action: onCopyAll)
             }
+        }
+    }
 
-            HStack(spacing: 6) {
+    private var primaryControls: some View {
+        HStack(alignment: .center, spacing: 8) {
+            sourceControls
+            modeControls
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var modeControls: some View {
+        LogToolbarGroup {
+            Toggle("Previous", isOn: $includePreviousLogs)
+                .toggleStyle(.button)
+                .logToolbarButtonFrame()
+                .help("Request logs from the previous container instance when Kubernetes has one.")
+
+            Toggle("Tail", isOn: $isTailModeEnabled)
+                .toggleStyle(.button)
+                .logToolbarButtonFrame()
+                .help("Keep reloading logs and append each read to the session cache.")
+
+            if isTailModeEnabled {
+                Button(isStreamPaused ? "Resume" : "Pause", action: onToggleStreamPause)
+                    .buttonStyle(.bordered)
+                    .logToolbarButtonFrame(width: 74)
+                    .help(isStreamPaused ? "Resume live log refresh." : "Pause live log refresh without leaving tail mode.")
+            }
+        }
+    }
+
+    private var toolbarActions: some View {
+        LogToolbarGroup {
+            Button(action: onReload) {
+                Label("Reload", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .logToolbarButtonFrame()
+            .help("Reload logs")
+
+            Button(action: onSave) {
+                Label("Save Logs", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.borderedProminent)
+            .logToolbarButtonFrame(width: 114)
+            .help("Save current logs")
+
+            Menu {
+                Button(action: onCopySelection) {
+                    Label("Copy Selection", systemImage: "doc.on.doc")
+                }
+                Button(action: onCopyAll) {
+                    Label("Copy All", systemImage: "doc.on.clipboard")
+                }
+
+                Divider()
+
+                Button {
+                    onSaveVisibleZip(searchSummary?.displayedText ?? "")
+                } label: {
+                    Label("Export Visible Results ZIP", systemImage: "doc.zipper")
+                }
+                Button(action: onSaveFullZip) {
+                    Label("Export Full Unfiltered ZIP", systemImage: "archivebox")
+                }
+                Button(action: onSaveAllPodsZip) {
+                    Label("Export All Pods Full ZIP", systemImage: "shippingbox")
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .buttonStyle(.bordered)
+            .logToolbarButtonFrame(width: 96)
+            .help("Copy and export log output")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private extension View {
+    func logToolbarButtonFrame(width: CGFloat? = nil) -> some View {
+        frame(minWidth: width, minHeight: 30, alignment: .center)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct LogToolbarGroup<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            content
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(minHeight: 34)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct LogToolbarScrollRow<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 8) {
+                content
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+}
+
+private struct LogToolbarPickerField<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .tracking(0.3)
+            content
+        }
+        .frame(width: fieldWidth, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var fieldWidth: CGFloat {
+        title == "Container" ? 166 : 158
+    }
+
+}
+
+private struct ResourceLogsStatusPanel: View {
+    let statusText: String
+    let showsPreviousHint: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 7) {
                 Circle()
-                    .fill(statusText.lowercased().contains("failed") ? Color.red : (statusText.lowercased().contains("loading") ? Color.blue : Color.green))
+                    .fill(statusColor)
                     .frame(width: 7, height: 7)
+
                 Text(statusText)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
             }
 
-            if includePreviousLogs {
-                Label("Previous logs are returned only for restarted containers; empty previous output can be normal.", systemImage: "info.circle")
+            if showsPreviousHint {
+                Text("Previous logs only exist for restarted containers.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-
-            ResourceLogsSearchBar(
-                query: $searchQuery,
-                selectedMatchIndex: $selectedSearchMatchIndex,
-                searchSummary: searchSummary
-            )
         }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var statusColor: Color {
+        let normalized = statusText.lowercased()
+        if normalized.contains("failed") || normalized.contains("error") {
+            return .red
+        }
+        if normalized.contains("loading") || normalized.contains("reloading") {
+            return .blue
+        }
+        if normalized.contains("paused") {
+            return .yellow
+        }
+        return .green
+    }
+}
+
+private struct ResourceLogsSourcePanel: View {
+    let title: String
+    let values: [String]
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "square.stack.3d.forward.dottedline")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .tracking(0.3)
+
+            Text(values.joined(separator: ", "))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+        }
+        .accessibilityLabel("\(title): \(values.joined(separator: ", "))")
+    }
+}
+
+private struct ResourceStructuredLogSummaryPanel: View {
+    let summary: ResourceStructuredLogSummary
+    let onSearchFieldSample: (ResourceStructuredLogField, String) -> Void
+    let onSearchDuplicate: (ResourceDuplicateLogLine) -> Void
+
+    var body: some View {
+        if summary.isStructured || !summary.duplicateLines.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: summary.isStructured ? "curlybraces" : "text.line.first.and.arrowtriangle.forward")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+
+                    Text(summary.isStructured ? "Structured logs" : "Repeated lines")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(summarySubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 0)
+                }
+
+                if !summary.fields.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(summary.fields.prefix(6), id: \.key) { field in
+                                fieldMenu(field)
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+
+                if !summary.duplicateLines.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(summary.duplicateLines.prefix(4), id: \.fingerprint) { duplicate in
+                                Button {
+                                    onSearchDuplicate(duplicate)
+                                } label: {
+                                    Label("\(duplicate.count)x", systemImage: "square.stack.3d.up")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help("Search repeated log line: \(duplicate.fingerprint)")
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+            }
+            .accessibilityLabel(summarySubtitle)
+        }
+    }
+
+    private var summarySubtitle: String {
+        if summary.isStructured {
+            let percent = Int((summary.structuredRatio * 100).rounded())
+            return "\(summary.jsonLineCount) of \(summary.totalLineCount) JSON lines, \(percent)% structured"
+        }
+        if let duplicate = summary.duplicateLines.first {
+            return "Top duplicate appears \(duplicate.count) times"
+        }
+        return "\(summary.totalLineCount) lines"
+    }
+
+    private func fieldMenu(_ field: ResourceStructuredLogField) -> some View {
+        Menu {
+            ForEach(field.sampleValues, id: \.self) { value in
+                Button {
+                    onSearchFieldSample(field, value)
+                } label: {
+                    Text(value)
+                }
+            }
+        } label: {
+            Label("\(field.title) \(field.nonEmptyCount)", systemImage: "number")
+        }
+        .menuStyle(.borderlessButton)
+        .controlSize(.small)
+        .help("Search structured field \(field.title)")
     }
 }
 
@@ -119,6 +438,8 @@ struct PodLogsInspectorPane: View {
     @State private var searchQuery = ""
     @State private var selectedSearchMatchIndex = 0
     @State private var searchNavigationSequence = 0
+    @State private var searchPulseID = 0
+    @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
         let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
@@ -133,6 +454,7 @@ struct PodLogsInspectorPane: View {
                 isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
                 selectedSearchMatchIndex: $selectedSearchMatchIndex,
+                searchPulseID: searchPulseID,
                 searchSummary: searchResult,
                 statusText: statusText,
                 containerOptions: containerOptions,
@@ -144,6 +466,16 @@ struct PodLogsInspectorPane: View {
                 onCopySelection: onCopySelection,
                 onCopyAll: onCopyAll,
                 onToggleStreamPause: onToggleStreamPause
+            )
+
+            ResourceStructuredLogSummaryPanel(
+                summary: structuredLogSummary,
+                onSearchFieldSample: { field, value in
+                    applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
+                },
+                onSearchDuplicate: { duplicate in
+                    applyLogSearchQuery(duplicate.fingerprint)
+                }
             )
 
             ResourceLogsOutputSurface(
@@ -167,6 +499,22 @@ struct PodLogsInspectorPane: View {
         .onChange(of: logText) { _, _ in
             selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
+        .task(id: logText) {
+            await refreshStructuredSummary(for: logText)
+        }
+    }
+
+    private func refreshStructuredSummary(for text: String) async {
+        let summary = await Task.detached(priority: .utility) {
+            ResourceStructuredLogAnalyzer.analyze(text: text)
+        }.value
+        guard !Task.isCancelled else { return }
+        structuredLogSummary = summary
+    }
+
+    private func applyLogSearchQuery(_ query: String) {
+        searchQuery = query
+        searchPulseID += 1
     }
 }
 
@@ -193,6 +541,8 @@ struct UnifiedResourceLogsInspectorPane: View {
     @State private var searchQuery = ""
     @State private var selectedSearchMatchIndex = 0
     @State private var searchNavigationSequence = 0
+    @State private var searchPulseID = 0
+    @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
         let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
@@ -207,6 +557,7 @@ struct UnifiedResourceLogsInspectorPane: View {
                 isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
                 selectedSearchMatchIndex: $selectedSearchMatchIndex,
+                searchPulseID: searchPulseID,
                 searchSummary: searchResult,
                 statusText: statusText,
                 containerOptions: [],
@@ -221,10 +572,18 @@ struct UnifiedResourceLogsInspectorPane: View {
             )
 
             if !podNames.isEmpty {
-                Text("Pods: " + podNames.joined(separator: ", "))
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
+                ResourceLogsSourcePanel(title: "Pods", values: podNames)
             }
+
+            ResourceStructuredLogSummaryPanel(
+                summary: structuredLogSummary,
+                onSearchFieldSample: { field, value in
+                    applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
+                },
+                onSearchDuplicate: { duplicate in
+                    applyLogSearchQuery(duplicate.fingerprint)
+                }
+            )
 
             ResourceLogsOutputSurface(
                 isLoadingLogs: isLoadingLogs,
@@ -247,6 +606,22 @@ struct UnifiedResourceLogsInspectorPane: View {
         .onChange(of: logText) { _, _ in
             selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
+        .task(id: logText) {
+            await refreshStructuredSummary(for: logText)
+        }
+    }
+
+    private func refreshStructuredSummary(for text: String) async {
+        let summary = await Task.detached(priority: .utility) {
+            ResourceStructuredLogAnalyzer.analyze(text: text)
+        }.value
+        guard !Task.isCancelled else { return }
+        structuredLogSummary = summary
+    }
+
+    private func applyLogSearchQuery(_ query: String) {
+        searchQuery = query
+        searchPulseID += 1
     }
 }
 
@@ -275,7 +650,10 @@ private struct ResourceLogsOutputSurface: View {
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         if searchResult.isFiltering {
-                            ResourceLogsSearchSummaryBar(searchResult: searchResult)
+                            ResourceLogsSearchSummaryBar(
+                                searchResult: searchResult,
+                                selectedMatchIndex: selectedSearchMatchIndex
+                            )
                         }
 
                         let outputResetID = "\(readOnlyResetID):\(searchResult.scrollIdentityToken)"
@@ -284,10 +662,15 @@ private struct ResourceLogsOutputSurface: View {
                             sequence: searchNavigationSequence
                         )
                         if shouldDeferOutputMount {
-                            DeferredResourceLogsTextView(
+                            InspectorReadOnlyTextView(
                                 text: searchResult.displayedText,
                                 resetID: outputResetID,
-                                navigationRequest: navigationRequest
+                                resetScrollOnExternalChange: false,
+                                contentStyle: .ansiLogs,
+                                navigationRequest: navigationRequest,
+                                usesLargeTextSurface: true,
+                                largeTextIndex: searchResult.textIndex,
+                                largeTextScrollTargetLine: searchResult.matchLineNumber(selectedIndex: selectedSearchMatchIndex)
                             )
                         } else {
                             InspectorReadOnlyTextView(
@@ -312,92 +695,32 @@ private struct ResourceLogsOutputSurface: View {
 enum ResourceLogsDeferredRenderingPolicy {
     static let deferredOutputThreshold = 250_000
 
-    static func shouldDeferOutputMount(text: String, query: String) -> Bool {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.utf8.count > deferredOutputThreshold
-    }
-
     static func shouldDeferOutputMount(for searchResult: ResourceLogSearchResult) -> Bool {
         searchResult.displayedText.utf8.count > deferredOutputThreshold
-    }
-}
-
-private struct DeferredResourceLogsTextView: View {
-    let text: String
-    let resetID: String
-    let navigationRequest: YAMLTextNavigationRequest?
-    @State private var isReady = false
-    @State private var renderTask: Task<Void, Never>?
-
-    var body: some View {
-        Group {
-            if isReady {
-                InspectorReadOnlyTextView(
-                    text: text,
-                    resetID: resetID,
-                    resetScrollOnExternalChange: false,
-                    contentStyle: .ansiLogs,
-                    navigationRequest: navigationRequest
-                )
-            } else {
-                ResourceLogsPreparingPlaceholder()
-            }
-        }
-        .onAppear {
-            scheduleRender()
-        }
-        .onChange(of: resetID) {
-            scheduleRender()
-        }
-        .onDisappear {
-            renderTask?.cancel()
-            renderTask = nil
-            isReady = false
-        }
-    }
-
-    private func scheduleRender() {
-        renderTask?.cancel()
-        isReady = false
-        let expectedResetID = resetID
-        renderTask = Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard expectedResetID == resetID else { return }
-                isReady = true
-            }
-        }
-    }
-}
-
-private struct ResourceLogsPreparingPlaceholder: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Preparing log output…")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(10)
     }
 }
 
 private struct ResourceLogsSearchBar: View {
     @Binding var query: String
     @Binding var selectedMatchIndex: Int
+    let searchPulseID: Int
     let searchSummary: ResourceLogSearchResult?
+    @State private var draftQuery = ""
+    @State private var queryCommitTask: Task<Void, Never>?
+    @State private var pulseOpacity = 0.0
 
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Search logs", text: $query)
+                TextField("Search logs", text: $draftQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
-                if !query.isEmpty {
+                if !draftQuery.isEmpty {
                     Button {
+                        queryCommitTask?.cancel()
+                        draftQuery = ""
                         query = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -415,6 +738,30 @@ private struct ResourceLogsSearchBar: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
+            }
+            .overlay {
+                LogSearchPulseOverlay(opacity: pulseOpacity)
+            }
+            .onAppear {
+                draftQuery = query
+            }
+            .onDisappear {
+                queryCommitTask?.cancel()
+            }
+            .onChange(of: draftQuery) { _, newValue in
+                queryCommitTask?.cancel()
+                queryCommitTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 85_000_000)
+                    guard !Task.isCancelled, query != newValue else { return }
+                    query = newValue
+                }
+            }
+            .onChange(of: query) { _, newValue in
+                guard draftQuery != newValue else { return }
+                draftQuery = newValue
+            }
+            .onChange(of: searchPulseID) { _, _ in
+                flashSearchPulse()
             }
 
             if let searchSummary, searchSummary.isFiltering {
@@ -445,13 +792,52 @@ private struct ResourceLogsSearchBar: View {
                         Capsule(style: .continuous)
                             .fill(Color.accentColor.opacity(searchSummary.matchingLineCount == 0 ? 0.08 : 0.16))
                     }
+
+                if searchSummary.hasMatches {
+                    Text(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background {
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        }
+                        .accessibilityLabel("Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))")
+                }
+            }
+        }
+    }
+
+    private func flashSearchPulse() {
+        withAnimation(.easeOut(duration: 0.08)) {
+            pulseOpacity = 1
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.24)) {
+                pulseOpacity = 0
             }
         }
     }
 }
 
+private struct LogSearchPulseOverlay: View {
+    let opacity: Double
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(Color.accentColor.opacity(0.32 * opacity), lineWidth: 2)
+            .shadow(color: Color.accentColor.opacity(0.18 * opacity), radius: 6)
+            .allowsHitTesting(false)
+    }
+}
+
 private struct ResourceLogsSearchSummaryBar: View {
     let searchResult: ResourceLogSearchResult
+    let selectedMatchIndex: Int
 
     var body: some View {
         HStack {
@@ -459,6 +845,12 @@ private struct ResourceLogsSearchSummaryBar: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
+            if searchResult.hasMatches {
+                Text(searchResult.matchPositionText(selectedIndex: selectedMatchIndex))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -478,6 +870,8 @@ struct ResourceLogSearchResult: Equatable {
     let totalLineCount: Int
     let matchingLineCount: Int
     let matchRanges: [NSRange]
+    let matchLineNumbers: [Int]
+    let textIndex: RuneLargeTextIndex
 
     var isFiltering: Bool {
         !query.isEmpty
@@ -489,6 +883,15 @@ struct ResourceLogSearchResult: Equatable {
 
     var badgeText: String {
         matchingLineCount == 1 ? "1 match" : "\(matchingLineCount) matches"
+    }
+
+    var hasMatches: Bool {
+        !matchRanges.isEmpty
+    }
+
+    func matchPositionText(selectedIndex: Int) -> String {
+        guard hasMatches else { return "0 of 0" }
+        return "\(clampedMatchIndex(selectedIndex) + 1) of \(matchRanges.count)"
     }
 
     var summaryText: String {
@@ -509,12 +912,15 @@ struct ResourceLogSearchResult: Equatable {
                 query: "",
                 totalLineCount: textIndex.lineCount,
                 matchingLineCount: textIndex.lineCount,
-                matchRanges: []
+                matchRanges: [],
+                matchLineNumbers: [],
+                textIndex: textIndex
             )
         }
 
         let searchResult = textIndex.search(query: trimmedQuery)
         let matchRanges = searchResult.matches.map(\.range)
+        let matchLineNumbers = searchResult.matches.map(\.lineNumber)
 
         return ResourceLogSearchResult(
             originalText: text,
@@ -522,7 +928,9 @@ struct ResourceLogSearchResult: Equatable {
             query: trimmedQuery,
             totalLineCount: searchResult.totalLineCount,
             matchingLineCount: searchResult.matchingLineCount,
-            matchRanges: matchRanges
+            matchRanges: matchRanges,
+            matchLineNumbers: matchLineNumbers,
+            textIndex: textIndex
         )
     }
 
@@ -541,6 +949,11 @@ struct ResourceLogSearchResult: Equatable {
         return (clampedMatchIndex(index) - 1 + matchRanges.count) % matchRanges.count
     }
 
+    func matchLineNumber(selectedIndex: Int) -> Int? {
+        guard !matchLineNumbers.isEmpty else { return nil }
+        return matchLineNumbers[clampedMatchIndex(selectedIndex)]
+    }
+
     func navigationRequest(selectedIndex: Int, sequence: Int) -> YAMLTextNavigationRequest? {
         guard !matchRanges.isEmpty else { return nil }
         let range = matchRanges[clampedMatchIndex(selectedIndex)]
@@ -555,17 +968,7 @@ struct ResourceLogSearchResult: Equatable {
 
     static func makeForInspector(text: String, query: String) -> ResourceLogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(text: text, query: trimmedQuery) else {
-            return make(text: text, query: trimmedQuery)
-        }
-        return ResourceLogSearchResult(
-            originalText: text,
-            displayedText: text,
-            query: "",
-            totalLineCount: 0,
-            matchingLineCount: 0,
-            matchRanges: []
-        )
+        return make(text: text, query: trimmedQuery)
     }
 }
 

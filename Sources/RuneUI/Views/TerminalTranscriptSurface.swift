@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import struct RuneSharedCore.RuneLargeTextIndex
+import struct RuneSharedUI.RuneLargeTextSurface
 
 struct TerminalTranscriptSurface: View {
     let text: String
@@ -11,32 +13,55 @@ struct TerminalTranscriptSurface: View {
     @State private var searchQuery = ""
     @State private var searchMatchCase = false
     @State private var selectedSearchMatchIndex = 0
+    @State private var isLargeTextPinnedToBottom = true
 
-    private var searchIndex: TerminalTranscriptSearchIndex {
-        TerminalTranscriptSearchIndex(text: text, query: searchQuery, matchCase: searchMatchCase)
-    }
-
-    private var resolvedSearchMatchIndex: Int {
-        searchIndex.clampedIndex(selectedSearchMatchIndex)
+    private var shouldUseLargeTextSurface: Bool {
+        text.utf8.count > 250_000
     }
 
     var body: some View {
+        let model = TerminalTranscriptRenderModel(
+            text: text,
+            query: searchQuery,
+            matchCase: searchMatchCase,
+            usesLargeTextSurface: shouldUseLargeTextSurface
+        )
+        let resolvedSearchMatchIndex = model.searchIndex.clampedIndex(selectedSearchMatchIndex)
+
         InspectorTextSurface(minHeight: height) {
-            TerminalTranscriptTextView(
-                text: text,
-                fontSize: fontSize,
-                searchQuery: searchQuery,
-                searchMatchCase: searchMatchCase,
-                selectedSearchMatchIndex: resolvedSearchMatchIndex,
-                onPasteText: onPasteText
-            )
+            Group {
+                if shouldUseLargeTextSurface, let textIndex = model.textIndex {
+                    RuneLargeTextSurface(
+                        index: textIndex,
+                        placeholder: "No terminal output",
+                        scrollTargetLine: model.scrollTargetLine(
+                            selectedIndex: resolvedSearchMatchIndex,
+                            isPinnedToBottom: isLargeTextPinnedToBottom
+                        ),
+                        showsLineNumbers: true,
+                        fontSize: fontSize,
+                        onNearBottomChange: { isNearBottom in
+                            isLargeTextPinnedToBottom = isNearBottom
+                        }
+                    )
+                } else {
+                    TerminalTranscriptTextView(
+                        text: text,
+                        fontSize: fontSize,
+                        searchQuery: searchQuery,
+                        searchMatchCase: searchMatchCase,
+                        selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                        onPasteText: onPasteText
+                    )
+                }
+            }
                 .id(resetID)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(height: height)
         .overlay(alignment: .topTrailing) {
             if isSearchVisible {
-                searchBar
+                searchBar(searchIndex: model.searchIndex, resolvedSearchMatchIndex: resolvedSearchMatchIndex)
                     .padding(10)
             } else {
                 Button {
@@ -67,11 +92,11 @@ struct TerminalTranscriptSurface: View {
             selectedSearchMatchIndex = 0
         }
         .onChange(of: text) { _, _ in
-            selectedSearchMatchIndex = resolvedSearchMatchIndex
+            selectedSearchMatchIndex = model.searchIndex.clampedIndex(selectedSearchMatchIndex)
         }
     }
 
-    private var searchBar: some View {
+    private func searchBar(searchIndex: TerminalTranscriptSearchIndex, resolvedSearchMatchIndex: Int) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -152,6 +177,8 @@ struct TerminalTranscriptSurface: View {
     }
 
     private func advanceSearch(by delta: Int) {
+        let searchIndex = TerminalTranscriptSearchIndex(text: text, query: searchQuery, matchCase: searchMatchCase)
+        let resolvedSearchMatchIndex = searchIndex.clampedIndex(selectedSearchMatchIndex)
         let count = searchIndex.ranges.count
         guard count > 0 else { return }
         selectedSearchMatchIndex = (resolvedSearchMatchIndex + delta + count) % count
@@ -192,47 +219,60 @@ private extension View {
     }
 }
 
-struct TerminalTranscriptSearchIndex: Equatable {
-    private static let highlightLimit = 5_000
+struct TerminalTranscriptRenderModel: Equatable {
+    let textIndex: RuneLargeTextIndex?
+    let searchIndex: TerminalTranscriptSearchIndex
 
+    init(text: String, query: String, matchCase: Bool, usesLargeTextSurface: Bool) {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldBuildLineIndex = usesLargeTextSurface || !trimmedQuery.isEmpty
+        let textIndex = shouldBuildLineIndex ? RuneLargeTextIndex(text: text) : nil
+        self.textIndex = textIndex
+        self.searchIndex = TerminalTranscriptSearchIndex(
+            text: text,
+            textIndex: textIndex,
+            normalizedQuery: trimmedQuery,
+            matchCase: matchCase
+        )
+    }
+
+    func scrollTargetLine(selectedIndex: Int, isPinnedToBottom: Bool = true) -> Int? {
+        if let matchLineNumber = searchIndex.matchLineNumber(selectedIndex: selectedIndex) {
+            return matchLineNumber
+        }
+        guard isPinnedToBottom else { return nil }
+        return textIndex?.lineCount
+    }
+}
+
+struct TerminalTranscriptSearchIndex: Equatable {
     let ranges: [NSRange]
-    let didHitHighlightLimit: Bool
+    let matchLineNumbers: [Int]
     private let hasQuery: Bool
 
     init(text: String, query: String, matchCase: Bool) {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(text: text, textIndex: nil, normalizedQuery: trimmedQuery, matchCase: matchCase)
+    }
+
+    init(
+        text: String,
+        textIndex providedTextIndex: RuneLargeTextIndex?,
+        normalizedQuery trimmedQuery: String,
+        matchCase: Bool
+    ) {
         hasQuery = !trimmedQuery.isEmpty
         guard !trimmedQuery.isEmpty else {
             ranges = []
-            didHitHighlightLimit = false
+            matchLineNumbers = []
             return
         }
 
-        let nsText = text as NSString
+        let index = providedTextIndex ?? RuneLargeTextIndex(text: text)
         let options: NSString.CompareOptions = matchCase ? [] : [.caseInsensitive]
-        var matches: [NSRange] = []
-        var searchRange = NSRange(location: 0, length: nsText.length)
-        var hitLimit = false
-
-        while searchRange.length > 0 {
-            let match = nsText.range(of: trimmedQuery, options: options, range: searchRange)
-            if match.location == NSNotFound {
-                break
-            }
-            if matches.count == Self.highlightLimit {
-                hitLimit = true
-                break
-            }
-            matches.append(match)
-            let nextLocation = max(match.location + max(match.length, 1), match.location + 1)
-            if nextLocation >= nsText.length {
-                break
-            }
-            searchRange = NSRange(location: nextLocation, length: nsText.length - nextLocation)
-        }
-
-        ranges = matches
-        didHitHighlightLimit = hitLimit
+        let result = index.search(query: trimmedQuery, options: options)
+        ranges = result.matches.map(\.range)
+        matchLineNumbers = result.matches.map(\.lineNumber)
     }
 
     func clampedIndex(_ index: Int) -> Int {
@@ -243,8 +283,12 @@ struct TerminalTranscriptSearchIndex: Equatable {
     func statusText(selectedIndex: Int) -> String {
         guard hasQuery else { return "" }
         guard !ranges.isEmpty else { return "No matches" }
-        let suffix = didHitHighlightLimit ? "+" : ""
-        return "\(clampedIndex(selectedIndex) + 1) of \(ranges.count)\(suffix)"
+        return "\(clampedIndex(selectedIndex) + 1) of \(ranges.count)"
+    }
+
+    func matchLineNumber(selectedIndex: Int) -> Int? {
+        guard !matchLineNumbers.isEmpty else { return nil }
+        return matchLineNumbers[clampedIndex(selectedIndex)]
     }
 }
 

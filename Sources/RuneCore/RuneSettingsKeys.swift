@@ -26,6 +26,7 @@ public enum RuneSettingsKeys {
     public static let keyBindingHistoryBack = "rune.settings.keybindings.historyBack"
     public static let keyBindingHistoryForward = "rune.settings.keybindings.historyForward"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
+    public static let keyBindingSaveLogs = "rune.settings.keybindings.saveLogs"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
     public static let keyBindingEdit = "rune.settings.keybindings.edit"
     public static let keyBindingYAML = "rune.settings.keybindings.yaml"
@@ -36,14 +37,24 @@ public enum RuneSettingsKeys {
     public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
     /// Persisted detail/inspector width in the 3-column shell.
     public static let layoutDetailWidth = "rune.settings.layout.detailWidth"
+    /// Persisted pod table name column width in the resource list.
+    public static let layoutPodNameColumnWidth = "rune.settings.layout.podNameColumnWidth"
     /// Base font size used by Rune's interface and monospaced terminal/editor surfaces.
     public static let terminalFontSize = "rune.settings.terminal.fontSize"
     public static let terminalFontSizeDefault = 12.0
     public static let terminalFontSizeMinimum = 10.0
     public static let terminalFontSizeMaximum = 20.0
+    public static let terminalScrollbackLineLimit = "rune.settings.terminal.scrollbackLineLimit"
+    public static let terminalScrollbackLineLimitDefault = 60_000
+    public static let terminalScrollbackLineLimitMinimum = 1_000
+    public static let terminalScrollbackLineLimitMaximum = 200_000
 
     public static func clampedTerminalFontSize(_ value: Double) -> Double {
         min(terminalFontSizeMaximum, max(terminalFontSizeMinimum, value))
+    }
+
+    public static func clampedTerminalScrollbackLineLimit(_ value: Int) -> Int {
+        min(terminalScrollbackLineLimitMaximum, max(terminalScrollbackLineLimitMinimum, value))
     }
 
     public static func registerDefaults() {
@@ -67,6 +78,7 @@ public enum RuneSettingsKeys {
             keyBindingHistoryBack: RuneKeyBindingAction.historyBack.defaultShortcut.storageValue,
             keyBindingHistoryForward: RuneKeyBindingAction.historyForward.defaultShortcut.storageValue,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
+            keyBindingSaveLogs: RuneKeyBindingAction.saveLogs.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
             keyBindingEdit: RuneKeyBindingAction.edit.defaultShortcut.storageValue,
             keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,
@@ -75,7 +87,9 @@ public enum RuneSettingsKeys {
             keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
             layoutSidebarWidth: 280.0,
             layoutDetailWidth: 440.0,
-            terminalFontSize: terminalFontSizeDefault
+            layoutPodNameColumnWidth: 280.0,
+            terminalFontSize: terminalFontSizeDefault,
+            terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault
         ])
     }
 }
@@ -114,6 +128,20 @@ public extension UserDefaults {
         }
         set {
             set(RuneSettingsKeys.clampedTerminalFontSize(newValue), forKey: RuneSettingsKeys.terminalFontSize)
+        }
+    }
+
+    var runeTerminalScrollbackLineLimit: Int {
+        get {
+            let raw = (object(forKey: RuneSettingsKeys.terminalScrollbackLineLimit) as? Int)
+                ?? RuneSettingsKeys.terminalScrollbackLineLimitDefault
+            return RuneSettingsKeys.clampedTerminalScrollbackLineLimit(raw)
+        }
+        set {
+            set(
+                RuneSettingsKeys.clampedTerminalScrollbackLineLimit(newValue),
+                forKey: RuneSettingsKeys.terminalScrollbackLineLimit
+            )
         }
     }
 

@@ -669,6 +669,16 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         ).first!
         XCTAssertEqual(pod.status, "Running")
 
+        let podDescribe = try await client.resourceDescribe(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .pod,
+            name: pod.name
+        )
+        XCTAssertTrue(podDescribe.contains("Name:"))
+        XCTAssertTrue(podDescribe.contains(pod.name))
+
         let events = try await waitForPodEvent(
             client: client,
             sources: fixture.sources,
@@ -706,6 +716,17 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             )
         }
         XCTAssertTrue(body.contains("rune docker fake http ok"), body)
+
+        let podLogs = try await client.podLogs(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            podName: pod.name,
+            container: nil,
+            filter: .tailLines(20),
+            previous: false
+        )
+        XCTAssertTrue(podLogs.contains("/healthz") || podLogs.contains("GET /"))
     }
 
     func testDockerComposeFakeK8sReadWriteOperationsAreReversible() async throws {

@@ -9,6 +9,7 @@ LOG_DIR="$RUN_DIR/logs"
 REPORT_MD="$RUN_DIR/report.md"
 REPORT_JSON="$RUN_DIR/report.json"
 STEPS_JSONL="$RUN_DIR/steps.jsonl"
+MODULE_CACHE_DIR="${RUNE_LOCAL_K8S_MODULE_CACHE_DIR:-$ROOT_DIR/.build/local-k8s-integration-cache}"
 
 COMPOSE_FILE="$ROOT_DIR/docker-compose/docker-compose.fake-k8s.yml"
 COMPOSE_PROJECT="rune-fake-k8s"
@@ -19,8 +20,11 @@ SKIP_DOCKER="${RUNE_SKIP_DOCKER_FAKE_K8S:-1}"
 
 FAILURES=0
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$MODULE_CACHE_DIR/clang" "$MODULE_CACHE_DIR/swiftpm"
 : > "$STEPS_JSONL"
+
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$MODULE_CACHE_DIR/clang}"
+export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$MODULE_CACHE_DIR/swiftpm}"
 
 json_string() {
   python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
@@ -106,6 +110,10 @@ skip_step() {
   append_step_md "$name" "skipped" "" "" "" "$note"
 }
 
+can_bind_loopback_socket() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.close()' >/dev/null 2>&1
+}
+
 write_report_header() {
   cat > "$REPORT_MD" <<EOF
 # Local Kubernetes Integration Test Report
@@ -176,7 +184,7 @@ write_report_header
 
 cd "$ROOT_DIR" || exit 1
 
-run_step build_RuneFakeK8s swift build --product RuneFakeK8s
+run_step build_RuneFakeK8s swift build --disable-sandbox --product RuneFakeK8s
 
 FAKE_BIN="${RUNE_FAKE_K8S_BINARY:-$ROOT_DIR/.build/debug/RuneFakeK8s}"
 if [[ ! -x "$FAKE_BIN" && -x "$ROOT_DIR/.build/arm64-apple-macosx/debug/RuneFakeK8s" ]]; then
@@ -192,9 +200,13 @@ run_step script_fake_setup env \
 run_step script_fake_integration_test env \
   RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
   RUNE_FAKE_K8S_BINARY="$FAKE_BIN" \
-  swift test --filter LocalKubernetesIntegrationTests/testRuneFakeK8sEventsPointAtExistingPods
+  swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testRuneFakeK8sEventsPointAtExistingPods
 
-run_step rest_fake_integration_test swift test --filter RuneFakeK8sRESTServerTests
+if can_bind_loopback_socket; then
+  run_step rest_fake_integration_test swift test --disable-sandbox --filter RuneFakeK8sRESTServerTests
+else
+  skip_step rest_fake_integration_test "Skipped because this environment cannot bind local loopback sockets."
+fi
 
 if [[ "$SKIP_DOCKER" == "1" ]]; then
   skip_step docker_compose_stack "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."
@@ -221,10 +233,10 @@ else
   if safe_docker_kubeconfig_check; then
     run_step docker_compose_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
-      swift test --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable
+      swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable
     run_step docker_compose_read_write_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
-      swift test --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sReadWriteOperationsAreReversible
+      swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sReadWriteOperationsAreReversible
   else
     FAILURES=$((FAILURES + 1))
     skip_step docker_compose_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."

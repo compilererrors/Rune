@@ -10,8 +10,41 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: describeTextViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("InspectorReadOnlyTextSurface("))
-        XCTAssertTrue(source.contains("contentStyle: .plainText"))
+        XCTAssertTrue(source.contains("contentStyle: .describe"))
         XCTAssertFalse(source.contains("struct DescribeReadOnlyTextView"))
+    }
+
+    func testDescribeOutputHighlightsKubectlDescribeKeys() async throws {
+        let describeText = """
+        Name: api-0
+        Namespace: default
+        Containers:
+          api:
+            Image: example/app:1
+        """
+        let (host, window) = makeDescribeHost(describeText: describeText)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        guard let scrollView = findTextScrollView(in: host.view),
+              let textView = scrollView.documentView as? NSTextView
+        else {
+            return XCTFail("Expected describe NSTextView-backed scroll view")
+        }
+
+        let source = textView.string as NSString
+        let keyRange = source.range(of: "Name")
+        let valueRange = source.range(of: "api-0")
+        let sectionRange = source.range(of: "Containers")
+
+        let keyColor = textView.textStorage?.attribute(.foregroundColor, at: keyRange.location, effectiveRange: nil) as? NSColor
+        let valueColor = textView.textStorage?.attribute(.foregroundColor, at: valueRange.location, effectiveRange: nil) as? NSColor
+        let sectionColor = textView.textStorage?.attribute(.foregroundColor, at: sectionRange.location, effectiveRange: nil) as? NSColor
+
+        XCTAssertNotNil(keyColor)
+        XCTAssertNotEqual(keyColor, valueColor, "Describe keys should be visually distinct from values, matching the k9s-style key/value scan pattern.")
+        XCTAssertNotEqual(sectionColor, valueColor, "Describe section headers should stand out from plain values.")
     }
 
     func testDescribePaneDoesNotPlaceFooterBelowScrollableTextSurface() throws {
@@ -35,6 +68,42 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(describeSource.contains("ResourceManifestInspectorLayout"))
         XCTAssertTrue(textSurfaceSource.contains("GeometryReader"))
         XCTAssertTrue(textSurfaceSource.contains("height: max(1, proxy.size.height)"))
+    }
+
+    func testUnsavedEditsIndicatorUsesReservedSlotToAvoidLayoutJumps() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(yamlSource.contains("ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)"))
+        XCTAssertTrue(describeSource.contains("ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)"))
+        XCTAssertTrue(yamlSource.contains("struct ManifestUnsavedEditsSlot"))
+        XCTAssertTrue(yamlSource.contains(".opacity(isVisible ? 1 : 0)"))
+        XCTAssertTrue(yamlSource.contains(".accessibilityHidden(!isVisible)"))
+        XCTAssertTrue(yamlSource.contains(".allowsHitTesting(isVisible)"))
+    }
+
+    func testYAMLAndDescribeUseGroupedManifestToolbarAndCompactStatus() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+
+        let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLInspectorPane",
+            to: "struct ManifestUnsavedEditsChip"
+        ))
+        let describePaneSource = describeSource
+
+        XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarScrollRow"))
+        XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarGroup"))
+        XCTAssertTrue(yamlPaneSource.contains("ManifestStatusChip(text: statusText"))
+        XCTAssertTrue(yamlPaneSource.contains("ManifestInlineNote("))
+
+        XCTAssertTrue(describePaneSource.contains("ManifestToolbarScrollRow"))
+        XCTAssertTrue(describePaneSource.contains("ManifestToolbarGroup"))
+        XCTAssertTrue(describePaneSource.contains("ManifestStatusChip(text: statusText"))
+        XCTAssertTrue(describePaneSource.contains("ManifestInlineNote("))
+
+        XCTAssertFalse(yamlPaneSource.contains("Text(statusText)"))
+        XCTAssertFalse(describePaneSource.contains("Text(statusText)"))
     }
 
     func testDescribePaneAllowsScrollingLongDescribeOutput() async throws {
@@ -196,12 +265,22 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceManifestInspectorLayout.swift").path
     }
 
-    private var inspectorTextViewsPath: String {
+private var inspectorTextViewsPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/InspectorTextViews.swift").path
+    }
+}
+
+private extension String {
+    func slice(from start: String, to end: String) -> String? {
+        guard let startRange = range(of: start),
+              let endRange = range(of: end, range: startRange.upperBound..<endIndex) else {
+            return nil
+        }
+        return String(self[startRange.lowerBound..<endRange.lowerBound])
     }
 }

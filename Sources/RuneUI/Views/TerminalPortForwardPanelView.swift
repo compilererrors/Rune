@@ -57,17 +57,21 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
-                titleBlock
-                Spacer(minLength: 12)
-                headerActions
-            }
+        HStack(alignment: .center, spacing: 10) {
+            titleBlock
+            Spacer(minLength: 12)
+            headerActions
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                titleBlock
-                headerActions
+    @ViewBuilder
+    private func stableHorizontalControls<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 10) {
+                content()
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -143,11 +147,8 @@ struct TerminalPortForwardPanelView: View {
                 selection: $selectedPortForwardPodID
             )
 
-            ViewThatFits(in: .horizontal) {
+            stableHorizontalControls {
                 endpointFields
-                VStack(alignment: .leading, spacing: 8) {
-                    endpointFields
-                }
             }
 
             activeSessionList
@@ -220,7 +221,6 @@ struct TerminalPortForwardPanelView: View {
                 .foregroundStyle(.secondary)
             field("Remote", text: $remotePort, minWidth: 74, idealWidth: 92)
             field("Address", text: $address, minWidth: 120, idealWidth: 150)
-            Spacer(minLength: 0)
         }
         .controlSize(.small)
     }

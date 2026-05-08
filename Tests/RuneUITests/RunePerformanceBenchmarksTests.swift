@@ -7,6 +7,7 @@ import struct RuneSharedCore.RuneLargeTextIndex
 @testable import RuneCore
 @testable import RuneExport
 @testable import RuneFakeK8sSupport
+@testable import RuneKube
 @testable import RuneSecurity
 @testable import RuneStore
 @testable import RuneUI
@@ -38,6 +39,90 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.25)
     }
 
+    func testKubernetesRequestRetryClassificationBenchmarkKPI() {
+        let statuses = [200, 400, 401, 403, 404, 409, 429, 500, 502, 503, 504]
+        let errors = [
+            URLError(.timedOut),
+            URLError(.networkConnectionLost),
+            URLError(.cannotConnectToHost),
+            URLError(.notConnectedToInternet),
+            URLError(.cancelled)
+        ]
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            var retryableCount = 0
+            for index in 0..<25_000 {
+                if KubernetesRequestRetryPolicy
+                    .classifyHTTPStatus(statuses[index % statuses.count], retryAfterHeader: index.isMultiple(of: 3) ? "1" : nil)
+                    .isRetryable {
+                    retryableCount += 1
+                }
+                if KubernetesRequestRetryPolicy.classifyNetworkError(errors[index % errors.count]).isRetryable {
+                    retryableCount += 1
+                }
+            }
+            XCTAssertGreaterThan(retryableCount, 0)
+        }
+
+        let started = ContinuousClock.now
+        var retryableCount = 0
+        for index in 0..<25_000 {
+            if KubernetesRequestRetryPolicy
+                .classifyHTTPStatus(statuses[index % statuses.count], retryAfterHeader: index.isMultiple(of: 3) ? "1" : nil)
+                .isRetryable {
+                retryableCount += 1
+            }
+            if KubernetesRequestRetryPolicy.classifyNetworkError(errors[index % errors.count]).isRetryable {
+                retryableCount += 1
+            }
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(retryableCount, 31_362)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.08,
+            "KPI: retry classification must be cheap enough to run on every failed Kubernetes request path."
+        )
+    }
+
+    func testKubernetesRequestCoalescerBenchmarkKPI() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = PerformanceCoalescerCounter()
+        let key = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"]
+        )
+
+        let started = ContinuousClock.now
+        await withTaskGroup(of: RESTResponse?.self) { group in
+            for _ in 0..<200 {
+                group.addTask {
+                    try? await coalescer.value(for: key) {
+                        let count = await counter.increment()
+                        try await Task.sleep(nanoseconds: 20_000_000)
+                        return RESTResponse(body: "body-\(count)", contentType: "application/json")
+                    }
+                }
+            }
+            for await response in group {
+                XCTAssertEqual(response?.body, "body-1")
+            }
+        }
+        let elapsed = started.duration(to: .now)
+        let operationCount = await counter.currentValue()
+
+        XCTAssertEqual(operationCount, 1)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.12,
+            "KPI: coalescing 200 identical in-flight reads should share one operation and keep scheduling overhead low."
+        )
+    }
+
     func testLogSearchNavigationBenchmarkKPI() {
         let text = (0..<20_000)
             .map { index in
@@ -66,6 +151,73 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         XCTAssertEqual(result.matchingLineCount, 500)
         XCTAssertLessThan(seconds(elapsed), 0.02)
+    }
+
+    func testStructuredJSONLAnalysisBenchmarkKPI() {
+        let text = (0..<20_000)
+            .map { index in
+                """
+                {"timestamp":"2026-05-06T10:00:\(String(format: "%02d", index % 60))Z","level":"\(index.isMultiple(of: 20) ? "error" : "info")","message":"synthetic message \(index % 500)","pod":"pod-\(index % 12)","container":"app","requestId":"req-\(index)","trace_id":"trace-\(index % 200)","namespace":"default"}
+                """
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = ResourceStructuredLogAnalyzer.analyze(text: text)
+        }
+
+        let started = ContinuousClock.now
+        let summary = ResourceStructuredLogAnalyzer.analyze(text: text)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(summary.isStructured)
+        XCTAssertEqual(summary.totalLineCount, 20_000)
+        XCTAssertEqual(summary.jsonLineCount, 20_000)
+        XCTAssertEqual(summary.field("level")?.nonEmptyCount, 20_000)
+        XCTAssertEqual(summary.field("requestID")?.nonEmptyCount, 20_000)
+        #if DEBUG
+        let maximumAnalysisSeconds = 0.35
+        #else
+        let maximumAnalysisSeconds = 0.05
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumAnalysisSeconds,
+            "KPI: structured JSONL analysis should stay snappy in debug and under 50ms in release for a 20k-line sample."
+        )
+    }
+
+    func testUnifiedLogDuplicateDetectionBenchmarkKPI() {
+        let text = (0..<24_000)
+            .map { index in
+                "[pod-\(index % 24)] " + """
+                {"timestamp":"2026-05-06T10:00:\(String(format: "%02d", index % 60))Z","level":"warn","message":"retrying upstream request \(index % 300)","pod":"pod-\(index % 24)","container":"app","namespace":"default"}
+                """
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = ResourceStructuredLogAnalyzer.analyze(text: text)
+        }
+
+        let started = ContinuousClock.now
+        let summary = ResourceStructuredLogAnalyzer.analyze(text: text)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(summary.isStructured)
+        XCTAssertEqual(summary.totalLineCount, 24_000)
+        XCTAssertFalse(summary.duplicateLines.isEmpty)
+        XCTAssertEqual(summary.duplicateLines.first?.count, 80)
+        #if DEBUG
+        let maximumDuplicateDetectionSeconds = 0.35
+        #else
+        let maximumDuplicateDetectionSeconds = 0.05
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumDuplicateDetectionSeconds,
+            "KPI: unified log duplicate detection should stay snappy in debug and under 50ms in release for a 24k-line sample."
+        )
     }
 
     func testLargeTextLineIndexBenchmarkKPI() {
@@ -167,6 +319,41 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
     }
 
+    func testLogArchiveMetadataExportBenchmarkKPI() throws {
+        let pods = (0..<12).map { "api-\($0)" }
+        let text = (0..<24_000)
+            .map { index in
+                "[api-\(index % pods.count)] 2026-05-07T10:00:\(String(format: "%02d", index % 60))Z message=\(index)"
+            }
+            .joined(separator: "\n")
+        let metadata = LogArchiveMetadata(
+            context: "demo",
+            namespace: "default",
+            workloadKind: "deployment",
+            workloadName: "api",
+            selectedPods: pods,
+            timeWindow: "recentLines",
+            previous: false,
+            tail: false,
+            exportedAt: "20260507T100000Z",
+            scope: "full"
+        )
+
+        let started = ContinuousClock.now
+        let zip = try LogArchiveBuilder.buildZip(
+            mergedText: text,
+            podNames: pods,
+            baseName: "deployment-api-full-logs",
+            generatedAt: "20260507T100000Z",
+            metadata: metadata
+        )
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertGreaterThan(zip.count, text.utf8.count / 2)
+        XCTAssertLessThan(seconds(elapsed), 0.45, "KPI: metadata should not push a 24k-line, 12-pod log archive above the 450ms export target.")
+        XCTAssertTrue(String(decoding: zip, as: UTF8.self).contains("metadata-20260507T100000Z.json"))
+    }
+
     @MainActor
     func testLargeLogInspectorInitialMountBenchmarkKPI() {
         let text = (0..<20_000)
@@ -237,6 +424,113 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsed = started.duration(to: .now)
 
         XCTAssertLessThan(seconds(elapsed), 0.12)
+    }
+
+    @MainActor
+    func testStableLogInspectorToolbarLayoutBenchmarkKPI() {
+        let widths: [CGFloat] = [420, 520, 720, 960]
+        let searchSummary = ResourceLogSearchResult.make(
+            text: (0..<300)
+                .map { index in
+                    index.isMultiple(of: 25)
+                        ? "2026-05-07T10:00:00Z level=error component=api message=synthetic failure \(index)"
+                        : "2026-05-07T10:00:00Z level=info component=api message=synthetic ok \(index)"
+                }
+                .joined(separator: "\n"),
+            query: "error"
+        )
+
+        let measuredController = makeLogToolbarController(
+            width: widths[0],
+            searchSummary: searchSummary,
+            containerOptions: ["app", "sidecar", "metrics"]
+        )
+        measuredController.view.layoutSubtreeIfNeeded()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for width in widths {
+                measuredController.view.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+                measuredController.view.layoutSubtreeIfNeeded()
+            }
+        }
+
+        let controller = makeLogToolbarController(
+            width: widths[0],
+            searchSummary: searchSummary,
+            containerOptions: ["app", "sidecar", "metrics"]
+        )
+        controller.view.layoutSubtreeIfNeeded()
+
+        let started = ContinuousClock.now
+        let heights = widths.map { width in
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+            controller.view.layoutSubtreeIfNeeded()
+            return controller.sizeThatFits(in: CGSize(width: width, height: 260)).height
+        }
+        let elapsed = started.duration(to: .now)
+
+        #if DEBUG
+        let maximumLayoutSeconds = 0.08
+        #else
+        let maximumLayoutSeconds = 0.02
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumLayoutSeconds,
+            "KPI: log inspector controls should stay snappy while resizing the detail pane."
+        )
+
+        let minHeight = heights.min() ?? 0
+        let maxHeight = heights.max() ?? 0
+        XCTAssertLessThanOrEqual(
+            maxHeight - minHeight,
+            8,
+            "KPI: log inspector controls should not jump vertically or wrap into extra rows when the detail pane width changes."
+        )
+    }
+
+    @MainActor
+    func testManifestInspectorToolbarLayoutBenchmarkKPI() {
+        let widths: [CGFloat] = [360, 480, 640, 820]
+        let measuredController = makeManifestToolbarController(width: widths[0])
+        measuredController.view.layoutSubtreeIfNeeded()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for width in widths {
+                measuredController.view.frame = NSRect(x: 0, y: 0, width: width, height: 160)
+                measuredController.view.layoutSubtreeIfNeeded()
+            }
+        }
+
+        let controller = makeManifestToolbarController(width: widths[0])
+        controller.view.layoutSubtreeIfNeeded()
+
+        let started = ContinuousClock.now
+        let heights = widths.map { width in
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 160)
+            controller.view.layoutSubtreeIfNeeded()
+            return controller.sizeThatFits(in: CGSize(width: width, height: 160)).height
+        }
+        let elapsed = started.duration(to: .now)
+
+        #if DEBUG
+        let maximumLayoutSeconds = 0.08
+        #else
+        let maximumLayoutSeconds = 0.02
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumLayoutSeconds,
+            "KPI: manifest inspector controls should stay snappy while resizing the detail pane."
+        )
+
+        let minHeight = heights.min() ?? 0
+        let maxHeight = heights.max() ?? 0
+        XCTAssertLessThanOrEqual(
+            maxHeight - minHeight,
+            8,
+            "KPI: manifest inspector controls should not jump vertically or wrap into extra rows when the detail pane width changes."
+        )
     }
 
     func testYAMLAnalysisBenchmarkKPI() {
@@ -475,6 +769,75 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testOperatorResourceBrowserProjectionBenchmarkKPI() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let resources = (0..<500).map { index in
+            OperatorResourceSummary(
+                family: index.isMultiple(of: 3) ? "Custom Resources" : "Flux",
+                kind: index.isMultiple(of: 2) ? "Widgets" : "Kustomizations",
+                apiPath: "/apis/example.test/v1/namespaces/default/widgets",
+                name: String(format: "synthetic-resource-%03d", index),
+                namespace: "default",
+                status: index.isMultiple(of: 7) ? "Ready False" : "Ready True",
+                message: index.isMultiple(of: 7) ? "Synthetic warning" : "Synthetic ready"
+            )
+        }
+        state.setOperatorResources(resources)
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            viewModel.setResourceSearchQuery("synthetic")
+            _ = viewModel.visibleOperatorResources
+            _ = viewModel.pagedOperatorResources
+            viewModel.setResourceSearchQuery("")
+        }
+
+        let started = ContinuousClock.now
+        viewModel.setResourceSearchQuery("warning")
+        let visible = viewModel.visibleOperatorResources
+        let page = viewModel.pagedOperatorResources
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(visible.count, 72)
+        XCTAssertEqual(page.count, 40)
+        XCTAssertLessThan(seconds(elapsed), 0.08, "KPI: CRD/operator browser filtering and first-page projection should stay below 80ms for 500 resources in debug.")
+
+        viewModel.selectOperatorResource(resources[250])
+        XCTAssertEqual(state.selectedOperatorResource?.name, "synthetic-resource-250")
+    }
+
+    @MainActor
+    func testGenericResourceQuickCompareBenchmarkKPI() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "benchmark")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps((0..<500).map { index in
+            ClusterResourceSummary(
+                kind: .configMap,
+                name: "config-\(index)",
+                namespace: "default",
+                primaryText: "\(index % 8 + 1) keys",
+                secondaryText: "updated \(index)m"
+            )
+        })
+        viewModel.toggleAllVisibleGenericResourcesForBulkActions()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.selectedGenericResourceComparisonText
+        }
+
+        let started = ContinuousClock.now
+        let comparison = viewModel.selectedGenericResourceComparisonText
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(comparison.contains("Selected ConfigMaps Compare"))
+        XCTAssertTrue(comparison.contains("config-499"))
+        XCTAssertLessThan(seconds(elapsed), 0.05, "KPI: quick compare should stay below 50ms for 500 selected resources in debug.")
+    }
+
+    @MainActor
     func testFavoriteResourceSortingBenchmarkKPI() {
         let state = RuneAppState()
         let suiteName = "RunePerformanceBenchmarksTests.favoriteSort.\(UUID().uuidString)"
@@ -638,10 +1001,49 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.20)
     }
 
-    func testTerminalTranscriptSearchBenchmarkKPI() {
-        let transcript = (0..<25_000)
+    func testTerminalTranscriptSanitizerVTBenchmarkKPI() {
+        let chunk = (0..<10_000)
             .map { index in
-                index.isMultiple(of: 50)
+                "pulling layer \(index)%\rpulling layer \(index + 1)%\u{001B}[0m\u{001B}(B\n"
+            }
+            .joined()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = TerminalTranscriptSanitizer.sanitize(chunk)
+        }
+
+        let started = ContinuousClock.now
+        let sanitized = TerminalTranscriptSanitizer.sanitize(chunk)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(sanitized.contains("pulling layer 10000%"))
+        XCTAssertFalse(sanitized.contains("\u{001B}"))
+        XCTAssertLessThan(seconds(elapsed), 0.10)
+    }
+
+    func testTerminalScrollbackRetentionBenchmarkKPI() {
+        let transcript = (0..<80_000)
+            .map { "line \($0) payload=synthetic-terminal-output" }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 60_000)
+        }
+
+        let started = ContinuousClock.now
+        let retained = TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 60_000)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(retained.hasPrefix(TerminalScrollbackRetention.truncationMarker))
+        XCTAssertFalse(retained.contains("line 0 payload"))
+        XCTAssertTrue(retained.contains("line 79999 payload"))
+        XCTAssertLessThan(seconds(elapsed), 0.15)
+    }
+
+    func testTerminalTranscriptSearchBenchmarkKPI() {
+        let transcript = (0..<60_000)
+            .map { index in
+                index.isMultiple(of: 5)
                     ? "pod=pod-\(index) status=error path=/very/long/synthetic/path/\(index)/with/a/wide/terminal/line"
                     : "pod=pod-\(index) status=ok path=/very/long/synthetic/path/\(index)/with/a/wide/terminal/line"
             }
@@ -655,9 +1057,154 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let index = TerminalTranscriptSearchIndex(text: transcript, query: "status=error", matchCase: false)
         let elapsed = started.duration(to: .now)
 
-        XCTAssertEqual(index.ranges.count, 500)
-        XCTAssertEqual(index.statusText(selectedIndex: 0), "1 of 500")
-        XCTAssertLessThan(seconds(elapsed), 0.25)
+        XCTAssertEqual(index.ranges.count, 12_000)
+        XCTAssertEqual(index.matchLineNumber(selectedIndex: 11_999), 59_996)
+        XCTAssertEqual(index.statusText(selectedIndex: 0), "1 of 12000")
+        XCTAssertLessThan(seconds(elapsed), 0.45)
+    }
+
+    func testTerminalTranscriptAppendWhileSearchOpenBenchmarkKPI() {
+        let base = (0..<30_000)
+            .map { index in
+                index.isMultiple(of: 6)
+                    ? "line=\(index) status=error terminal-search-open"
+                    : "line=\(index) status=ok terminal-search-open"
+            }
+            .joined(separator: "\n")
+        let appended = (30_000..<31_000)
+            .map { index in
+                index.isMultiple(of: 6)
+                    ? "line=\(index) status=error appended"
+                    : "line=\(index) status=ok appended"
+            }
+            .joined(separator: "\n")
+        let transcript = "\(base)\n\(appended)"
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = TerminalTranscriptRenderModel(
+                text: transcript,
+                query: "status=error",
+                matchCase: false,
+                usesLargeTextSurface: true
+            )
+        }
+
+        let started = ContinuousClock.now
+        let model = TerminalTranscriptRenderModel(
+            text: transcript,
+            query: "status=error",
+            matchCase: false,
+            usesLargeTextSurface: true
+        )
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(model.searchIndex.ranges.count, 5_167)
+        XCTAssertEqual(model.scrollTargetLine(selectedIndex: 5_166), 30_997)
+        XCTAssertLessThan(seconds(elapsed), 0.12)
+    }
+
+    func testTerminalPromptPasteAndSendPreparationBenchmarkKPI() {
+        let largePaste = (0..<10_000)
+            .map { "echo synthetic-\($0)" }
+            .joined(separator: "\r\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let paste = TerminalShellPanelView.normalizedTerminalPasteForPrompt(largePaste)
+            _ = TerminalShellPanelView.preparedTerminalPromptSend(
+                input: paste.text,
+                pendingMultilinePasteConfirmation: paste.requiresConfirmation
+            )
+        }
+
+        let started = ContinuousClock.now
+        let paste = TerminalShellPanelView.normalizedTerminalPasteForPrompt(largePaste)
+        for _ in 0..<1_000 {
+            _ = TerminalShellPanelView.preparedTerminalPromptSend(
+                input: "kubectl get pods",
+                pendingMultilinePasteConfirmation: false
+            )
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertTrue(paste.requiresConfirmation)
+        XCTAssertTrue(paste.text.contains("echo synthetic-9999"))
+        XCTAssertLessThan(seconds(elapsed), 0.05)
+    }
+
+    func testTerminalTranscriptScrollNavigationBenchmarkKPI() {
+        let transcript = (0..<80_000)
+            .map { index in
+                index.isMultiple(of: 8)
+                    ? "line=\(index) status=error navigation-target"
+                    : "line=\(index) status=ok navigation-target"
+            }
+            .joined(separator: "\n")
+        let model = TerminalTranscriptRenderModel(
+            text: transcript,
+            query: "status=error",
+            matchCase: false,
+            usesLargeTextSurface: true
+        )
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for index in stride(from: 0, to: model.searchIndex.ranges.count, by: 7) {
+                _ = model.scrollTargetLine(selectedIndex: index, isPinnedToBottom: false)
+            }
+        }
+
+        let started = ContinuousClock.now
+        for index in 0..<model.searchIndex.ranges.count {
+            _ = model.scrollTargetLine(selectedIndex: index, isPinnedToBottom: false)
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(model.searchIndex.ranges.count, 10_000)
+        XCTAssertEqual(model.scrollTargetLine(selectedIndex: 9_999, isPinnedToBottom: false), 79_993)
+        let noQueryModel = TerminalTranscriptRenderModel(
+            text: transcript,
+            query: "",
+            matchCase: false,
+            usesLargeTextSurface: true
+        )
+        XCTAssertNil(noQueryModel.scrollTargetLine(selectedIndex: 0, isPinnedToBottom: false))
+        XCTAssertLessThan(seconds(elapsed), 0.02)
+    }
+
+    @MainActor
+    func testLargeTerminalTranscriptInitialMountBenchmarkKPI() {
+        let transcript = (0..<20_000)
+            .map { index in
+                "line=\(String(format: "%06d", index)) status=ok path=/synthetic/terminal/output/\(index)"
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let controller = NSHostingController(
+                rootView: TerminalTranscriptSurface(
+                    text: transcript,
+                    height: 420,
+                    resetID: "benchmark:terminal",
+                    fontSize: 12
+                )
+            )
+            controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 520)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+
+        let started = ContinuousClock.now
+        let controller = NSHostingController(
+            rootView: TerminalTranscriptSurface(
+                text: transcript,
+                height: 420,
+                resetID: "benchmark:terminal",
+                fontSize: 12
+            )
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 520)
+        controller.view.layoutSubtreeIfNeeded()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(seconds(elapsed), 0.12)
     }
 
     @MainActor
@@ -696,15 +1243,17 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     transcriptHeight: 320,
                     selectedShellPodID: .constant(selectedPod.id),
                     terminalInput: .constant(""),
-                    onStartSession: { _ in },
-                    onReconnectSession: { _, _ in },
+                    onStartSession: { _, _ in },
+                    onReconnectSession: { _, _, _ in },
                     onSend: {},
                     onSendControlSequence: { _ in },
                     onDisconnect: {},
                     onSelectSession: { _ in },
                     onCloseSession: { _ in },
                     onComposeNewSession: {},
-                    onClearTranscript: {}
+                    onClearTranscript: {},
+                    onSaveActiveTranscript: {},
+                    onSaveAllTranscripts: {}
                 )
             }
         }
@@ -722,15 +1271,17 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 transcriptHeight: 320,
                 selectedShellPodID: .constant(selectedPod.id),
                 terminalInput: .constant(""),
-                onStartSession: { _ in },
-                onReconnectSession: { _, _ in },
+                onStartSession: { _, _ in },
+                onReconnectSession: { _, _, _ in },
                 onSend: {},
                 onSendControlSequence: { _ in },
                 onDisconnect: {},
                 onSelectSession: { _ in },
                 onCloseSession: { _ in },
                 onComposeNewSession: {},
-                onClearTranscript: {}
+                onClearTranscript: {},
+                onSaveActiveTranscript: {},
+                onSaveAllTranscripts: {}
             )
         }
         let elapsed = started.duration(to: .now)
@@ -738,6 +1289,42 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(sessions.count, 64)
         XCTAssertEqual(pods.count, 500)
         XCTAssertLessThan(seconds(elapsed), 0.10)
+    }
+
+    func testTerminalTranscriptExportBenchmarkKPI() throws {
+        let sessions = (0..<8).map { sessionIndex in
+            PodTerminalSession(
+                id: "shell-\(sessionIndex)",
+                contextName: "benchmark",
+                namespace: "default",
+                podName: "pod-\(String(format: "%02d", sessionIndex))",
+                shell: "sh",
+                transcript: (0..<2_500).map { lineIndex in
+                    "session=\(sessionIndex) line=\(lineIndex) status=ok"
+                }.joined(separator: "\n"),
+                status: sessionIndex.isMultiple(of: 2) ? .connected : .disconnected,
+                lastExitCode: sessionIndex.isMultiple(of: 2) ? nil : 0
+            )
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = try? RuneAppViewModel.terminalTranscriptArchiveData(
+                sessions: sessions,
+                generatedAt: "20260508T100000Z"
+            )
+        }
+
+        let started = ContinuousClock.now
+        let data = try RuneAppViewModel.terminalTranscriptArchiveData(
+            sessions: sessions,
+            generatedAt: "20260508T100000Z"
+        )
+        let elapsed = started.duration(to: .now)
+        let archiveBytes = String(decoding: data, as: UTF8.self)
+
+        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-1-default-pod-00-20260508T100000Z.log"))
+        XCTAssertTrue(archiveBytes.contains("session=7 line=2499 status=ok"))
+        XCTAssertLessThan(seconds(elapsed), 0.25, "KPI: terminal transcript ZIP export should stay below 250ms for 20k synthetic lines.")
     }
 
     @MainActor
@@ -853,6 +1440,77 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertTrue(message.contains("diff truncated"))
         XCTAssertLessThan(seconds(elapsed), 0.10)
     }
+
+    @MainActor
+    private func makeLogToolbarController(
+        width: CGFloat,
+        searchSummary: ResourceLogSearchResult,
+        containerOptions: [String]
+    ) -> NSHostingController<ResourceLogsToolbar> {
+        let controller = NSHostingController(
+            rootView: ResourceLogsToolbar(
+                selectedLogPreset: .constant(.recentLines),
+                includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                searchQuery: .constant("error"),
+                selectedSearchMatchIndex: .constant(2),
+                searchPulseID: 0,
+                searchSummary: searchSummary,
+                statusText: "Last updated 12:00:00",
+                containerOptions: containerOptions,
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+        return controller
+    }
+
+    @MainActor
+    private func makeManifestToolbarController(width: CGFloat) -> NSHostingController<some View> {
+        let controller = NSHostingController(
+            rootView: VStack(alignment: .leading, spacing: 9) {
+                ManifestInlineNote("YAML edits stay local until Apply YAML.") {
+                    ManifestUnsavedEditsSlot(isVisible: true)
+                }
+
+                ManifestToolbarScrollRow {
+                    ManifestToolbarGroup {
+                        Button("Apply YAML") {}
+                            .buttonStyle(.borderedProminent)
+                        Button("Quick Edit") {}
+                            .buttonStyle(.bordered)
+                        Button("Edit…") {}
+                            .buttonStyle(.bordered)
+                        Button("Undo") {}
+                            .buttonStyle(.bordered)
+                        Button("Revert") {}
+                            .buttonStyle(.bordered)
+                    }
+
+                    ManifestToolbarGroup {
+                        Button("Import…") {}
+                            .buttonStyle(.bordered)
+                        Button("Export…") {}
+                            .buttonStyle(.bordered)
+                    }
+                }
+
+                ManifestStatusChip(text: "Last updated 12:00:00", systemImage: "clock")
+            }
+            .frame(width: width, alignment: .leading)
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 160)
+        return controller
+    }
 }
 
 private struct EmptyKubeConfigDiscoverer: KubeConfigDiscovering {
@@ -867,6 +1525,19 @@ private final class CountingKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         callCount += 1
         return []
+    }
+}
+
+private actor PerformanceCoalescerCounter {
+    private var count = 0
+
+    func increment() -> Int {
+        count += 1
+        return count
+    }
+
+    func currentValue() -> Int {
+        count
     }
 }
 

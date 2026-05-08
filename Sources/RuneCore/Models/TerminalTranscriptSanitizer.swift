@@ -71,6 +71,15 @@ public enum TerminalTranscriptSanitizer {
                     continue
                 }
 
+                if Self.isCharsetEscapeIntroducer(introducer) {
+                    guard index < combined.unicodeScalars.endIndex else {
+                        pendingEscape = String(combined.unicodeScalars[escapeStart...])
+                        break
+                    }
+                    combined.unicodeScalars.formIndex(after: &index)
+                    continue
+                }
+
                 continue
             }
 
@@ -82,7 +91,15 @@ public enum TerminalTranscriptSanitizer {
             case 0x09, 0x0A:
                 output.append(scalar)
             case 0x0D:
-                break
+                let nextIndex = combined.unicodeScalars.index(after: index)
+                if nextIndex < combined.unicodeScalars.endIndex,
+                   combined.unicodeScalars[nextIndex].value == 0x0A {
+                    break
+                } else {
+                    while !output.isEmpty, output.last?.value != 0x0A {
+                        output.removeLast()
+                    }
+                }
             case 0x00..<0x20:
                 break
             default:
@@ -93,5 +110,14 @@ public enum TerminalTranscriptSanitizer {
         }
 
         return String(output)
+    }
+
+    private static func isCharsetEscapeIntroducer(_ scalar: UnicodeScalar) -> Bool {
+        switch scalar {
+        case "(", ")", "*", "+", "-", ".", "/":
+            return true
+        default:
+            return false
+        }
     }
 }

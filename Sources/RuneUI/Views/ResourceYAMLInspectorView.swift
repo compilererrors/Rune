@@ -78,17 +78,12 @@ struct ResourceYAMLInspectorPane: View {
             && !presentedIssues.contains(where: { $0.severity == .error })
 
         ResourceManifestInspectorLayout {
-            HStack(spacing: 8) {
-                if hasUnsavedEdits {
-                    Text("Unsaved edits")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 0)
+            ManifestInlineNote("YAML edits stay local until Apply YAML.") {
+                ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
             }
         } toolbar: {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+            ManifestToolbarScrollRow {
+                ManifestToolbarGroup {
                     Button("Apply YAML", action: onApply)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
@@ -119,10 +114,9 @@ struct ResourceYAMLInspectorPane: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(!hasUnsavedEdits)
+                }
 
-                    Divider()
-                        .frame(height: 16)
-
+                ManifestToolbarGroup {
                     Button("Import…") {
                         onImport()
                         onOpenEditor()
@@ -137,10 +131,7 @@ struct ResourceYAMLInspectorPane: View {
             }
         } status: {
             VStack(alignment: .leading, spacing: 6) {
-                Text(statusText)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                ManifestStatusChip(text: statusText, systemImage: "clock")
                 YAMLValidationSummaryView(
                     issues: presentedIssues,
                     isValidating: isValidating,
@@ -176,6 +167,123 @@ struct ResourceYAMLInspectorPane: View {
         }
         issueNavigationSequence += 1
         issueNavigationRequest = YAMLTextNavigationRequest(issue: issue, sequence: issueNavigationSequence)
+    }
+}
+
+struct ManifestUnsavedEditsChip: View {
+    var body: some View {
+        RuneChip(
+            horizontalPadding: 8,
+            verticalPadding: 3,
+            fill: Color.orange.opacity(0.14),
+            cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius
+        ) {
+            Label("Unsaved edits", systemImage: "circle.fill")
+                .font(.caption.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .imageScale(.small)
+                .foregroundStyle(.orange)
+        }
+        .frame(height: RuneUILayoutMetrics.headerChipHeight)
+        .help("The YAML draft has local changes that have not been applied to the cluster.")
+        .accessibilityLabel("Unsaved YAML edits")
+    }
+}
+
+struct ManifestUnsavedEditsSlot: View {
+    let isVisible: Bool
+
+    var body: some View {
+        ManifestUnsavedEditsChip()
+            .opacity(isVisible ? 1 : 0)
+            .accessibilityHidden(!isVisible)
+            .allowsHitTesting(isVisible)
+    }
+}
+
+struct ManifestInlineNote<Accessory: View>: View {
+    private let text: String
+    @ViewBuilder private let accessory: Accessory
+
+    init(_ text: String, @ViewBuilder accessory: () -> Accessory) {
+        self.text = text
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+
+            accessory
+        }
+        .frame(minHeight: RuneUILayoutMetrics.headerChipHeight, alignment: .center)
+    }
+}
+
+struct ManifestToolbarScrollRow<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 8) {
+                content
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .controlSize(.small)
+    }
+}
+
+struct ManifestToolbarGroup<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            content
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .frame(minHeight: 30)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+struct ManifestStatusChip: View {
+    let text: String
+    var systemImage = "clock"
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .monospacedDigit()
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+            }
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

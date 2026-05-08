@@ -10,7 +10,7 @@ struct DescribeTextSurface: View {
             text: text,
             minHeight: minHeight,
             resetID: resetID,
-            contentStyle: .plainText
+            contentStyle: .describe
         )
     }
 }

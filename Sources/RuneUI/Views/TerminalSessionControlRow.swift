@@ -15,21 +15,14 @@ struct TerminalSessionControlRow: View {
     @Binding var selection: String
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 selectorLabel
                     .frame(width: 116, alignment: .leading)
                 picker
                 actionButtons
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                selectorLabel
-                HStack(spacing: 8) {
-                    picker
-                    actionButtons
-                }
-            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -56,7 +49,7 @@ struct TerminalSessionControlRow: View {
         .labelsHidden()
         .disabled(pods.isEmpty)
         .controlSize(.small)
-        .frame(minWidth: 180, idealWidth: 340, maxWidth: .infinity, minHeight: 24, idealHeight: 26, maxHeight: 28, alignment: .leading)
+        .frame(width: 340, height: 26, alignment: .leading)
     }
 
     private var actionButtons: some View {

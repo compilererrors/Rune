@@ -5,6 +5,7 @@ import RuneCore
 struct AppKitManifestTextView: NSViewRepresentable {
     enum ContentStyle: Sendable {
         case yaml
+        case describe
         case plainText
         case ansiLogs
     }
@@ -279,6 +280,9 @@ private final class PlainManifestTextView: NSTextView {
             activeValidationIssues = issues
             applyYAMLHighlighting(in: storage, fullRange: fullRange, analysis: analysis)
             applyYAMLDiagnostics(in: storage, issues: issues)
+        } else if contentStyle == .describe, storage.length > 0 {
+            activeValidationIssues = []
+            applyDescribeHighlighting(in: storage, range: styleRange)
         } else {
             activeValidationIssues = []
         }
@@ -550,6 +554,37 @@ private final class PlainManifestTextView: NSTextView {
         }
     }
 
+    private func applyDescribeHighlighting(in storage: NSTextStorage, range: NSRange) {
+        let nsString = storage.string as NSString
+        let lineSearchRange = nsString.lineRange(for: range)
+        nsString.enumerateSubstrings(in: lineSearchRange, options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
+            let trimmedRange = self.trimmedLineRange(lineRange, in: nsString)
+            guard trimmedRange.length > 0 else { return }
+
+            let line = nsString.substring(with: trimmedRange)
+            guard let colonIndex = line.firstIndex(of: ":") else { return }
+            let keyLength = line.distance(from: line.startIndex, to: colonIndex)
+            guard keyLength > 0 else { return }
+
+            let leadingWhitespace = line.prefix { $0 == " " || $0 == "\t" }.count
+            let keyRange = NSRange(location: trimmedRange.location + leadingWhitespace, length: max(0, keyLength - leadingWhitespace))
+            guard keyRange.length > 0 else { return }
+
+            let isSectionHeader = line[line.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces).isEmpty
+            storage.addAttributes([
+                .foregroundColor: isSectionHeader ? ManifestPalette.describeSection : ManifestPalette.describeKey,
+                .font: NSFont.monospacedSystemFont(ofSize: self.configuredFontSize, weight: isSectionHeader ? .semibold : .medium)
+            ], range: keyRange)
+
+            let colonLocation = trimmedRange.location + keyLength
+            storage.addAttribute(
+                .foregroundColor,
+                value: ManifestPalette.describeColon,
+                range: NSRange(location: colonLocation, length: 1)
+            )
+        }
+    }
+
     private func drawIndentGuides(in rect: NSRect) {
         guard let layoutManager else { return }
         guard let visibleRange = visibleCharacterRange else { return }
@@ -749,6 +784,9 @@ private struct ManifestPalette {
     static let errorBackground = NSColor.systemRed.withAlphaComponent(0.12)
     static let warningUnderline = NSColor.systemOrange
     static let warningBackground = NSColor.systemOrange.withAlphaComponent(0.1)
+    static let describeKey = NSColor.systemCyan.withAlphaComponent(0.9)
+    static let describeSection = NSColor.controlAccentColor.withAlphaComponent(0.95)
+    static let describeColon = NSColor.secondaryLabelColor.withAlphaComponent(0.8)
 
     static func color(for kind: YAMLHighlightKind) -> NSColor {
         switch kind {

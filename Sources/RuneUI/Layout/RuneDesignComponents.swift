@@ -164,26 +164,18 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 selectionCountChip
                 selectVisibleButton
                 separator
                 actions
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    selectionCountChip
-                    selectVisibleButton
-                }
-                HStack(spacing: 8) {
-                    actions
-                }
-            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
     }
 
@@ -377,16 +369,14 @@ struct RuneInspectorActionRow<Content: View>: View {
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .center, spacing: 8) {
                 content
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                content
-            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .controlSize(.regular)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

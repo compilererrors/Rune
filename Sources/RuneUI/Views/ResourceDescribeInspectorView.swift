@@ -20,13 +20,12 @@ struct ResourceDescribeInspectorPane: View {
             && !validationIssues.contains(where: { $0.severity == .error })
 
         ResourceManifestInspectorLayout {
-            Text("Describe output is read-only. Edit the YAML manifest to change the resource, then Apply.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            ManifestInlineNote("Describe output is read-only. Edit YAML, then Apply.") {
+                ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+            }
         } toolbar: {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+            ManifestToolbarScrollRow {
+                ManifestToolbarGroup {
                     Button("Apply", action: onApply)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
@@ -39,10 +38,7 @@ struct ResourceDescribeInspectorPane: View {
                 }
             }
         } status: {
-            Text(statusText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            ManifestStatusChip(text: statusText, systemImage: "clock")
         } surface: {
             DescribeTextSurface(
                 text: describeText,

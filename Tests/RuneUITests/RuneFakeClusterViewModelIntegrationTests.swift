@@ -104,6 +104,35 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testFakeClusterLoadsPodLogsYAMLAndDescribeThroughViewModel() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+
+        try await waitUntil {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.name == "ember-gate-75c9f746b8-kq2wm"
+                && harness.state.resourceYAML.contains("Pod")
+                && harness.state.resourceDescribe.contains("Name:")
+                && harness.state.resourceDescribe.contains("ember-gate-75c9f746b8-kq2wm")
+        }
+
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil {
+            !harness.state.isLoadingLogs
+                && harness.state.podLogs.contains("synthetic REST fake log")
+                && harness.state.lastLogFetchError == nil
+        }
+
+        XCTAssertNil(harness.state.lastResourceYAMLError)
+        XCTAssertNil(harness.state.lastResourceDescribeError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testRapidViewSwitchCoalescesFinalInspectorRequests() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }

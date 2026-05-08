@@ -12,14 +12,52 @@ public struct PodLogArchiveRecord: Sendable {
     }
 }
 
+public struct LogArchiveMetadata: Codable, Equatable, Sendable {
+    public let context: String
+    public let namespace: String
+    public let workloadKind: String
+    public let workloadName: String
+    public let selectedPods: [String]
+    public let timeWindow: String
+    public let previous: Bool
+    public let tail: Bool
+    public let exportedAt: String
+    public let scope: String
+
+    public init(
+        context: String,
+        namespace: String,
+        workloadKind: String,
+        workloadName: String,
+        selectedPods: [String],
+        timeWindow: String,
+        previous: Bool,
+        tail: Bool,
+        exportedAt: String,
+        scope: String
+    ) {
+        self.context = context
+        self.namespace = namespace
+        self.workloadKind = workloadKind
+        self.workloadName = workloadName
+        self.selectedPods = selectedPods
+        self.timeWindow = timeWindow
+        self.previous = previous
+        self.tail = tail
+        self.exportedAt = exportedAt
+        self.scope = scope
+    }
+}
+
 public enum LogArchiveBuilder {
     public static func buildPodContainerZip(
         records: [PodLogArchiveRecord],
         baseName: String,
-        generatedAt: String
+        generatedAt: String,
+        metadata: LogArchiveMetadata? = nil
     ) throws -> Data {
         var entries: [ZipArchiveEntry] = []
-        entries.reserveCapacity(records.count + 1)
+        entries.reserveCapacity(records.count + 2)
         var mergedText = String()
         mergedText.reserveCapacity(records.reduce(0) { partial, record in
             partial + record.logs.utf8.count + (record.podName.utf8.count + (record.containerName?.utf8.count ?? 0) + 8) * 8
@@ -52,6 +90,7 @@ public enum LogArchiveBuilder {
             ),
             at: 0
         )
+        try appendMetadataEntry(metadata, baseName: baseName, generatedAt: generatedAt, to: &entries)
 
         return try ZipArchiveBuilder.build(entries: entries)
     }
@@ -60,7 +99,8 @@ public enum LogArchiveBuilder {
         mergedText: String,
         podNames: [String],
         baseName: String,
-        generatedAt: String
+        generatedAt: String,
+        metadata: LogArchiveMetadata? = nil
     ) throws -> Data {
         var entries = [
             ZipArchiveEntry(
@@ -82,6 +122,7 @@ public enum LogArchiveBuilder {
                 )
             )
         }
+        try appendMetadataEntry(metadata, baseName: baseName, generatedAt: generatedAt, to: &entries)
 
         return try ZipArchiveBuilder.build(entries: entries)
     }
@@ -133,5 +174,23 @@ public enum LogArchiveBuilder {
             output.append(contentsOf: line)
         }
         wroteLine = true
+    }
+
+    private static func appendMetadataEntry(
+        _ metadata: LogArchiveMetadata?,
+        baseName: String,
+        generatedAt: String,
+        to entries: inout [ZipArchiveEntry]
+    ) throws {
+        guard let metadata else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(metadata)
+        entries.append(
+            ZipArchiveEntry(
+                path: "\(baseName)/metadata-\(generatedAt).json",
+                data: data
+            )
+        )
     }
 }

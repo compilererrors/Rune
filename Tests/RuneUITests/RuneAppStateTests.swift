@@ -2,9 +2,110 @@ import XCTest
 @testable import RuneCore
 @testable import RuneDiagnostics
 @testable import RuneExport
+@testable import RuneKube
 @testable import RuneUI
 
 final class RuneAppStateTests: XCTestCase {
+    @MainActor
+    func testLoadDemoClusterPopulatesFullInMemorySnapshot() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        state.isLoading = true
+        state.isLoadingLogs = true
+        state.setError(RuneError.invalidInput(message: "Previous startup error"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        viewModel.loadDemoCluster()
+
+        XCTAssertEqual(state.contexts.map(\.name), ["rune-demo"])
+        XCTAssertEqual(state.selectedContext?.name, "rune-demo")
+        XCTAssertEqual(state.selectedNamespace, "demo")
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertFalse(state.isLoading)
+        XCTAssertFalse(state.isLoadingLogs)
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(state.pods.count, 2)
+        XCTAssertFalse(state.deployments.isEmpty)
+        XCTAssertFalse(state.statefulSets.isEmpty)
+        XCTAssertFalse(state.daemonSets.isEmpty)
+        XCTAssertFalse(state.jobs.isEmpty)
+        XCTAssertFalse(state.cronJobs.isEmpty)
+        XCTAssertFalse(state.replicaSets.isEmpty)
+        XCTAssertFalse(state.horizontalPodAutoscalers.isEmpty)
+        XCTAssertFalse(state.services.isEmpty)
+        XCTAssertFalse(state.ingresses.isEmpty)
+        XCTAssertFalse(state.networkPolicies.isEmpty)
+        XCTAssertFalse(state.configMaps.isEmpty)
+        XCTAssertFalse(state.secrets.isEmpty)
+        XCTAssertFalse(state.persistentVolumeClaims.isEmpty)
+        XCTAssertFalse(state.persistentVolumes.isEmpty)
+        XCTAssertFalse(state.storageClasses.isEmpty)
+        XCTAssertFalse(state.nodes.isEmpty)
+        XCTAssertFalse(state.rbacRoles.isEmpty)
+        XCTAssertFalse(state.rbacRoleBindings.isEmpty)
+        XCTAssertFalse(state.rbacClusterRoles.isEmpty)
+        XCTAssertFalse(state.rbacClusterRoleBindings.isEmpty)
+        XCTAssertFalse(state.helmReleases.isEmpty)
+        XCTAssertFalse(state.operatorResources.isEmpty)
+        XCTAssertTrue(state.resourceYAML.contains("kind: Pod"))
+        XCTAssertTrue(state.resourceDescribe.contains("Name:"))
+        XCTAssertTrue(state.podLogs.contains("demo API"))
+    }
+
+    @MainActor
+    func testDemoClusterDetailsAndLogsStayInMemoryWhenSwitchingSelections() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+        viewModel.loadDemoCluster()
+
+        viewModel.setSection(RuneSection.workloads)
+        viewModel.setWorkloadKind(KubeResourceKind.deployment)
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("kind: Deployment")
+                && state.resourceDescribe.contains("Deployment")
+                && state.unifiedServiceLogs.contains("deployment rollout")
+                && !state.isLoadingResourceDetails
+                && !state.isLoadingLogs
+        }
+
+        viewModel.setSection(RuneSection.helm)
+        try await waitUntilForRuneAppState {
+            state.helmValues.contains("replicaCount")
+                && state.helmManifest.contains("kind: Deployment")
+                && state.helmHistory.map(\.revision) == [1, 2]
+        }
+
+        viewModel.selectOperatorResource(state.operatorResources.first)
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("apiVersion: operators.coreos.com")
+                && state.resourceDescribe.contains("Operator")
+                && !state.isLoadingResourceDetails
+        }
+
+        XCTAssertNil(state.lastResourceYAMLError)
+        XCTAssertNil(state.lastResourceDescribeError)
+        XCTAssertNil(state.lastLogFetchError)
+    }
+
     @MainActor
     func testOverviewClusterUsageCanUpdateWithoutReplacingOverviewSnapshot() {
         let state = RuneAppState()
@@ -470,6 +571,35 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testLogFetchErrorPreservesCachedLogsUntilSuccessfulRead() {
+        let state = RuneAppState()
+
+        state.appendPodLogRead(
+            "ready\n",
+            contextName: "demo",
+            namespace: "default",
+            podName: "api-0",
+            loadedAt: Date(timeIntervalSince1970: 1_776_000_000)
+        )
+
+        state.setLastLogFetchError("stream interrupted")
+
+        XCTAssertEqual(state.lastLogFetchError, "stream interrupted")
+        XCTAssertTrue(state.podLogs.contains("ready"))
+
+        state.appendPodLogRead(
+            "recovered\n",
+            contextName: "demo",
+            namespace: "default",
+            podName: "api-0",
+            loadedAt: Date(timeIntervalSince1970: 1_776_000_030)
+        )
+
+        XCTAssertNil(state.lastLogFetchError)
+        XCTAssertTrue(state.podLogs.contains("recovered"))
+    }
+
+    @MainActor
     func testUnifiedLogsCanBeScopedToSelectedPods() {
         let result = RuneAppViewModel.scopedUnifiedLogResult(
             mergedText: """
@@ -707,6 +837,106 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testActiveTerminalTranscriptExportSavesCurrentShellOnly() {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "api-0",
+            shell: "sh",
+            transcript: "active line\n",
+            status: .connected
+        ))
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-b",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "worker-0",
+            shell: "sh",
+            transcript: "background line\n",
+            status: .connected
+        ))
+        state.selectTerminalSession(id: "shell-a")
+
+        viewModel.saveActiveTerminalTranscript()
+
+        XCTAssertEqual(exporter.saves.count, 1)
+        XCTAssertTrue(exporter.saves[0].suggestedName.hasPrefix("terminal-demo-api-0-transcript-"))
+        XCTAssertEqual(exporter.saves[0].allowedFileTypes, ["log", "txt"])
+        let payload = String(decoding: exporter.saves[0].data, as: UTF8.self)
+        XCTAssertTrue(payload.contains("Context: demo-context"))
+        XCTAssertTrue(payload.contains("Namespace: demo"))
+        XCTAssertTrue(payload.contains("Pod: api-0"))
+        XCTAssertTrue(payload.contains("Status: connected"))
+        XCTAssertTrue(payload.contains("active line"))
+        XCTAssertFalse(payload.contains("background line"))
+    }
+
+    @MainActor
+    func testAllTerminalTranscriptExportBuildsOneArchiveForEveryShellTab() throws {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "api-0",
+            shell: "sh",
+            transcript: "alpha\n",
+            status: .disconnected,
+            lastExitCode: 0
+        ))
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-b",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "worker-0",
+            shell: "sh",
+            transcript: "beta\n",
+            status: .failed,
+            lastExitCode: 137
+        ))
+
+        viewModel.saveAllTerminalTranscriptsZip()
+
+        XCTAssertEqual(exporter.saves.count, 1)
+        XCTAssertTrue(exporter.saves[0].suggestedName.hasPrefix("terminal-transcripts-"))
+        XCTAssertEqual(exporter.saves[0].allowedFileTypes, ["zip"])
+        let archiveBytes = String(decoding: exporter.saves[0].data, as: UTF8.self)
+        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/README.txt"))
+        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-1-demo-api-0-"))
+        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-2-demo-worker-0-"))
+        XCTAssertTrue(archiveBytes.contains("alpha"))
+        XCTAssertTrue(archiveBytes.contains("beta"))
+        XCTAssertTrue(archiveBytes.contains("Exit Code: 137"))
+    }
+
+    @MainActor
+    func testTerminalTranscriptExportSkipsWhenNoTranscriptExists() {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-empty",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "api-0",
+            shell: "sh",
+            transcript: "",
+            status: .connected
+        ))
+
+        viewModel.saveActiveTerminalTranscript()
+        viewModel.saveAllTerminalTranscriptsZip()
+
+        XCTAssertTrue(exporter.saves.isEmpty)
+    }
+
+    @MainActor
     func testStartingTerminalSessionForConnectedPodReusesExistingTab() {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "benchmark")
@@ -727,6 +957,88 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(state.terminalSessions.map(\.id), ["shell-a"])
         XCTAssertEqual(state.terminalSession?.id, "shell-a")
         XCTAssertEqual(state.terminalSession?.transcript, "already connected")
+    }
+
+    @MainActor
+    func testTerminalSessionsAreScopedBySelectedContainer() {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "benchmark")
+        state.selectedNamespace = "default"
+        let viewModel = RuneAppViewModel(state: state)
+        let pod = PodSummary(
+            name: "pod-0",
+            namespace: "default",
+            status: "Running",
+            containerNamesLine: "app, sidecar"
+        )
+
+        viewModel.startTerminalSession(for: pod, container: "app")
+        viewModel.startTerminalSession(for: pod, container: "sidecar")
+        viewModel.startTerminalSession(for: pod, container: "app")
+
+        XCTAssertEqual(state.terminalSessions.count, 2)
+        XCTAssertEqual(state.terminalSessions.map(\.containerName), ["app", "sidecar"])
+        XCTAssertEqual(state.terminalSession?.containerName, "app")
+    }
+
+    @MainActor
+    func testTerminalFailureDiagnosticIsStoredAndClearedAfterReconnect() {
+        let state = RuneAppState()
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell",
+            contextName: "demo",
+            namespace: "default",
+            podName: "pod-0",
+            shell: "sh",
+            status: .connecting
+        ))
+        let diagnostic = PodTerminalSessionDiagnostic(
+            category: .transportDisconnected,
+            summary: "Terminal stream disconnected for pod `pod-0`.",
+            recoveryHint: "Reconnect when the cluster connection is healthy."
+        )
+
+        state.updateTerminalSessionStatus(id: "shell", status: .failed, diagnostic: diagnostic)
+
+        XCTAssertEqual(state.terminalSession?.lastDiagnostic, diagnostic)
+
+        state.updateTerminalSessionStatus(id: "shell", status: .connected)
+
+        XCTAssertNil(state.terminalSession?.lastDiagnostic)
+    }
+
+    @MainActor
+    func testTerminalSessionAppendAppliesScrollbackLimitFromSettings() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.terminalScrollbackLineLimit)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.terminalScrollbackLineLimit)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.terminalScrollbackLineLimit)
+            }
+        }
+        defaults.runeTerminalScrollbackLineLimit = RuneSettingsKeys.terminalScrollbackLineLimitMinimum
+
+        let state = RuneAppState()
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell",
+            contextName: "demo",
+            namespace: "default",
+            podName: "pod-0",
+            shell: "sh",
+            status: .connected
+        ))
+
+        state.appendTerminalSessionOutput(
+            id: "shell",
+            text: (0..<(RuneSettingsKeys.terminalScrollbackLineLimitMinimum + 5)).map { "line \($0)" }.joined(separator: "\n")
+        )
+
+        let transcript = state.terminalSession?.transcript ?? ""
+        XCTAssertTrue(transcript.hasPrefix(TerminalScrollbackRetention.truncationMarker))
+        XCTAssertFalse(transcript.contains("line 0"))
+        XCTAssertTrue(transcript.contains("line \(RuneSettingsKeys.terminalScrollbackLineLimitMinimum + 4)"))
     }
 
     @MainActor
@@ -921,6 +1233,36 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testResourceSearchQueryNormalizesPastedLineBreaksBeforeFiltering() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.setPods([
+            PodSummary(name: "api-0", namespace: "default", status: "Pending"),
+            PodSummary(name: "api-1", namespace: "default", status: "Running"),
+            PodSummary(name: "worker-0", namespace: "default", status: "Running")
+        ])
+
+        viewModel.setResourceSearchQuery("api\nPending\n")
+
+        XCTAssertEqual(state.resourceSearchQuery, "api Pending")
+        XCTAssertEqual(viewModel.visiblePods.map(\.name), ["api-0"])
+    }
+
+    @MainActor
+    func testResourceSearchQueryKeepsNormalTypingButSanitizesPasteSeparators() {
+        XCTAssertEqual(
+            RuneAppViewModel.normalizedResourceSearchQueryInput("api  worker"),
+            "api  worker"
+        )
+        XCTAssertEqual(
+            RuneAppViewModel.normalizedResourceSearchQueryInput("api\tworker\r\npending\n"),
+            "api worker pending"
+        )
+    }
+
+    @MainActor
     func testGenericResourceBulkSelectionBuildsDeleteConfirmation() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
@@ -943,6 +1285,51 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete 2")
         XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("2 selected resources"))
         XCTAssertTrue(viewModel.pendingWriteActionIsDestructive)
+    }
+
+    @MainActor
+    func testSelectedGenericResourceComparisonSummarizesVisibleSelection() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps([
+            ClusterResourceSummary(kind: .configMap, name: "settings", namespace: "default", primaryText: "2 keys", secondaryText: "Data"),
+            ClusterResourceSummary(kind: .configMap, name: "feature-flags", namespace: "default", primaryText: "1 key", secondaryText: "Data")
+        ])
+
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[0])
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[1])
+
+        let comparison = viewModel.selectedGenericResourceComparisonText
+
+        XCTAssertTrue(viewModel.canCopySelectedGenericResourceComparison)
+        XCTAssertTrue(comparison.contains("Selected ConfigMaps Compare"))
+        XCTAssertTrue(comparison.contains("Namespace: default"))
+        XCTAssertTrue(comparison.contains("feature-flags"))
+        XCTAssertTrue(comparison.contains("settings"))
+        XCTAssertTrue(comparison.contains("Primary: 1 key"))
+        XCTAssertTrue(comparison.contains("Primary: 2 keys"))
+        XCTAssertFalse(comparison.contains("token"))
+        XCTAssertFalse(comparison.contains("kubeconfig"))
+    }
+
+    @MainActor
+    func testSelectedGenericResourceComparisonRequiresAtLeastTwoResources() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps([
+            ClusterResourceSummary(kind: .configMap, name: "settings", namespace: "default", primaryText: "2 keys", secondaryText: "Data")
+        ])
+
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[0])
+
+        XCTAssertFalse(viewModel.canCopySelectedGenericResourceComparison)
+        XCTAssertTrue(viewModel.selectedGenericResourceComparisonText.contains("settings"))
     }
 
     @MainActor
@@ -1041,6 +1428,41 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.operatorResourcePageSummary, "41-45 of 45")
         XCTAssertTrue(viewModel.canPageOperatorResourcesBackward)
         XCTAssertFalse(viewModel.canPageOperatorResourcesForward)
+    }
+
+    @MainActor
+    func testOperatorResourceSelectionIsSeparateFromHelmReleaseForDrilldown() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let release = HelmReleaseSummary(
+            name: "sample-release",
+            namespace: "default",
+            revision: 1,
+            updated: "now",
+            status: "deployed",
+            chart: "sample-1.0.0",
+            appVersion: "1.0.0"
+        )
+        let resource = OperatorResourceSummary(
+            family: "Custom Resources",
+            kind: "Widgets",
+            apiPath: "/apis/example.test/v1/namespaces/default/widgets",
+            name: "widget-a",
+            namespace: "default",
+            status: "Ready True",
+            message: "Ready"
+        )
+
+        state.setHelmReleases([release])
+        state.setOperatorResources([resource])
+        viewModel.selectHelmRelease(release)
+        XCTAssertEqual(state.selectedHelmRelease, release)
+        XCTAssertNil(state.selectedOperatorResource)
+
+        viewModel.selectOperatorResource(resource)
+
+        XCTAssertEqual(state.selectedOperatorResource, resource)
+        XCTAssertNil(state.selectedHelmRelease)
     }
 
     @MainActor
@@ -1265,6 +1687,28 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(exporter.saves.first?.data.count), 0)
     }
 
+    @MainActor
+    func testCommandPalettePodLogsAliasSavesCurrentLogs() throws {
+        let state = RuneAppState()
+        let exporter = RecordingFileExporter()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setPodLogs("ready\n")
+
+        let items = viewModel.commandPaletteItems(query: ":po logs")
+        XCTAssertEqual(items.first?.title, "Save Logs")
+
+        viewModel.executeCommandPaletteQuery(":po logs")
+
+        XCTAssertEqual(exporter.saves.count, 1)
+        XCTAssertEqual(exporter.saves.first?.allowedFileTypes, ["log", "txt"])
+        XCTAssertTrue(exporter.saves.first?.suggestedName.contains("pod-api-0-logs") == true)
+        XCTAssertEqual(String(data: try XCTUnwrap(exporter.saves.first?.data), encoding: .utf8), "ready\n")
+    }
+
     func testPodContainerLogArchiveIncludesDeploymentMergedAndContainerFiles() throws {
         let data = try LogArchiveBuilder.buildPodContainerZip(
             records: [
@@ -1285,6 +1729,75 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(archiveText.contains("deployment-api-pod-logs/pods/api-1/api-1-20260506T100000Z.log"))
         XCTAssertTrue(archiveText.contains("[api-0/app] ready"))
         XCTAssertTrue(archiveText.contains("[api-0/sidecar] proxy ready"))
+    }
+
+    func testLogArchiveIncludesMetadataWithoutSecretFields() throws {
+        let metadata = LogArchiveMetadata(
+            context: "demo",
+            namespace: "default",
+            workloadKind: "deployment",
+            workloadName: "api",
+            selectedPods: ["api-0", "api-1"],
+            timeWindow: "recent-200-lines",
+            previous: true,
+            tail: false,
+            exportedAt: "2026-05-07T10:00:00Z",
+            scope: "full"
+        )
+
+        let data = try LogArchiveBuilder.buildZip(
+            mergedText: "[api-0] ready\n[api-1] served",
+            podNames: ["api-0", "api-1"],
+            baseName: "deployment-api-full-logs",
+            generatedAt: "20260507T100000Z",
+            metadata: metadata
+        )
+
+        let archiveText = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(archiveText.contains("deployment-api-full-logs/metadata-20260507T100000Z.json"))
+        XCTAssertTrue(archiveText.contains(#""context":"demo""#))
+        XCTAssertTrue(archiveText.contains(#""namespace":"default""#))
+        XCTAssertTrue(archiveText.contains(#""workloadKind":"deployment""#))
+        XCTAssertTrue(archiveText.contains(#""workloadName":"api""#))
+        XCTAssertTrue(archiveText.contains(#""selectedPods":["api-0","api-1"]"#))
+        XCTAssertTrue(archiveText.contains(#""timeWindow":"recent-200-lines""#))
+        XCTAssertTrue(archiveText.contains(#""previous":true"#))
+        XCTAssertTrue(archiveText.contains(#""tail":false"#))
+        XCTAssertTrue(archiveText.contains(#""scope":"full""#))
+        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("token"))
+        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("bearer"))
+        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("kubeconfig"))
+        XCTAssertFalse(archiveText.contains("/Users/"))
+    }
+
+    func testPodContainerLogArchiveIncludesMetadataForSelectedPods() throws {
+        let metadata = LogArchiveMetadata(
+            context: "demo",
+            namespace: "default",
+            workloadKind: "pod",
+            workloadName: "selected-pods",
+            selectedPods: ["api-0"],
+            timeWindow: "all",
+            previous: false,
+            tail: true,
+            exportedAt: "2026-05-07T10:01:00Z",
+            scope: "selected"
+        )
+
+        let data = try LogArchiveBuilder.buildPodContainerZip(
+            records: [
+                PodLogArchiveRecord(podName: "api-0", containerName: "app", logs: "ready")
+            ],
+            baseName: "selected-pod-full-logs",
+            generatedAt: "20260507T100100Z",
+            metadata: metadata
+        )
+
+        let archiveText = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(archiveText.contains("selected-pod-full-logs/metadata-20260507T100100Z.json"))
+        XCTAssertTrue(archiveText.contains(#""workloadKind":"pod""#))
+        XCTAssertTrue(archiveText.contains(#""selectedPods":["api-0"]"#))
+        XCTAssertTrue(archiveText.contains(#""scope":"selected""#))
     }
 
     @MainActor
@@ -1380,6 +1893,22 @@ private struct CancelledFileExporter: FileExporting {
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
         throw FileExportError.userCancelled
     }
+}
+
+private func waitUntilForRuneAppState(
+    timeout: TimeInterval = 2,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    predicate: @escaping @MainActor () -> Bool
+) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if await MainActor.run(body: predicate) {
+            return
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTFail("Timed out waiting for condition", file: file, line: line)
 }
 
 @MainActor

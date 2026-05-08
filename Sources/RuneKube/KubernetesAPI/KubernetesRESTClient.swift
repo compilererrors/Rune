@@ -18,6 +18,7 @@ private func RuneSecKeychainCreate(
 final class KubernetesRESTClient: @unchecked Sendable {
     private let configCache = KubernetesRESTConfigCache()
     private let execCredentialCache = KubernetesExecCredentialCache()
+    private let requestCoalescer = KubernetesRESTRequestCoalescer()
 
     init() {}
 
@@ -117,6 +118,62 @@ final class KubernetesRESTClient: @unchecked Sendable {
             body: nil,
             timeout: timeout
         ).body
+    }
+
+    func customResourceYAML(
+        environment: [String: String],
+        contextName: String,
+        collectionAPIPath: String,
+        name: String,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let response = try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "GET",
+            apiPath: try customResourcePath(collectionAPIPath: collectionAPIPath, name: name),
+            headers: ["Accept": "application/yaml, application/json"],
+            body: nil,
+            timeout: timeout
+        )
+
+        if response.contentType.localizedCaseInsensitiveContains("yaml") {
+            return response.body
+        }
+
+        let json = try JSONSerialization.jsonObject(with: Data(response.body.utf8))
+        let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func customResourceDescribe(
+        environment: [String: String],
+        contextName: String,
+        resource: OperatorResourceSummary,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let raw = try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "GET",
+            apiPath: try customResourcePath(collectionAPIPath: resource.apiPath, name: resource.name),
+            headers: ["Accept": "application/json"],
+            body: nil,
+            timeout: timeout
+        ).body
+        let pretty = try prettyPrintedJSON(raw)
+        return [
+            "Name: \(resource.name)",
+            "Namespace: \(resource.namespace ?? "<cluster>")",
+            "Kind: \(resource.kind)",
+            "Family: \(resource.family)",
+            "API Path: \(resource.apiPath)",
+            "Status: \(resource.status)",
+            resource.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : "Message: \(resource.message)",
+            "",
+            "Manifest JSON:",
+            pretty
+        ].compactMap { $0 }.joined(separator: "\n")
     }
 
     func resourceJSON(
@@ -300,6 +357,20 @@ final class KubernetesRESTClient: @unchecked Sendable {
             body: nil,
             timeout: timeout
         ).body
+    }
+
+    private func customResourcePath(collectionAPIPath: String, name: String) throws -> String {
+        let trimmedPath = collectionAPIPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedPath.hasPrefix("/"), !trimmedPath.contains("?") else {
+            throw RuneError.invalidInput(message: "Custom resource API path is invalid.")
+        }
+        guard !trimmedName.isEmpty else {
+            throw RuneError.invalidInput(message: "Custom resource name is empty.")
+        }
+        return trimmedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == ""
+            ? "/\(trimmedName.runePercentEncodedPathSegment)"
+            : "\(trimmedPath.trimmingTrailingSlashes())/\(trimmedName.runePercentEncodedPathSegment)"
     }
 
     func selfSubjectAccessReview(
@@ -1003,40 +1074,115 @@ final class KubernetesRESTClient: @unchecked Sendable {
             request.httpBody = Data(body.utf8)
         }
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await restSession.session.data(for: request)
-        } catch {
+        if KubernetesRESTRequestCoalescingKey.isCoalescible(method: method, body: body) {
+            let finalRequest = request
+            let key = KubernetesRESTRequestCoalescingKey(
+                method: method,
+                server: resolved.serverURL.absoluteString,
+                contextName: contextName,
+                apiPath: apiPath,
+                headers: headers
+            )
+            return try await requestCoalescer.value(for: key) {
+                try await self.performRawRequest(
+                    request: finalRequest,
+                    restSession: restSession,
+                    method: method,
+                    contextName: contextName,
+                    apiPath: apiPath,
+                    resolved: resolved
+                )
+            }
+        }
+
+        return try await performRawRequest(
+            request: request,
+            restSession: restSession,
+            method: method,
+            contextName: contextName,
+            apiPath: apiPath,
+            resolved: resolved
+        )
+    }
+
+    private func performRawRequest(
+        request: URLRequest,
+        restSession: RESTURLSession,
+        method: String,
+        contextName: String,
+        apiPath: String,
+        resolved: ResolvedRESTContext
+    ) async throws -> RESTResponse {
+        var attempt = 1
+        while true {
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await restSession.session.data(for: request)
+            } catch {
+                let retryDecision = KubernetesRequestRetryPolicy.classifyNetworkError(error)
+                let errorMessage = networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure())
+                if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
+                    try await sleepBeforeKubernetesRetry(
+                        method: method,
+                        contextName: contextName,
+                        apiPath: apiPath,
+                        attempt: attempt,
+                        decision: retryDecision
+                    )
+                    attempt += 1
+                    continue
+                }
+                VerboseKubeTrace.append(
+                    "k8s.request",
+                    "failed method=\(method) context=\(contextName) path=\(apiPath) \(retryDecision.traceDescription) error=\(errorMessage)"
+                )
+                throw RuneError.commandFailed(
+                    command: "kubernetes REST \(method) \(apiPath)",
+                    message: retryAnnotatedErrorMessage(errorMessage, decision: retryDecision)
+                )
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw RuneError.commandFailed(command: "kubernetes REST \(method) \(apiPath)", message: "Missing HTTP response")
+            }
+
+            let responseBody = String(data: data, encoding: .utf8) ?? ""
             VerboseKubeTrace.append(
                 "k8s.request",
-                "failed method=\(method) context=\(contextName) path=\(apiPath) error=\(networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure()))"
+                "response method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode)"
             )
-            throw RuneError.commandFailed(
-                command: "kubernetes REST \(method) \(apiPath)",
-                message: networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure())
-            )
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw RuneError.commandFailed(command: "kubernetes REST \(method) \(apiPath)", message: "Missing HTTP response")
-        }
+            guard (200..<300).contains(http.statusCode) else {
+                let retryDecision = KubernetesRequestRetryPolicy.classifyHTTPStatus(
+                    http.statusCode,
+                    retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+                )
+                if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
+                    try await sleepBeforeKubernetesRetry(
+                        method: method,
+                        contextName: contextName,
+                        apiPath: apiPath,
+                        attempt: attempt,
+                        decision: retryDecision
+                    )
+                    attempt += 1
+                    continue
+                }
+                VerboseKubeTrace.append(
+                    "k8s.request",
+                    "http_error method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode) \(retryDecision.traceDescription)"
+                )
+                let message = responseBody.isEmpty ? "HTTP \(http.statusCode)" : "HTTP \(http.statusCode): \(responseBody)"
+                throw RuneError.commandFailed(
+                    command: "kubernetes REST \(method) \(apiPath)",
+                    message: retryAnnotatedErrorMessage(message, decision: retryDecision)
+                )
+            }
 
-        let responseBody = String(data: data, encoding: .utf8) ?? ""
-        VerboseKubeTrace.append(
-            "k8s.request",
-            "response method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode)"
-        )
-        guard (200..<300).contains(http.statusCode) else {
-            throw RuneError.commandFailed(
-                command: "kubernetes REST \(method) \(apiPath)",
-                message: responseBody.isEmpty ? "HTTP \(http.statusCode)" : "HTTP \(http.statusCode): \(responseBody)"
+            return RESTResponse(
+                body: responseBody,
+                contentType: http.value(forHTTPHeaderField: "Content-Type") ?? ""
             )
         }
-
-        return RESTResponse(
-            body: responseBody,
-            contentType: http.value(forHTTPHeaderField: "Content-Type") ?? ""
-        )
     }
 
     private func makeWebSocketTask(
@@ -2357,7 +2503,66 @@ private struct RESTCredentialResolution {
     let clientTLSIdentity: ClientTLSIdentity?
 }
 
-private struct RESTResponse {
+struct KubernetesRESTRequestCoalescingKey: Hashable, Sendable {
+    let method: String
+    let server: String
+    let contextName: String
+    let apiPath: String
+    let headers: [String: String]
+
+    init(
+        method: String,
+        server: String,
+        contextName: String,
+        apiPath: String,
+        headers: [String: String]
+    ) {
+        self.method = method.uppercased()
+        self.server = server
+        self.contextName = contextName
+        self.apiPath = apiPath
+        self.headers = headers
+    }
+
+    static func isCoalescible(method: String, body: String?) -> Bool {
+        guard body == nil else { return false }
+        switch method.uppercased() {
+        case "GET", "HEAD":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+actor KubernetesRESTRequestCoalescer {
+    private var inFlight: [KubernetesRESTRequestCoalescingKey: Task<RESTResponse, Error>] = [:]
+
+    func value(
+        for key: KubernetesRESTRequestCoalescingKey,
+        operation: @escaping @Sendable () async throws -> RESTResponse
+    ) async throws -> RESTResponse {
+        if let existing = inFlight[key] {
+            return try await existing.value
+        }
+
+        let task = Task {
+            try await operation()
+        }
+        inFlight[key] = task
+
+        do {
+            let value = try await task.value
+            inFlight[key] = nil
+            return value
+        } catch {
+            inFlight[key] = nil
+            throw error
+        }
+    }
+}
+
+struct RESTResponse: Sendable {
     let body: String
     let contentType: String
 }
@@ -2703,6 +2908,27 @@ private func networkErrorMessage(_ error: Error, resolved: ResolvedRESTContext, 
         }
     }
     return details.joined(separator: " | ")
+}
+
+private func retryAnnotatedErrorMessage(_ message: String, decision: KubernetesRequestRetryDecision) -> String {
+    guard decision.isRetryable else { return message }
+    let delayDescription = decision.suggestedDelayNanoseconds.map { " after \($0 / 1_000_000) ms" } ?? ""
+    return "\(message) | transient \(decision.category.rawValue), safe to retry\(delayDescription)"
+}
+
+private func sleepBeforeKubernetesRetry(
+    method: String,
+    contextName: String,
+    apiPath: String,
+    attempt: Int,
+    decision: KubernetesRequestRetryDecision
+) async throws {
+    let delayNanoseconds = KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: decision, attempt: attempt)
+    VerboseKubeTrace.append(
+        "k8s.request",
+        "retry method=\(method) context=\(contextName) path=\(apiPath) attempt=\(attempt + 1) delayMs=\(delayNanoseconds / 1_000_000) \(decision.traceDescription)"
+    )
+    try await Task.sleep(nanoseconds: delayNanoseconds)
 }
 
 private extension ResolvedRESTContext {
@@ -3890,5 +4116,13 @@ private extension Data {
 private extension String {
     var runePercentEncodedPathSegment: String {
         addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? self
+    }
+
+    func trimmingTrailingSlashes() -> String {
+        var value = self
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 }

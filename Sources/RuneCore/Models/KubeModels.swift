@@ -612,34 +612,137 @@ public enum PodTerminalSessionStatus: String, Codable, Sendable {
     case failed
 }
 
+public enum PodTerminalSessionFailureCategory: String, Codable, Sendable {
+    case rbacDenied
+    case missingShell
+    case podOrContainerUnavailable
+    case transportDisconnected
+    case unknown
+}
+
+public struct PodTerminalSessionDiagnostic: Hashable, Codable, Sendable {
+    public let category: PodTerminalSessionFailureCategory
+    public let summary: String
+    public let recoveryHint: String
+
+    public init(category: PodTerminalSessionFailureCategory, summary: String, recoveryHint: String) {
+        self.category = category
+        self.summary = summary
+        self.recoveryHint = recoveryHint
+    }
+
+    public var transcriptMessage: String {
+        "[rune] \(summary) \(recoveryHint)"
+    }
+
+    public static func classify(
+        errorMessage: String,
+        podName: String,
+        containerName: String?,
+        shell: String
+    ) -> PodTerminalSessionDiagnostic {
+        let message = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = message.lowercased()
+        let containerLabel = containerName.map { " container `\($0)`" } ?? ""
+
+        if lower.contains("forbidden")
+            || lower.contains("unauthorized")
+            || lower.contains("cannot create resource")
+            || lower.contains("pods/exec")
+            || lower.contains("rbac")
+            || lower.contains(" 401")
+            || lower.contains(" 403") {
+            return PodTerminalSessionDiagnostic(
+                category: .rbacDenied,
+                summary: "RBAC denied terminal exec for pod `\(podName)`\(containerLabel).",
+                recoveryHint: "Verify create access on `pods/exec` for the selected namespace."
+            )
+        }
+
+        if lower.contains("executable file not found")
+            || lower.contains("command not found")
+            || lower.contains("no such file or directory")
+            || lower.contains("stat /bin/")
+            || lower.contains("stat /usr/bin/") {
+            return PodTerminalSessionDiagnostic(
+                category: .missingShell,
+                summary: "Shell not found in pod `\(podName)`\(containerLabel).",
+                recoveryHint: "Try `sh`, `ash`, or another shell that exists in the image instead of `\(shell)`."
+            )
+        }
+
+        if lower.contains("container not found")
+            || lower.contains("container ") && lower.contains(" not found")
+            || lower.contains("pod ") && lower.contains(" not found")
+            || lower.contains("pod does not exist")
+            || lower.contains("containercreating")
+            || lower.contains("crashloopbackoff")
+            || lower.contains("terminated") {
+            return PodTerminalSessionDiagnostic(
+                category: .podOrContainerUnavailable,
+                summary: "Pod or container unavailable for `\(podName)`\(containerLabel).",
+                recoveryHint: "Refresh the workload and reconnect after the pod is running."
+            )
+        }
+
+        if lower.contains("network connection was lost")
+            || lower.contains("socket")
+            || lower.contains("websocket")
+            || lower.contains("connection")
+            || lower.contains("timed out")
+            || lower.contains("timeout")
+            || lower.contains("transport")
+            || lower.contains("eof")
+            || lower.contains("cancelled") {
+            return PodTerminalSessionDiagnostic(
+                category: .transportDisconnected,
+                summary: "Terminal stream disconnected for pod `\(podName)`\(containerLabel).",
+                recoveryHint: "Reconnect when the cluster connection is healthy."
+            )
+        }
+
+        return PodTerminalSessionDiagnostic(
+            category: .unknown,
+            summary: "Terminal session failed for pod `\(podName)`\(containerLabel).",
+            recoveryHint: "Open Auth Doctor or retry after refreshing the resource."
+        )
+    }
+}
+
 public struct PodTerminalSession: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let contextName: String
     public let namespace: String
     public let podName: String
+    public let containerName: String?
     public let shell: String
     public let transcript: String
     public let status: PodTerminalSessionStatus
     public let lastExitCode: Int32?
+    public let lastDiagnostic: PodTerminalSessionDiagnostic?
 
     public init(
         id: String,
         contextName: String,
         namespace: String,
         podName: String,
+        containerName: String? = nil,
         shell: String,
         transcript: String = "",
         status: PodTerminalSessionStatus,
-        lastExitCode: Int32? = nil
+        lastExitCode: Int32? = nil,
+        lastDiagnostic: PodTerminalSessionDiagnostic? = nil
     ) {
         self.id = id
         self.contextName = contextName
         self.namespace = namespace
         self.podName = podName
+        self.containerName = containerName
         self.shell = shell
         self.transcript = transcript
         self.status = status
         self.lastExitCode = lastExitCode
+        self.lastDiagnostic = lastDiagnostic
     }
 }
 

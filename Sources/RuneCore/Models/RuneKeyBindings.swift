@@ -117,6 +117,7 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
     case historyForward
     case describe
     case logs
+    case saveLogs
     case shell
     case edit
     case yaml
@@ -134,6 +135,7 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .historyForward: return "History Forward"
         case .describe: return "Describe"
         case .logs: return "Logs"
+        case .saveLogs: return "Save Logs"
         case .shell: return "Shell / Scale"
         case .edit: return "Edit"
         case .yaml: return "YAML"
@@ -157,6 +159,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return "Open the describe inspector for the selected resource."
         case .logs:
             return "Open pod logs or unified service/deployment logs."
+        case .saveLogs:
+            return "Save the currently selected pod logs or unified logs when the log inspector has focus."
         case .shell:
             return "Open pod exec, or deployment scale controls where Rune supports the k9s `s` workflow."
         case .edit:
@@ -186,6 +190,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "d", requiresShift: false)!
         case .logs:
             return RuneKeyboardShortcut(key: "l", requiresShift: false)!
+        case .saveLogs:
+            return RuneKeyboardShortcut(key: "s", requiresShift: false, requiresCommand: true)!
         case .shell:
             return RuneKeyboardShortcut(key: "s", requiresShift: false)!
         case .edit:
@@ -209,12 +215,67 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .historyForward: return RuneSettingsKeys.keyBindingHistoryForward
         case .describe: return RuneSettingsKeys.keyBindingDescribe
         case .logs: return RuneSettingsKeys.keyBindingLogs
+        case .saveLogs: return RuneSettingsKeys.keyBindingSaveLogs
         case .shell: return RuneSettingsKeys.keyBindingShell
         case .edit: return RuneSettingsKeys.keyBindingEdit
         case .yaml: return RuneSettingsKeys.keyBindingYAML
         case .delete: return RuneSettingsKeys.keyBindingDelete
         case .portForward: return RuneSettingsKeys.keyBindingPortForward
         case .rollout: return RuneSettingsKeys.keyBindingRollout
+        }
+    }
+}
+
+public enum RuneKeyBindingModifier: String, CaseIterable, Sendable, Hashable {
+    case command
+    case option
+    case control
+    case shift
+    case function
+}
+
+public struct RuneKeyBindingInput: Sendable, Equatable {
+    public let baseKey: String
+    public let modifiers: Set<RuneKeyBindingModifier>
+    public let isTextInputFocused: Bool
+    public let isNavigationSuspended: Bool
+
+    public init(
+        baseKey: String,
+        modifiers: Set<RuneKeyBindingModifier>,
+        isTextInputFocused: Bool = false,
+        isNavigationSuspended: Bool = false
+    ) {
+        self.baseKey = baseKey
+        self.modifiers = modifiers
+        self.isTextInputFocused = isTextInputFocused
+        self.isNavigationSuspended = isNavigationSuspended
+    }
+}
+
+public struct RuneKeyBindingResolver: Sendable {
+    public typealias ShortcutProvider = @Sendable (RuneKeyBindingAction) -> RuneKeyboardShortcut
+
+    private let shortcutProvider: ShortcutProvider
+
+    public init(shortcutProvider: @escaping ShortcutProvider = { $0.defaultShortcut }) {
+        self.shortcutProvider = shortcutProvider
+    }
+
+    public func action(for input: RuneKeyBindingInput) -> RuneKeyBindingAction? {
+        guard !input.isNavigationSuspended else { return nil }
+        guard !input.isTextInputFocused else { return nil }
+        guard !input.modifiers.contains(.function) else { return nil }
+        guard !input.baseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        return RuneKeyBindingAction.allCases.first { action in
+            shortcutProvider(action).matches(
+                baseKey: input.baseKey,
+                requiresShift: input.modifiers.contains(.shift),
+                requiresCommand: input.modifiers.contains(.command),
+                requiresOption: input.modifiers.contains(.option),
+                requiresControl: input.modifiers.contains(.control)
+            )
         }
     }
 }

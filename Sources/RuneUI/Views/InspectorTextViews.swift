@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import struct RuneSharedCore.RuneLargeTextIndex
+import struct RuneSharedUI.RuneLargeTextSurface
 import RuneCore
 
 struct InspectorTextSurface<Content: View>: View {
@@ -35,16 +37,47 @@ struct InspectorReadOnlyTextView: View {
     var contentStyle: AppKitManifestTextView.ContentStyle = .plainText
     var externalValidationIssues: [YAMLValidationIssue] = []
     var navigationRequest: YAMLTextNavigationRequest?
+    var usesLargeTextSurface = false
+    var largeTextIndex: RuneLargeTextIndex?
+    var largeTextScrollTargetLine: Int?
+    var largeTextShowsLineNumbers = true
+    @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
+
+    private var shouldUseLargeTextSurface: Bool {
+        usesLargeTextSurface || text.utf8.count > 250_000
+    }
 
     var body: some View {
-        AppKitManifestTextView(
-            text: .constant(text),
-            isEditable: false,
-            resetScrollOnExternalChange: resetScrollOnExternalChange,
-            contentStyle: contentStyle,
-            externalValidationIssues: externalValidationIssues,
-            navigationRequest: navigationRequest
-        )
+        Group {
+            if shouldUseLargeTextSurface {
+                if let largeTextIndex {
+                    RuneLargeTextSurface(
+                        index: largeTextIndex,
+                        placeholder: "No output",
+                        scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
+                        showsLineNumbers: largeTextShowsLineNumbers,
+                        fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
+                    )
+                } else {
+                    RuneLargeTextSurface(
+                        text: text,
+                        placeholder: "No output",
+                        scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
+                        showsLineNumbers: largeTextShowsLineNumbers,
+                        fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
+                    )
+                }
+            } else {
+                AppKitManifestTextView(
+                    text: .constant(text),
+                    isEditable: false,
+                    resetScrollOnExternalChange: resetScrollOnExternalChange,
+                    contentStyle: contentStyle,
+                    externalValidationIssues: externalValidationIssues,
+                    navigationRequest: navigationRequest
+                )
+            }
+        }
         .id(resetID)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

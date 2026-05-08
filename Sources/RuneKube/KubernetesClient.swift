@@ -1212,6 +1212,35 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func operatorResourceYAML(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        resource: OperatorResourceSummary
+    ) async throws -> String {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await restClient.customResourceYAML(
+            environment: env,
+            contextName: context.name,
+            collectionAPIPath: resource.apiPath,
+            name: resource.name,
+            timeout: commandTimeout
+        )
+    }
+
+    public func operatorResourceDescribe(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        resource: OperatorResourceSummary
+    ) async throws -> String {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await restClient.customResourceDescribe(
+            environment: env,
+            contextName: context.name,
+            resource: resource,
+            timeout: commandTimeout
+        )
+    }
+
     public func listReleases(
         from sources: [KubeConfigSource],
         context: KubeContext,

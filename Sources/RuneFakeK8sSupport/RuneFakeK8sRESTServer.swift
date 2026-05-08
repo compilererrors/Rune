@@ -375,6 +375,20 @@ private struct RuneFakeK8sRouter {
                 return routeNetworkingNamespaced(pathParts: pathParts, namespace: namespace, query: query)
             }
 
+            if pathParts.count == 7,
+               pathParts[0] == "apis",
+               pathParts[3] == "namespaces",
+               cluster.namespaces.contains(where: { $0.name == pathParts[4] }),
+               cluster.operatorResources.contains(where: {
+                   $0.apiGroup == pathParts[1] &&
+                       $0.apiVersion == pathParts[2] &&
+                       $0.namespace == pathParts[4] &&
+                       $0.plural == pathParts[5] &&
+                       $0.name == pathParts[6]
+               }) {
+                return routeOperatorNamespacedResource(pathParts: pathParts, cluster: cluster, namespace: pathParts[4])
+            }
+
             if pathParts.count == 6,
                pathParts[0] == "apis",
                pathParts[3] == "namespaces",
@@ -386,6 +400,18 @@ private struct RuneFakeK8sRouter {
                        $0.plural == pathParts[5]
                }) {
                 return routeOperatorNamespaced(pathParts: pathParts, cluster: cluster, namespace: pathParts[4], query: query)
+            }
+
+            if pathParts.count == 5,
+               pathParts[0] == "apis",
+               cluster.operatorResources.contains(where: {
+                   $0.apiGroup == pathParts[1] &&
+                       $0.apiVersion == pathParts[2] &&
+                       $0.namespace == nil &&
+                       $0.plural == pathParts[3] &&
+                       $0.name == pathParts[4]
+               }) {
+                return routeOperatorClusterScopedResource(pathParts: pathParts, cluster: cluster)
             }
 
             if pathParts.count == 4,
@@ -538,6 +564,23 @@ private struct RuneFakeK8sRouter {
         return .json(status: 200, object: operatorResourceListObject(matches, query: query))
     }
 
+    private func routeOperatorNamespacedResource(
+        pathParts: [String],
+        cluster: RuneFakeK8sCluster,
+        namespace: String
+    ) -> RuneFakeK8sHTTPResponse {
+        guard let match = cluster.operatorResources.first(where: { resource in
+            resource.apiGroup == pathParts[1] &&
+                resource.apiVersion == pathParts[2] &&
+                resource.namespace == namespace &&
+                resource.plural == pathParts[5] &&
+                resource.name == pathParts[6]
+        }) else {
+            return .json(status: 404, object: status(message: "Unsupported operator namespaced resource route."))
+        }
+        return .json(status: 200, object: operatorResourceObject(match))
+    }
+
     private func routeOperatorClusterScoped(
         pathParts: [String],
         cluster: RuneFakeK8sCluster,
@@ -553,6 +596,22 @@ private struct RuneFakeK8sRouter {
             return .json(status: 404, object: status(message: "Unsupported operator cluster route."))
         }
         return .json(status: 200, object: operatorResourceListObject(matches, query: query))
+    }
+
+    private func routeOperatorClusterScopedResource(
+        pathParts: [String],
+        cluster: RuneFakeK8sCluster
+    ) -> RuneFakeK8sHTTPResponse {
+        guard let match = cluster.operatorResources.first(where: { resource in
+            resource.apiGroup == pathParts[1] &&
+                resource.apiVersion == pathParts[2] &&
+                resource.namespace == nil &&
+                resource.plural == pathParts[3] &&
+                resource.name == pathParts[4]
+        }) else {
+            return .json(status: 404, object: status(message: "Unsupported operator cluster resource route."))
+        }
+        return .json(status: 200, object: operatorResourceObject(match))
     }
 
     private func routeNetworkingNamespaced(

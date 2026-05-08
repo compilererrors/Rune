@@ -35,21 +35,14 @@ struct TerminalPodSelectorRow: View {
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 selectorLabel
                     .frame(width: 128, alignment: .leading)
                 picker
                 actionButton
             }
-
-            VStack(alignment: .leading, spacing: 6) {
-                selectorLabel
-                HStack(spacing: 8) {
-                    picker
-                    actionButton
-                }
-            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -76,7 +69,7 @@ struct TerminalPodSelectorRow: View {
         .labelsHidden()
         .disabled(pods.isEmpty)
         .controlSize(.small)
-        .frame(minWidth: 180, idealWidth: 320, maxWidth: .infinity, minHeight: 24, idealHeight: 26, maxHeight: 28, alignment: .leading)
+        .frame(width: 320, height: 26, alignment: .leading)
     }
 
     @ViewBuilder

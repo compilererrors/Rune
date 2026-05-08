@@ -16,8 +16,8 @@ struct ResourceTerminalWorkspaceView: View {
     @Binding var portForwardLocalPort: String
     @Binding var portForwardRemotePort: String
     @Binding var portForwardAddress: String
-    let onStartSession: (PodSummary) -> Void
-    let onReconnectSession: (PodTerminalSession, PodSummary) -> Void
+    let onStartSession: (PodSummary, String?) -> Void
+    let onReconnectSession: (PodTerminalSession, PodSummary, String?) -> Void
     let onStartPortForward: (PodSummary) -> Void
     let onStopPortForward: (PortForwardSession) -> Void
     let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
@@ -30,6 +30,8 @@ struct ResourceTerminalWorkspaceView: View {
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
     let onClearTranscript: () -> Void
+    let onSaveActiveTerminalTranscript: () -> Void
+    let onSaveAllTerminalTranscripts: () -> Void
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
 
@@ -98,7 +100,9 @@ struct ResourceTerminalWorkspaceView: View {
                         onSelectSession: selectShellSession,
                         onCloseSession: closeShellSession,
                         onComposeNewSession: composeNewShellTab,
-                        onClearTranscript: onClearTranscript
+                        onClearTranscript: onClearTranscript,
+                        onSaveActiveTranscript: onSaveActiveTerminalTranscript,
+                        onSaveAllTranscripts: onSaveAllTerminalTranscripts
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -126,14 +130,14 @@ struct ResourceTerminalWorkspaceView: View {
         availablePods.first { $0.id == id }
     }
 
-    private func startShellSession(_ pod: PodSummary) {
+    private func startShellSession(_ pod: PodSummary, containerName: String?) {
         isComposingNewShellTab = false
-        onStartSession(pod)
+        onStartSession(pod, containerName)
     }
 
-    private func reconnectShellSession(_ session: PodTerminalSession, pod: PodSummary) {
+    private func reconnectShellSession(_ session: PodTerminalSession, pod: PodSummary, containerName: String?) {
         isComposingNewShellTab = false
-        onReconnectSession(session, pod)
+        onReconnectSession(session, pod, containerName)
     }
 
     private func selectShellSession(_ id: String) {
@@ -165,7 +169,7 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     private func hasShellSession(for pod: PodSummary) -> Bool {
-        sessions.contains { $0.namespace == pod.namespace && $0.podName == pod.name }
+        sessions.contains { $0.namespace == pod.namespace && $0.podName == pod.name && $0.containerName == nil }
     }
 }
 

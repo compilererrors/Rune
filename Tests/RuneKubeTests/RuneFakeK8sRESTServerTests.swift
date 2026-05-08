@@ -205,6 +205,72 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(resources.first(where: { $0.name == "edge" })?.status, "Programmed True")
     }
 
+    func testOperatorResourceYAMLAndDescribeDrilldownReadsNamespacedAndClusterScopedResources() async throws {
+        let base = RuneFakeK8sFixture.defaultContexts[0]
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: base.contextName,
+                defaultNamespace: base.defaultNamespace,
+                namespaces: base.namespaces,
+                nodes: base.nodes,
+                operatorResources: [
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "cert-manager.io",
+                        apiVersion: "v1",
+                        plural: "certificates",
+                        kind: "Certificate",
+                        name: "web-tls",
+                        namespace: "alpha-zone",
+                        conditionType: "Ready",
+                        conditionStatus: "True",
+                        reason: "Issued",
+                        message: "Certificate is up to date"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "apiextensions.crossplane.io",
+                        apiVersion: "v1",
+                        plural: "compositions",
+                        kind: "Composition",
+                        name: "postgresql",
+                        namespace: nil,
+                        conditionType: "Established",
+                        conditionStatus: "True",
+                        reason: "Active",
+                        message: "Composition is available"
+                    )
+                ]
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        let resources = try await client.listOperatorResources(from: sources, context: context, namespace: "alpha-zone")
+
+        let certificate = try XCTUnwrap(resources.first { $0.name == "web-tls" })
+        let certificateYAML = try await client.operatorResourceYAML(from: sources, context: context, resource: certificate)
+        let certificateDescribe = try await client.operatorResourceDescribe(from: sources, context: context, resource: certificate)
+
+        XCTAssertTrue(certificateYAML.contains(#""kind" : "Certificate""#))
+        XCTAssertTrue(certificateYAML.contains(#""name" : "web-tls""#))
+        XCTAssertTrue(certificateDescribe.contains("Name: web-tls"))
+        XCTAssertTrue(certificateDescribe.contains("Namespace: alpha-zone"))
+        XCTAssertTrue(certificateDescribe.contains("Kind: Certificates"))
+        XCTAssertTrue(certificateDescribe.contains("Certificate is up to date"))
+
+        let composition = try XCTUnwrap(resources.first { $0.name == "postgresql" })
+        let compositionYAML = try await client.operatorResourceYAML(from: sources, context: context, resource: composition)
+        let compositionDescribe = try await client.operatorResourceDescribe(from: sources, context: context, resource: composition)
+
+        XCTAssertTrue(compositionYAML.contains(#""kind" : "Composition""#))
+        XCTAssertTrue(compositionDescribe.contains("Namespace: <cluster>"))
+        XCTAssertTrue(compositionDescribe.contains("Composition is available"))
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-rest-fake-kubeconfig-\(UUID().uuidString).yaml")

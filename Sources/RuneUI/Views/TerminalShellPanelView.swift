@@ -13,8 +13,8 @@ struct TerminalShellPanelView: View {
     let transcriptHeight: CGFloat
     @Binding var selectedShellPodID: String
     @Binding var terminalInput: String
-    let onStartSession: (PodSummary) -> Void
-    let onReconnectSession: (PodTerminalSession, PodSummary) -> Void
+    let onStartSession: (PodSummary, String?) -> Void
+    let onReconnectSession: (PodTerminalSession, PodSummary, String?) -> Void
     let onSend: () -> Void
     let onSendControlSequence: (String) -> Void
     let onDisconnect: () -> Void
@@ -22,10 +22,14 @@ struct TerminalShellPanelView: View {
     let onCloseSession: (String) -> Void
     let onComposeNewSession: () -> Void
     let onClearTranscript: () -> Void
+    let onSaveActiveTranscript: () -> Void
+    let onSaveAllTranscripts: () -> Void
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @State private var isInputFocused = false
     @State private var commandHistory: [String] = []
     @State private var commandHistoryIndex: Int?
+    @State private var pendingMultilinePasteConfirmation = false
+    @State private var selectedTerminalContainerName = ""
 
     private var terminalFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(storedTerminalFontSize))
@@ -34,6 +38,9 @@ struct TerminalShellPanelView: View {
     private var activeTabLabel: String? {
         guard let session else { return nil }
         var parts = [session.namespace, "shell \(session.shell)"]
+        if let containerName = session.containerName, !containerName.isEmpty {
+            parts.append("container \(containerName)")
+        }
         if let exitCode = session.lastExitCode {
             parts.append("exit \(exitCode)")
         }
@@ -50,11 +57,35 @@ struct TerminalShellPanelView: View {
 
     private var selectedPodExistingSession: PodTerminalSession? {
         guard session == nil, let selectedPod else { return nil }
-        return sessions.first { $0.namespace == selectedPod.namespace && $0.podName == selectedPod.name }
+        let containerName = selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName
+        return sessions.first {
+            $0.namespace == selectedPod.namespace
+                && $0.podName == selectedPod.name
+                && $0.containerName == containerName
+        }
+    }
+
+    private var containerOptions: [String] {
+        selectedPod?.containerNames ?? []
+    }
+
+    private var shouldShowContainerPicker: Bool {
+        containerOptions.count > 1 || session?.containerName != nil
     }
 
     private var canOpenSession: Bool {
         session == nil || session?.status == .disconnected || session?.status == .failed
+    }
+
+    private var canSaveActiveTranscript: Bool {
+        guard let session else { return false }
+        return !session.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var canSaveAllTranscripts: Bool {
+        sessions.contains {
+            !$0.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     private var primaryActionTitle: String {
@@ -114,7 +145,9 @@ struct TerminalShellPanelView: View {
                 selectedPod: selectedPod,
                 canApplyMutations: canApplyMutations,
                 selectedShellPodID: $selectedShellPodID,
-                onStartSession: onStartSession,
+                onStartSession: { pod in
+                    onStartSession(pod, selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName)
+                },
                 onSelectSession: onSelectSession,
                 onCloseSession: onCloseSession,
                 onComposeNewSession: onComposeNewSession
@@ -134,6 +167,8 @@ struct TerminalShellPanelView: View {
                 selection: $selectedShellPodID
             )
 
+            containerPicker
+
             TerminalTranscriptSurface(
                 text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : transcriptPlaceholder,
                 height: transcriptHeight,
@@ -142,16 +177,22 @@ struct TerminalShellPanelView: View {
                 onPasteText: pasteIntoPrompt
             )
 
+            multilinePasteConfirmationNote
             inputRow
         }
         .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
         .onAppear {
             syncShellPodSelectionToActiveSession()
+            syncContainerSelectionToActiveSession()
             focusPromptIfConnected()
         }
         .onChange(of: activeSessionID) { _, _ in
             syncShellPodSelectionToActiveSession()
+            syncContainerSelectionToActiveSession()
             focusPromptIfConnected()
+        }
+        .onChange(of: selectedPod?.id) { _, _ in
+            syncContainerSelectionToSelectedPod()
         }
         .onChange(of: selectedShellPodID) { _, newValue in
             handleShellPodSelectionChange(newValue)
@@ -162,7 +203,11 @@ struct TerminalShellPanelView: View {
     }
 
     private var header: some View {
-        titleBlock
+        HStack(alignment: .top, spacing: 10) {
+            titleBlock
+            Spacer(minLength: 0)
+            exportMenu
+        }
     }
 
     private var titleBlock: some View {
@@ -188,6 +233,53 @@ struct TerminalShellPanelView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            Button("Save Active Transcript") {
+                onSaveActiveTranscript()
+            }
+            .disabled(!canSaveActiveTranscript)
+
+            Button("Save All Transcripts ZIP") {
+                onSaveAllTranscripts()
+            }
+            .disabled(!canSaveAllTranscripts)
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.down")
+        }
+        .menuStyle(.button)
+        .controlSize(.small)
+        .help("Export terminal transcripts")
+    }
+
+    @ViewBuilder
+    private var containerPicker: some View {
+        if shouldShowContainerPicker {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    Label("Container", systemImage: "shippingbox")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 116, alignment: .leading)
+
+                    Picker("Container", selection: $selectedTerminalContainerName) {
+                        Text("Default container").tag("")
+                        ForEach(containerOptions, id: \.self) { containerName in
+                            Text(containerName).tag(containerName)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 340, height: 26, alignment: .leading)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RuneSurfaceBackground(kind: .editor))
         }
     }
 
@@ -237,6 +329,20 @@ struct TerminalShellPanelView: View {
         .controlSize(.small)
     }
 
+    private var multilinePasteConfirmationNote: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "return")
+                .font(.caption.weight(.semibold))
+            Text("Multiline paste staged. Press Return again to send.")
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color.accentColor)
+        .opacity(pendingMultilinePasteConfirmation ? 1 : 0)
+        .frame(height: 18, alignment: .leading)
+        .accessibilityHidden(!pendingMultilinePasteConfirmation)
+    }
+
     private func statusBadge(_ status: PodTerminalSessionStatus) -> some View {
         Text(TerminalStatusStyling.title(status))
             .font(.caption.weight(.semibold))
@@ -264,6 +370,22 @@ struct TerminalShellPanelView: View {
         }
     }
 
+    private func syncContainerSelectionToActiveSession() {
+        guard !isComposingNewSession else {
+            syncContainerSelectionToSelectedPod()
+            return
+        }
+        selectedTerminalContainerName = session?.containerName ?? ""
+    }
+
+    private func syncContainerSelectionToSelectedPod() {
+        if let selectedPod,
+           !selectedTerminalContainerName.isEmpty,
+           !selectedPod.containerNames.contains(selectedTerminalContainerName) {
+            selectedTerminalContainerName = ""
+        }
+    }
+
     private func focusPromptIfConnected() {
         guard canSendInput else { return }
         Task { @MainActor in
@@ -273,21 +395,70 @@ struct TerminalShellPanelView: View {
 
     private func pasteIntoPrompt(_ text: String) {
         guard canSendInput else { return }
-        let normalizedText = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        guard !normalizedText.isEmpty else { return }
-        terminalInput += normalizedText
+        let paste = TerminalShellPanelView.normalizedTerminalPasteForPrompt(text)
+        guard !paste.text.isEmpty else { return }
+        terminalInput += paste.text
+        pendingMultilinePasteConfirmation = paste.requiresConfirmation
         isInputFocused = true
     }
 
     private func sendPrompt() {
-        let command = terminalInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !command.isEmpty {
-            rememberCommand(command)
+        let send = TerminalShellPanelView.preparedTerminalPromptSend(
+            input: terminalInput,
+            pendingMultilinePasteConfirmation: pendingMultilinePasteConfirmation
+        )
+        if send.shouldRefocusPrompt {
+            pendingMultilinePasteConfirmation = false
+            isInputFocused = true
+            return
+        }
+        if send.shouldClearConfirmation {
+            pendingMultilinePasteConfirmation = false
+        }
+        if send.shouldSend {
+            rememberCommand(send.command)
         }
         commandHistoryIndex = nil
-        onSend()
+        if send.shouldSend {
+            onSend()
+        }
+    }
+
+    nonisolated static func normalizedTerminalPasteForPrompt(_ text: String) -> (text: String, requiresConfirmation: Bool) {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .newlines)
+        var nonEmptyLineCount = 0
+        var hasNonNewlineCharacter = false
+        for character in normalized {
+            if character == "\n" {
+                if hasNonNewlineCharacter {
+                    nonEmptyLineCount += 1
+                    if nonEmptyLineCount > 1 {
+                        return (normalized, true)
+                    }
+                    hasNonNewlineCharacter = false
+                }
+            } else {
+                hasNonNewlineCharacter = true
+            }
+        }
+        if hasNonNewlineCharacter {
+            nonEmptyLineCount += 1
+        }
+        return (normalized, nonEmptyLineCount > 1)
+    }
+
+    nonisolated static func preparedTerminalPromptSend(
+        input: String,
+        pendingMultilinePasteConfirmation: Bool
+    ) -> (command: String, shouldSend: Bool, shouldClearConfirmation: Bool, shouldRefocusPrompt: Bool) {
+        let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if pendingMultilinePasteConfirmation, command.contains("\n") {
+            return (command, false, true, true)
+        }
+        return (command, !command.isEmpty, true, false)
     }
 
     private func rememberCommand(_ command: String) {
@@ -345,10 +516,11 @@ struct TerminalShellPanelView: View {
             onSelectSession(existing.id)
             return
         }
+        let containerName = selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName
         if let session, session.status == .disconnected || session.status == .failed {
-            onReconnectSession(session, selectedPod)
+            onReconnectSession(session, selectedPod, containerName)
         } else {
-            onStartSession(selectedPod)
+            onStartSession(selectedPod, containerName)
         }
     }
 

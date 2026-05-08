@@ -43,6 +43,7 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedSecret: ClusterResourceSummary?
     @Published public var selectedNode: ClusterResourceSummary?
     @Published public var selectedHelmRelease: HelmReleaseSummary?
+    @Published public private(set) var selectedOperatorResource: OperatorResourceSummary?
 
     @Published public private(set) var pods: [PodSummary] = []
     @Published public private(set) var deployments: [DeploymentSummary] = []
@@ -261,6 +262,8 @@ public final class RuneAppState: ObservableObject {
 
     public func setOperatorResources(_ resources: [OperatorResourceSummary]) {
         operatorResources = resources
+        if let selectedOperatorResource, resources.contains(selectedOperatorResource) { return }
+        selectedOperatorResource = nil
     }
 
     public func setStatefulSets(_ resources: [ClusterResourceSummary]) {
@@ -751,15 +754,21 @@ public final class RuneAppState: ObservableObject {
     public func appendTerminalSessionOutput(id: String, text: String) {
         guard let index = terminalSessions.firstIndex(where: { $0.id == id }), !text.isEmpty else { return }
         var session = terminalSessions[index]
+        let transcript = TerminalScrollbackRetention.retainingRecentLines(
+            session.transcript + text,
+            maxLines: UserDefaults.standard.runeTerminalScrollbackLineLimit
+        )
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,
             namespace: session.namespace,
             podName: session.podName,
+            containerName: session.containerName,
             shell: session.shell,
-            transcript: session.transcript + text,
+            transcript: transcript,
             status: session.status,
-            lastExitCode: session.lastExitCode
+            lastExitCode: session.lastExitCode,
+            lastDiagnostic: session.lastDiagnostic
         )
         terminalSessions[index] = session
         if activeTerminalSessionID == id {
@@ -772,18 +781,26 @@ public final class RuneAppState: ObservableObject {
         appendTerminalSessionOutput(id: id, text: rendered)
     }
 
-    public func updateTerminalSessionStatus(id: String, status: PodTerminalSessionStatus, exitCode: Int32? = nil) {
+    public func updateTerminalSessionStatus(
+        id: String,
+        status: PodTerminalSessionStatus,
+        exitCode: Int32? = nil,
+        diagnostic: PodTerminalSessionDiagnostic? = nil
+    ) {
         guard let index = terminalSessions.firstIndex(where: { $0.id == id }) else { return }
         var session = terminalSessions[index]
+        let lastDiagnostic = diagnostic ?? (status == .failed ? session.lastDiagnostic : nil)
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,
             namespace: session.namespace,
             podName: session.podName,
+            containerName: session.containerName,
             shell: session.shell,
             transcript: session.transcript,
             status: status,
-            lastExitCode: exitCode ?? session.lastExitCode
+            lastExitCode: exitCode ?? session.lastExitCode,
+            lastDiagnostic: lastDiagnostic
         )
         terminalSessions[index] = session
         if activeTerminalSessionID == id {
@@ -801,10 +818,12 @@ public final class RuneAppState: ObservableObject {
             contextName: session.contextName,
             namespace: session.namespace,
             podName: session.podName,
+            containerName: session.containerName,
             shell: session.shell,
             transcript: "",
             status: session.status,
-            lastExitCode: session.lastExitCode
+            lastExitCode: session.lastExitCode,
+            lastDiagnostic: session.lastDiagnostic
         )
         terminalSessions[index] = session
         terminalSession = session
@@ -841,6 +860,10 @@ public final class RuneAppState: ObservableObject {
 
     public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
         selectedHelmRelease = release
+    }
+
+    public func setSelectedOperatorResource(_ resource: OperatorResourceSummary?) {
+        selectedOperatorResource = resource
     }
 
     public func setHelmValues(_ values: String) {

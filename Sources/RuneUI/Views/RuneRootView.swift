@@ -398,6 +398,10 @@ private enum PodTableLayout {
     static let rowHorizontalPadding: CGFloat = 10
     static let rowVerticalPadding: CGFloat = 5
     static let listRowEdgeInset: CGFloat = 4
+    static let nameColumnDefaultWidth: CGFloat = 280
+    static let nameColumnMinimumWidth: CGFloat = 160
+    static let nameColumnMaximumWidth: CGFloat = 820
+    static let nameColumnResizeHandleWidth: CGFloat = 14
     static let cpuWidth: CGFloat = 44
     static let memoryWidth: CGFloat = 56
     static let restartsWidth: CGFloat = 56
@@ -406,9 +410,30 @@ private enum PodTableLayout {
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
     static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+    static let selectionColumnWidth: CGFloat = 30
     static let minimumScrollableWidth: CGFloat = 620
     /// Space between column headers and first row — enough to avoid a cramped look without excess air.
     static let headerBottomSpacing: CGFloat = 10
+
+    static func clampedNameColumnWidth(_ width: CGFloat) -> CGFloat {
+        min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, width))
+    }
+
+    static func minimumScrollableWidth(nameColumnWidth: CGFloat) -> CGFloat {
+        max(
+            minimumScrollableWidth,
+            clampedNameColumnWidth(nameColumnWidth)
+                + selectionColumnWidth
+                + nameColumnResizeHandleWidth
+                + cpuWidth
+                + memoryWidth
+                + restartsWidth
+                + ageWidth
+                + statusTotalWidth
+                + (metricsSpacing * 7)
+                + 90
+        )
+    }
 }
 
 private enum RuneRootKeyboardPane: CaseIterable {
@@ -446,6 +471,7 @@ public struct RuneRootView: View {
 
     @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
+    @AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth) private var persistedPodNameColumnWidth = Double(PodTableLayout.nameColumnDefaultWidth)
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
@@ -469,6 +495,9 @@ public struct RuneRootView: View {
     @State private var hasMountedWorkspaceChrome = false
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
+    @State private var podNameColumnResizeStartWidth: CGFloat?
+    @State private var livePodNameColumnWidth: CGFloat?
+    @State private var isHoveringPodNameColumnResizeHandle = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -702,13 +731,11 @@ public struct RuneRootView: View {
     }
 
     private var launchLogoImage: NSImage? {
-        if let url = Bundle.module.url(forResource: "rune_logo_main", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        if let url = Bundle.main.url(forResource: "rune_logo_main", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
+        for bundle in launchLogoCandidateBundles {
+            if let url = bundle.url(forResource: "rune_logo_main", withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                return image
+            }
         }
         if let applicationIcon = NSApp.applicationIconImage,
            applicationIcon.size.width > 0,
@@ -716,6 +743,37 @@ public struct RuneRootView: View {
             return applicationIcon
         }
         return NSImage(named: "rune_logo_main")
+    }
+
+    private var launchLogoCandidateBundles: [Bundle] {
+        var bundles = [Bundle.main]
+        guard let resourceURL = Bundle.main.resourceURL else { return bundles }
+
+        let explicitBundleNames = [
+            "Rune_RuneUI.bundle",
+            "RuneUI_RuneUI.bundle",
+            "RuneUI.bundle"
+        ]
+        for bundleName in explicitBundleNames {
+            if let bundle = Bundle(url: resourceURL.appendingPathComponent(bundleName)) {
+                bundles.append(bundle)
+            }
+        }
+
+        guard let resourceBundles = try? FileManager.default.contentsOfDirectory(
+            at: resourceURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return bundles
+        }
+
+        for bundleURL in resourceBundles where bundleURL.pathExtension == "bundle" {
+            if let bundle = Bundle(url: bundleURL), !bundles.contains(where: { $0.bundleURL == bundle.bundleURL }) {
+                bundles.append(bundle)
+            }
+        }
+        return bundles
     }
 
     private var configuredMainSplitContainer: some View {
@@ -1981,16 +2039,35 @@ public struct RuneRootView: View {
                 .background(.thinMaterial, in: Capsule())
                 .help("Change namespace from the toolbar menu or Command Palette (:ns).")
 
-            TextField("/ filter resources", text: Binding(get: {
-                viewModel.state.resourceSearchQuery
-            }, set: { newValue in
-                viewModel.setResourceSearchQuery(newValue)
-            }))
-            .textFieldStyle(.roundedBorder)
-            .font(.caption)
-            .controlSize(.small)
-            .frame(maxWidth: 280)
-            .focused($textInputFocus, equals: .resourceFilter)
+            HStack(spacing: 4) {
+                TextField("/ filter resources", text: Binding(get: {
+                    viewModel.state.resourceSearchQuery
+                }, set: { newValue in
+                    viewModel.setResourceSearchQuery(newValue)
+                }))
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .controlSize(.small)
+                .frame(maxWidth: 280)
+                .focused($textInputFocus, equals: .resourceFilter)
+
+                Button {
+                    viewModel.setResourceSearchQuery("")
+                    textInputFocus = .resourceFilter
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 22, height: RuneUILayoutMetrics.headerChipHeight, alignment: .center)
+                .contentShape(Rectangle())
+                .opacity(viewModel.state.resourceSearchQuery.isEmpty ? 0 : 1)
+                .disabled(viewModel.state.resourceSearchQuery.isEmpty)
+                .accessibilityLabel("Clear resource filter")
+                .help("Clear resource filter")
+            }
+            .frame(maxWidth: 306, alignment: .leading)
 
             if viewModel.state.isLoading {
                 ProgressView()
@@ -2078,6 +2155,14 @@ public struct RuneRootView: View {
             allVisibleSelected: viewModel.areAllVisibleGenericResourcesSelectedForBulkActions,
             onToggleVisibleSelection: viewModel.toggleAllVisibleGenericResourcesForBulkActions
         ) {
+            Button {
+                viewModel.copySelectedGenericResourceComparisonToClipboard()
+            } label: {
+                Label("Compare", systemImage: "rectangle.split.2x1")
+            }
+            .disabled(!viewModel.canCopySelectedGenericResourceComparison)
+            .help("Copy a quick compare summary for selected resources")
+
             Button(role: .destructive) {
                 viewModel.requestDeleteSelectedGenericResources()
             } label: {
@@ -2300,17 +2385,23 @@ public struct RuneRootView: View {
 
                     GeometryReader { proxy in
                         let tableWidth = max(
-                            PodTableLayout.minimumScrollableWidth,
+                            PodTableLayout.minimumScrollableWidth(nameColumnWidth: podNameColumnWidth),
                             proxy.size.width - (PodTableLayout.listRowEdgeInset * 2)
                         )
 
                         ScrollView([.horizontal, .vertical]) {
                             LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
                                 Section {
-                                    ForEach(viewModel.visiblePods) { pod in
-                                        podTableRow(pod)
-                                        .contextMenu {
-                                            podResourceContextMenu(pod)
+                                    if viewModel.visiblePods.isEmpty {
+                                        resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
+                                            .frame(width: tableWidth - (PodTableLayout.listRowEdgeInset * 2), alignment: .topLeading)
+                                            .padding(.top, 4)
+                                    } else {
+                                        ForEach(viewModel.visiblePods) { pod in
+                                            podTableRow(pod)
+                                            .contextMenu {
+                                                podResourceContextMenu(pod)
+                                            }
                                         }
                                     }
                                 } header: {
@@ -2330,35 +2421,39 @@ public struct RuneRootView: View {
                 .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
 
             case .deployment:
-                List(viewModel.visibleDeployments) { deployment in
-                    Button {
-                        viewModel.selectDeployment(deployment)
-                    } label: {
-                        HStack {
-                            Text(deployment.name)
-                                .font(.body.weight(.medium))
-                            Spacer()
-                            Text(deployment.replicaText)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.22), in: Capsule())
-                                .foregroundStyle(.blue)
-                            if viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(Color.yellow)
+                if viewModel.visibleDeployments.isEmpty {
+                    resourceFilterEmptyState(kindTitle: "Deployments", totalCount: viewModel.state.deployments.count)
+                } else {
+                    List(viewModel.visibleDeployments) { deployment in
+                        Button {
+                            viewModel.selectDeployment(deployment)
+                        } label: {
+                            HStack {
+                                Text(deployment.name)
+                                    .font(.body.weight(.medium))
+                                Spacer()
+                                Text(deployment.replicaText)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.22), in: Capsule())
+                                    .foregroundStyle(.blue)
+                                if viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) {
+                                    Image(systemName: "star.fill")
+                                        .foregroundStyle(Color.yellow)
+                                }
                             }
+                            .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
                         }
-                        .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            deploymentResourceContextMenu(deployment)
+                        }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
+                        .listRowBackground(Color.clear)
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        deploymentResourceContextMenu(deployment)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
-                    .listRowBackground(Color.clear)
+                    .listStyle(.plain)
                 }
-                .listStyle(.plain)
 
             case .statefulSet:
                 genericResourceList(viewModel.visibleStatefulSets, selection: viewModel.state.selectedStatefulSet, action: viewModel.selectStatefulSet)
@@ -2397,41 +2492,45 @@ public struct RuneRootView: View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
             case .service:
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(viewModel.visibleServices) { service in
-                            Button {
-                                viewModel.selectService(service)
-                            } label: {
-                                HStack {
-                                    Text(service.name)
-                                        .font(.body.weight(.medium))
-                                        .help(service.name)
-                                    Spacer()
-                                    Text(service.type)
-                                        .font(.caption.weight(.semibold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 2)
-                                        .background(Color.purple.opacity(0.22), in: Capsule())
-                                        .foregroundStyle(.purple)
-                                    if viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) {
-                                        Image(systemName: "star.fill")
-                                            .foregroundStyle(Color.yellow)
+                if viewModel.visibleServices.isEmpty {
+                    resourceFilterEmptyState(kindTitle: "Services", totalCount: viewModel.state.services.count)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(viewModel.visibleServices) { service in
+                                Button {
+                                    viewModel.selectService(service)
+                                } label: {
+                                    HStack {
+                                        Text(service.name)
+                                            .font(.body.weight(.medium))
+                                            .help(service.name)
+                                        Spacer()
+                                        Text(service.type)
+                                            .font(.caption.weight(.semibold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 2)
+                                            .background(Color.purple.opacity(0.22), in: Capsule())
+                                            .foregroundStyle(.purple)
+                                        if viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) {
+                                            Image(systemName: "star.fill")
+                                                .foregroundStyle(Color.yellow)
+                                        }
                                     }
+                                    .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
                                 }
-                                .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                serviceResourceContextMenu(service)
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    serviceResourceContextMenu(service)
+                                }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
                     }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .id("networking:service")
                 }
-                .id("networking:service")
 
             case .ingress:
                 genericResourceList(viewModel.visibleIngresses, selection: viewModel.state.selectedIngress, action: viewModel.selectIngress)
@@ -2539,7 +2638,8 @@ public struct RuneRootView: View {
                     Text(pod.name)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: podNameColumnWidth, alignment: .leading)
+                        .help(pod.name)
 
                     HStack(spacing: PodTableLayout.metricsSpacing) {
                         Text(pod.cpuDisplay)
@@ -2671,40 +2771,47 @@ public struct RuneRootView: View {
                 }
 
                 ForEach(viewModel.pagedOperatorResources) { resource in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("\(resource.family) · \(resource.kind)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            if viewModel.isFavoriteOperatorResource(resource) {
-                                Image(systemName: "star.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.yellow)
-                                    .accessibilityLabel("Favorite")
+                    Button {
+                        viewModel.selectOperatorResource(resource)
+                        genericResourceManifestTab = .describe
+                        yamlManifestIsEditing = false
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("\(resource.family) · \(resource.kind)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                if viewModel.isFavoriteOperatorResource(resource) {
+                                    Image(systemName: "star.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.yellow)
+                                        .accessibilityLabel("Favorite")
+                                }
+                                Spacer()
+                                Text(resource.status)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
                             }
-                            Spacer()
-                            Text(resource.status)
-                                .font(.caption.weight(.semibold))
+                            Text(resource.name)
+                                .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
+                                .help(resource.name)
+                            if !resource.message.isEmpty {
+                                Text(resource.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .help(resource.message)
+                            }
+                            HStack(spacing: 6) {
+                                operatorPinnedColumn(resource.namespace ?? "Cluster", systemImage: "square.stack.3d.up")
+                                operatorPinnedColumn(resource.status, systemImage: "checkmark.seal")
+                                operatorPinnedColumn(resource.apiPath, systemImage: "curlybraces")
+                            }
                         }
-                        Text(resource.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                            .help(resource.name)
-                        if !resource.message.isEmpty {
-                            Text(resource.message)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .help(resource.message)
-                        }
-                        HStack(spacing: 6) {
-                            operatorPinnedColumn(resource.namespace ?? "Cluster", systemImage: "square.stack.3d.up")
-                            operatorPinnedColumn(resource.status, systemImage: "checkmark.seal")
-                            operatorPinnedColumn(resource.apiPath, systemImage: "curlybraces")
-                        }
+                        .runeListRowCard(isSelected: viewModel.state.selectedOperatorResource == resource, verticalPadding: 5)
                     }
-                    .runeListRowCard(isSelected: false, verticalPadding: 5)
+                    .buttonStyle(.plain)
                     .contextMenu {
                         Button {
                             viewModel.toggleFavoriteOperatorResource(resource)
@@ -3044,7 +3151,9 @@ public struct RuneRootView: View {
 
     private var helmDetails: some View {
         Group {
-            if let release = viewModel.state.selectedHelmRelease {
+            if let resource = viewModel.state.selectedOperatorResource {
+                operatorResourceDetails(resource: resource)
+            } else if let release = viewModel.state.selectedHelmRelease {
                 VStack(alignment: .leading, spacing: 12) {
                     copyableInspectorTitle(release.name, label: "Helm release name")
 
@@ -3138,6 +3247,33 @@ public struct RuneRootView: View {
             } else {
                 inspectorEmptyState("Select a Helm release", symbol: "ferry")
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func operatorResourceDetails(resource: OperatorResourceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            copyableInspectorTitle(resource.name, label: "\(resource.kind) name")
+
+            VStack(alignment: .leading, spacing: 8) {
+                inspectorInfoRow("Family", value: resource.family, symbol: "shippingbox")
+                if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
+                    inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+                } else if resource.namespace == nil {
+                    inspectorInfoRow("Scope", value: "Cluster", symbol: "square.stack.3d.up")
+                }
+                inspectorInfoRow("Status", value: resource.status, symbol: "checkmark.seal")
+                inspectorInfoRow("API Path", value: resource.apiPath, symbol: "curlybraces")
+            }
+
+            RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
+                ForEach(GenericResourceManifestTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+
+            manifestInspectorPane(activeTab: genericResourceManifestTab)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3340,12 +3476,12 @@ public struct RuneRootView: View {
                                         .disabled(!viewModel.canApplyClusterMutations)
                                     Button("Export…") { viewModel.saveCurrentResourceYAML() }
                                         .buttonStyle(.bordered)
+                                    Button("Delete", role: .destructive) {
+                                        viewModel.requestDeleteSelectedResource()
+                                    }
+                                    .disabled(!viewModel.canApplyClusterMutations)
                                     Spacer(minLength: 0)
                                 }
-                                Button("Delete", role: .destructive) {
-                                    viewModel.requestDeleteSelectedResource()
-                                }
-                                .disabled(!viewModel.canApplyClusterMutations)
                             }
 
                         case .unifiedLogs:
@@ -3579,6 +3715,11 @@ public struct RuneRootView: View {
     }
 
     private var manifestResourceReference: String {
+        if viewModel.state.selectedSection == .helm,
+           let resource = viewModel.state.selectedOperatorResource {
+            return "\(resource.kind) \(resource.name)"
+        }
+
         switch viewModel.state.selectedWorkloadKind {
         case .pod:
             return viewModel.state.selectedPod.map { "pod \($0.name)" } ?? "the selected pod"
@@ -3676,7 +3817,7 @@ public struct RuneRootView: View {
             resourceReference: manifestResourceReference,
             yamlText: yamlDraftBinding,
             yamlFooterText: yamlFooterText,
-            canApplyMutations: viewModel.canApplyClusterMutations,
+            canApplyMutations: viewModel.canApplyClusterMutations && viewModel.state.selectedOperatorResource == nil,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
@@ -3698,7 +3839,7 @@ public struct RuneRootView: View {
             yamlFooterText: yamlFooterText,
             baseline: viewModel.state.resourceYAMLBaseline,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
-            canApplyMutations: viewModel.canApplyClusterMutations,
+            canApplyMutations: viewModel.canApplyClusterMutations && viewModel.state.selectedOperatorResource == nil,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
             statusText: manifestStatusText,
@@ -3731,7 +3872,7 @@ public struct RuneRootView: View {
         ResourceDescribeInspectorPane(
             describeText: describeDisplayText,
             resourceReference: manifestResourceReference,
-            canApplyMutations: viewModel.canApplyClusterMutations,
+            canApplyMutations: viewModel.canApplyClusterMutations && viewModel.state.selectedOperatorResource == nil,
             yamlText: viewModel.state.resourceYAML,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
@@ -3896,9 +4037,9 @@ public struct RuneRootView: View {
             portForwardLocalPort: $viewModel.portForwardLocalPortInput,
             portForwardRemotePort: $viewModel.portForwardRemotePortInput,
             portForwardAddress: $viewModel.portForwardAddressInput,
-            onStartSession: { pod in viewModel.startTerminalSession(for: pod) },
-            onReconnectSession: { session, pod in
-                viewModel.startTerminalSession(for: pod, replacingSessionID: session.id)
+            onStartSession: { pod, containerName in viewModel.startTerminalSession(for: pod, container: containerName) },
+            onReconnectSession: { session, pod, containerName in
+                viewModel.startTerminalSession(for: pod, container: containerName, replacingSessionID: session.id)
             },
             onStartPortForward: { pod in
                 viewModel.startPortForward(targetKind: .pod, targetName: pod.name)
@@ -3923,7 +4064,9 @@ public struct RuneRootView: View {
             onDisconnect: { viewModel.stopTerminalSession() },
             onSelectSession: { id in viewModel.selectTerminalSession(id: id) },
             onCloseSession: { id in viewModel.closeTerminalSession(id: id) },
-            onClearTranscript: { viewModel.clearTerminalSessionTranscript() }
+            onClearTranscript: { viewModel.clearTerminalSessionTranscript() },
+            onSaveActiveTerminalTranscript: { viewModel.saveActiveTerminalTranscript() },
+            onSaveAllTerminalTranscripts: { viewModel.saveAllTerminalTranscriptsZip() }
         )
         .id("terminal")
         .onAppear(perform: reconcileTerminalPodSelections)
@@ -4034,6 +4177,10 @@ public struct RuneRootView: View {
                     genericResourceBulkSelectionControls
                 }
 
+                if resources.isEmpty {
+                    resourceFilterEmptyState(kindTitle: viewModel.state.selectedWorkloadKind.title, totalCount: 0)
+                }
+
                 ForEach(resources) { resource in
                     let isSelectedForBulkAction = viewModel.isGenericResourceSelectedForBulkAction(resource)
                     HStack(alignment: .top, spacing: 8) {
@@ -4093,6 +4240,39 @@ public struct RuneRootView: View {
         .transaction { transaction in
             transaction.animation = nil
         }
+    }
+
+    private func resourceFilterEmptyState(kindTitle: String, totalCount: Int) -> some View {
+        let query = viewModel.state.resourceSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let namespace = viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = namespace.isEmpty ? "the current namespace scope" : "namespace \(namespace)"
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: query.isEmpty ? "tray" : "magnifyingglass")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(query.isEmpty ? "No \(kindTitle.lowercased()) loaded" : "No \(kindTitle.lowercased()) match \"\(query)\"")
+                .font(.headline)
+
+            Text(query.isEmpty
+                ? "Rune has no \(kindTitle.lowercased()) to show for \(scope)."
+                : "This filter only searches \(kindTitle.lowercased()) loaded for \(scope). Clear the filter, switch namespace, or choose another kind.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !query.isEmpty {
+                Button("Clear Filter") {
+                    viewModel.setResourceSearchQuery("")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .runePanelCard(padding: 14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -4480,19 +4660,37 @@ public struct RuneRootView: View {
     private func configuredAction(for event: NSEvent) -> RuneKeyBindingAction? {
         guard let baseKey = configuredActionBaseKey(for: event) else { return nil }
 
-        let requiresShift = event.modifierFlags.contains(.shift)
-        let requiresCommand = event.modifierFlags.contains(.command)
-        let requiresOption = event.modifierFlags.contains(.option)
-        let requiresControl = event.modifierFlags.contains(.control)
-        return RuneKeyBindingAction.allCases.first {
-            UserDefaults.standard.runeKeyBindingShortcut(for: $0).matches(
-                baseKey: baseKey,
-                requiresShift: requiresShift,
-                requiresCommand: requiresCommand,
-                requiresOption: requiresOption,
-                requiresControl: requiresControl
-            )
+        let resolver = RuneKeyBindingResolver { action in
+            UserDefaults.standard.runeKeyBindingShortcut(for: action)
         }
+        return resolver.action(
+            for: RuneKeyBindingInput(
+                baseKey: baseKey,
+                modifiers: runeKeyBindingModifiers(for: event),
+                isTextInputFocused: textInputFocus != nil,
+                isNavigationSuspended: keyboardNavigationSuspended
+            )
+        )
+    }
+
+    private func runeKeyBindingModifiers(for event: NSEvent) -> Set<RuneKeyBindingModifier> {
+        var modifiers: Set<RuneKeyBindingModifier> = []
+        if event.modifierFlags.contains(.command) {
+            modifiers.insert(.command)
+        }
+        if event.modifierFlags.contains(.option) {
+            modifiers.insert(.option)
+        }
+        if event.modifierFlags.contains(.control) {
+            modifiers.insert(.control)
+        }
+        if event.modifierFlags.contains(.shift) {
+            modifiers.insert(.shift)
+        }
+        if event.modifierFlags.contains(.function) {
+            modifiers.insert(.function)
+        }
+        return modifiers
     }
 
     private func configuredActionBaseKey(for event: NSEvent) -> String? {
@@ -4545,6 +4743,8 @@ public struct RuneRootView: View {
             return openDescribeInspectorForSelection()
         case .logs:
             return openLogsInspectorForSelection()
+        case .saveLogs:
+            return saveCurrentLogsFromKeyBinding()
         case .shell:
             return openShellOrScaleInspectorForSelection()
         case .edit:
@@ -4671,6 +4871,33 @@ public struct RuneRootView: View {
 
         yamlManifestIsEditing = false
         keyboardPaneFocus = .detail
+        return true
+    }
+
+    private func saveCurrentLogsFromKeyBinding() -> Bool {
+        guard keyboardPaneFocus == .detail else { return false }
+
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard podInspectorTab == .logs, viewModel.state.selectedPod != nil else { return false }
+            case .deployment:
+                guard deploymentInspectorTab == .unifiedLogs, viewModel.state.selectedDeployment != nil else { return false }
+            default:
+                return false
+            }
+        case .networking:
+            guard viewModel.state.selectedWorkloadKind == .service,
+                  serviceInspectorTab == .unifiedLogs,
+                  viewModel.state.selectedService != nil else {
+                return false
+            }
+        case .overview, .config, .storage, .rbac, .events, .helm, .terminal:
+            return false
+        }
+
+        viewModel.saveCurrentLogs()
         return true
     }
 
@@ -4990,6 +5217,26 @@ public struct RuneRootView: View {
         return clampedDetailWidth(width)
     }
 
+    private var podNameColumnWidth: CGFloat {
+        livePodNameColumnWidth
+            ?? podNameColumnCommittedWidth
+    }
+
+    private var podNameColumnCommittedWidth: CGFloat {
+        PodTableLayout.clampedNameColumnWidth(CGFloat(persistedPodNameColumnWidth))
+    }
+
+    private func setLivePodNameColumnWidth(_ width: CGFloat) {
+        livePodNameColumnWidth = PodTableLayout.clampedNameColumnWidth(width)
+    }
+
+    private func commitPodNameColumnWidth(_ width: CGFloat) {
+        let clamped = PodTableLayout.clampedNameColumnWidth(width)
+        guard abs(clamped - CGFloat(persistedPodNameColumnWidth)) >= 1 else { return }
+        persistedPodNameColumnWidth = Double(clamped)
+        UserDefaults.standard.set(persistedPodNameColumnWidth, forKey: RuneSettingsKeys.layoutPodNameColumnWidth)
+    }
+
     private var compactDetailIdealWidth: CGFloat {
         guard !viewModel.isSidebarVisible, viewModel.isDetailPaneVisible else {
             return resolvedDetailWidth
@@ -5234,8 +5481,15 @@ public struct RuneRootView: View {
 
     private var podTableHeader: some View {
         HStack(spacing: PodTableLayout.metricsSpacing) {
-            podSortHeaderButton(title: "Name", column: .name)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear
+                .frame(width: PodTableLayout.selectionColumnWidth, height: 1)
+
+            HStack(spacing: 0) {
+                podSortHeaderButton(title: "Name", column: .name, width: podNameColumnWidth, alignment: .leading)
+                podNameColumnResizeHandle
+            }
+            .frame(width: podNameColumnWidth + PodTableLayout.nameColumnResizeHandleWidth, alignment: .leading)
+
             HStack(spacing: PodTableLayout.metricsSpacing) {
                 podSortHeaderButton(title: "CPU", column: .cpu, width: PodTableLayout.cpuWidth, alignment: .trailing)
                     .help("CPU in millicores (1000m = 1 core), from the metrics snapshot Rune loaded when available.")
@@ -5249,6 +5503,42 @@ public struct RuneRootView: View {
         .padding(.top, 4)
         .padding(.bottom, PodTableLayout.headerBottomSpacing)
         .textCase(nil)
+    }
+
+    private var podNameColumnResizeHandle: some View {
+        Capsule()
+            .fill(Color.secondary.opacity(isHoveringPodNameColumnResizeHandle ? 0.58 : 0.32))
+            .frame(width: isHoveringPodNameColumnResizeHandle ? 3 : 2, height: 18)
+            .frame(width: PodTableLayout.nameColumnResizeHandleWidth, height: 28)
+            .contentShape(Rectangle())
+            .help("Drag to resize the pod name column")
+            .animation(.easeOut(duration: 0.10), value: isHoveringPodNameColumnResizeHandle)
+            .onHover { isHovering in
+                isHoveringPodNameColumnResizeHandle = isHovering
+                if isHovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let startWidth = podNameColumnResizeStartWidth ?? podNameColumnWidth
+                        podNameColumnResizeStartWidth = startWidth
+                        setLivePodNameColumnWidth(startWidth + value.translation.width)
+                    }
+                    .onEnded { value in
+                        let startWidth = podNameColumnResizeStartWidth ?? podNameColumnWidth
+                        commitPodNameColumnWidth(startWidth + value.translation.width)
+                        livePodNameColumnWidth = nil
+                        podNameColumnResizeStartWidth = nil
+                    }
+            )
+            .onTapGesture(count: 2) {
+                livePodNameColumnWidth = nil
+                commitPodNameColumnWidth(PodTableLayout.nameColumnDefaultWidth)
+            }
     }
 
     private func podSortHeaderButton(
@@ -5782,7 +6072,7 @@ public struct RuneRootView: View {
                     .font(.body.weight(.semibold))
             }
 
-            ViewThatFits(in: .horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .center, spacing: 8) {
                     Text("Replicas")
                         .font(.subheadline.weight(.medium))
@@ -5794,24 +6084,8 @@ public struct RuneRootView: View {
                             .frame(minWidth: 32, alignment: .trailing)
                     }
                     deploymentScaleButton(deployment: deployment)
-                    Spacer(minLength: 0)
                 }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .center, spacing: 8) {
-                        Text("Replicas")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                            Text("\(viewModel.scaleReplicaInput)")
-                                .monospacedDigit()
-                                .font(.body.weight(.medium))
-                                .frame(minWidth: 32, alignment: .trailing)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    deploymentScaleButton(deployment: deployment)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             Divider()
@@ -5842,13 +6116,13 @@ public struct RuneRootView: View {
                 .buttonStyle(.bordered)
                 .disabled(viewModel.state.isLoadingResourceDetails)
 
+                Button("Delete", role: .destructive) {
+                    viewModel.requestDeleteSelectedResource()
+                }
+                .disabled(!viewModel.canApplyClusterMutations)
+
                 Spacer(minLength: 0)
             }
-
-            Button("Delete", role: .destructive) {
-                viewModel.requestDeleteSelectedResource()
-            }
-            .disabled(!viewModel.canApplyClusterMutations)
         }
     }
 
