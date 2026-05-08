@@ -190,9 +190,6 @@ struct ResourceTerminalDetailsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Terminal")
-                .font(.title2.weight(.bold))
-
             if let session {
                 Label("\(session.namespace)/\(session.podName)", systemImage: "terminal")
                     .font(.subheadline.weight(.medium))

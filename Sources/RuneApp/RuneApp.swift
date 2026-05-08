@@ -54,7 +54,7 @@ struct RuneApplication: App {
                     minWidth: RuneWindowLayoutDefaults.minimumWidth,
                     minHeight: RuneWindowLayoutDefaults.minimumHeight
                 )
-                .userActivity("com.rune.app.open") { activity in
+                .userActivity(RuneApplicationIdentifiers.openActivityType) { activity in
                     activity.title = "Rune"
                     activity.isEligibleForSearch = true
                 }
@@ -88,6 +88,10 @@ struct RuneApplication: App {
 
                 Button("Load Demo Cluster") {
                     viewModel.loadDemoCluster()
+                }
+
+                Button("Reset Demo Cluster") {
+                    viewModel.resetDemoCluster()
                 }
 
                 Divider()

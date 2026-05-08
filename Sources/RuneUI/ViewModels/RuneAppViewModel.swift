@@ -534,6 +534,8 @@ public final class RuneAppViewModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var hasBootstrapped = false
+    private var bootstrapTask: Task<Void, Never>?
+    private var clusterLoadGeneration = UUID()
     private var launchExperienceStartedAt = ContinuousClock.now
     private var latestSnapshotRequestID = UUID()
     private var latestResourceDetailsRequestID = UUID()
@@ -573,6 +575,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Recently selected contexts (most-recent first); used with favorites when selecting prefetch targets.
     private var recentContextNames: [String] = []
     private let demoContextName = "rune-demo"
+    private var demoContext: KubeContext { KubeContext(name: demoContextName) }
     private static let operatorResourcePageSize = 40
 
     private let refreshDebounceNanoseconds: UInt64 = 120_000_000
@@ -925,8 +928,16 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func contextsIncludingEnabledDemo(_ contexts: [KubeContext]) -> [KubeContext] {
+        guard UserDefaults.standard.runeEnableDemoCluster else {
+            return contexts.filter { $0.name != demoContextName }
+        }
+        guard !contexts.contains(where: { $0.name == demoContextName }) else { return contexts }
+        return contexts + [demoContext]
+    }
+
     public var visibleContexts: [KubeContext] {
-        let filtered = state.contexts.filter { context in
+        let filtered = contextsIncludingEnabledDemo(state.contexts).filter { context in
             let query = state.contextSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { return true }
             return matches(context.name, query: query)
@@ -945,7 +956,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var contextMenuOptions: [KubeContext] {
-        state.contexts.sorted { lhs, rhs in
+        contextsIncludingEnabledDemo(state.contexts).sorted { lhs, rhs in
             lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
@@ -1156,35 +1167,54 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func bootstrap() {
-        Task { @MainActor in
+        bootstrapTask?.cancel()
+        let generation = clusterLoadGeneration
+        bootstrapTask = Task { @MainActor [weak self] in
+            guard let self else { return }
             await Task.yield()
+            guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
             do {
-                let discoveredURLs = kubeConfigDiscoverer.discoverCandidateFiles()
-                diagnostics.log("bootstrap discovered kubeconfig files: \(discoveredURLs.map(\.path).joined(separator: ", "))")
+                let discoveredURLs = self.kubeConfigDiscoverer.discoverCandidateFiles()
+                guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
+                self.diagnostics.log("bootstrap discovered kubeconfig files: \(discoveredURLs.map(\.path).joined(separator: ", "))")
 
-                let sources = try resolvedKubeConfigSources(
+                let sources = try self.resolvedKubeConfigSources(
                     fallbackURLs: discoveredURLs
                 )
+                guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
 
-                if state.kubeConfigSources != sources {
-                    state.setSources(sources)
+                if self.state.kubeConfigSources != sources {
+                    self.state.setSources(sources)
                 }
-                diagnostics.log("bootstrap resolved sources count=\(sources.count)")
+                self.diagnostics.log("bootstrap resolved sources count=\(sources.count)")
 
                 guard !sources.isEmpty else {
-                    clearClusterDataForEmptyBootstrapIfNeeded()
-                    await finishLaunchExperience()
+                    self.clearClusterDataForEmptyBootstrapIfNeeded()
+                    if !self.state.contexts.isEmpty {
+                        self.state.setContexts([])
+                    }
+                    await self.finishLaunchExperience()
                     return
                 }
 
-                persistDiscoveredKubeConfigsInBackground(discoveredURLs)
-                try await reloadContexts(loadInitialSnapshotSynchronously: false, showsLoadingIndicator: false)
+                self.persistDiscoveredKubeConfigsInBackground(discoveredURLs)
+                try await self.reloadContexts(
+                    loadInitialSnapshotSynchronously: false,
+                    showsLoadingIndicator: false,
+                    expectedClusterLoadGeneration: generation
+                )
             } catch {
-                diagnostics.log("bootstrap failed: \(error.localizedDescription)")
-                state.setError(error)
+                guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
+                self.diagnostics.log("bootstrap failed: \(error.localizedDescription)")
+                self.state.setError(error)
             }
-            await finishLaunchExperience()
+            guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
+            await self.finishLaunchExperience()
         }
+    }
+
+    private func isCurrentClusterLoad(_ generation: UUID) -> Bool {
+        clusterLoadGeneration == generation
     }
 
     private func finishLaunchExperience() async {
@@ -1333,7 +1363,11 @@ public final class RuneAppViewModel: ObservableObject {
         try await reloadContexts(loadInitialSnapshotSynchronously: true)
     }
 
-    private func reloadContexts(loadInitialSnapshotSynchronously: Bool, showsLoadingIndicator: Bool = true) async throws {
+    private func reloadContexts(
+        loadInitialSnapshotSynchronously: Bool,
+        showsLoadingIndicator: Bool = true,
+        expectedClusterLoadGeneration: UUID? = nil
+    ) async throws {
         if showsLoadingIndicator {
             state.isLoading = true
         }
@@ -1347,6 +1381,9 @@ public final class RuneAppViewModel: ObservableObject {
         let previousContextName = state.selectedContext?.name
         let previousNamespace = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
         let contexts = try await kubeClient.listContexts(from: state.kubeConfigSources)
+        if let expectedClusterLoadGeneration, !isCurrentClusterLoad(expectedClusterLoadGeneration) {
+            throw CancellationError()
+        }
         state.setContexts(contexts)
         diagnostics.log("reloadContexts contexts=\(contexts.count)")
 
@@ -1712,6 +1749,10 @@ public final class RuneAppViewModel: ObservableObject {
         trackHistory: Bool,
         triggerReload: Bool
     ) {
+        if context.name == demoContextName {
+            loadDemoCluster()
+            return
+        }
         prepareNavigationMutation(trackHistory: trackHistory)
         diagnostics.log("setContext -> \(context.name)")
         diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
@@ -2075,6 +2116,15 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func selectPod(_ pod: PodSummary?) {
         selectPod(pod, trackHistory: true)
+    }
+
+    public func focusTerminalPodInspector(_ pod: PodSummary, reloadLogs: Bool = false, loadDetails: Bool = false) {
+        selectPod(pod, trackHistory: false)
+        if loadDetails {
+            loadResourceDetailsForCurrentSelection()
+        } else if reloadLogs {
+            reloadLogsForSelection()
+        }
     }
 
     private func selectPod(_ pod: PodSummary?, trackHistory: Bool) {
@@ -3554,13 +3604,22 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
 
+        clusterLoadGeneration = UUID()
+        bootstrapTask?.cancel()
+        bootstrapTask = nil
         scheduledRefreshTask?.cancel()
         pendingCurrentViewRefreshID = nil
         cancelPendingLogReload()
         resourceDetailsTask?.cancel()
         yamlValidationTask?.cancel()
+        overviewPrefetchTask?.cancel()
+        overviewPrefetchTask = nil
+        contextOverviewPrefetchTask?.cancel()
+        contextOverviewPrefetchTask = nil
+        latestSnapshotRequestID = UUID()
         latestResourceDetailsRequestID = UUID()
         latestYAMLValidationRequestID = UUID()
+        isLaunchExperienceVisible = false
         state.isLoading = false
         state.isLoadingLogs = false
         state.finishResourceDetailLoad()
@@ -3568,9 +3627,8 @@ public final class RuneAppViewModel: ObservableObject {
         state.clearManualNamespaceMode()
         state.clearResourceDetails()
 
-        let context = KubeContext(name: demoContextName)
-        state.setSources([])
-        state.setContexts([context])
+        let context = demoContext
+        state.setContexts(contextsIncludingEnabledDemo(state.contexts))
         state.selectedContext = context
         state.selectedNamespace = "demo"
         state.selectedSection = .overview
@@ -3583,6 +3641,10 @@ public final class RuneAppViewModel: ObservableObject {
                 message: "In-memory demo cluster loaded. No Kubernetes API calls are made."
             )
         )
+    }
+
+    public func resetDemoCluster() {
+        loadDemoCluster()
     }
 
     private func applyDemoClusterSnapshot() {
@@ -3616,11 +3678,27 @@ public final class RuneAppViewModel: ObservableObject {
                 qosClass: "Burstable",
                 containersReady: "1/1",
                 containerNamesLine: "worker"
+            ),
+            PodSummary(
+                name: "checkout-5d79f6c8b9-vx4lp",
+                namespace: "demo",
+                status: "CrashLoopBackOff",
+                totalRestarts: 7,
+                ageDescription: "6m",
+                cpuUsage: "8m",
+                memoryUsage: "52Mi",
+                podIP: "10.42.0.23",
+                hostIP: "192.0.2.11",
+                nodeName: "demo-node-b",
+                qosClass: "Burstable",
+                containersReady: "0/1",
+                containerNamesLine: "checkout"
             )
         ]
         let deployments = [
             DeploymentSummary(name: "api", namespace: "demo", readyReplicas: 1, desiredReplicas: 1, selector: ["app": "api"]),
-            DeploymentSummary(name: "worker", namespace: "demo", readyReplicas: 1, desiredReplicas: 1, selector: ["app": "worker"])
+            DeploymentSummary(name: "worker", namespace: "demo", readyReplicas: 1, desiredReplicas: 1, selector: ["app": "worker"]),
+            DeploymentSummary(name: "checkout", namespace: "demo", readyReplicas: 0, desiredReplicas: 2, selector: ["app": "checkout"])
         ]
         let statefulSets = [
             ClusterResourceSummary(kind: .statefulSet, name: "postgres", namespace: "demo", primaryText: "1/1 ready", secondaryText: "app=postgres")
@@ -3647,7 +3725,8 @@ public final class RuneAppViewModel: ObservableObject {
             ClusterResourceSummary(kind: .networkPolicy, name: "api-allow-web", namespace: "demo", primaryText: "Ingress", secondaryText: "Allows web to api")
         ]
         let events = [
-            EventSummary(type: "Normal", reason: "Started", objectName: "api-6f78d9d7c9-2xkq8", message: "Started container api", lastTimestamp: "2026-05-05T10:00:00Z", involvedKind: "Pod", involvedNamespace: "demo")
+            EventSummary(type: "Normal", reason: "Started", objectName: "api-6f78d9d7c9-2xkq8", message: "Started container api", lastTimestamp: "2026-05-05T10:00:00Z", involvedKind: "Pod", involvedNamespace: "demo"),
+            EventSummary(type: "Warning", reason: "BackOff", objectName: "checkout-5d79f6c8b9-vx4lp", message: "Back-off restarting failed demo container", lastTimestamp: "2026-05-05T10:05:00Z", involvedKind: "Pod", involvedNamespace: "demo")
         ]
         let configMaps = [
             ClusterResourceSummary(kind: .configMap, name: "api-settings", namespace: "demo", primaryText: "3 keys", secondaryText: "Demo configuration")

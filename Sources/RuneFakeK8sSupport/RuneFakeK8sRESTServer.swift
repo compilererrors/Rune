@@ -463,6 +463,9 @@ private struct RuneFakeK8sRouter {
             guard let pod = namespace.pods.first(where: { $0.name == pathParts[5] }) else {
                 return .json(status: 404, object: status(message: "Pod \(pathParts[5]) was not found."))
             }
+            if namespace.failingLogPodNames.contains(pod.name) {
+                return .json(status: 500, object: status(message: "Synthetic forced pod log failure for \(pod.name)."))
+            }
             return .text(status: 200, body: logLines(for: pod, namespace: namespace.name, container: query["container"]))
         case "services" where pathParts.count == 5:
             return .json(status: 200, object: listObject(

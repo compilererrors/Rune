@@ -806,6 +806,50 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(state.selectedOperatorResource?.name, "synthetic-resource-250")
     }
 
+    func testPodNameColumnResizeLayoutBenchmarkKPI() {
+        let translations = (-1000...1000).map { CGFloat($0) * 0.75 }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            var checksum: CGFloat = 0
+            for _ in 0..<80 {
+                for translation in translations {
+                    let width = PodTableLayout.resizePreviewWidth(
+                        committedWidth: PodTableLayout.nameColumnDefaultWidth,
+                        translation: translation
+                    )
+                    checksum += PodTableLayout.nameColumnFrameWidth(width)
+                    checksum += PodTableLayout.minimumScrollableWidth(nameColumnWidth: width)
+                }
+            }
+            XCTAssertGreaterThan(checksum, 0)
+        }
+
+        let started = ContinuousClock.now
+        var widths: [CGFloat] = []
+        widths.reserveCapacity(translations.count)
+        for translation in translations {
+            widths.append(PodTableLayout.resizePreviewWidth(
+                committedWidth: PodTableLayout.nameColumnDefaultWidth,
+                translation: translation
+            ))
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(widths.first, PodTableLayout.nameColumnMinimumWidth)
+        XCTAssertEqual(widths.last, PodTableLayout.nameColumnMaximumWidth)
+        XCTAssertTrue(widths.allSatisfy { $0.rounded(.toNearestOrAwayFromZero) == $0 })
+        XCTAssertEqual(PodTableLayout.headerHorizontalInset, PodTableLayout.rowHorizontalPadding)
+        XCTAssertEqual(
+            PodTableLayout.nameColumnFrameWidth(PodTableLayout.nameColumnDefaultWidth),
+            PodTableLayout.nameColumnDefaultWidth + PodTableLayout.nameColumnResizeHandleWidth
+        )
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.01,
+            "KPI: pod name column drag math must stay below 10ms for 2001 drag samples so resize remains pointer-rate cheap."
+        )
+    }
+
     @MainActor
     func testGenericResourceQuickCompareBenchmarkKPI() {
         let state = RuneAppState()

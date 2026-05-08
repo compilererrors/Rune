@@ -241,6 +241,22 @@ enum PodInspectorTab: String, CaseIterable, Identifiable {
     }
 }
 
+enum TerminalInspectorTab: String, CaseIterable, Identifiable {
+    case commands
+    case logs
+    case yaml
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .commands: return "Commands"
+        case .logs: return "Logs"
+        case .yaml: return "YAML"
+        }
+    }
+}
+
 enum ServiceInspectorTab: String, CaseIterable, Identifiable {
     case overview
     case unifiedLogs
@@ -393,7 +409,7 @@ private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     }
 }
 
-private enum PodTableLayout {
+enum PodTableLayout {
     static let metricsSpacing: CGFloat = 10
     static let rowHorizontalPadding: CGFloat = 10
     static let rowVerticalPadding: CGFloat = 5
@@ -409,30 +425,49 @@ private enum PodTableLayout {
     static let statusTextWidth: CGFloat = 120
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
-    static let headerHorizontalInset: CGFloat = rowHorizontalPadding + listRowEdgeInset
+    static let headerHorizontalInset: CGFloat = rowHorizontalPadding
     static let selectionColumnWidth: CGFloat = 30
+    static let favoriteColumnWidth: CGFloat = 14
     static let minimumScrollableWidth: CGFloat = 620
     /// Space between column headers and first row — enough to avoid a cramped look without excess air.
     static let headerBottomSpacing: CGFloat = 10
 
     static func clampedNameColumnWidth(_ width: CGFloat) -> CGFloat {
-        min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, width))
+        let pixelAlignedWidth = width.rounded(.toNearestOrAwayFromZero)
+        return min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, pixelAlignedWidth))
     }
 
     static func minimumScrollableWidth(nameColumnWidth: CGFloat) -> CGFloat {
         max(
             minimumScrollableWidth,
-            clampedNameColumnWidth(nameColumnWidth)
+            rowHorizontalPadding * 2
                 + selectionColumnWidth
-                + nameColumnResizeHandleWidth
-                + cpuWidth
-                + memoryWidth
-                + restartsWidth
-                + ageWidth
+                + nameColumnFrameWidth(nameColumnWidth)
+                + metricsColumnGroupWidth
                 + statusTotalWidth
-                + (metricsSpacing * 7)
-                + 90
+                + favoriteColumnWidth
+                + (metricsSpacing * 4)
         )
+    }
+
+    static func nameColumnFrameWidth(_ width: CGFloat) -> CGFloat {
+        clampedNameColumnWidth(width) + nameColumnResizeHandleWidth
+    }
+
+    static var metricsColumnGroupWidth: CGFloat {
+        cpuWidth
+            + memoryWidth
+            + restartsWidth
+            + ageWidth
+            + (metricsSpacing * 3)
+    }
+
+    static func resizePreviewWidth(committedWidth: CGFloat, translation: CGFloat) -> CGFloat {
+        clampedNameColumnWidth(committedWidth + translation)
+    }
+
+    static func resizeCommitWidth(committedWidth: CGFloat, translation: CGFloat) -> CGFloat {
+        clampedNameColumnWidth(committedWidth + translation)
     }
 }
 
@@ -486,6 +521,7 @@ public struct RuneRootView: View {
     @State private var isYAMLEditorSheetPresented = false
     @State private var terminalShellPodID = ""
     @State private var terminalPortForwardPodID = ""
+    @State private var terminalInspectorTab: TerminalInspectorTab = .commands
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
     @State private var overviewCardSelectionIndex = 0
@@ -495,9 +531,6 @@ public struct RuneRootView: View {
     @State private var hasMountedWorkspaceChrome = false
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
-    @State private var podNameColumnResizeStartWidth: CGFloat?
-    @State private var livePodNameColumnWidth: CGFloat?
-    @State private var isHoveringPodNameColumnResizeHandle = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -2383,39 +2416,56 @@ public struct RuneRootView: View {
                         podBulkSelectionControls
                     }
 
-                    GeometryReader { proxy in
-                        let tableWidth = max(
-                            PodTableLayout.minimumScrollableWidth(nameColumnWidth: podNameColumnWidth),
-                            proxy.size.width - (PodTableLayout.listRowEdgeInset * 2)
-                        )
-
-                        ScrollView([.horizontal, .vertical]) {
-                            LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
-                                Section {
-                                    if viewModel.visiblePods.isEmpty {
-                                        resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
-                                            .frame(width: tableWidth - (PodTableLayout.listRowEdgeInset * 2), alignment: .topLeading)
-                                            .padding(.top, 4)
-                                    } else {
-                                        ForEach(viewModel.visiblePods) { pod in
-                                            podTableRow(pod)
-                                            .contextMenu {
-                                                podResourceContextMenu(pod)
-                                            }
-                                        }
-                                    }
-                                } header: {
-                                    podTableHeader
-                                        .background(panelFill)
-                                }
-                            }
-                            .frame(width: tableWidth, alignment: .topLeading)
-                            .padding(.horizontal, PodTableLayout.listRowEdgeInset)
-                            .padding(.vertical, 2)
+                    if viewModel.visiblePods.isEmpty {
+                        ScrollView {
+                            resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .padding(.top, 4)
                         }
-                        .defaultScrollAnchor(.topLeading)
+                    } else {
+                        AppKitPodTableView(
+                            pods: viewModel.visiblePods,
+                            selectedPodID: viewModel.state.selectedPod?.id,
+                            selectedPodIDs: viewModel.state.selectedPodIDs,
+                            sortColumn: viewModel.podSortColumn,
+                            sortAscending: viewModel.podSortAscending,
+                            nameColumnWidth: podNameColumnWidth,
+                            canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                            isFavorite: { pod in
+                                viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                            },
+                            onSelectPod: viewModel.selectPod,
+                            onToggleBulkSelection: viewModel.togglePodBulkSelection,
+                            onToggleSort: viewModel.togglePodSort,
+                            onNameColumnWidthChanged: commitPodNameColumnWidth,
+                            onToggleFavorite: { pod in
+                                viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                            },
+                            onOpenLogs: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .logs
+                                viewModel.reloadLogsForSelection()
+                            },
+                            onOpenExec: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .exec
+                            },
+                            onOpenDescribe: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .describe
+                            },
+                            onOpenYAML: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .yaml
+                            },
+                            onDelete: { pod in
+                                viewModel.requestDeleteResource(kind: .pod, name: pod.name)
+                            }
+                        )
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
@@ -2424,35 +2474,38 @@ public struct RuneRootView: View {
                 if viewModel.visibleDeployments.isEmpty {
                     resourceFilterEmptyState(kindTitle: "Deployments", totalCount: viewModel.state.deployments.count)
                 } else {
-                    List(viewModel.visibleDeployments) { deployment in
-                        Button {
+                    AppKitDeploymentListView(
+                        deployments: viewModel.visibleDeployments,
+                        selectedDeploymentID: viewModel.state.selectedDeployment?.id,
+                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                        isFavorite: { deployment in
+                            viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
+                        },
+                        onSelectDeployment: viewModel.selectDeployment,
+                        onToggleFavorite: { deployment in
+                            viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
+                        },
+                        onOpenUnifiedLogs: { deployment in
                             viewModel.selectDeployment(deployment)
-                        } label: {
-                            HStack {
-                                Text(deployment.name)
-                                    .font(.body.weight(.medium))
-                                Spacer()
-                                Text(deployment.replicaText)
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(Color.blue.opacity(0.22), in: Capsule())
-                                    .foregroundStyle(.blue)
-                                if viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) {
-                                    Image(systemName: "star.fill")
-                                        .foregroundStyle(Color.yellow)
-                                }
-                            }
-                            .runeListRowCard(isSelected: viewModel.state.selectedDeployment == deployment, verticalPadding: 5)
+                            deploymentInspectorTab = .unifiedLogs
+                            viewModel.reloadLogsForSelection()
+                        },
+                        onOpenRollout: { deployment in
+                            viewModel.selectDeployment(deployment)
+                            deploymentInspectorTab = .rollout
+                        },
+                        onOpenDescribe: { deployment in
+                            viewModel.selectDeployment(deployment)
+                            deploymentInspectorTab = .describe
+                        },
+                        onOpenYAML: { deployment in
+                            viewModel.selectDeployment(deployment)
+                            deploymentInspectorTab = .yaml
+                        },
+                        onDelete: { deployment in
+                            viewModel.requestDeleteResource(kind: .deployment, name: deployment.name)
                         }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            deploymentResourceContextMenu(deployment)
-                        }
-                        .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
-                        .listRowBackground(Color.clear)
-                    }
-                    .listStyle(.plain)
+                    )
                 }
 
             case .statefulSet:
@@ -2495,40 +2548,38 @@ public struct RuneRootView: View {
                 if viewModel.visibleServices.isEmpty {
                     resourceFilterEmptyState(kindTitle: "Services", totalCount: viewModel.state.services.count)
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(viewModel.visibleServices) { service in
-                                Button {
-                                    viewModel.selectService(service)
-                                } label: {
-                                    HStack {
-                                        Text(service.name)
-                                            .font(.body.weight(.medium))
-                                            .help(service.name)
-                                        Spacer()
-                                        Text(service.type)
-                                            .font(.caption.weight(.semibold))
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 2)
-                                            .background(Color.purple.opacity(0.22), in: Capsule())
-                                            .foregroundStyle(.purple)
-                                        if viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) {
-                                            Image(systemName: "star.fill")
-                                                .foregroundStyle(Color.yellow)
-                                        }
-                                    }
-                                    .runeListRowCard(isSelected: viewModel.state.selectedService == service, verticalPadding: 5)
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    serviceResourceContextMenu(service)
-                                }
-                            }
+                    AppKitServiceListView(
+                        services: viewModel.visibleServices,
+                        selectedServiceID: viewModel.state.selectedService?.id,
+                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                        isFavorite: { service in
+                            viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
+                        },
+                        onSelectService: viewModel.selectService,
+                        onToggleFavorite: { service in
+                            viewModel.toggleFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
+                        },
+                        onOpenUnifiedLogs: { service in
+                            viewModel.selectService(service)
+                            serviceInspectorTab = .unifiedLogs
+                            viewModel.reloadLogsForSelection()
+                        },
+                        onOpenPortForward: { service in
+                            viewModel.selectService(service)
+                            serviceInspectorTab = .portForward
+                        },
+                        onOpenDescribe: { service in
+                            viewModel.selectService(service)
+                            serviceInspectorTab = .describe
+                        },
+                        onOpenYAML: { service in
+                            viewModel.selectService(service)
+                            serviceInspectorTab = .yaml
+                        },
+                        onDelete: { service in
+                            viewModel.requestDeleteResource(kind: .service, name: service.name)
                         }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                    }
+                    )
                     .id("networking:service")
                 }
 
@@ -2617,69 +2668,6 @@ public struct RuneRootView: View {
         }
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func podTableRow(_ pod: PodSummary) -> some View {
-        let isSelectedForBulkAction = viewModel.isPodSelectedForBulkAction(pod)
-
-        return HStack(spacing: 8) {
-            RuneSelectionCheckboxButton(
-                isSelected: isSelectedForBulkAction,
-                accessibilityLabel: "Select \(pod.name)",
-                selectedHelp: "Remove from bulk selection",
-                deselectedHelp: "Add to bulk selection",
-                onToggle: { viewModel.togglePodBulkSelection(pod) }
-            )
-
-            Button {
-                viewModel.selectPod(pod)
-            } label: {
-                HStack(spacing: PodTableLayout.metricsSpacing) {
-                    Text(pod.name)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                        .frame(width: podNameColumnWidth, alignment: .leading)
-                        .help(pod.name)
-
-                    HStack(spacing: PodTableLayout.metricsSpacing) {
-                        Text(pod.cpuDisplay)
-                            .frame(width: PodTableLayout.cpuWidth, alignment: .trailing)
-                        Text(pod.memoryDisplay)
-                            .frame(width: PodTableLayout.memoryWidth, alignment: .trailing)
-                        Text("\(pod.totalRestarts)")
-                            .frame(width: PodTableLayout.restartsWidth, alignment: .trailing)
-                        Text(pod.ageDescription)
-                            .frame(width: PodTableLayout.ageWidth, alignment: .trailing)
-                    }
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.secondary)
-
-                    Text(pod.status)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .multilineTextAlignment(.center)
-                        .frame(width: PodTableLayout.statusTextWidth, alignment: .center)
-                        .padding(.horizontal, PodTableLayout.statusHorizontalPadding)
-                        .padding(.vertical, 2)
-                        .background(statusColor(for: pod.status).opacity(0.22), in: Capsule())
-                        .foregroundStyle(statusColor(for: pod.status))
-                        .help("Pod phase from the cluster")
-
-                    if viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(Color.yellow)
-                            .frame(width: 14)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-        }
-        .runeListRowCard(
-            isSelected: viewModel.state.selectedPod?.id == pod.id || isSelectedForBulkAction,
-            horizontalPadding: PodTableLayout.rowHorizontalPadding,
-            verticalPadding: PodTableLayout.rowVerticalPadding
-        )
     }
 
     private var helmPane: some View {
@@ -4091,14 +4079,132 @@ public struct RuneRootView: View {
     }
 
     private var terminalDetails: some View {
-        ResourceTerminalDetailsView(
-            session: viewModel.state.terminalSession,
-            selectedPod: viewModel.state.selectedPod,
-            portForwardSessions: viewModel.state.portForwardSessions,
-            onFillCommand: { command in
-                viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Terminal")
+                .font(.title2.weight(.bold))
+
+            RuneSegmentedPickerInScroll(
+                "",
+                selection: $terminalInspectorTab,
+                labelsHidden: true
+            ) {
+                ForEach(TerminalInspectorTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
             }
-        )
+            .accessibilityLabel("Terminal Inspector")
+
+            Group {
+                switch terminalInspectorTab {
+                case .commands:
+                    ResourceTerminalDetailsView(
+                        session: viewModel.state.terminalSession,
+                        selectedPod: terminalInspectorPod,
+                        portForwardSessions: viewModel.state.portForwardSessions,
+                        onFillCommand: { command in
+                            viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
+                        }
+                    )
+
+                case .logs:
+                    terminalPodLogsDetails
+
+                case .yaml:
+                    terminalPodYAMLDetails
+                }
+            }
+            .transaction { transaction in
+                transaction.animation = nil
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear(perform: refreshTerminalInspectorSelectionIfNeeded)
+        .onChange(of: terminalInspectorTab) { _, _ in
+            refreshTerminalInspectorSelectionIfNeeded()
+        }
+        .onChange(of: terminalShellPodID) { _, _ in
+            refreshTerminalInspectorSelectionIfNeeded()
+        }
+    }
+
+    private var terminalInspectorPod: PodSummary? {
+        viewModel.state.pods.first { $0.id == terminalShellPodID }
+            ?? viewModel.state.selectedPod
+            ?? viewModel.state.pods.first
+    }
+
+    @ViewBuilder
+    private var terminalPodLogsDetails: some View {
+        if let pod = terminalInspectorPod {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Pod logs: \(pod.namespace)/\(pod.name)", systemImage: "shippingbox")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("Terminal logs are scoped to the selected pod, not the deployment.")
+
+                PodLogsInspectorPane(
+                    selectedLogPreset: $viewModel.selectedLogPreset,
+                    includePreviousLogs: $viewModel.includePreviousLogs,
+                    selectedContainer: $viewModel.selectedLogContainer,
+                    isTailModeEnabled: $viewModel.isLogTailModeEnabled,
+                    isStreamPaused: $viewModel.isLogStreamPaused,
+                    isLoadingLogs: viewModel.state.isLoadingLogs,
+                    isLoadingResources: viewModel.state.isLoading,
+                    errorMessage: viewModel.state.lastLogFetchError,
+                    statusText: logStatusText,
+                    containerOptions: viewModel.podLogContainerOptions,
+                    logText: viewModel.state.podLogs,
+                    readOnlyResetID: "terminal-podlogs:\(pod.name):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs):\(viewModel.selectedLogContainer)",
+                    onReload: { viewModel.focusTerminalPodInspector(pod, reloadLogs: true) },
+                    onSave: { viewModel.saveCurrentLogs() },
+                    onSaveVisibleZip: { viewModel.saveVisibleLogsZip(visibleText: $0) },
+                    onSaveFullZip: { viewModel.saveCurrentLogsZip() },
+                    onSaveAllPodsZip: { viewModel.saveAllPodsLogsZip() },
+                    onCopySelection: { copySelectedTextFromFocusedTextView() },
+                    onCopyAll: { viewModel.copyCurrentLogsToClipboard() },
+                    onToggleStreamPause: { viewModel.toggleLogStreamPause() }
+                )
+                .onAppear {
+                    viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+                }
+            }
+        } else {
+            inspectorEmptyState("Select a pod for logs", symbol: "doc.text.magnifyingglass")
+        }
+    }
+
+    @ViewBuilder
+    private var terminalPodYAMLDetails: some View {
+        if let pod = terminalInspectorPod {
+            manifestInspectorPane(activeTab: .yaml)
+                .onAppear {
+                    viewModel.focusTerminalPodInspector(pod, loadDetails: shouldReloadTerminalPodDetails(for: pod))
+                }
+        } else {
+            inspectorEmptyState("Select a pod for YAML", symbol: "curlybraces")
+        }
+    }
+
+    private func refreshTerminalInspectorSelectionIfNeeded() {
+        guard let pod = terminalInspectorPod else { return }
+        switch terminalInspectorTab {
+        case .commands:
+            break
+        case .logs:
+            viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+        case .yaml:
+            viewModel.focusTerminalPodInspector(pod, loadDetails: shouldReloadTerminalPodDetails(for: pod))
+        }
+    }
+
+    private func shouldReloadTerminalPodLogs(for pod: PodSummary) -> Bool {
+        viewModel.state.selectedPod?.id != pod.id || viewModel.state.podLogs.isEmpty
+    }
+
+    private func shouldReloadTerminalPodDetails(for pod: PodSummary) -> Bool {
+        viewModel.state.selectedPod?.id != pod.id || viewModel.state.resourceYAML.isEmpty
     }
 
     private func portForwardSessionRow(_ session: PortForwardSession) -> some View {
@@ -5218,16 +5324,7 @@ public struct RuneRootView: View {
     }
 
     private var podNameColumnWidth: CGFloat {
-        livePodNameColumnWidth
-            ?? podNameColumnCommittedWidth
-    }
-
-    private var podNameColumnCommittedWidth: CGFloat {
         PodTableLayout.clampedNameColumnWidth(CGFloat(persistedPodNameColumnWidth))
-    }
-
-    private func setLivePodNameColumnWidth(_ width: CGFloat) {
-        livePodNameColumnWidth = PodTableLayout.clampedNameColumnWidth(width)
     }
 
     private func commitPodNameColumnWidth(_ width: CGFloat) {
@@ -5479,91 +5576,6 @@ public struct RuneRootView: View {
         .background(Color.secondary.opacity(0.14), in: Capsule())
     }
 
-    private var podTableHeader: some View {
-        HStack(spacing: PodTableLayout.metricsSpacing) {
-            Color.clear
-                .frame(width: PodTableLayout.selectionColumnWidth, height: 1)
-
-            HStack(spacing: 0) {
-                podSortHeaderButton(title: "Name", column: .name, width: podNameColumnWidth, alignment: .leading)
-                podNameColumnResizeHandle
-            }
-            .frame(width: podNameColumnWidth + PodTableLayout.nameColumnResizeHandleWidth, alignment: .leading)
-
-            HStack(spacing: PodTableLayout.metricsSpacing) {
-                podSortHeaderButton(title: "CPU", column: .cpu, width: PodTableLayout.cpuWidth, alignment: .trailing)
-                    .help("CPU in millicores (1000m = 1 core), from the metrics snapshot Rune loaded when available.")
-                podSortHeaderButton(title: "MEM", column: .memory, width: PodTableLayout.memoryWidth, alignment: .trailing)
-                podSortHeaderButton(title: "Restarts", column: .restarts, width: PodTableLayout.restartsWidth, alignment: .trailing)
-                podSortHeaderButton(title: "Age", column: .age, width: PodTableLayout.ageWidth, alignment: .trailing)
-            }
-            podSortHeaderButton(title: "Status", column: .status, width: PodTableLayout.statusTotalWidth, alignment: .center)
-        }
-        .padding(.horizontal, PodTableLayout.headerHorizontalInset)
-        .padding(.top, 4)
-        .padding(.bottom, PodTableLayout.headerBottomSpacing)
-        .textCase(nil)
-    }
-
-    private var podNameColumnResizeHandle: some View {
-        Capsule()
-            .fill(Color.secondary.opacity(isHoveringPodNameColumnResizeHandle ? 0.58 : 0.32))
-            .frame(width: isHoveringPodNameColumnResizeHandle ? 3 : 2, height: 18)
-            .frame(width: PodTableLayout.nameColumnResizeHandleWidth, height: 28)
-            .contentShape(Rectangle())
-            .help("Drag to resize the pod name column")
-            .animation(.easeOut(duration: 0.10), value: isHoveringPodNameColumnResizeHandle)
-            .onHover { isHovering in
-                isHoveringPodNameColumnResizeHandle = isHovering
-                if isHovering {
-                    NSCursor.resizeLeftRight.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        let startWidth = podNameColumnResizeStartWidth ?? podNameColumnWidth
-                        podNameColumnResizeStartWidth = startWidth
-                        setLivePodNameColumnWidth(startWidth + value.translation.width)
-                    }
-                    .onEnded { value in
-                        let startWidth = podNameColumnResizeStartWidth ?? podNameColumnWidth
-                        commitPodNameColumnWidth(startWidth + value.translation.width)
-                        livePodNameColumnWidth = nil
-                        podNameColumnResizeStartWidth = nil
-                    }
-            )
-            .onTapGesture(count: 2) {
-                livePodNameColumnWidth = nil
-                commitPodNameColumnWidth(PodTableLayout.nameColumnDefaultWidth)
-            }
-    }
-
-    private func podSortHeaderButton(
-        title: String,
-        column: PodListSortColumn,
-        width: CGFloat? = nil,
-        alignment: Alignment = .leading
-    ) -> some View {
-        Button {
-            viewModel.togglePodSort(column)
-        } label: {
-            HStack(spacing: 4) {
-                Text(title)
-                if viewModel.podSortColumn == column {
-                    Image(systemName: viewModel.podSortAscending ? "arrow.up" : "arrow.down")
-                        .font(.system(size: 10, weight: .bold))
-                }
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: alignment)
-        }
-        .buttonStyle(.plain)
-    }
-
     private func contextUsageValue(_ value: Int?) -> String {
         if let value {
             return "\(value)%"
@@ -5661,150 +5673,6 @@ public struct RuneRootView: View {
         let lineRange = text.lineRange(for: selectedRange)
         let selectedLines = text.substring(with: lineRange).trimmingCharacters(in: .newlines)
         copyToClipboard(selectedLines)
-    }
-
-    @ViewBuilder
-    private func podResourceContextMenu(_ pod: PodSummary) -> some View {
-        Button {
-            viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
-        } label: {
-            Label(
-                viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) ? "Remove Favorite" : "Favorite Resource",
-                systemImage: viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name) ? "star.slash" : "star"
-            )
-        }
-        Divider()
-        Button {
-            viewModel.selectPod(pod)
-            podInspectorTab = .logs
-            viewModel.reloadLogsForSelection()
-        } label: {
-            Label("Open Logs", systemImage: "text.alignleft")
-        }
-        Button {
-            viewModel.selectPod(pod)
-            podInspectorTab = .exec
-        } label: {
-            Label("Exec Shell", systemImage: "terminal")
-        }
-        Button {
-            viewModel.selectPod(pod)
-            podInspectorTab = .describe
-        } label: {
-            Label("Describe", systemImage: "doc.text.magnifyingglass")
-        }
-        Button {
-            viewModel.selectPod(pod)
-            podInspectorTab = .yaml
-        } label: {
-            Label("Open YAML", systemImage: "curlybraces")
-        }
-        Divider()
-        copyMenuItem(value: pod.name, label: "pod name")
-        copyMenuItem(value: pod.namespace, label: "namespace")
-        Divider()
-        Button(role: .destructive) {
-            viewModel.requestDeleteResource(kind: .pod, name: pod.name)
-        } label: {
-            Label("Delete Pod", systemImage: "trash")
-        }
-        .disabled(!viewModel.canApplyClusterMutations)
-    }
-
-    @ViewBuilder
-    private func deploymentResourceContextMenu(_ deployment: DeploymentSummary) -> some View {
-        Button {
-            viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
-        } label: {
-            Label(
-                viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) ? "Remove Favorite" : "Favorite Resource",
-                systemImage: viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name) ? "star.slash" : "star"
-            )
-        }
-        Divider()
-        Button {
-            viewModel.selectDeployment(deployment)
-            deploymentInspectorTab = .unifiedLogs
-            viewModel.reloadLogsForSelection()
-        } label: {
-            Label("Open Unified Logs", systemImage: "text.alignleft")
-        }
-        Button {
-            viewModel.selectDeployment(deployment)
-            deploymentInspectorTab = .rollout
-        } label: {
-            Label("Open Rollout", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
-        }
-        Button {
-            viewModel.selectDeployment(deployment)
-            deploymentInspectorTab = .describe
-        } label: {
-            Label("Describe", systemImage: "doc.text.magnifyingglass")
-        }
-        Button {
-            viewModel.selectDeployment(deployment)
-            deploymentInspectorTab = .yaml
-        } label: {
-            Label("Open YAML", systemImage: "curlybraces")
-        }
-        Divider()
-        copyMenuItem(value: deployment.name, label: "deployment name")
-        copyMenuItem(value: deployment.namespace, label: "namespace")
-        Divider()
-        Button(role: .destructive) {
-            viewModel.requestDeleteResource(kind: .deployment, name: deployment.name)
-        } label: {
-            Label("Delete Deployment", systemImage: "trash")
-        }
-        .disabled(!viewModel.canApplyClusterMutations)
-    }
-
-    @ViewBuilder
-    private func serviceResourceContextMenu(_ service: ServiceSummary) -> some View {
-        Button {
-            viewModel.toggleFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
-        } label: {
-            Label(
-                viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) ? "Remove Favorite" : "Favorite Resource",
-                systemImage: viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name) ? "star.slash" : "star"
-            )
-        }
-        Divider()
-        Button {
-            viewModel.selectService(service)
-            serviceInspectorTab = .unifiedLogs
-            viewModel.reloadLogsForSelection()
-        } label: {
-            Label("Open Unified Logs", systemImage: "text.alignleft")
-        }
-        Button {
-            viewModel.selectService(service)
-            serviceInspectorTab = .portForward
-        } label: {
-            Label("Port Forward", systemImage: "arrow.left.arrow.right")
-        }
-        Button {
-            viewModel.selectService(service)
-            serviceInspectorTab = .describe
-        } label: {
-            Label("Describe", systemImage: "doc.text.magnifyingglass")
-        }
-        Button {
-            viewModel.selectService(service)
-            serviceInspectorTab = .yaml
-        } label: {
-            Label("Open YAML", systemImage: "curlybraces")
-        }
-        Divider()
-        copyMenuItem(value: service.name, label: "service name")
-        copyMenuItem(value: service.namespace, label: "namespace")
-        Divider()
-        Button(role: .destructive) {
-            viewModel.requestDeleteResource(kind: .service, name: service.name)
-        } label: {
-            Label("Delete Service", systemImage: "trash")
-        }
-        .disabled(!viewModel.canApplyClusterMutations)
     }
 
     @ViewBuilder

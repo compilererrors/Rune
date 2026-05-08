@@ -128,6 +128,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testTerminalWorkspaceComposesIndependentPanelsInStableOrder() throws {
         let workspaceSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
         let portForwardSource = try String(contentsOfFile: terminalPortForwardPanelViewPath, encoding: .utf8)
         let tabBarSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
@@ -147,10 +148,33 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(portForwardSource.contains("@Binding var isExpanded"))
         XCTAssertTrue(portForwardSource.contains("compactStatus"))
         XCTAssertTrue(portForwardSource.contains("expandedControls"))
+        XCTAssertTrue(rootViewSource.contains("enum TerminalInspectorTab"))
+        XCTAssertTrue(rootViewSource.contains("case commands"))
+        XCTAssertTrue(rootViewSource.contains("case logs"))
+        XCTAssertTrue(rootViewSource.contains("case yaml"))
+        XCTAssertTrue(rootViewSource.contains("selection: $terminalInspectorTab"))
+        XCTAssertTrue(rootViewSource.contains("PodLogsInspectorPane("))
+        XCTAssertTrue(rootViewSource.contains("manifestInspectorPane(activeTab: .yaml)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.focusTerminalPodInspector"))
         XCTAssertTrue(tabBarSource.contains("ScrollView(.horizontal"))
         XCTAssertTrue(tabBarSource.contains("accessibilityLabel(\"New Shell\")"))
         XCTAssertTrue(sessionControlSource.contains("struct TerminalSessionControlRow"))
         XCTAssertTrue(transcriptSource.contains("struct TerminalTranscriptSurface"))
+    }
+
+    func testTerminalLogsPanelIsExplicitlyPodScoped() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let terminalLogsBlock = try functionBlock(
+            named: "private var terminalPodLogsDetails: some View",
+            endingBefore: "private var terminalPodYAMLDetails",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(terminalLogsBlock.contains("Label(\"Pod logs: \\(pod.namespace)/\\(pod.name)\", systemImage: \"shippingbox\")"))
+        XCTAssertTrue(terminalLogsBlock.contains("Terminal logs are scoped to the selected pod, not the deployment."))
+        XCTAssertTrue(terminalLogsBlock.contains("PodLogsInspectorPane("))
+        XCTAssertTrue(terminalLogsBlock.contains("viewModel.focusTerminalPodInspector(pod, reloadLogs: true)"))
+        XCTAssertFalse(terminalLogsBlock.contains("UnifiedResourceLogsInspectorPane"))
     }
 
     func testTerminalTabsUseFullTabHitAreaForSelection() throws {
@@ -196,6 +220,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             viewModelSource.range(of: "discoverCandidateFiles()")!.lowerBound
         )
         XCTAssertFalse(viewModelSource.contains("isInitialBootstrapRunning"))
+    }
+
+    func testAppMenuExposesExplicitDemoResetAction() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appPath = repoRoot.appendingPathComponent("Sources/RuneApp/RuneApp.swift").path
+        let appSource = try String(contentsOfFile: appPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(appSource.contains("Button(\"Reset Demo Cluster\")"))
+        XCTAssertTrue(appSource.contains("viewModel.resetDemoCluster()"))
+        XCTAssertTrue(viewModelSource.contains("public func resetDemoCluster()"))
     }
 
     func testTerminalControlsAreScopedToActiveTabAndReserveStableSpace() throws {
@@ -414,6 +453,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("swift build --disable-sandbox --product RuneFakeK8s"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testRuneFakeK8sEventsPointAtExistingPods"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneFakeK8sRESTServerTests"))
+        XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests"))
         XCTAssertTrue(source.contains("can_bind_loopback_socket"))
         XCTAssertTrue(source.contains("Skipped because this environment cannot bind local loopback sockets."))
     }
@@ -752,29 +792,48 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testPodResourceListNameColumnIsResizableAndPersisted() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
         let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
 
         XCTAssertTrue(settingsSource.contains("layoutPodNameColumnWidth"))
         XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth)"))
         XCTAssertTrue(rootViewSource.contains("podNameColumnWidth"))
-        XCTAssertTrue(rootViewSource.contains("livePodNameColumnWidth"))
-        XCTAssertTrue(rootViewSource.contains("podNameColumnCommittedWidth"))
-        XCTAssertTrue(rootViewSource.contains("setLivePodNameColumnWidth"))
+        XCTAssertFalse(rootViewSource.contains("setLivePodNameColumnWidth"))
+        XCTAssertFalse(rootViewSource.contains("podNameColumnResizeTranslation"))
+        XCTAssertFalse(rootViewSource.contains("private var podNameColumnResizeHandle"))
+        XCTAssertFalse(rootViewSource.contains("isHoveringPodNameColumnResizeHandle"))
         XCTAssertTrue(rootViewSource.contains("commitPodNameColumnWidth"))
-        XCTAssertTrue(rootViewSource.contains("podNameColumnResizeHandle"))
-        XCTAssertTrue(rootViewSource.contains("DragGesture(minimumDistance: 1)"))
-        XCTAssertTrue(rootViewSource.contains("PodTableLayout.minimumScrollableWidth(nameColumnWidth: podNameColumnWidth)"))
-        XCTAssertTrue(rootViewSource.contains(".frame(width: podNameColumnWidth, alignment: .leading)"))
-        XCTAssertTrue(rootViewSource.contains(".frame(width: podNameColumnWidth + PodTableLayout.nameColumnResizeHandleWidth"))
-        XCTAssertTrue(rootViewSource.contains(".onHover { isHovering in"))
-        XCTAssertTrue(rootViewSource.contains("NSCursor.resizeLeftRight.push()"))
-        XCTAssertTrue(rootViewSource.contains("NSCursor.pop()"))
+        XCTAssertTrue(rootViewSource.contains("AppKitPodTableView("))
+        XCTAssertTrue(rootViewSource.contains("onNameColumnWidthChanged: commitPodNameColumnWidth"))
+        XCTAssertTrue(rootViewSource.contains("canApplyClusterMutations: viewModel.canApplyClusterMutations"))
+        XCTAssertTrue(appKitPodTableSource.contains("NSTableView"))
+        XCTAssertTrue(appKitPodTableSource.contains("allowsColumnResizing = true"))
+        XCTAssertTrue(appKitPodTableSource.contains("columnAutoresizingStyle = .noColumnAutoresizing"))
+        XCTAssertTrue(appKitPodTableSource.contains("selectionHighlightStyle = .none"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableRowView"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableHeaderCell"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceStatusPillView"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerCell.configure("))
+        XCTAssertTrue(appKitPodTableSource.contains("NSImage(systemSymbolName: symbolName"))
+        XCTAssertTrue(appKitPodTableSource.contains("resetNameColumnWidth()"))
+        XCTAssertTrue(appKitPodTableSource.contains("event.clickCount == 2"))
+        XCTAssertTrue(appKitPodTableSource.contains("drawColumnDivider"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneUILayoutMetrics.compactGlyphCornerRadius"))
+        XCTAssertTrue(appKitPodTableSource.contains("NSColor.controlBackgroundColor.withAlphaComponent(0.42)"))
+        XCTAssertTrue(appKitPodTableSource.contains("NSColor.controlAccentColor.withAlphaComponent(0.11)"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableViewColumnDidResize"))
+        XCTAssertTrue(appKitPodTableSource.contains("DispatchQueue.main.asyncAfter(deadline: .now() + 0.18"))
+        XCTAssertTrue(appKitPodTableSource.contains("column.resizingMask = self == .name ? .userResizingMask : []"))
+        XCTAssertTrue(appKitPodTableSource.contains("isEnabled: parent.canApplyClusterMutations"))
+        XCTAssertFalse(appKitPodTableSource.contains("tableView.setIndicatorImage(parent.sortAscending"))
+        XCTAssertFalse(appKitPodTableSource.contains("super.draw(dirtyRect)"))
+        XCTAssertFalse(appKitPodTableSource.contains("DragGesture"))
     }
 
     func testPodNameColumnWidthIsClampedToUsableRange() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let layout = try functionBlock(
-            named: "private enum PodTableLayout {",
+            named: "enum PodTableLayout {",
             endingBefore: "private enum RuneRootKeyboardPane",
             in: rootViewSource
         )
@@ -782,27 +841,50 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(layout.contains("nameColumnMinimumWidth"))
         XCTAssertTrue(layout.contains("nameColumnMaximumWidth"))
         XCTAssertTrue(layout.contains("clampedNameColumnWidth"))
-        XCTAssertTrue(layout.contains("min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, width))"))
+        XCTAssertTrue(layout.contains("width.rounded(.toNearestOrAwayFromZero)"))
+        XCTAssertTrue(layout.contains("min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, pixelAlignedWidth))"))
     }
 
     func testPodNameColumnHeaderAndRowsShareSelectionGutterForResizeAlignment() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
         let layout = try functionBlock(
-            named: "private enum PodTableLayout {",
+            named: "enum PodTableLayout {",
             endingBefore: "private enum RuneRootKeyboardPane",
             in: rootViewSource
         )
-        let header = try functionBlock(
-            named: "private var podTableHeader: some View",
-            endingBefore: "private var podNameColumnResizeHandle",
+        let workloadsPane = try functionBlock(
+            named: "private var workloadsPane: some View",
+            endingBefore: "private var networkingPane",
             in: rootViewSource
         )
 
         XCTAssertTrue(layout.contains("selectionColumnWidth"))
         XCTAssertTrue(layout.contains("+ selectionColumnWidth"))
-        XCTAssertTrue(header.contains("Color.clear"))
-        XCTAssertTrue(header.contains(".frame(width: PodTableLayout.selectionColumnWidth"))
-        XCTAssertTrue(header.contains("podNameColumnResizeHandle"))
+        XCTAssertTrue(layout.contains("headerHorizontalInset: CGFloat = rowHorizontalPadding"))
+        XCTAssertTrue(layout.contains("nameColumnFrameWidth"))
+        XCTAssertTrue(layout.contains("metricsColumnGroupWidth"))
+        XCTAssertTrue(workloadsPane.contains("AppKitPodTableView("))
+        XCTAssertTrue(workloadsPane.contains("nameColumnWidth: podNameColumnWidth"))
+        XCTAssertFalse(workloadsPane.contains("pinnedViews: [.sectionHeaders]"))
+        XCTAssertTrue(appKitPodTableSource.contains("case selection"))
+        XCTAssertTrue(appKitPodTableSource.contains("case name"))
+        XCTAssertTrue(appKitPodTableSource.contains("case cpu"))
+        XCTAssertTrue(appKitPodTableSource.contains("case memory"))
+        XCTAssertTrue(appKitPodTableSource.contains("case restarts"))
+        XCTAssertTrue(appKitPodTableSource.contains("case age"))
+        XCTAssertTrue(appKitPodTableSource.contains("case status"))
+        XCTAssertFalse(appKitPodTableSource.contains("case favorite"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .selection: return PodTableLayout.selectionColumnWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .name: return PodTableLayout.clampedNameColumnWidth(nameColumnWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .cpu: return PodTableLayout.cpuWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .memory: return PodTableLayout.memoryWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .restarts: return PodTableLayout.restartsWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .age: return PodTableLayout.ageWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .status: return PodTableLayout.statusTotalWidth + PodTableLayout.favoriteColumnWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("return statusCell(for: pod)"))
+        XCTAssertTrue(appKitPodTableSource.contains("symbolImageView(systemName: \"star.fill\""))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.intercellSpacing = NSSize(width: 0, height: 4)"))
     }
 
     func testSidebarContextListIsAConstrainedScrollableRegion() async throws {
@@ -1090,13 +1172,23 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testCenterResourceRowsExposeOperationalContextMenus() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
 
-        XCTAssertTrue(rootViewSource.contains("podResourceContextMenu(pod)"))
-        XCTAssertTrue(rootViewSource.contains("deploymentResourceContextMenu(deployment)"))
-        XCTAssertTrue(rootViewSource.contains("serviceResourceContextMenu(service)"))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Open Logs\""))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Describe\""))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Open YAML\""))
+        XCTAssertTrue(rootViewSource.contains("AppKitDeploymentListView("))
+        XCTAssertTrue(appKitPodTableSource.contains("struct AppKitDeploymentListView"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableRowView(horizontalInset: 10)"))
+        XCTAssertFalse(rootViewSource.contains("List(viewModel.visibleDeployments)"))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Open Unified Logs\""))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Open Rollout\""))
+        XCTAssertTrue(rootViewSource.contains("AppKitServiceListView("))
+        XCTAssertTrue(appKitPodTableSource.contains("struct AppKitServiceListView"))
+        XCTAssertFalse(rootViewSource.contains("serviceResourceContextMenu(service)"))
+        XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Port Forward\""))
         XCTAssertTrue(rootViewSource.contains("genericResourceContextMenu(resource, action: action)"))
-        XCTAssertTrue(rootViewSource.contains("Open Logs"))
-        XCTAssertTrue(rootViewSource.contains("Open Unified Logs"))
+        XCTAssertTrue(appKitPodTableSource.contains("Open Unified Logs"))
         XCTAssertTrue(rootViewSource.contains("Open YAML"))
         XCTAssertTrue(rootViewSource.contains("Describe"))
     }
@@ -1284,6 +1376,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
+    private var appKitPodTableViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitPodTableView.swift").path
     }
 
     private func functionBlock(named startMarker: String, endingBefore endMarker: String, in source: String) throws -> String {

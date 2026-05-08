@@ -10,7 +10,7 @@ public enum RuneSettingsKeys {
     public static let verboseDebugTrace = "rune.settings.verboseDebugTrace"
     /// When true, after the active context snapshot finishes, Rune may warm overview cache for a few other contexts in the background (bounded).
     public static let backgroundPrefetchOtherContexts = "rune.settings.backgroundPrefetchOtherContexts"
-    /// When true, Rune exposes a small in-memory demo cluster action for screenshots and first-run evaluation.
+    /// When true, Rune exposes a small in-memory demo cluster context and menu action for screenshots and first-run evaluation.
     public static let enableDemoCluster = "rune.settings.enableDemoCluster"
     public static let logsCustomPresetOneMode = "rune.settings.logs.customPresetOne.mode"
     public static let logsCustomPresetOneLines = "rune.settings.logs.customPresetOne.lines"

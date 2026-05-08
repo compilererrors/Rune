@@ -66,6 +66,36 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertTrue(logs.contains("synthetic REST fake log"))
     }
 
+    func testRESTFakeCanForcePodLogEndpointFailure() async throws {
+        let failingPodName = "ember-gate-75c9f746b8-kq2wm"
+        let base = RuneFakeK8sFixture.defaultContexts[0]
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: base.contextName,
+                defaultNamespace: base.defaultNamespace,
+                namespaces: base.namespaces.map { namespace in
+                    RuneFakeK8sNamespace(
+                        name: namespace.name,
+                        pods: namespace.pods,
+                        deployments: namespace.deployments,
+                        services: namespace.services,
+                        failingLogPodNames: namespace.name == "alpha-zone" ? [failingPodName] : []
+                    )
+                },
+                nodes: base.nodes,
+                operatorResources: base.operatorResources
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+
+        let url = URL(string: "http://127.0.0.1:\(server.port)/api/v1/namespaces/alpha-zone/pods/\(failingPodName)/log")!
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 500)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("Synthetic forced pod log failure"))
+    }
+
     func testRESTFakeSupportsKubernetesPaginationMetadata() async throws {
         let server = try await RuneFakeK8sRESTServer.start()
         defer { server.stop() }

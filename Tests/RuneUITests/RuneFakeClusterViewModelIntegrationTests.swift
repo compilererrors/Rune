@@ -7,6 +7,64 @@ import XCTest
 
 @MainActor
 final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
+    func testDemoContextIsVisibleWithoutHijackingFakeClusterStartup() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+
+        XCTAssertEqual(harness.state.contexts.map(\.name), [RuneFakeK8sFixture.defaultContextName])
+        XCTAssertEqual(harness.state.selectedContext?.name, RuneFakeK8sFixture.defaultContextName)
+        XCTAssertEqual(harness.state.selectedNamespace, "alpha-zone")
+        XCTAssertTrue(harness.viewModel.visibleContexts.map(\.name).contains("rune-demo"))
+        XCTAssertTrue(harness.viewModel.contextMenuOptions.map(\.name).contains("rune-demo"))
+        XCTAssertEqual(harness.state.overviewPods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testSelectingDemoContextFromFakeClusterUsesInMemorySnapshotAndCanReturnToFakeCluster() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+
+        harness.viewModel.setContext(KubeContext(name: "rune-demo"))
+
+        XCTAssertEqual(harness.state.selectedContext?.name, "rune-demo")
+        XCTAssertEqual(harness.state.selectedNamespace, "demo")
+        XCTAssertEqual(harness.state.contexts.map(\.name), [RuneFakeK8sFixture.defaultContextName, "rune-demo"])
+        XCTAssertFalse(harness.state.pods.isEmpty)
+        XCTAssertTrue(harness.state.resourceYAML.contains("kind: Pod"))
+        XCTAssertTrue(harness.server.requestLines().isEmpty)
+        XCTAssertNil(harness.state.lastError)
+
+        harness.viewModel.setContext(KubeContext(name: RuneFakeK8sFixture.defaultContextName))
+
+        try await waitUntil {
+            harness.state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                && harness.state.selectedNamespace == "alpha-zone"
+                && harness.state.pods.map(\.name) == [
+                    "ember-gate-75c9f746b8-kq2wm",
+                    "orbit-lens-6f58d7d89b-hx9q2"
+                ]
+                && !harness.state.isLoading
+        }
+
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testOverviewStartupLoadsFakeClusterSnapshot() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -133,6 +191,94 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testTerminalPodInspectorLoadsLogsAndYAMLAgainstFakeClusterWithoutLeavingTerminal() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .terminal
+
+        try await harness.viewModel.reloadContexts()
+        let pod = try XCTUnwrap(harness.state.pods.first)
+        harness.server.resetRequestLines()
+
+        harness.viewModel.focusTerminalPodInspector(pod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.id == pod.id
+                && harness.state.podLogs.contains("synthetic REST fake log")
+                && !harness.state.isLoadingLogs
+        }
+
+        harness.viewModel.focusTerminalPodInspector(pod, reloadLogs: false, loadDetails: true)
+
+        try await waitUntil {
+            harness.state.selectedSection == .terminal
+                && harness.state.resourceYAML.contains(pod.name)
+                && harness.state.resourceDescribe.contains(pod.name)
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/\(pod.name)/log") })
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/\(pod.name)") })
+        XCTAssertNil(harness.state.lastLogFetchError)
+        XCTAssertNil(harness.state.lastResourceYAMLError)
+        XCTAssertNil(harness.state.lastResourceDescribeError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testTerminalPodLogEndpointFailureStaysInInspectorAndPreservesCachedLogs() async throws {
+        let failingPodName = "ember-gate-75c9f746b8-kq2wm"
+        let fixture = RuneFakeK8sFixture(
+            contexts: RuneFakeK8sFixture.defaultContexts.map { cluster in
+                RuneFakeK8sCluster(
+                    contextName: cluster.contextName,
+                    defaultNamespace: cluster.defaultNamespace,
+                    namespaces: cluster.namespaces.map { namespace in
+                        RuneFakeK8sNamespace(
+                            name: namespace.name,
+                            pods: namespace.pods,
+                            deployments: namespace.deployments,
+                            services: namespace.services,
+                            failingLogPodNames: namespace.name == "alpha-zone" ? [failingPodName] : []
+                        )
+                    },
+                    nodes: cluster.nodes,
+                    operatorResources: cluster.operatorResources
+                )
+            }
+        )
+        let harness = try await makeHarness(fixture: fixture)
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .terminal
+
+        try await harness.viewModel.reloadContexts()
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name == failingPodName })
+        harness.state.appendPodLogRead(
+            "cached log before forced endpoint failure\n",
+            contextName: RuneFakeK8sFixture.defaultContextName,
+            namespace: "alpha-zone",
+            podName: failingPodName
+        )
+        harness.server.resetRequestLines()
+
+        harness.viewModel.focusTerminalPodInspector(pod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.id == pod.id
+                && !harness.state.isLoadingLogs
+                && harness.state.lastLogFetchError?.contains("Synthetic forced pod log failure") == true
+        }
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/\(failingPodName)/log") })
+        XCTAssertTrue(harness.state.podLogs.contains("cached log before forced endpoint failure"))
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testRapidViewSwitchCoalescesFinalInspectorRequests() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -181,8 +327,8 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         }
     }
 
-    private func makeHarness() async throws -> Harness {
-        let server = try await RuneFakeK8sRESTServer.start()
+    private func makeHarness(fixture: RuneFakeK8sFixture = RuneFakeK8sFixture()) async throws -> Harness {
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
@@ -199,6 +345,14 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             .appendingPathComponent("rune-ui-fake-cluster-\(UUID().uuidString).yaml")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private func restoreDemoSetting(_ value: Any?) {
+        if let value {
+            UserDefaults.standard.set(value, forKey: RuneSettingsKeys.enableDemoCluster)
+        } else {
+            UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+        }
     }
 
     private func waitUntil(

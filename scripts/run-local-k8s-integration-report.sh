@@ -68,8 +68,21 @@ append_step_md() {
   local rel_log="${log_path#$RUN_DIR/}"
   local exit_text="${exit_code:-n/a}"
   local duration_text="${duration:-0}"
-  printf '| `%s` | %s | %s | %ss | [%s](%s) | %s |\n' \
-    "$name" "$status" "$exit_text" "$duration_text" "$rel_log" "$rel_log" "$note" >> "$REPORT_MD"
+
+  {
+    printf '\n### `%s`\n\n' "$name"
+    printf -- '- Status: `%s`\n' "$status"
+    printf -- '- Exit: `%s`\n' "$exit_text"
+    printf -- '- Duration: `%ss`\n' "$duration_text"
+    if [[ -n "$rel_log" ]]; then
+      printf -- '- Log: [`%s`](%s)\n' "$rel_log" "$rel_log"
+    else
+      printf -- '- Log: `n/a`\n'
+    fi
+    if [[ -n "$note" ]]; then
+      printf -- '- Note: %s\n' "$note"
+    fi
+  } >> "$REPORT_MD"
 }
 
 run_step() {
@@ -126,9 +139,6 @@ write_report_header() {
 - Safety gate: tests require \`RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1\` and hard-fail unless kubeconfigs are fake/local only.
 
 ## Steps
-
-| Step | Status | Exit | Duration | Log | Note |
-| --- | --- | ---: | ---: | --- | --- |
 EOF
 }
 
@@ -214,15 +224,14 @@ if [[ "$SKIP_DOCKER" == "1" ]]; then
 else
   if [[ "$RESET_DOCKER" == "1" ]]; then
     run_step docker_compose_reset docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans
+    rm -f "$ROOT_DIR/docker-compose/generated/orbit-seeded.ok" \
+      "$ROOT_DIR/docker-compose/generated/lattice-seeded.ok" \
+      "$ROOT_DIR/docker-compose/generated/orbit-host.yaml" \
+      "$ROOT_DIR/docker-compose/generated/lattice-host.yaml" \
+      "$ROOT_DIR/docker-compose/generated/rune-fake-kubeconfig.yaml"
   else
     skip_step docker_compose_reset "Skipped because RUNE_RESET_DOCKER_FAKE_K8S=0."
   fi
-
-  rm -f "$ROOT_DIR/docker-compose/generated/orbit-seeded.ok" \
-    "$ROOT_DIR/docker-compose/generated/lattice-seeded.ok" \
-    "$ROOT_DIR/docker-compose/generated/orbit-host.yaml" \
-    "$ROOT_DIR/docker-compose/generated/lattice-host.yaml" \
-    "$ROOT_DIR/docker-compose/generated/rune-fake-kubeconfig.yaml"
 
   run_step docker_compose_up docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
   run_step docker_compose_wait_seeded bash -lc \
@@ -237,10 +246,14 @@ else
     run_step docker_compose_read_write_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sReadWriteOperationsAreReversible
+    run_step docker_compose_view_model_feature_integration_test env \
+      RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
+      swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests
   else
     FAILURES=$((FAILURES + 1))
     skip_step docker_compose_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
     skip_step docker_compose_read_write_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
+    skip_step docker_compose_view_model_feature_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
   fi
 fi
 

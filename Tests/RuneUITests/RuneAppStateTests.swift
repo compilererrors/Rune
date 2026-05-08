@@ -3,6 +3,7 @@ import XCTest
 @testable import RuneDiagnostics
 @testable import RuneExport
 @testable import RuneKube
+@testable import RuneSecurity
 @testable import RuneUI
 
 final class RuneAppStateTests: XCTestCase {
@@ -33,8 +34,10 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(state.isLoading)
         XCTAssertFalse(state.isLoadingLogs)
         XCTAssertNil(state.lastError)
-        XCTAssertEqual(state.pods.count, 2)
+        XCTAssertEqual(state.pods.count, 3)
+        XCTAssertNotNil(state.pods.first { $0.name == "checkout-5d79f6c8b9-vx4lp" && $0.status == "CrashLoopBackOff" })
         XCTAssertFalse(state.deployments.isEmpty)
+        XCTAssertNotNil(state.deployments.first { $0.name == "checkout" && $0.readyReplicas == 0 && $0.desiredReplicas == 2 })
         XCTAssertFalse(state.statefulSets.isEmpty)
         XCTAssertFalse(state.daemonSets.isEmpty)
         XCTAssertFalse(state.jobs.isEmpty)
@@ -56,9 +59,72 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(state.rbacClusterRoleBindings.isEmpty)
         XCTAssertFalse(state.helmReleases.isEmpty)
         XCTAssertFalse(state.operatorResources.isEmpty)
+        XCTAssertNotNil(state.events.first { $0.type == "Warning" && $0.objectName == "checkout-5d79f6c8b9-vx4lp" })
         XCTAssertTrue(state.resourceYAML.contains("kind: Pod"))
         XCTAssertTrue(state.resourceDescribe.contains("Name:"))
         XCTAssertTrue(state.podLogs.contains("demo API"))
+    }
+
+    @MainActor
+    func testLoadDemoClusterWinsOverPendingBootstrap() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "previous-context")])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
+        )
+
+        viewModel.bootstrap()
+        viewModel.loadDemoCluster()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(state.contexts.map(\.name), ["previous-context", "rune-demo"])
+        XCTAssertEqual(state.selectedContext?.name, "rune-demo")
+        XCTAssertEqual(state.selectedNamespace, "demo")
+        XCTAssertFalse(viewModel.isLaunchExperienceVisible)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+    }
+
+    @MainActor
+    func testResetDemoClusterRestoresInMemorySnapshot() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+
+        viewModel.loadDemoCluster()
+        state.setPods([])
+        state.setEvents([])
+        state.selectedSection = .terminal
+        state.setPodLogs("mutated demo logs")
+
+        viewModel.resetDemoCluster()
+
+        XCTAssertEqual(state.selectedContext?.name, "rune-demo")
+        XCTAssertEqual(state.selectedSection, .overview)
+        XCTAssertEqual(state.pods.count, 3)
+        XCTAssertNotNil(state.pods.first { $0.status == "CrashLoopBackOff" })
+        XCTAssertNotNil(state.events.first { $0.type == "Warning" })
+        XCTAssertTrue(state.podLogs.contains("started demo API"))
+        XCTAssertNil(state.lastError)
     }
 
     @MainActor
@@ -107,6 +173,37 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalPodInspectorCanLoadLogsAndYAMLWithoutLeavingTerminal() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        viewModel.loadDemoCluster()
+        state.selectedSection = .terminal
+
+        let pod = try XCTUnwrap(state.pods.last)
+        viewModel.focusTerminalPodInspector(pod, reloadLogs: true, loadDetails: true)
+
+        XCTAssertEqual(state.selectedSection, .terminal)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.id, pod.id)
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("name: \(pod.name)")
+                && state.podLogs.contains("demo API")
+                && !state.isLoadingResourceDetails
+                && !state.isLoadingLogs
+        }
+    }
+
+    @MainActor
     func testOverviewClusterUsageCanUpdateWithoutReplacingOverviewSnapshot() {
         let state = RuneAppState()
         state.setOverviewSnapshot(
@@ -144,6 +241,16 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testContextMenuOptionsAreAlphabeticalWithoutFavoriteGrouping() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
         let state = RuneAppState()
         state.setContexts([
             KubeContext(name: "prod"),
@@ -155,6 +262,37 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["alpha", "Beta", "prod"])
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["prod", "alpha", "Beta"])
+    }
+
+    @MainActor
+    func testDemoContextIsVisibleWhenDemoClusterIsEnabled() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let state = RuneAppState()
+        state.setContexts([
+            KubeContext(name: "prod"),
+            KubeContext(name: "qa")
+        ])
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertTrue(viewModel.visibleContexts.map(\.name).contains("rune-demo"))
+        XCTAssertTrue(viewModel.contextMenuOptions.map(\.name).contains("rune-demo"))
+
+        viewModel.setContext(KubeContext(name: "rune-demo"))
+
+        XCTAssertEqual(state.selectedContext?.name, "rune-demo")
+        XCTAssertEqual(state.selectedNamespace, "demo")
+        XCTAssertTrue(state.contexts.map(\.name).contains("prod"))
+        XCTAssertTrue(state.contexts.map(\.name).contains("rune-demo"))
+        XCTAssertFalse(state.pods.isEmpty)
     }
 
     @MainActor
@@ -1892,6 +2030,12 @@ private final class RecordingPortForwardBrowserOpener: PortForwardBrowserOpening
 private struct CancelledFileExporter: FileExporting {
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
         throw FileExportError.userCancelled
+    }
+}
+
+private struct EmptyKubeConfigDiscoverer: KubeConfigDiscovering {
+    func discoverCandidateFiles() -> [URL] {
+        []
     }
 }
 

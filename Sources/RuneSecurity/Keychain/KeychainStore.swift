@@ -1,4 +1,5 @@
 import Foundation
+import RuneCore
 import Security
 
 public protocol SecretStore: Sendable {
@@ -21,7 +22,7 @@ public enum KeychainError: LocalizedError, Sendable {
 public final class KeychainStore: SecretStore {
     private let service: String
 
-    public init(service: String = "com.rune.app") {
+    public init(service: String = RuneApplicationIdentifiers.keychainService) {
         self.service = service
     }
 

@@ -191,8 +191,8 @@ public struct RunePreferencesView: View {
 
             settingsSection("Demo cluster") {
                 settingsToggleRow(
-                    "Enable demo cluster action",
-                    help: "Shows a small in-memory cluster from the Rune menu for screenshots and first-run evaluation. It does not start a server or keep background resources alive.",
+                    "Show demo cluster context",
+                    help: "Adds rune-demo to the context list and keeps the Rune menu demo action available for screenshots and first-run evaluation. It does not start a server or keep background resources alive.",
                     isOn: $enableDemoCluster
                 )
             }

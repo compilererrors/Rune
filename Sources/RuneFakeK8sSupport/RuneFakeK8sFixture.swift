@@ -116,6 +116,21 @@ public struct RuneFakeK8sNamespace: Sendable {
     public let pods: [RuneFakeK8sPod]
     public let deployments: [RuneFakeK8sDeployment]
     public let services: [RuneFakeK8sService]
+    public let failingLogPodNames: Set<String>
+
+    public init(
+        name: String,
+        pods: [RuneFakeK8sPod],
+        deployments: [RuneFakeK8sDeployment],
+        services: [RuneFakeK8sService],
+        failingLogPodNames: Set<String> = []
+    ) {
+        self.name = name
+        self.pods = pods
+        self.deployments = deployments
+        self.services = services
+        self.failingLogPodNames = failingLogPodNames
+    }
 }
 
 public struct RuneFakeK8sPod: Sendable {
