@@ -1751,6 +1751,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let urls = sources.map(\.url)
 
         for url in urls {
+            access.retainAccess(to: url)
             _ = try access.withAccess(to: url) {
                 try FileManager.default.attributesOfItem(atPath: url.path)
             }

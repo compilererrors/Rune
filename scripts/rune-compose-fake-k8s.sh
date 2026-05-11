@@ -88,7 +88,7 @@ case "$SUBCOMMAND" in
     start_stack
     ;;
   env)
-    start_stack
+    start_stack >&2
     cat <<EOF
 export HOME="$APP_STATE_DIR"
 export CFFIXED_USER_HOME="$APP_STATE_DIR"

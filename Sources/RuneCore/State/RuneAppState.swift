@@ -559,6 +559,32 @@ public final class RuneAppState: ObservableObject {
         lastLogUpdatedAt = loadedAt
     }
 
+    /// Replaces the cached pod log session for this resource (no merge with prior fetches). Used when tail mode
+    /// is off so changing the time window / line preset does not concatenate snapshots into one giant buffer.
+    public func replacePodLogRead(
+        _ logs: String,
+        contextName: String,
+        namespace: String,
+        podName: String,
+        loadedAt: Date = Date()
+    ) {
+        let key = logCacheKey(contextName: contextName, namespace: namespace, kind: .pod, resourceName: podName)
+        let segment = formattedLogSegment(
+            logs,
+            contextName: contextName,
+            namespace: namespace,
+            kind: .pod,
+            resourceName: podName,
+            sourceNames: [podName],
+            loadedAt: loadedAt
+        )
+        let bounded = boundedSessionLogCache(segment)
+        sessionLogCache[key] = bounded
+        podLogs = bounded
+        lastLogFetchError = nil
+        lastLogUpdatedAt = loadedAt
+    }
+
     public func setUnifiedServiceLogs(_ logs: String, pods: [String]) {
         unifiedServiceLogs = logs
         unifiedServiceLogPods = pods
@@ -589,6 +615,34 @@ public final class RuneAppState: ObservableObject {
             sourceNames: pods,
             loadedAt: loadedAt
         )
+        unifiedServiceLogPods = pods
+        lastLogFetchError = nil
+        lastLogUpdatedAt = loadedAt
+    }
+
+    /// Same as `replacePodLogRead` but for unified service/deployment log streams.
+    public func replaceUnifiedServiceLogRead(
+        _ logs: String,
+        pods: [String],
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceName: String,
+        loadedAt: Date = Date()
+    ) {
+        let key = logCacheKey(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)
+        let segment = formattedLogSegment(
+            logs,
+            contextName: contextName,
+            namespace: namespace,
+            kind: kind,
+            resourceName: resourceName,
+            sourceNames: pods,
+            loadedAt: loadedAt
+        )
+        let bounded = boundedSessionLogCache(segment)
+        sessionLogCache[key] = bounded
+        unifiedServiceLogs = bounded
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
         lastLogUpdatedAt = loadedAt

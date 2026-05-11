@@ -37,6 +37,10 @@ public enum RuneSettingsKeys {
     public static let layoutSidebarWidth = "rune.settings.layout.sidebarWidth"
     /// Persisted detail/inspector width in the 3-column shell.
     public static let layoutDetailWidth = "rune.settings.layout.detailWidth"
+    /// Persisted sidebar visibility in the 3-column shell.
+    public static let layoutSidebarVisible = "rune.settings.layout.sidebarVisible"
+    /// Persisted detail/inspector visibility in the 3-column shell.
+    public static let layoutDetailPaneVisible = "rune.settings.layout.detailPaneVisible"
     /// Persisted pod table name column width in the resource list.
     public static let layoutPodNameColumnWidth = "rune.settings.layout.podNameColumnWidth"
     /// Base font size used by Rune's interface and monospaced terminal/editor surfaces.
@@ -87,6 +91,8 @@ public enum RuneSettingsKeys {
             keyBindingRollout: RuneKeyBindingAction.rollout.defaultShortcut.storageValue,
             layoutSidebarWidth: 280.0,
             layoutDetailWidth: 440.0,
+            layoutSidebarVisible: true,
+            layoutDetailPaneVisible: true,
             layoutPodNameColumnWidth: 280.0,
             terminalFontSize: terminalFontSizeDefault,
             terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault
@@ -118,6 +124,16 @@ public extension UserDefaults {
     var runeEnableDemoCluster: Bool {
         get { (object(forKey: RuneSettingsKeys.enableDemoCluster) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.enableDemoCluster) }
+    }
+
+    var runeLayoutSidebarVisible: Bool {
+        get { (object(forKey: RuneSettingsKeys.layoutSidebarVisible) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.layoutSidebarVisible) }
+    }
+
+    var runeLayoutDetailPaneVisible: Bool {
+        get { (object(forKey: RuneSettingsKeys.layoutDetailPaneVisible) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.layoutDetailPaneVisible) }
     }
 
     var runeTerminalFontSize: Double {

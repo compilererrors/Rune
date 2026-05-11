@@ -84,7 +84,47 @@ public final class BookmarkManager: @unchecked Sendable {
 }
 
 public final class SecurityScopedAccess {
+    private let lock = NSLock()
+    private var retainedURLs: [String: URL] = [:]
+
     public init() {}
+
+    deinit {
+        lock.lock()
+        let urls = Array(retainedURLs.values)
+        retainedURLs.removeAll()
+        lock.unlock()
+
+        for url in urls {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    public func retainAccess(to url: URL) {
+        let standardizedURL = url.standardizedFileURL
+        let path = standardizedURL.path
+
+        lock.lock()
+        let isRetained = retainedURLs[path] != nil
+        lock.unlock()
+
+        guard !isRetained else {
+            return
+        }
+
+        guard standardizedURL.startAccessingSecurityScopedResource() else {
+            return
+        }
+
+        lock.lock()
+        if retainedURLs[path] == nil {
+            retainedURLs[path] = standardizedURL
+            lock.unlock()
+        } else {
+            lock.unlock()
+            standardizedURL.stopAccessingSecurityScopedResource()
+        }
+    }
 
     public func withAccess<T>(to url: URL, _ operation: () throws -> T) rethrows -> T {
         let accessed = url.startAccessingSecurityScopedResource()

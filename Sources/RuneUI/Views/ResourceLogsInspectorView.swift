@@ -14,6 +14,9 @@ struct ResourceLogsToolbar: View {
     let searchPulseID: Int
     let searchSummary: ResourceLogSearchResult?
     let statusText: String
+    var podOptions: [PodSummary] = []
+    var selectedPodID: Binding<String>? = nil
+    var showsContainerPicker: Bool = true
     let containerOptions: [String]
     let onReload: () -> Void
     let onSave: () -> Void
@@ -63,7 +66,20 @@ struct ResourceLogsToolbar: View {
                 .frame(width: 158)
             }
 
-            if !containerOptions.isEmpty {
+            if let selectedPodID, !podOptions.isEmpty {
+                LogToolbarPickerField(title: "Pod") {
+                    Picker("Pod", selection: selectedPodID) {
+                        ForEach(podOptions) { pod in
+                            Text(pod.name).tag(pod.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 240)
+                    .help("Choose a pod in the current namespace for terminal logs.")
+                }
+            }
+
+            if showsContainerPicker, !containerOptions.isEmpty {
                 LogToolbarPickerField(title: "Container") {
                     Picker("Container", selection: $selectedContainer) {
                         Text("All containers").tag("")
@@ -167,19 +183,19 @@ private struct LogToolbarGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 10) {
             content
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: 34)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minHeight: 48)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.055))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -203,7 +219,7 @@ private struct LogToolbarPickerField<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
@@ -216,7 +232,14 @@ private struct LogToolbarPickerField<Content: View>: View {
     }
 
     private var fieldWidth: CGFloat {
-        title == "Container" ? 166 : 158
+        switch title {
+        case "Pod":
+            return 240
+        case "Container":
+            return 166
+        default:
+            return 158
+        }
     }
 
 }
@@ -424,6 +447,9 @@ struct PodLogsInspectorPane: View {
     let isLoadingResources: Bool
     let errorMessage: String?
     let statusText: String
+    var podOptions: [PodSummary] = []
+    var selectedPodID: Binding<String>? = nil
+    var showsContainerPicker: Bool = true
     let containerOptions: [String]
     let logText: String
     let readOnlyResetID: String
@@ -457,6 +483,9 @@ struct PodLogsInspectorPane: View {
                 searchPulseID: searchPulseID,
                 searchSummary: searchResult,
                 statusText: statusText,
+                podOptions: podOptions,
+                selectedPodID: selectedPodID,
+                showsContainerPicker: showsContainerPicker,
                 containerOptions: containerOptions,
                 onReload: onReload,
                 onSave: onSave,
@@ -560,6 +589,9 @@ struct UnifiedResourceLogsInspectorPane: View {
                 searchPulseID: searchPulseID,
                 searchSummary: searchResult,
                 statusText: statusText,
+                podOptions: [],
+                selectedPodID: nil,
+                showsContainerPicker: false,
                 containerOptions: [],
                 onReload: onReload,
                 onSave: onSave,
@@ -661,43 +693,33 @@ private struct ResourceLogsOutputSurface: View {
                             selectedIndex: selectedSearchMatchIndex,
                             sequence: searchNavigationSequence
                         )
-                        if shouldDeferOutputMount {
-                            InspectorReadOnlyTextView(
-                                text: searchResult.displayedText,
-                                resetID: outputResetID,
-                                resetScrollOnExternalChange: false,
-                                contentStyle: .ansiLogs,
-                                navigationRequest: navigationRequest,
-                                usesLargeTextSurface: true,
-                                largeTextIndex: searchResult.textIndex,
-                                largeTextScrollTargetLine: searchResult.matchLineNumber(selectedIndex: selectedSearchMatchIndex)
-                            )
-                        } else {
-                            InspectorReadOnlyTextView(
-                                text: searchResult.displayedText,
-                                resetID: outputResetID,
-                                resetScrollOnExternalChange: false,
-                                contentStyle: .ansiLogs,
-                                navigationRequest: navigationRequest
-                            )
-                        }
+                        InspectorReadOnlyTextView(
+                            text: searchResult.displayedText,
+                            resetID: outputResetID,
+                            resetScrollOnExternalChange: false,
+                            contentStyle: .ansiLogs,
+                            navigationRequest: navigationRequest,
+                            allowsAutomaticLargeTextSurface: false
+                        )
                     }
                 }
             }
         }
     }
-
-    private var shouldDeferOutputMount: Bool {
-        ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: searchResult)
-    }
 }
 
 enum ResourceLogsDeferredRenderingPolicy {
     static let deferredOutputThreshold = 250_000
+    static let deferredLineCountThreshold = 1_000
 
-    static func shouldDeferOutputMount(for searchResult: ResourceLogSearchResult) -> Bool {
-        searchResult.displayedText.utf8.count > deferredOutputThreshold
+    static func shouldDeferOutputMount(for _: ResourceLogSearchResult) -> Bool {
+        false
     }
+}
+
+private enum LogSearchBarMetrics {
+    static let widestBadgePlaceholder = "9,999,999 matches"
+    static let widestPositionPlaceholder = "9,999,999 of 9,999,999"
 }
 
 private struct ResourceLogsSearchBar: View {
@@ -765,27 +787,46 @@ private struct ResourceLogsSearchBar: View {
             }
 
             if let searchSummary, searchSummary.isFiltering {
-                Button {
-                    selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(.plain)
-                .disabled(searchSummary.matchRanges.isEmpty)
-                .help("Previous match")
+                HStack(spacing: 8) {
+                    Button {
+                        selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(searchSummary.matchRanges.isEmpty)
+                    .help("Previous match")
 
-                Button {
-                    selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(.plain)
-                .disabled(searchSummary.matchRanges.isEmpty)
-                .help("Next match")
+                    Button {
+                        selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(searchSummary.matchRanges.isEmpty)
+                    .help("Next match")
 
-                Text(searchSummary.badgeText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(searchSummary.matchingLineCount == 0 ? .secondary : .primary)
+                    ZStack {
+                        Text(LogSearchBarMetrics.widestBadgePlaceholder)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .hidden()
+                        Text(searchSummary.badgeText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(searchSummary.matchingLineCount == 0 ? .secondary : .primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background {
@@ -793,19 +834,36 @@ private struct ResourceLogsSearchBar: View {
                             .fill(Color.accentColor.opacity(searchSummary.matchingLineCount == 0 ? 0.08 : 0.16))
                     }
 
-                if searchSummary.hasMatches {
-                    Text(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))
+                    ZStack {
+                        Text(LogSearchBarMetrics.widestPositionPlaceholder)
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .hidden()
+                        Text(
+                            searchSummary.hasMatches
+                                ? searchSummary.matchPositionText(selectedIndex: selectedMatchIndex)
+                                : "\u{00a0}"
+                        )
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(searchSummary.hasMatches ? Color.secondary : Color.clear)
                         .monospacedDigit()
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background {
-                            Capsule(style: .continuous)
-                                .fill(Color.primary.opacity(0.06))
-                        }
-                        .accessibilityLabel("Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background {
+                        Capsule(style: .continuous)
+                            .fill(Color.primary.opacity(searchSummary.hasMatches ? 0.06 : 0))
+                    }
+                    .accessibilityLabel(
+                        searchSummary.hasMatches
+                            ? "Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))"
+                            : "Search match position"
+                    )
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
     }
@@ -964,6 +1022,11 @@ struct ResourceLogSearchResult: Equatable {
             line: nil,
             column: nil
         )
+    }
+
+    func largeTextNavigationRevision(selectedIndex: Int, sequence: Int) -> Int? {
+        guard !matchRanges.isEmpty else { return nil }
+        return sequence &* 1_000_003 &+ clampedMatchIndex(selectedIndex)
     }
 
     static func makeForInspector(text: String, query: String) -> ResourceLogSearchResult {

@@ -418,16 +418,16 @@ enum PodTableLayout {
     static let nameColumnMinimumWidth: CGFloat = 160
     static let nameColumnMaximumWidth: CGFloat = 820
     static let nameColumnResizeHandleWidth: CGFloat = 14
-    static let cpuWidth: CGFloat = 44
-    static let memoryWidth: CGFloat = 56
-    static let restartsWidth: CGFloat = 56
-    static let ageWidth: CGFloat = 44
+    static let cpuWidth: CGFloat = 66
+    static let memoryWidth: CGFloat = 72
+    static let restartsWidth: CGFloat = 82
+    static let ageWidth: CGFloat = 60
     static let statusTextWidth: CGFloat = 120
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
     static let headerHorizontalInset: CGFloat = rowHorizontalPadding
     static let selectionColumnWidth: CGFloat = 30
-    static let favoriteColumnWidth: CGFloat = 14
+    static let favoriteColumnWidth: CGFloat = 34
     static let minimumScrollableWidth: CGFloat = 620
     /// Space between column headers and first row — enough to avoid a cramped look without excess air.
     static let headerBottomSpacing: CGFloat = 10
@@ -460,6 +460,17 @@ enum PodTableLayout {
             + restartsWidth
             + ageWidth
             + (metricsSpacing * 3)
+    }
+
+    static var defaultAppKitTableWidth: CGFloat {
+        selectionColumnWidth
+            + nameColumnDefaultWidth
+            + cpuWidth
+            + memoryWidth
+            + restartsWidth
+            + ageWidth
+            + statusTotalWidth
+            + favoriteColumnWidth
     }
 
     static func resizePreviewWidth(committedWidth: CGFloat, translation: CGFloat) -> CGFloat {
@@ -2477,11 +2488,14 @@ public struct RuneRootView: View {
                     AppKitDeploymentListView(
                         deployments: viewModel.visibleDeployments,
                         selectedDeploymentID: viewModel.state.selectedDeployment?.id,
+                        sortColumn: viewModel.deploymentSortColumn,
+                        sortAscending: viewModel.deploymentSortAscending,
                         canApplyClusterMutations: viewModel.canApplyClusterMutations,
                         isFavorite: { deployment in
                             viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
                         },
                         onSelectDeployment: viewModel.selectDeployment,
+                        onToggleSort: viewModel.toggleDeploymentSort,
                         onToggleFavorite: { deployment in
                             viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
                         },
@@ -2551,11 +2565,14 @@ public struct RuneRootView: View {
                     AppKitServiceListView(
                         services: viewModel.visibleServices,
                         selectedServiceID: viewModel.state.selectedService?.id,
+                        sortColumn: viewModel.serviceSortColumn,
+                        sortAscending: viewModel.serviceSortAscending,
                         canApplyClusterMutations: viewModel.canApplyClusterMutations,
                         isFavorite: { service in
                             viewModel.isFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
                         },
                         onSelectService: viewModel.selectService,
+                        onToggleSort: viewModel.toggleServiceSort,
                         onToggleFavorite: { service in
                             viewModel.toggleFavoriteResource(kind: .service, namespace: service.namespace, name: service.name)
                         },
@@ -2680,44 +2697,15 @@ public struct RuneRootView: View {
                 } else if viewModel.visibleHelmReleases.isEmpty {
                     inspectorEmptyState("No Helm releases found", symbol: "ferry")
                 } else {
-                    ForEach(viewModel.visibleHelmReleases) { release in
-                        Button {
-                            viewModel.selectHelmRelease(release)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(release.name)
-                                        .font(.body.weight(.medium))
-                                        .lineLimit(1)
-                                        .help(release.name)
-                                    Spacer()
-                                    Text(release.status.capitalized)
-                                        .font(.caption.weight(.semibold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 2)
-                                        .background(statusColor(for: release.status).opacity(0.22), in: Capsule())
-                                        .foregroundStyle(statusColor(for: release.status))
-                                }
-
-                                HStack(spacing: 8) {
-                                    if shouldShowResourceNamespaceLabel(release.namespace) {
-                                        Text(release.namespace)
-                                    }
-                                    Text("Rev \(release.revision)")
-                                    Text(release.chart)
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            }
-                            .runeListRowCard(isSelected: viewModel.state.selectedHelmRelease == release)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            copyMenuItem(value: release.name, label: "Helm release name")
-                            copyMenuItem(value: release.namespace, label: "namespace")
-                        }
-                    }
+                    AppKitHelmReleaseListView(
+                        releases: viewModel.visibleHelmReleases,
+                        selectedReleaseID: viewModel.state.selectedHelmRelease?.id,
+                        sortColumn: viewModel.helmReleaseSortColumn,
+                        sortAscending: viewModel.helmReleaseSortAscending,
+                        onSelectRelease: viewModel.selectHelmRelease,
+                        onToggleSort: viewModel.toggleHelmReleaseSort
+                    )
+                    .frame(height: helmReleaseListHeight(count: viewModel.visibleHelmReleases.count))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -2725,6 +2713,10 @@ public struct RuneRootView: View {
         }
         .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func helmReleaseListHeight(count: Int) -> CGFloat {
+        min(max(170, CGFloat(count) * 38 + 42), 520)
     }
 
     private var operatorResourceViews: some View {
@@ -4136,14 +4128,8 @@ public struct RuneRootView: View {
     @ViewBuilder
     private var terminalPodLogsDetails: some View {
         if let pod = terminalInspectorPod {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Pod logs: \(pod.namespace)/\(pod.name)", systemImage: "shippingbox")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help("Terminal logs are scoped to the selected pod, not the deployment.")
-
+            let podOptions = terminalLogPodOptions(namespace: pod.namespace)
+            VStack(alignment: .leading, spacing: 12) {
                 PodLogsInspectorPane(
                     selectedLogPreset: $viewModel.selectedLogPreset,
                     includePreviousLogs: $viewModel.includePreviousLogs,
@@ -4154,6 +4140,9 @@ public struct RuneRootView: View {
                     isLoadingResources: viewModel.state.isLoading,
                     errorMessage: viewModel.state.lastLogFetchError,
                     statusText: logStatusText,
+                    podOptions: podOptions,
+                    selectedPodID: terminalLogPodSelectionBinding(currentPod: pod, podOptions: podOptions),
+                    showsContainerPicker: false,
                     containerOptions: viewModel.podLogContainerOptions,
                     logText: viewModel.state.podLogs,
                     readOnlyResetID: "terminal-podlogs:\(pod.name):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs):\(viewModel.selectedLogContainer)",
@@ -4173,6 +4162,25 @@ public struct RuneRootView: View {
         } else {
             inspectorEmptyState("Select a pod for logs", symbol: "doc.text.magnifyingglass")
         }
+    }
+
+    private func terminalLogPodOptions(namespace: String) -> [PodSummary] {
+        viewModel.state.pods
+            .filter { $0.namespace == namespace }
+            .sorted { lhs, rhs in
+                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private func terminalLogPodSelectionBinding(currentPod: PodSummary, podOptions: [PodSummary]) -> Binding<String> {
+        Binding(
+            get: { currentPod.id },
+            set: { podID in
+                guard let pod = podOptions.first(where: { $0.id == podID }) else { return }
+                terminalShellPodID = pod.id
+                viewModel.focusTerminalPodInspector(pod, reloadLogs: true)
+            }
+        )
     }
 
     @ViewBuilder
@@ -4277,69 +4285,48 @@ public struct RuneRootView: View {
         selection: ClusterResourceSummary?,
         action: @escaping (ClusterResourceSummary?) -> Void
     ) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                if !resources.isEmpty {
+        Group {
+            if resources.isEmpty {
+                resourceFilterEmptyState(kindTitle: viewModel.state.selectedWorkloadKind.title, totalCount: 0)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
                     genericResourceBulkSelectionControls
-                }
 
-                if resources.isEmpty {
-                    resourceFilterEmptyState(kindTitle: viewModel.state.selectedWorkloadKind.title, totalCount: 0)
-                }
-
-                ForEach(resources) { resource in
-                    let isSelectedForBulkAction = viewModel.isGenericResourceSelectedForBulkAction(resource)
-                    HStack(alignment: .top, spacing: 8) {
-                        RuneSelectionCheckboxButton(
-                            isSelected: isSelectedForBulkAction,
-                            accessibilityLabel: "Select \(resource.name)",
-                            selectedHelp: "Remove from bulk selection",
-                            deselectedHelp: "Add to bulk selection",
-                            onToggle: { viewModel.toggleGenericResourceBulkSelection(resource) }
-                        )
-
-                        Button {
+                    AppKitGenericResourceListView(
+                        resources: resources,
+                        selectedResourceID: selection?.id,
+                        selectedResourceIDs: viewModel.state.selectedGenericResourceIDs,
+                        sortColumn: viewModel.genericResourceSortColumn,
+                        sortAscending: viewModel.genericResourceSortAscending,
+                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                        isFavorite: { resource in
+                            viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+                        },
+                        onSelectResource: { resource in
                             action(resource)
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(resource.name)
-                                        .font(.body.weight(.medium))
-                                        .lineLimit(1)
-                                        .help(resource.name)
-                                    Text(resource.primaryText)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                    Text(resource.secondaryText)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                if viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) {
-                                    Image(systemName: "star.fill")
-                                        .foregroundStyle(Color.yellow)
-                                        .help("Favorite resource")
-                                }
-                                if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                                    RuneChip {
-                                        Text(namespace)
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
+                        },
+                        onToggleBulkSelection: viewModel.toggleGenericResourceBulkSelection,
+                        onToggleSort: viewModel.toggleGenericResourceSort,
+                        onToggleFavorite: { resource in
+                            viewModel.toggleFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+                        },
+                        onOpenDescribe: { resource in
+                            action(resource)
+                            genericResourceManifestTab = .describe
+                        },
+                        onOpenYAML: { resource in
+                            action(resource)
+                            genericResourceManifestTab = .yaml
+                        },
+                        onDelete: { resource in
+                            viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
                         }
-                        .buttonStyle(.plain)
-                    }
-                    .runeListRowCard(isSelected: selection == resource || isSelectedForBulkAction)
-                    .contextMenu {
-                        genericResourceContextMenu(resource, action: action)
-                    }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.vertical, 2)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(.vertical, 2)
         }
         .padding(.horizontal, 2)
         .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\(genericResourceListIdentity(resources))")

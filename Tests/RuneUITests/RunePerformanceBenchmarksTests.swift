@@ -39,6 +39,40 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.25)
     }
 
+    func testResourceLogRenderPolicyBenchmarkKPI() {
+        let manyLineLogs = (0..<60_000)
+            .map { index in
+                index.isMultiple(of: 25)
+                    ? "line=\(index) level=error component=api"
+                    : "line=\(index) level=info component=api"
+            }
+            .joined(separator: "\n")
+        let wideFewLinePayload = String(repeating: " payload=synthetic-wide-log-field", count: 140)
+        let wideFewLineLogs = (0..<80)
+            .map { index in "line=\(String(format: "%06d", index))\(wideFewLinePayload)" }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let manyLineResult = ResourceLogSearchResult.makeForInspector(text: manyLineLogs, query: "level=error")
+            let wideResult = ResourceLogSearchResult.makeForInspector(text: wideFewLineLogs, query: "")
+            _ = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: manyLineResult)
+            _ = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: wideResult)
+        }
+
+        let started = ContinuousClock.now
+        let manyLineResult = ResourceLogSearchResult.makeForInspector(text: manyLineLogs, query: "level=error")
+        let wideResult = ResourceLogSearchResult.makeForInspector(text: wideFewLineLogs, query: "")
+        let defersManyLines = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: manyLineResult)
+        let defersWideFewLines = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: wideResult)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertFalse(defersManyLines)
+        XCTAssertFalse(defersWideFewLines)
+        XCTAssertEqual(manyLineResult.matchingLineCount, 2_400)
+        XCTAssertEqual(wideResult.textIndex.lineCount, 80)
+        XCTAssertLessThan(seconds(elapsed), 0.45)
+    }
+
     func testKubernetesRequestRetryClassificationBenchmarkKPI() {
         let statuses = [200, 400, 401, 403, 404, 409, 429, 500, 502, 503, 504]
         let errors = [
@@ -363,7 +397,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             .joined(separator: "\n")
         let result = ResourceLogSearchResult.make(text: text, query: "")
 
-        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
 
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
             let controller = NSHostingController(
@@ -486,6 +520,73 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             maxHeight - minHeight,
             8,
             "KPI: log inspector controls should not jump vertically or wrap into extra rows when the detail pane width changes."
+        )
+    }
+
+    @MainActor
+    func testTerminalPodOnlyLogToolbarLayoutBenchmarkKPI() {
+        let widths: [CGFloat] = [420, 520, 720, 960]
+        let pods = (0..<12).map { index in
+            PodSummary(
+                name: "api-\(String(format: "%02d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 3) ? "Succeeded" : "Running",
+                containerNamesLine: "app,sidecar"
+            )
+        }
+        let searchSummary = ResourceLogSearchResult.make(
+            text: (0..<300)
+                .map { index in
+                    "2026-05-07T10:00:00Z pod=api-\(String(format: "%02d", index % pods.count)) message=synthetic log \(index)"
+                }
+                .joined(separator: "\n"),
+            query: "api"
+        )
+
+        let measuredController = makeLogToolbarController(
+            width: widths[0],
+            searchSummary: searchSummary,
+            podOptions: pods,
+            selectedPodID: pods[0].id,
+            showsContainerPicker: false,
+            containerOptions: ["app", "sidecar"]
+        )
+        measuredController.view.layoutSubtreeIfNeeded()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for width in widths {
+                measuredController.view.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+                measuredController.view.layoutSubtreeIfNeeded()
+            }
+        }
+
+        let controller = makeLogToolbarController(
+            width: widths[0],
+            searchSummary: searchSummary,
+            podOptions: pods,
+            selectedPodID: pods[0].id,
+            showsContainerPicker: false,
+            containerOptions: ["app", "sidecar"]
+        )
+        controller.view.layoutSubtreeIfNeeded()
+
+        let started = ContinuousClock.now
+        let heights = widths.map { width in
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+            controller.view.layoutSubtreeIfNeeded()
+            return controller.sizeThatFits(in: CGSize(width: width, height: 260)).height
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.08,
+            "KPI: terminal log pod picker layout should stay responsive while resizing."
+        )
+        XCTAssertLessThanOrEqual(
+            (heights.max() ?? 0) - (heights.min() ?? 0),
+            8,
+            "KPI: terminal log pod picker should not wrap or jump vertically across panel widths."
         )
     }
 
@@ -850,6 +951,136 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testResourceListColumnLayoutBenchmarkKPI() {
+        let visibleWidths = stride(from: CGFloat(240), through: CGFloat(1800), by: CGFloat(3)).map { $0 }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            var checksum: CGFloat = 0
+            for _ in 0..<400 {
+                for visibleWidth in visibleWidths {
+                    let widths = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
+                    checksum += widths.name + widths.replicas + widths.favorite
+                    let serviceWidths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
+                    checksum += serviceWidths.name + serviceWidths.type + serviceWidths.clusterIP + serviceWidths.favorite
+                    let genericWidths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
+                    checksum += genericWidths.selection + genericWidths.name + genericWidths.primary + genericWidths.secondary + genericWidths.namespace + genericWidths.favorite
+                    let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
+                    checksum += helmWidths.name + helmWidths.status + helmWidths.namespace + helmWidths.revision + helmWidths.chart + helmWidths.appVersion
+                }
+            }
+            XCTAssertGreaterThan(checksum, 0)
+        }
+
+        var previousTotal: CGFloat = 0
+        for visibleWidth in visibleWidths {
+            let widths = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
+            let total = widths.name + widths.replicas + widths.favorite
+            let deploymentMinimumTotal = RuneAppKitResourceListLayout.deploymentMinimumNameColumnWidth
+                + RuneAppKitResourceListLayout.deploymentReplicaColumnWidth
+                + RuneAppKitResourceListLayout.deploymentFavoriteColumnWidth
+            let deploymentUsableWidth = min(
+                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.deploymentTrailingBreathingRoom
+            )
+            XCTAssertEqual(total, max(deploymentUsableWidth, deploymentMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(total, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+            XCTAssertGreaterThanOrEqual(total, previousTotal)
+            previousTotal = total
+
+            let serviceWidths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
+            let serviceTotal = serviceWidths.name + serviceWidths.type + serviceWidths.clusterIP + serviceWidths.favorite
+            let serviceMinimumTotal = RuneAppKitResourceListLayout.serviceMinimumNameColumnWidth
+                + RuneAppKitResourceListLayout.serviceTypeColumnWidth
+                + RuneAppKitResourceListLayout.serviceClusterIPColumnWidth
+                + RuneAppKitResourceListLayout.serviceFavoriteColumnWidth
+            let serviceUsableWidth = min(
+                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.serviceTrailingBreathingRoom
+            )
+            XCTAssertEqual(serviceTotal, max(serviceUsableWidth, serviceMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(serviceTotal, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+
+            let genericWidths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
+            let genericLeadingTotal = genericWidths.selection + genericWidths.name + genericWidths.primary
+            let genericTrailingTotal = genericWidths.secondary + genericWidths.namespace + genericWidths.favorite
+            let genericTotal = genericLeadingTotal + genericTrailingTotal
+            let genericMinimumTotal = RuneAppKitResourceListLayout.genericSelectionColumnWidth
+                + RuneAppKitResourceListLayout.genericMinimumNameColumnWidth
+                + RuneAppKitResourceListLayout.genericPrimaryColumnWidth
+                + RuneAppKitResourceListLayout.genericSecondaryColumnWidth
+                + RuneAppKitResourceListLayout.genericNamespaceColumnWidth
+                + RuneAppKitResourceListLayout.genericFavoriteColumnWidth
+            let genericUsableWidth = min(
+                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.genericTrailingBreathingRoom
+            )
+            XCTAssertEqual(genericTotal, max(genericUsableWidth, genericMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(genericTotal, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+
+            let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
+            let helmPrimaryTotal = helmWidths.name + helmWidths.status + helmWidths.namespace
+            let helmMetadataTotal = helmWidths.revision + helmWidths.chart + helmWidths.appVersion
+            let helmTotal = helmPrimaryTotal + helmMetadataTotal
+            let helmMinimumTotal = RuneAppKitResourceListLayout.helmMinimumNameColumnWidth
+                + RuneAppKitResourceListLayout.helmStatusColumnWidth
+                + RuneAppKitResourceListLayout.helmNamespaceColumnWidth
+                + RuneAppKitResourceListLayout.helmRevisionColumnWidth
+                + RuneAppKitResourceListLayout.helmChartColumnWidth
+                + RuneAppKitResourceListLayout.helmAppVersionColumnWidth
+            let helmUsableWidth = min(
+                RuneAppKitResourceListLayout.helmMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.helmTrailingBreathingRoom
+            )
+            XCTAssertEqual(helmTotal, max(helmUsableWidth, helmMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(helmTotal, RuneAppKitResourceListLayout.helmMaximumContentWidth)
+
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.deploymentReplicaColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Ready", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceClusterIPColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Cluster IP", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericPrimaryColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Detail", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericSecondaryColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Info", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmStatusColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmRevisionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Rev", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmChartColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Chart", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmAppVersionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "App", reservesSortIndicator: true))
+        }
+
+        let wideDeployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: 1320)
+        XCTAssertGreaterThanOrEqual(wideDeployment.replicas, 88)
+        XCTAssertGreaterThanOrEqual(wideDeployment.name, 900)
+
+        let wideGeneric = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: 1320)
+        XCTAssertGreaterThanOrEqual(wideGeneric.name, 480)
+        XCTAssertLessThanOrEqual(wideGeneric.primary, 144)
+        XCTAssertLessThanOrEqual(wideGeneric.secondary, 164)
+        XCTAssertLessThanOrEqual(wideGeneric.namespace, 132)
+
+        let started = ContinuousClock.now
+        var checksum: CGFloat = 0
+        for _ in 0..<50 {
+            for visibleWidth in visibleWidths {
+                let deployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
+                checksum += deployment.name + deployment.replicas + deployment.favorite
+                let service = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
+                checksum += service.name + service.type + service.clusterIP + service.favorite
+                let generic = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
+                checksum += generic.selection + generic.name + generic.primary + generic.secondary + generic.namespace + generic.favorite
+                let helm = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
+                checksum += helm.name + helm.status + helm.namespace + helm.revision + helm.chart + helm.appVersion
+            }
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertGreaterThan(checksum, 0)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.01,
+            "KPI: resource column width projection should stay below 10ms for 50 passes across resize samples so the middle panel tracks the side panel."
+        )
+    }
+
     @MainActor
     func testGenericResourceQuickCompareBenchmarkKPI() {
         let state = RuneAppState()
@@ -921,6 +1152,50 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(visible.count, 5_000)
         XCTAssertEqual(visible.prefix(3).map(\.name), ["config-0000", "config-0250", "config-0500"])
         XCTAssertLessThan(seconds(elapsed), 0.35)
+    }
+
+    @MainActor
+    func testPodMetricSortingBenchmarkKPI() {
+        let state = RuneAppState()
+        let suiteName = "RunePerformanceBenchmarksTests.podMetricSort.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let viewModel = RuneAppViewModel(
+            state: state,
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
+        )
+        state.selectedContext = KubeContext(name: "benchmark")
+        state.selectedNamespace = "default"
+        state.setPods((0..<5_000).map { index in
+            PodSummary(
+                name: "pod-\(String(format: "%04d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 5) ? "Succeeded" : "Running",
+                ageDescription: "\(5_000 - index)m",
+                cpuUsage: "\(index % 250)m",
+                memoryUsage: "\(128 + (index % 512))Mi"
+            )
+        })
+        for index in stride(from: 0, to: 5_000, by: 333) {
+            viewModel.toggleFavoriteResource(
+                kind: .pod,
+                namespace: "default",
+                name: "pod-\(String(format: "%04d", index))"
+            )
+        }
+        viewModel.togglePodSort(.cpu)
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.visiblePods
+        }
+
+        let started = ContinuousClock.now
+        let visible = viewModel.visiblePods
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(visible.count, 5_000)
+        XCTAssertEqual(visible.prefix(3).map(\.cpuDisplay), ["249m", "249m", "249m"])
+        XCTAssertLessThan(seconds(elapsed), 0.35, "KPI: numeric pod CPU sorting should stay below 350ms for 5,000 rows in debug.")
     }
 
     @MainActor
@@ -1489,6 +1764,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     private func makeLogToolbarController(
         width: CGFloat,
         searchSummary: ResourceLogSearchResult,
+        podOptions: [PodSummary] = [],
+        selectedPodID: String = "",
+        showsContainerPicker: Bool = true,
         containerOptions: [String]
     ) -> NSHostingController<ResourceLogsToolbar> {
         let controller = NSHostingController(
@@ -1503,6 +1781,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 searchPulseID: 0,
                 searchSummary: searchSummary,
                 statusText: "Last updated 12:00:00",
+                podOptions: podOptions,
+                selectedPodID: podOptions.isEmpty ? nil : .constant(selectedPodID),
+                showsContainerPicker: showsContainerPicker,
                 containerOptions: containerOptions,
                 onReload: {},
                 onSave: {},

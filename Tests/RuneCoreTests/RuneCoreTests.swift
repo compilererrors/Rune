@@ -2,6 +2,27 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
+    @MainActor
+    func testAppendPodLogTailTrimsOlderSegmentsWhenSessionCacheExceedsCharacterBudget() {
+        let state = RuneAppState()
+        let earlySentinel = "RUNE_EARLY_TAIL_SENTINEL"
+        let firstBody = "\(earlySentinel)\n\(String(repeating: "a", count: 520_000))"
+        state.appendPodLogRead(firstBody, contextName: "ctx", namespace: "ns", podName: "pod-a")
+
+        let secondBody = String(repeating: "b", count: 520_000)
+        state.appendPodLogRead(secondBody, contextName: "ctx", namespace: "ns", podName: "pod-a")
+
+        XCTAssertTrue(
+            state.podLogs.contains("[older session log cache truncated]"),
+            "Expected session log merge to exceed the in-memory cap and record truncation."
+        )
+        XCTAssertFalse(
+            state.podLogs.contains(earlySentinel),
+            "Tail-append mode must drop the oldest merged log bytes; otherwise the UI looks like logs “disappear” or never fully load."
+        )
+        XCTAssertTrue(state.podLogs.contains("b"), "The newest tail read should still be present after truncation.")
+    }
+
     func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
         let shortcut = RuneKeyboardShortcut(storageValue: "shift-f")
 

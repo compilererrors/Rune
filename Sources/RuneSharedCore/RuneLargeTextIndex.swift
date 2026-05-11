@@ -71,6 +71,44 @@ public struct RuneLargeTextSearchResult: Equatable, Sendable {
     }
 }
 
+public struct RuneLargeTextViewportLayout: Equatable, Sendable {
+    public let lineCount: Int
+    public let rowHeight: Double
+    public let verticalPadding: Double
+    public let viewportHeight: Double
+
+    public init(lineCount: Int, rowHeight: Double, verticalPadding: Double, viewportHeight: Double) {
+        self.lineCount = max(0, lineCount)
+        self.rowHeight = max(1, rowHeight)
+        self.verticalPadding = max(0, verticalPadding)
+        self.viewportHeight = max(1, viewportHeight)
+    }
+
+    public var contentHeight: Double {
+        max(rowHeight, Double(lineCount) * rowHeight + verticalPadding * 2)
+    }
+
+    public var maxVerticalOffset: Double {
+        max(0, contentHeight - viewportHeight)
+    }
+
+    public func clampedVerticalOffset(_ verticalOffset: Double) -> Double {
+        min(max(0, verticalOffset), maxVerticalOffset)
+    }
+
+    public func viewportStartLine(verticalOffset: Double, overscan: Int) -> Int {
+        let visibleOffset = clampedVerticalOffset(verticalOffset)
+        let overscanLineCount = max(0, overscan)
+        let rawStartLine = Int((max(0, visibleOffset - verticalPadding) / rowHeight).rounded(.down)) + 1
+        return max(1, rawStartLine - overscanLineCount)
+    }
+
+    public func scrollTargetLineForClampedOffset(_ verticalOffset: Double) -> Int? {
+        guard lineCount > 0, verticalOffset > maxVerticalOffset + rowHeight else { return nil }
+        return lineCount
+    }
+}
+
 public struct RuneLargeTextIndex: Equatable, Sendable {
     public let text: String
     public let lineStartUTF16Offsets: [Int]

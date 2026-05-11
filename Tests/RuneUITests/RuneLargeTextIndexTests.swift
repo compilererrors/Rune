@@ -1,5 +1,6 @@
 import XCTest
 import struct RuneSharedCore.RuneLargeTextIndex
+import struct RuneSharedCore.RuneLargeTextViewportLayout
 @testable import RuneUI
 
 final class RuneLargeTextIndexTests: XCTestCase {
@@ -11,6 +12,18 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertEqual(index.line(number: 2)?.text, "beta")
         XCTAssertEqual(index.line(number: 3)?.text, "gamma")
         XCTAssertEqual(index.line(number: 4)?.text, "")
+    }
+
+    func testMockKeyValueConfigDumpIndexesEveryLogicalLine() {
+        let lineCount = 500
+        let text = (0..<lineCount)
+            .map { "mock.framework.mockSetting.\($0) = mockValue" }
+            .joined(separator: "\n")
+        let index = RuneLargeTextIndex(text: text)
+
+        XCTAssertEqual(index.lineCount, lineCount)
+        XCTAssertEqual(index.line(number: 1)?.text, "mock.framework.mockSetting.0 = mockValue")
+        XCTAssertEqual(index.line(number: lineCount)?.text, "mock.framework.mockSetting.\(lineCount - 1) = mockValue")
     }
 
     func testViewportReadsOnlyRequestedWindowDeepInLargeText() {
@@ -25,6 +38,30 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertEqual(viewport.lines.map(\.number), [70_001, 70_002, 70_003, 70_004, 70_005])
         XCTAssertEqual(viewport.lines.first?.text, "line-70000 value=synthetic")
         XCTAssertEqual(viewport.lines.last?.text, "line-70004 value=synthetic")
+    }
+
+    func testLargeTextViewportClampsStaleOffsetSoLinesRemainRenderable() {
+        let layout = RuneLargeTextViewportLayout(
+            lineCount: 4_356,
+            rowHeight: 18,
+            verticalPadding: 8,
+            viewportHeight: 620
+        )
+        let staleOffsetPastContent = layout.contentHeight * 3
+
+        XCTAssertGreaterThan(staleOffsetPastContent, layout.maxVerticalOffset)
+        XCTAssertEqual(layout.clampedVerticalOffset(staleOffsetPastContent), layout.maxVerticalOffset)
+
+        let startLine = layout.viewportStartLine(
+            verticalOffset: staleOffsetPastContent,
+            overscan: 24
+        )
+        let viewport = RuneLargeTextIndex(text: (0..<4_356).map { "line-\($0)" }.joined(separator: "\n"))
+            .viewport(startLine: startLine, lineLimit: 60)
+
+        XCTAssertFalse(viewport.lines.isEmpty, "Existing log lines must still render when a reused large text surface has a stale scroll offset.")
+        XCTAssertGreaterThanOrEqual(viewport.lines.count, 30)
+        XCTAssertEqual(layout.scrollTargetLineForClampedOffset(staleOffsetPastContent), 4_356)
     }
 
     func testSearchFindsEveryMatchWithoutFilteringOrCapping() {

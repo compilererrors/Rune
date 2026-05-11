@@ -8,6 +8,40 @@ import XCTest
 
 final class RuneAppStateTests: XCTestCase {
     @MainActor
+    func testViewModelRestoresAndPersistsSplitPaneVisibility() {
+        let defaults = UserDefaults.standard
+        let previousSidebar = defaults.object(forKey: RuneSettingsKeys.layoutSidebarVisible)
+        let previousDetail = defaults.object(forKey: RuneSettingsKeys.layoutDetailPaneVisible)
+        defer {
+            if let previousSidebar {
+                defaults.set(previousSidebar, forKey: RuneSettingsKeys.layoutSidebarVisible)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.layoutSidebarVisible)
+            }
+
+            if let previousDetail {
+                defaults.set(previousDetail, forKey: RuneSettingsKeys.layoutDetailPaneVisible)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.layoutDetailPaneVisible)
+            }
+        }
+
+        defaults.runeLayoutSidebarVisible = false
+        defaults.runeLayoutDetailPaneVisible = true
+
+        let viewModel = RuneAppViewModel(state: RuneAppState())
+
+        XCTAssertFalse(viewModel.isSidebarVisible)
+        XCTAssertTrue(viewModel.isDetailPaneVisible)
+
+        viewModel.toggleSidebarVisibility()
+        viewModel.toggleDetailPaneVisibility()
+
+        XCTAssertTrue(defaults.runeLayoutSidebarVisible)
+        XCTAssertFalse(defaults.runeLayoutDetailPaneVisible)
+    }
+
+    @MainActor
     func testLoadDemoClusterPopulatesFullInMemorySnapshot() {
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
@@ -676,6 +710,33 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testReplacePodLogReadOverwritesCachedSnapshotWithoutMergingPriorFetch() {
+        let state = RuneAppState()
+        let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
+        let secondDate = Date(timeIntervalSince1970: 1_776_000_060)
+
+        state.replacePodLogRead(
+            "narrow-window-line\n",
+            contextName: "ctx-a",
+            namespace: "ns-a",
+            podName: "pod-a",
+            loadedAt: firstDate
+        )
+        XCTAssertTrue(state.podLogs.contains("narrow-window-line"))
+        XCTAssertFalse(state.podLogs.contains("wide-window-line"))
+
+        state.replacePodLogRead(
+            "wide-window-line\n",
+            contextName: "ctx-a",
+            namespace: "ns-a",
+            podName: "pod-a",
+            loadedAt: secondDate
+        )
+        XCTAssertTrue(state.podLogs.contains("wide-window-line"))
+        XCTAssertFalse(state.podLogs.contains("narrow-window-line"))
+    }
+
+    @MainActor
     func testSessionLogCacheKeepsReadSegmentsWithResourceBreaks() {
         let state = RuneAppState()
         let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
@@ -1241,6 +1302,106 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testGenericResourceListSortsByHeaderMetadata() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setConfigMaps([
+            ClusterResourceSummary(kind: .configMap, name: "beta", namespace: "default", primaryText: "1 key", secondaryText: "runtime"),
+            ClusterResourceSummary(kind: .configMap, name: "alpha", namespace: "default", primaryText: "3 keys", secondaryText: "feature-flags"),
+            ClusterResourceSummary(kind: .configMap, name: "gamma", namespace: "platform", primaryText: "2 keys", secondaryText: "settings")
+        ])
+
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["alpha", "beta", "gamma"])
+
+        viewModel.toggleGenericResourceSort(.primary)
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["alpha", "gamma", "beta"])
+
+        viewModel.toggleGenericResourceSort(.secondary)
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["alpha", "beta", "gamma"])
+
+        viewModel.toggleGenericResourceSort(.namespace)
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["alpha", "beta", "gamma"])
+
+        viewModel.toggleGenericResourceSort(.namespace)
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["gamma", "alpha", "beta"])
+    }
+
+    @MainActor
+    func testDeploymentListSortsByHeaderMetadata() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setDeployments([
+            DeploymentSummary(name: "api", namespace: "default", readyReplicas: 1, desiredReplicas: 3),
+            DeploymentSummary(name: "worker", namespace: "default", readyReplicas: 3, desiredReplicas: 3),
+            DeploymentSummary(name: "checkout", namespace: "default", readyReplicas: 0, desiredReplicas: 2)
+        ])
+
+        XCTAssertEqual(viewModel.visibleDeployments.map(\.name), ["api", "checkout", "worker"])
+
+        viewModel.toggleDeploymentSort(.replicas)
+
+        XCTAssertEqual(viewModel.visibleDeployments.map(\.name), ["worker", "api", "checkout"])
+
+        viewModel.toggleDeploymentSort(.replicas)
+
+        XCTAssertEqual(viewModel.visibleDeployments.map(\.name), ["checkout", "api", "worker"])
+    }
+
+    @MainActor
+    func testServiceListSortsByHeaderMetadata() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setServices([
+            ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.30"),
+            ServiceSummary(name: "gateway", namespace: "default", type: "LoadBalancer", clusterIP: "10.0.0.10"),
+            ServiceSummary(name: "worker", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.20")
+        ])
+
+        XCTAssertEqual(viewModel.visibleServices.map(\.name), ["api", "gateway", "worker"])
+
+        viewModel.toggleServiceSort(.type)
+
+        XCTAssertEqual(viewModel.visibleServices.map(\.name), ["api", "worker", "gateway"])
+
+        viewModel.toggleServiceSort(.clusterIP)
+
+        XCTAssertEqual(viewModel.visibleServices.map(\.name), ["gateway", "worker", "api"])
+    }
+
+    @MainActor
+    func testHelmReleaseListSortsByHeaderMetadata() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setHelmReleases([
+            HelmReleaseSummary(name: "worker", namespace: "default", revision: 2, updated: "2026-05-01 10:00:00", status: "deployed", chart: "worker-1.4.0", appVersion: "1.4.0"),
+            HelmReleaseSummary(name: "api", namespace: "default", revision: 4, updated: "2026-05-01 10:01:00", status: "failed", chart: "api-1.6.0", appVersion: "1.6.0"),
+            HelmReleaseSummary(name: "gateway", namespace: "platform", revision: 1, updated: "2026-05-01 10:02:00", status: "deployed", chart: "gateway-1.2.0", appVersion: "1.2.0")
+        ])
+
+        XCTAssertEqual(viewModel.visibleHelmReleases.map(\.name), ["api", "gateway", "worker"])
+
+        viewModel.toggleHelmReleaseSort(.status)
+
+        XCTAssertEqual(viewModel.visibleHelmReleases.map(\.name), ["gateway", "worker", "api"])
+
+        viewModel.toggleHelmReleaseSort(.revision)
+
+        XCTAssertEqual(viewModel.visibleHelmReleases.map(\.name), ["api", "worker", "gateway"])
+
+        viewModel.toggleHelmReleaseSort(.namespace)
+
+        XCTAssertEqual(viewModel.visibleHelmReleases.map(\.name), ["api", "worker", "gateway"])
+    }
+
+    @MainActor
     func testFavoriteResourcesPersistAndAreScopedByKindNamespaceAndName() {
         let state = RuneAppState()
         let suiteName = "RuneAppStateTests.favoriteResourceScope.\(UUID().uuidString)"
@@ -1368,6 +1529,41 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.selectedPodsForBulkActions.map(\.name), ["api-0", "api-1"])
         XCTAssertEqual(viewModel.selectedPodCount, 3)
+    }
+
+    @MainActor
+    func testPodMetricSortsUseNumericValuesBeforeFavorites() {
+        let state = RuneAppState()
+        let suiteName = "RuneAppStateTests.podMetricSort.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let viewModel = RuneAppViewModel(
+            state: state,
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
+        )
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setPods([
+            PodSummary(name: "favorite-low-cpu-old", namespace: "default", status: "Running", ageDescription: "13d", cpuUsage: "1m"),
+            PodSummary(name: "mid-cpu-new", namespace: "default", status: "Running", ageDescription: "4h", cpuUsage: "3m"),
+            PodSummary(name: "high-cpu-middle", namespace: "default", status: "Running", ageDescription: "1d", cpuUsage: "42m"),
+            PodSummary(name: "missing-cpu", namespace: "default", status: "Running", ageDescription: "2d")
+        ])
+        viewModel.toggleFavoriteResource(kind: .pod, namespace: "default", name: "favorite-low-cpu-old")
+
+        viewModel.togglePodSort(.cpu)
+
+        XCTAssertEqual(
+            viewModel.visiblePods.map(\.name),
+            ["high-cpu-middle", "mid-cpu-new", "favorite-low-cpu-old", "missing-cpu"]
+        )
+
+        viewModel.togglePodSort(.age)
+
+        XCTAssertEqual(
+            viewModel.visiblePods.map(\.name),
+            ["mid-cpu-new", "high-cpu-middle", "missing-cpu", "favorite-low-cpu-old"]
+        )
     }
 
     @MainActor

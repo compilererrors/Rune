@@ -76,6 +76,7 @@ public struct RuneLargeTextSurface: View {
     private let index: RuneLargeTextIndex
     private let placeholder: String
     private let scrollTargetLine: Int?
+    private let scrollTargetRevision: Int?
     private let showsLineNumbers: Bool
     private let fontSize: CGFloat
     private let onNearBottomChange: (Bool) -> Void
@@ -85,6 +86,7 @@ public struct RuneLargeTextSurface: View {
         text: String,
         placeholder: String = "No output",
         scrollTargetLine: Int? = nil,
+        scrollTargetRevision: Int? = nil,
         showsLineNumbers: Bool = true,
         fontSize: CGFloat = 12,
         onNearBottomChange: @escaping (Bool) -> Void = { _ in }
@@ -92,6 +94,7 @@ public struct RuneLargeTextSurface: View {
         self.index = RuneLargeTextIndex(text: text)
         self.placeholder = placeholder
         self.scrollTargetLine = scrollTargetLine
+        self.scrollTargetRevision = scrollTargetRevision
         self.showsLineNumbers = showsLineNumbers
         self.fontSize = fontSize
         self.onNearBottomChange = onNearBottomChange
@@ -101,6 +104,7 @@ public struct RuneLargeTextSurface: View {
         index: RuneLargeTextIndex,
         placeholder: String = "No output",
         scrollTargetLine: Int? = nil,
+        scrollTargetRevision: Int? = nil,
         showsLineNumbers: Bool = true,
         fontSize: CGFloat = 12,
         onNearBottomChange: @escaping (Bool) -> Void = { _ in }
@@ -108,6 +112,7 @@ public struct RuneLargeTextSurface: View {
         self.index = index
         self.placeholder = placeholder
         self.scrollTargetLine = scrollTargetLine
+        self.scrollTargetRevision = scrollTargetRevision
         self.showsLineNumbers = showsLineNumbers
         self.fontSize = fontSize
         self.onNearBottomChange = onNearBottomChange
@@ -116,6 +121,7 @@ public struct RuneLargeTextSurface: View {
     public var body: some View {
         ScrollViewReader { proxy in
             GeometryReader { outerProxy in
+                let viewportHeight = Self.clampedFiniteViewportHeight(outerProxy.size.height)
                 ScrollView([.vertical, .horizontal]) {
                     if index.lineCount == 0 {
                         Text(placeholder)
@@ -124,24 +130,46 @@ public struct RuneLargeTextSurface: View {
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                             .padding(10)
                     } else {
-                        sparseContent(viewportHeight: outerProxy.size.height)
+                        sparseContent(viewportHeight: viewportHeight)
                     }
                 }
                 .coordinateSpace(name: coordinateSpaceName)
                 .onPreferenceChange(RuneLargeTextVerticalOffsetPreferenceKey.self) { offset in
                     let normalizedOffset = max(0, offset)
                     verticalOffset = normalizedOffset
-                    onNearBottomChange(isNearBottom(verticalOffset: normalizedOffset, viewportHeight: outerProxy.size.height))
+                    onNearBottomChange(isNearBottom(verticalOffset: normalizedOffset, viewportHeight: viewportHeight))
+                }
+                .onChange(of: index.lineCount) { _, _ in
+                    clampScrollIfNeeded(proxy: proxy, viewportHeight: viewportHeight)
+                }
+                .onChange(of: index.utf16Length) { _, _ in
+                    clampScrollIfNeeded(proxy: proxy, viewportHeight: viewportHeight)
+                }
+                .onChange(of: outerProxy.size.height) { _, height in
+                    clampScrollIfNeeded(proxy: proxy, viewportHeight: Self.clampedFiniteViewportHeight(height))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             .onAppear {
-                scroll(proxy: proxy, to: scrollTargetLine)
+                scrollToActiveSearchTarget(proxy: proxy)
             }
-            .onChange(of: scrollTargetLine) { _, line in
-                scroll(proxy: proxy, to: line)
+            .onChange(of: scrollTargetLine) { _, _ in
+                scrollToActiveSearchTarget(proxy: proxy)
+            }
+            .onChange(of: scrollTargetRevision) { _, _ in
+                scrollToActiveSearchTarget(proxy: proxy)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// `GeometryReader` inside a `ScrollViewReader` can receive a collapsed or non-finite proposal from SwiftUI;
+    /// virtualization math then uses a bogus viewport height and the surface can look “cut off” after roughly
+    /// `visibleLimit + overscan*2` rows (~80 on typical laptop metrics).
+    private static func clampedFiniteViewportHeight(_ raw: CGFloat) -> CGFloat {
+        guard raw.isFinite, raw > 2 else { return 480 }
+        return min(max(raw, 120), 16_384)
     }
 
     private var coordinateSpaceName: String {
@@ -163,7 +191,7 @@ public struct RuneLargeTextSurface: View {
 
     private func sparseContent(viewportHeight: CGFloat) -> some View {
         let visible = visibleViewport(viewportHeight: viewportHeight)
-        let contentHeight = max(rowHeight, CGFloat(index.lineCount) * rowHeight + verticalPadding * 2)
+        let contentHeight = layout(viewportHeight: viewportHeight).contentHeight
         let targetLine = scrollTargetLine.flatMap { line in
             line > 0 && line <= index.lineCount ? line : nil
         }
@@ -181,7 +209,14 @@ public struct RuneLargeTextSurface: View {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .offset(y: yOffset(for: targetLine))
-                    .id(scrollTargetID(for: targetLine))
+                    .id(matchScrollTargetID(for: targetLine))
+            }
+
+            if index.lineCount > 0, targetLine != index.lineCount {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .offset(y: yOffset(for: index.lineCount))
+                    .id(bottomScrollTargetID(for: index.lineCount))
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -199,14 +234,26 @@ public struct RuneLargeTextSurface: View {
             .padding(.trailing, 12)
             .offset(y: yOffset(for: visible.startLine))
         }
-        .frame(minWidth: 1, minHeight: contentHeight, alignment: .topLeading)
+        .frame(minWidth: 1, minHeight: CGFloat(contentHeight), alignment: .topLeading)
     }
 
     private func visibleViewport(viewportHeight: CGFloat) -> RuneLargeTextViewport {
         let overscan = 24
         let visibleLimit = max(1, Int(ceil(max(1, viewportHeight) / rowHeight)))
-        let startLine = max(1, Int(floor(max(0, verticalOffset - verticalPadding) / rowHeight)) + 1 - overscan)
+        let startLine = layout(viewportHeight: viewportHeight).viewportStartLine(
+            verticalOffset: Double(verticalOffset),
+            overscan: overscan
+        )
         return index.viewport(startLine: startLine, lineLimit: visibleLimit + overscan * 2)
+    }
+
+    private func layout(viewportHeight: CGFloat) -> RuneLargeTextViewportLayout {
+        RuneLargeTextViewportLayout(
+            lineCount: index.lineCount,
+            rowHeight: Double(rowHeight),
+            verticalPadding: Double(verticalPadding),
+            viewportHeight: Double(viewportHeight)
+        )
     }
 
     private func yOffset(for line: Int) -> CGFloat {
@@ -219,12 +266,28 @@ public struct RuneLargeTextSurface: View {
         return maxOffset - verticalOffset < rowHeight * 2
     }
 
-    private func scroll(proxy: ScrollViewProxy, to line: Int?) {
-        guard let line, line > 0, line <= index.lineCount else { return }
-        proxy.scrollTo(scrollTargetID(for: line), anchor: .center)
+    private func scrollToActiveSearchTarget(proxy: ScrollViewProxy) {
+        guard let line = scrollTargetLine, line > 0, line <= index.lineCount else { return }
+        proxy.scrollTo(matchScrollTargetID(for: line), anchor: .center)
     }
 
-    private func scrollTargetID(for line: Int) -> String {
+    private func clampScrollIfNeeded(proxy: ScrollViewProxy, viewportHeight: CGFloat) {
+        guard let line = layout(viewportHeight: viewportHeight).scrollTargetLineForClampedOffset(Double(verticalOffset)) else {
+            return
+        }
+        proxy.scrollTo(bottomScrollTargetID(for: line), anchor: .bottom)
+    }
+
+    /// ScrollViewReader ignores repeated `scrollTo` calls when the identity is unchanged; include the navigation
+    /// revision so stepping search matches on the same line still recenters the viewport.
+    private func matchScrollTargetID(for line: Int) -> String {
+        if let scrollTargetRevision {
+            return "line-anchor-\(line)-r\(scrollTargetRevision)"
+        }
+        return "line-anchor-\(line)"
+    }
+
+    private func bottomScrollTargetID(for line: Int) -> String {
         "line-anchor-\(line)"
     }
 }

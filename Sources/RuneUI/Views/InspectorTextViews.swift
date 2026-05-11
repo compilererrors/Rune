@@ -38,13 +38,15 @@ struct InspectorReadOnlyTextView: View {
     var externalValidationIssues: [YAMLValidationIssue] = []
     var navigationRequest: YAMLTextNavigationRequest?
     var usesLargeTextSurface = false
+    var allowsAutomaticLargeTextSurface = true
     var largeTextIndex: RuneLargeTextIndex?
     var largeTextScrollTargetLine: Int?
+    var largeTextScrollTargetRevision: Int?
     var largeTextShowsLineNumbers = true
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     private var shouldUseLargeTextSurface: Bool {
-        usesLargeTextSurface || text.utf8.count > 250_000
+        usesLargeTextSurface || (allowsAutomaticLargeTextSurface && text.utf8.count > 250_000)
     }
 
     var body: some View {
@@ -55,6 +57,7 @@ struct InspectorReadOnlyTextView: View {
                         index: largeTextIndex,
                         placeholder: "No output",
                         scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
+                        scrollTargetRevision: largeTextScrollTargetRevision ?? navigationRequest?.sequence,
                         showsLineNumbers: largeTextShowsLineNumbers,
                         fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
                     )
@@ -63,6 +66,7 @@ struct InspectorReadOnlyTextView: View {
                         text: text,
                         placeholder: "No output",
                         scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
+                        scrollTargetRevision: largeTextScrollTargetRevision ?? navigationRequest?.sequence,
                         showsLineNumbers: largeTextShowsLineNumbers,
                         fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
                     )

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import RuneUI
 
@@ -19,7 +21,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("ResourceLogsSourcePanel(title: \"Pods\""))
         XCTAssertTrue(source.contains(".toggleStyle(.button)"))
         XCTAssertTrue(source.contains(".fixedSize(horizontal: true, vertical: false)"))
-        XCTAssertTrue(source.contains(".frame(minHeight: 34)"))
+        XCTAssertTrue(source.contains(".frame(minHeight: 48)"))
         XCTAssertTrue(source.contains("Label(\"Save Logs\", systemImage: \"square.and.arrow.down\")"))
         XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(source.contains("Label(\"More\", systemImage: \"ellipsis.circle\")"))
@@ -38,7 +40,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("statusColor"))
         XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: 8, style: .continuous)"))
         XCTAssertTrue(source.contains("Text(title)"))
-        XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: 4)"))
+        XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: 5)"))
         XCTAssertTrue(source.contains("Text(title.uppercased())"))
         XCTAssertFalse(source.contains("Circle()\\n                    .fill(statusText.lowercased()"))
     }
@@ -215,11 +217,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(first.scrollIdentityToken, second.scrollIdentityToken)
     }
 
-    func testLargeUnfilteredLogsDeferInitialTextMount() {
+    func testLargeUnfilteredLogsStillUseSharedInspectorTextSurface() {
         let text = String(repeating: "INFO synthetic benchmark line\n", count: 12_000)
         let result = ResourceLogSearchResult.make(text: text, query: "")
 
-        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
     func testSmallUnfilteredLogsRenderImmediately() {
@@ -228,7 +230,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
-    func testLargeSearchedLogsStillDeferBecauseOutputIsNotFiltered() {
+    func testLargeSearchedLogsStillUseSharedInspectorTextSurface() {
         let text = (0..<12_000)
             .map { index in
                 index.isMultiple(of: 1_000)
@@ -242,7 +244,25 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(result.displayedText.contains("INFO synthetic line 1"))
         XCTAssertTrue(result.displayedText.contains("INFO synthetic line 11999"))
         XCTAssertEqual(result.matchRanges.count, 12)
-        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
+
+    func testWideFewLineLogsRenderWithRegularTextSurfaceInsteadOfVirtualizedSurface() throws {
+        let widePayload = String(repeating: " payload=synthetic-wide-log-field", count: 140)
+        let text = (0..<80)
+            .map { index in "line-\(String(format: "%06d", index))\(widePayload)" }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+
+        XCTAssertGreaterThan(result.displayedText.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
+        XCTAssertEqual(result.textIndex.lineCount, 80)
+        XCTAssertFalse(
+            ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result),
+            "A small number of very wide log lines should not use the virtualized surface; that path can look clipped or blank because it optimizes for deep line counts."
+        )
+
+        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        XCTAssertTrue(source.contains("allowsAutomaticLargeTextSurface: false"))
     }
 
     func testLargeInspectorSearchDoesNotCapRenderedLogData() {
@@ -258,7 +278,229 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(result.displayedText, text)
         XCTAssertTrue(result.displayedText.contains("INFO full output line 11999"))
         XCTAssertEqual(result.matchRanges.count, 8)
-        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
+
+    func testLargeLogSearchNavigationKeepsFocusWhenNextMatchStaysOnSameLine() throws {
+        let text = "ERROR first ERROR second\nINFO recovered\n"
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "error")
+
+        XCTAssertEqual(result.matchLineNumber(selectedIndex: 0), 1)
+        XCTAssertEqual(result.matchLineNumber(selectedIndex: 1), 1)
+        XCTAssertNotEqual(
+            result.largeTextNavigationRevision(selectedIndex: 0, sequence: 1),
+            result.largeTextNavigationRevision(selectedIndex: 1, sequence: 1)
+        )
+
+        let inspectorSource = try String(contentsOfFile: inspectorTextViewsPath, encoding: .utf8)
+        let logsSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let sharedSource = try String(contentsOfFile: largeTextSurfacePath, encoding: .utf8)
+
+        XCTAssertTrue(inspectorSource.contains("largeTextScrollTargetRevision"))
+        XCTAssertTrue(logsSource.contains("largeTextNavigationRevision"))
+        XCTAssertTrue(sharedSource.contains("scrollTargetRevision"))
+        XCTAssertTrue(
+            sharedSource.contains("matchScrollTargetID"),
+            "Virtualized log search must use a per-navigation scroll identity so “Next match” still scrolls when the line number is unchanged."
+        )
+    }
+
+    /// Regression guard for pod logs that look like long single-line Spring-style rows: the inspector must not stop
+    /// laying out after roughly one viewport worth of rows (~80 on common laptop heights), leaving a blank panel.
+    @MainActor
+    func testWideSyntheticPodLogsLayOutTranscriptTallerThanEightyLineStride() async throws {
+        let lineCount = 150
+        let text = Self.makeMockWidePodLogTranscript(lineCount: lineCount)
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+
+        XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
+        XCTAssertEqual(result.textIndex.lineCount, lineCount)
+        XCTAssertFalse(
+            ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result),
+            "This fixture targets the non-virtualized AppKit log surface (few logical lines, very wide UTF-8)."
+        )
+
+        let host = NSHostingController(
+            rootView: PodLogsInspectorPane(
+                selectedLogPreset: .constant(.largeTail),
+                includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                isLoadingLogs: false,
+                isLoadingResources: false,
+                errorMessage: nil,
+                statusText: "Tail off",
+                containerOptions: ["mock"],
+                logText: text,
+                readOnlyResetID: "mock-wide-pod-log-layout",
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+            .frame(width: 920, height: 680)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        try await settle(window: window)
+
+        let textViews = findTextViews(in: host.view)
+        let logTextView = try XCTUnwrap(
+            textViews.filter({ $0.string == text }).max(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }),
+            "Expected a read-only NSTextView containing the full mock transcript."
+        )
+
+        logTextView.layoutSubtreeIfNeeded()
+        guard let layoutManager = logTextView.layoutManager,
+              let textContainer = logTextView.textContainer else {
+            XCTFail("Missing layoutManager/textContainer")
+            return
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let usedHeight = layoutManager.usedRect(for: textContainer).height
+        let lineHeight = layoutManager.defaultLineHeight(for: logTextView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular))
+
+        XCTAssertGreaterThan(
+            usedHeight,
+            lineHeight * 90,
+            "Mock transcript has \(lineCount) logical newlines; layout height must exceed a ~80-line band or the log panel looks clipped with empty space below."
+        )
+    }
+
+    /// Many lines plus large UTF-8: same shared AppKit surface as other presets; scrollable content must still span
+    /// the full line count (not an ~80-line-tall blank cut-off).
+    @MainActor
+    func testDeepSyntheticPodLogsScrollExceedsEightyLineStride() async throws {
+        let lineCount = 1_100
+        let text = Self.makeMockDeepPodLogTranscript(lineCount: lineCount, minUTF8PerLine: 240)
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+
+        XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
+        XCTAssertGreaterThanOrEqual(result.textIndex.lineCount, ResourceLogsDeferredRenderingPolicy.deferredLineCountThreshold)
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+
+        let host = NSHostingController(
+            rootView: PodLogsInspectorPane(
+                selectedLogPreset: .constant(.largeTail),
+                includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                isLoadingLogs: false,
+                isLoadingResources: false,
+                errorMessage: nil,
+                statusText: "Tail off",
+                containerOptions: ["mock"],
+                logText: text,
+                readOnlyResetID: "mock-deep-pod-log-layout",
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+            .frame(width: 920, height: 680)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        try await settle(window: window)
+
+        let scrollViews = findScrollViews(in: host.view)
+        let docHeights = scrollViews.compactMap { $0.documentView?.bounds.height }
+        let maxDocHeight = try XCTUnwrap(docHeights.max(), "Expected at least one scrollable document surface.")
+        let expectedMinHeight = CGFloat(lineCount) * 14
+
+        XCTAssertGreaterThan(
+            maxDocHeight,
+            expectedMinHeight,
+            "Deep mock logs with \(lineCount) lines must size scroll content near one row per logical line; an ~80-row-tall document with thousands of lines is the reported pod log clip-off bug."
+        )
+    }
+
+    @MainActor
+    func testWideFewLinePodLogsFillInspectorOutputHeight() async throws {
+        let longPayload = String(repeating: " payload=synthetic-wide-log-field", count: 140)
+        let text = (0..<80)
+            .map { index in "line-\(String(format: "%06d", index))\(longPayload)" }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertEqual(result.textIndex.lineCount, 80)
+
+        let host = NSHostingController(
+            rootView: PodLogsInspectorPane(
+                selectedLogPreset: .constant(.largeTail),
+                includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                isLoadingLogs: false,
+                isLoadingResources: false,
+                errorMessage: nil,
+                statusText: "Tail off",
+                containerOptions: ["app"],
+                logText: text,
+                readOnlyResetID: "large-few-line-log-layout",
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+            .frame(width: 920, height: 680)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        try await settle(window: window)
+
+        let scrollViews = findScrollViews(in: host.view)
+        let outputScrollView = try XCTUnwrap(
+            scrollViews.max(by: { $0.frame.height < $1.frame.height }),
+            "The large log output should mount a scroll view."
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            outputScrollView.frame.height,
+            360,
+            "Large few-line logs must use the remaining inspector height; otherwise only a few lines render and the rest of the panel looks blank."
+        )
     }
 
     private var resourceLogsInspectorViewPath: String {
@@ -277,6 +519,78 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
+    private var inspectorTextViewsPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/InspectorTextViews.swift").path
+    }
+
+    private var largeTextSurfacePath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneSharedUI/RuneSharedComponents.swift").path
+    }
+
+    @MainActor
+    private func settle(window: NSWindow) async throws {
+        for _ in 0..<8 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    @MainActor
+    private func findScrollViews(in view: NSView) -> [NSScrollView] {
+        var matches: [NSScrollView] = []
+        if let scrollView = view as? NSScrollView {
+            matches.append(scrollView)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: findScrollViews(in: subview))
+        }
+        return matches
+    }
+
+    @MainActor
+    private func findTextViews(in view: NSView) -> [NSTextView] {
+        var matches: [NSTextView] = []
+        if let textView = view as? NSTextView {
+            matches.append(textView)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: findTextViews(in: subview))
+        }
+        return matches
+    }
+
+    private static func makeMockWidePodLogTranscript(lineCount: Int) -> String {
+        // Keep each row wide enough that the merged UTF-8 crosses the inspector’s “large payload” threshold
+        // (same shape as multi-field service logs) without referencing any real workload.
+        let filler = String(repeating: " f=mock", count: 260)
+        return (0..<lineCount)
+            .map { idx in
+                "MOCK-\(String(format: "%04d", idx))Z MOCK-LEVEL 0 --- [mock-app] mock-thread mock.MockClass\(filler)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func makeMockDeepPodLogTranscript(lineCount: Int, minUTF8PerLine: Int) -> String {
+        let prefix = "MOCK-"
+        let padLength = max(1, minUTF8PerLine - prefix.count - 8)
+        let pad = String(repeating: "x", count: padLength)
+        return (0..<lineCount)
+            .map { idx in
+                "\(prefix)\(String(format: "%05d", idx))-\(pad)"
+            }
+            .joined(separator: "\n")
     }
 }
 

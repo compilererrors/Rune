@@ -1,10 +1,12 @@
 import AppKit
 import Foundation
-import UniformTypeIdentifiers
 
 public protocol KubeConfigPicking {
     @MainActor
     func pickFiles() throws -> [URL]
+
+    @MainActor
+    func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL?
 }
 
 public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
@@ -16,7 +18,6 @@ public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = ["yaml", "yml", "config"].compactMap { UTType(filenameExtension: $0) }
         panel.prompt = "Importera"
 
         let result = panel.runModal()
@@ -25,5 +26,25 @@ public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
         }
 
         return panel.urls
+    }
+
+    @MainActor
+    public func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.directoryURL = defaultURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = defaultURL.lastPathComponent
+        panel.showsHiddenFiles = true
+        panel.prompt = "Use Config"
+        panel.message = "Select your kubeconfig file to grant Rune access."
+
+        let result = panel.runModal()
+        guard result == .OK else {
+            return nil
+        }
+
+        return panel.url
     }
 }

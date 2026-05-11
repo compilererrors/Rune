@@ -526,6 +526,14 @@ struct TerminalShellPanelView: View {
 
 }
 
+private enum TerminalPromptPalette {
+    static let inputTextColor = NSColor(calibratedWhite: 0.92, alpha: 1)
+    static let disabledInputTextColor = NSColor(calibratedWhite: 0.58, alpha: 1)
+    static let selectedInputTextColor = NSColor.white
+    static let selectionBackgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.34)
+    static let insertionPointColor = NSColor.controlAccentColor
+}
+
 private struct TerminalPromptTextEditor: NSViewRepresentable {
     @Binding var text: String
     let fontSize: CGFloat
@@ -562,6 +570,7 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
             context.coordinator.parent.text = value
         }
         configure(textView)
+        layoutTextView(textView, in: scrollView)
         textView.string = text
         scrollView.documentView = textView
         return scrollView
@@ -579,6 +588,7 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
             context.coordinator.parent.text = value
         }
         configure(textView)
+        layoutTextView(textView, in: scrollView)
         if textView.string != text {
             textView.string = text
             textView.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
@@ -608,7 +618,7 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
         textView.isAutomaticTextCompletionEnabled = false
         textView.isGrammarCheckingEnabled = false
         textView.isContinuousSpellCheckingEnabled = false
-        textView.isHorizontallyResizable = true
+        textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = false
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24)
@@ -616,12 +626,31 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 7, height: 3)
         textView.backgroundColor = .clear
         textView.drawsBackground = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        textView.textColor = isEnabled ? .labelColor : .secondaryLabelColor
-        textView.insertionPointColor = .controlAccentColor
+        let promptFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let inputTextColor = isEnabled ? TerminalPromptPalette.inputTextColor : TerminalPromptPalette.disabledInputTextColor
+        textView.font = promptFont
+        textView.textColor = inputTextColor
+        textView.insertionPointColor = TerminalPromptPalette.insertionPointColor
+        textView.selectedTextAttributes = [
+            .backgroundColor: TerminalPromptPalette.selectionBackgroundColor,
+            .foregroundColor: TerminalPromptPalette.selectedInputTextColor
+        ]
+        textView.typingAttributes = [
+            .font: promptFont,
+            .foregroundColor: inputTextColor
+        ]
         textView.textContainer?.lineFragmentPadding = 0
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24)
+        textView.textContainer?.widthTracksTextView = true
+    }
+
+    private func layoutTextView(_ textView: TerminalPromptTextView, in scrollView: NSScrollView) {
+        let viewportSize = scrollView.contentView.bounds.size
+        let resolvedWidth = max(viewportSize.width, 1)
+        let resolvedSize = NSSize(width: resolvedWidth, height: 24)
+        textView.frame = NSRect(origin: .zero, size: resolvedSize)
+        textView.minSize = resolvedSize
+        textView.maxSize = resolvedSize
+        textView.textContainer?.containerSize = resolvedSize
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

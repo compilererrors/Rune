@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import RuneCore
 import UniformTypeIdentifiers
@@ -305,6 +306,33 @@ public enum PodListSortColumn: String, Sendable {
     case status
 }
 
+public enum DeploymentListSortColumn: String, Sendable {
+    case name
+    case replicas
+}
+
+public enum ServiceListSortColumn: String, Sendable {
+    case name
+    case type
+    case clusterIP
+}
+
+public enum GenericResourceListSortColumn: String, Sendable {
+    case name
+    case primary
+    case secondary
+    case namespace
+}
+
+public enum HelmReleaseListSortColumn: String, Sendable {
+    case name
+    case status
+    case namespace
+    case revision
+    case chart
+    case appVersion
+}
+
 private struct NavigationCheckpoint: Equatable, Sendable {
     let contextName: String?
     let namespace: String
@@ -487,6 +515,14 @@ public final class RuneAppViewModel: ObservableObject {
     }
     @Published public private(set) var podSortColumn: PodListSortColumn = .name
     @Published public private(set) var podSortAscending: Bool = true
+    @Published public private(set) var deploymentSortColumn: DeploymentListSortColumn = .name
+    @Published public private(set) var deploymentSortAscending: Bool = true
+    @Published public private(set) var serviceSortColumn: ServiceListSortColumn = .name
+    @Published public private(set) var serviceSortAscending: Bool = true
+    @Published public private(set) var genericResourceSortColumn: GenericResourceListSortColumn = .name
+    @Published public private(set) var genericResourceSortAscending: Bool = true
+    @Published public private(set) var helmReleaseSortColumn: HelmReleaseListSortColumn = .name
+    @Published public private(set) var helmReleaseSortAscending: Bool = true
     @Published public private(set) var operatorResourcePage: Int = 0
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
@@ -503,8 +539,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
-    @Published public var isSidebarVisible: Bool = true
-    @Published public var isDetailPaneVisible: Bool = true
+    @Published public var isSidebarVisible: Bool = UserDefaults.standard.runeLayoutSidebarVisible
+    @Published public var isDetailPaneVisible: Bool = UserDefaults.standard.runeLayoutDetailPaneVisible
     @Published public var isLiveStatusUpdatesEnabled: Bool = false {
         didSet {
             if isLiveStatusUpdatesEnabled {
@@ -711,7 +747,7 @@ public final class RuneAppViewModel: ObservableObject {
             default: return []
             }
         }()
-        return favoriteSorted(filtered(list) { summaryText(for: $0) })
+        return genericResourceSorted(filtered(list) { summaryText(for: $0) })
     }
 
     public var writeActionsEnabled: Bool {
@@ -965,82 +1001,77 @@ public final class RuneAppViewModel: ObservableObject {
         let values = filtered(state.pods) { pod in
             "\(pod.name) \(pod.status) \(pod.namespace) \(pod.ageDescription) \(pod.cpuDisplay) \(pod.memoryDisplay) \(pod.totalRestarts)"
         }
-        return values.sorted { lhs, rhs in
-            let lhsFavorite = isFavoriteResource(kind: .pod, namespace: lhs.namespace, name: lhs.name)
-            let rhsFavorite = isFavoriteResource(kind: .pod, namespace: rhs.namespace, name: rhs.name)
-            if lhsFavorite != rhsFavorite {
-                return lhsFavorite && !rhsFavorite
-            }
-            return podComparator(lhs, rhs)
-        }
+        return values.sorted(by: podComparator)
     }
 
     public var visibleDeployments: [DeploymentSummary] {
-        favoriteSorted(filtered(state.deployments) { deployment in
+        filtered(state.deployments) { deployment in
             "\(deployment.name) \(deployment.namespace) \(deployment.replicaText)"
-        }, kind: .deployment) { $0.name }
+        }
+        .sorted(by: deploymentComparator)
     }
 
     public var visibleServices: [ServiceSummary] {
-        favoriteSorted(filtered(state.services) { service in
+        filtered(state.services) { service in
             "\(service.name) \(service.namespace) \(service.type) \(service.clusterIP)"
-        }, kind: .service) { $0.name }
+        }
+        .sorted(by: serviceComparator)
     }
 
     public var visibleStatefulSets: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.statefulSets) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.statefulSets) { summaryText(for: $0) })
     }
 
     public var visibleDaemonSets: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.daemonSets) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.daemonSets) { summaryText(for: $0) })
     }
 
     public var visibleJobs: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.jobs) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.jobs) { summaryText(for: $0) })
     }
 
     public var visibleCronJobs: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.cronJobs) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.cronJobs) { summaryText(for: $0) })
     }
 
     public var visibleReplicaSets: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.replicaSets) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.replicaSets) { summaryText(for: $0) })
     }
 
     public var visiblePersistentVolumeClaims: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.persistentVolumeClaims) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.persistentVolumeClaims) { summaryText(for: $0) })
     }
 
     public var visiblePersistentVolumes: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.persistentVolumes) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.persistentVolumes) { summaryText(for: $0) })
     }
 
     public var visibleStorageClasses: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.storageClasses) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.storageClasses) { summaryText(for: $0) })
     }
 
     public var visibleHorizontalPodAutoscalers: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.horizontalPodAutoscalers) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.horizontalPodAutoscalers) { summaryText(for: $0) })
     }
 
     public var visibleNetworkPolicies: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.networkPolicies) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.networkPolicies) { summaryText(for: $0) })
     }
 
     public var visibleIngresses: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.ingresses) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.ingresses) { summaryText(for: $0) })
     }
 
     public var visibleConfigMaps: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.configMaps) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.configMaps) { summaryText(for: $0) })
     }
 
     public var visibleSecrets: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.secrets) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.secrets) { summaryText(for: $0) })
     }
 
     public var visibleNodes: [ClusterResourceSummary] {
-        favoriteSorted(filtered(state.nodes) { summaryText(for: $0) })
+        genericResourceSorted(filtered(state.nodes) { summaryText(for: $0) })
     }
 
     public var visibleEvents: [EventSummary] {
@@ -1053,6 +1084,7 @@ public final class RuneAppViewModel: ObservableObject {
         filtered(state.helmReleases) { release in
             "\(release.name) \(release.namespace) \(release.status) \(release.chart) \(release.appVersion)"
         }
+        .sorted(by: helmReleaseComparator)
     }
 
     public var visibleOperatorResources: [OperatorResourceSummary] {
@@ -1342,21 +1374,46 @@ public final class RuneAppViewModel: ObservableObject {
     public func addDefaultKubeConfig() {
         Task {
             do {
-                let url = URL(fileURLWithPath: "\(NSHomeDirectory())/.kube/config")
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    throw RuneError.invalidInput(message: "Default kubeconfig was not found at \(url.path)")
+                let url = Self.standardKubeConfigURL()
+                let selectedURL: URL
+                if Self.isAppSandboxed {
+                    guard let pickedURL = try picker.pickDefaultKubeConfig(at: url) else {
+                        return
+                    }
+                    selectedURL = pickedURL
+                } else {
+                    guard FileManager.default.fileExists(atPath: url.path) else {
+                        throw RuneError.invalidInput(message: "Default kubeconfig was not found at \(url.path)")
+                    }
+                    selectedURL = url
                 }
 
-                try? bookmarkManager.addKubeConfig(url: url)
-                let sources = try resolvedKubeConfigSources(fallbackURLs: [url])
+                try? bookmarkManager.addKubeConfig(url: selectedURL)
+                let sources = try resolvedKubeConfigSources(fallbackURLs: [selectedURL])
                 state.setSources(sources)
-                diagnostics.log("addDefaultKubeConfig loaded \(url.path), sources count=\(sources.count)")
+                diagnostics.log("addDefaultKubeConfig loaded \(selectedURL.path), sources count=\(sources.count)")
                 try await reloadContexts()
             } catch {
                 diagnostics.log("addDefaultKubeConfig failed: \(error.localizedDescription)")
                 state.setError(error)
             }
         }
+    }
+
+    private static var isAppSandboxed: Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    }
+
+    private static func standardKubeConfigURL() -> URL {
+        if let home = getpwuid(getuid())?.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: home))
+                .appendingPathComponent(".kube", isDirectory: true)
+                .appendingPathComponent("config", isDirectory: false)
+        }
+
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kube", isDirectory: true)
+            .appendingPathComponent("config", isDirectory: false)
     }
 
     public func reloadContexts() async throws {
@@ -1707,16 +1764,59 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func toggleDeploymentSort(_ column: DeploymentListSortColumn) {
+        if deploymentSortColumn == column {
+            deploymentSortAscending.toggle()
+        } else {
+            deploymentSortColumn = column
+            switch column {
+            case .name:
+                deploymentSortAscending = true
+            case .replicas:
+                deploymentSortAscending = false
+            }
+        }
+    }
+
+    public func toggleServiceSort(_ column: ServiceListSortColumn) {
+        if serviceSortColumn == column {
+            serviceSortAscending.toggle()
+        } else {
+            serviceSortColumn = column
+            serviceSortAscending = true
+        }
+    }
+
+    public func toggleGenericResourceSort(_ column: GenericResourceListSortColumn) {
+        if genericResourceSortColumn == column {
+            genericResourceSortAscending.toggle()
+        } else {
+            genericResourceSortColumn = column
+            genericResourceSortAscending = column == .primary ? false : true
+        }
+    }
+
+    public func toggleHelmReleaseSort(_ column: HelmReleaseListSortColumn) {
+        if helmReleaseSortColumn == column {
+            helmReleaseSortAscending.toggle()
+        } else {
+            helmReleaseSortColumn = column
+            helmReleaseSortAscending = column == .revision ? false : true
+        }
+    }
+
     public func setReadOnlyMode(_ value: Bool) {
         state.isReadOnlyMode = value
     }
 
     public func toggleSidebarVisibility() {
         isSidebarVisible.toggle()
+        UserDefaults.standard.runeLayoutSidebarVisible = isSidebarVisible
     }
 
     public func toggleDetailPaneVisibility() {
         isDetailPaneVisible.toggle()
+        UserDefaults.standard.runeLayoutDetailPaneVisible = isDetailPaneVisible
     }
 
     public func setHelmAllNamespaces(_ value: Bool) {
@@ -2119,6 +2219,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func focusTerminalPodInspector(_ pod: PodSummary, reloadLogs: Bool = false, loadDetails: Bool = false) {
+        selectedLogContainer = ""
         selectPod(pod, trackHistory: false)
         if loadDetails {
             loadResourceDetailsForCurrentSelection()
@@ -2553,7 +2654,7 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: previous
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
-                    self.state.appendPodLogRead(
+                    self.commitPodLogFetch(
                         logs,
                         contextName: context.name,
                         namespace: namespace,
@@ -2583,7 +2684,7 @@ public final class RuneAppViewModel: ObservableObject {
                         mergedText: unified.mergedText,
                         podNames: unified.podNames
                     )
-                    self.state.appendUnifiedServiceLogRead(
+                    self.commitUnifiedLogFetch(
                         scoped.mergedText,
                         pods: scoped.podNames,
                         contextName: context.name,
@@ -2615,7 +2716,7 @@ public final class RuneAppViewModel: ObservableObject {
                         mergedText: unified.mergedText,
                         podNames: unified.podNames
                     )
-                    self.state.appendUnifiedServiceLogRead(
+                    self.commitUnifiedLogFetch(
                         scoped.mergedText,
                         pods: scoped.podNames,
                         contextName: context.name,
@@ -6017,8 +6118,8 @@ public final class RuneAppViewModel: ObservableObject {
 
         var merged: [String: KubeConfigSource] = [:]
         for source in bookmarked + fallback {
-            let standardizedPath = URL(fileURLWithPath: source.path).standardizedFileURL.path
-            merged[standardizedPath] = KubeConfigSource(url: URL(fileURLWithPath: standardizedPath))
+            let standardizedPath = source.url.standardizedFileURL.path
+            merged[standardizedPath] = source
         }
 
         return merged.values.sorted { $0.path < $1.path }
@@ -6166,6 +6267,43 @@ public final class RuneAppViewModel: ObservableObject {
         tailLogsReloadTask?.cancel()
         tailLogsReloadTask = nil
         latestLogsReloadRequestID = UUID()
+    }
+
+    private func commitPodLogFetch(_ logs: String, contextName: String, namespace: String, podName: String) {
+        if isLogTailModeEnabled {
+            state.appendPodLogRead(logs, contextName: contextName, namespace: namespace, podName: podName)
+        } else {
+            state.replacePodLogRead(logs, contextName: contextName, namespace: namespace, podName: podName)
+        }
+    }
+
+    private func commitUnifiedLogFetch(
+        _ mergedText: String,
+        pods: [String],
+        contextName: String,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceName: String
+    ) {
+        if isLogTailModeEnabled {
+            state.appendUnifiedServiceLogRead(
+                mergedText,
+                pods: pods,
+                contextName: contextName,
+                namespace: namespace,
+                kind: kind,
+                resourceName: resourceName
+            )
+        } else {
+            state.replaceUnifiedServiceLogRead(
+                mergedText,
+                pods: pods,
+                contextName: contextName,
+                namespace: namespace,
+                kind: kind,
+                resourceName: resourceName
+            )
+        }
     }
 
     private func scheduleNextTailLogsReload() {
@@ -6321,7 +6459,7 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await logsResult {
                 case let .success(logs):
-                    state.appendPodLogRead(
+                    commitPodLogFetch(
                         logs,
                         contextName: context.name,
                         namespace: state.selectedNamespace,
@@ -6375,7 +6513,7 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await unifiedResult {
                 case let .success(unified):
-                    state.appendUnifiedServiceLogRead(
+                    commitUnifiedLogFetch(
                         unified.mergedText,
                         pods: unified.podNames,
                         contextName: context.name,
@@ -6439,7 +6577,7 @@ public final class RuneAppViewModel: ObservableObject {
 
                 switch await unifiedResult {
                 case let .success(unified):
-                    state.appendUnifiedServiceLogRead(
+                    commitUnifiedLogFetch(
                         unified.mergedText,
                         pods: unified.podNames,
                         contextName: context.name,
@@ -8376,6 +8514,173 @@ public final class RuneAppViewModel: ObservableObject {
                 tieBreak: nameOrder
             )
         }
+    }
+
+    private func deploymentComparator(_ lhs: DeploymentSummary, _ rhs: DeploymentSummary) -> Bool {
+        let ascending = deploymentSortAscending
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+
+        switch deploymentSortColumn {
+        case .name:
+            return ascending ? nameOrder : !nameOrder
+        case .replicas:
+            let lhsRatio = replicaReadinessRatio(lhs)
+            let rhsRatio = replicaReadinessRatio(rhs)
+            if lhsRatio != rhsRatio {
+                return ascending ? (lhsRatio < rhsRatio) : (lhsRatio > rhsRatio)
+            }
+            if lhs.readyReplicas != rhs.readyReplicas {
+                return ascending ? (lhs.readyReplicas < rhs.readyReplicas) : (lhs.readyReplicas > rhs.readyReplicas)
+            }
+            if lhs.desiredReplicas != rhs.desiredReplicas {
+                return ascending ? (lhs.desiredReplicas < rhs.desiredReplicas) : (lhs.desiredReplicas > rhs.desiredReplicas)
+            }
+            return nameOrder
+        }
+    }
+
+    private func serviceComparator(_ lhs: ServiceSummary, _ rhs: ServiceSummary) -> Bool {
+        let ascending = serviceSortAscending
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+
+        let orderedAscending: Bool
+        switch serviceSortColumn {
+        case .name:
+            orderedAscending = nameOrder
+        case .type:
+            if lhs.type != rhs.type {
+                orderedAscending = lhs.type.localizedCaseInsensitiveCompare(rhs.type) == .orderedAscending
+            } else {
+                orderedAscending = nameOrder
+            }
+        case .clusterIP:
+            if lhs.clusterIP != rhs.clusterIP {
+                orderedAscending = compareIPv4(lhs.clusterIP, rhs.clusterIP) ?? (lhs.clusterIP.localizedStandardCompare(rhs.clusterIP) == .orderedAscending)
+            } else {
+                orderedAscending = nameOrder
+            }
+        }
+
+        return ascending ? orderedAscending : !orderedAscending
+    }
+
+    private func compareIPv4(_ lhs: String, _ rhs: String) -> Bool? {
+        let left = lhs.split(separator: ".").compactMap { Int($0) }
+        let right = rhs.split(separator: ".").compactMap { Int($0) }
+        guard left.count == 4, right.count == 4 else { return nil }
+        for (leftPart, rightPart) in zip(left, right) where leftPart != rightPart {
+            return leftPart < rightPart
+        }
+        return false
+    }
+
+    private func genericResourceSorted(_ values: [ClusterResourceSummary]) -> [ClusterResourceSummary] {
+        values.sorted(by: genericResourceComparator)
+    }
+
+    private func genericResourceComparator(_ lhs: ClusterResourceSummary, _ rhs: ClusterResourceSummary) -> Bool {
+        let lhsFavorite = isFavoriteResource(kind: lhs.kind, namespace: lhs.namespace, name: lhs.name)
+        let rhsFavorite = isFavoriteResource(kind: rhs.kind, namespace: rhs.namespace, name: rhs.name)
+        if lhsFavorite != rhsFavorite {
+            return lhsFavorite && !rhsFavorite
+        }
+
+        let ascending = genericResourceSortAscending
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+
+        let orderedAscending: Bool?
+        switch genericResourceSortColumn {
+        case .name:
+            orderedAscending = nameOrder
+        case .primary:
+            if let primaryOrder = numericPrefixOrder(lhs.primaryText, rhs.primaryText), primaryOrder != .orderedSame {
+                orderedAscending = primaryOrder == .orderedAscending
+            } else if lhs.primaryText != rhs.primaryText {
+                orderedAscending = lhs.primaryText.localizedStandardCompare(rhs.primaryText) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .secondary:
+            if lhs.secondaryText != rhs.secondaryText {
+                orderedAscending = lhs.secondaryText.localizedStandardCompare(rhs.secondaryText) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .namespace:
+            let lhsNamespace = lhs.namespace ?? ""
+            let rhsNamespace = rhs.namespace ?? ""
+            if lhsNamespace != rhsNamespace {
+                orderedAscending = lhsNamespace.localizedCaseInsensitiveCompare(rhsNamespace) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        }
+
+        guard let orderedAscending else { return nameOrder }
+        return ascending ? orderedAscending : !orderedAscending
+    }
+
+    private func helmReleaseComparator(_ lhs: HelmReleaseSummary, _ rhs: HelmReleaseSummary) -> Bool {
+        let ascending = helmReleaseSortAscending
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+
+        let orderedAscending: Bool?
+        switch helmReleaseSortColumn {
+        case .name:
+            orderedAscending = nameOrder
+        case .status:
+            if lhs.status != rhs.status {
+                orderedAscending = lhs.status.localizedCaseInsensitiveCompare(rhs.status) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .namespace:
+            if lhs.namespace != rhs.namespace {
+                orderedAscending = lhs.namespace.localizedCaseInsensitiveCompare(rhs.namespace) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .revision:
+            if lhs.revision != rhs.revision {
+                orderedAscending = lhs.revision < rhs.revision
+            } else {
+                orderedAscending = nil
+            }
+        case .chart:
+            if lhs.chart != rhs.chart {
+                orderedAscending = lhs.chart.localizedStandardCompare(rhs.chart) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .appVersion:
+            if lhs.appVersion != rhs.appVersion {
+                orderedAscending = lhs.appVersion.localizedStandardCompare(rhs.appVersion) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        }
+
+        guard let orderedAscending else { return nameOrder }
+        return ascending ? orderedAscending : !orderedAscending
+    }
+
+    private func numericPrefixOrder(_ lhs: String, _ rhs: String) -> ComparisonResult? {
+        guard let lhsNumber = leadingInteger(lhs), let rhsNumber = leadingInteger(rhs) else { return nil }
+        if lhsNumber == rhsNumber { return .orderedSame }
+        return lhsNumber < rhsNumber ? .orderedAscending : .orderedDescending
+    }
+
+    private func leadingInteger(_ value: String) -> Int? {
+        let digits = value.trimmingCharacters(in: .whitespacesAndNewlines).prefix { $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        return Int(digits)
+    }
+
+    private func replicaReadinessRatio(_ deployment: DeploymentSummary) -> Double {
+        guard deployment.desiredReplicas > 0 else {
+            return deployment.readyReplicas > 0 ? 1 : 0
+        }
+        return Double(deployment.readyReplicas) / Double(deployment.desiredReplicas)
     }
 
     /// Missing metrics sort last regardless of ascending/descending direction.
