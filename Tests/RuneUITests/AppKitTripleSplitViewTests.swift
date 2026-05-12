@@ -17,7 +17,9 @@ final class AppKitTripleSplitViewTests: XCTestCase {
 
         state.noteRestoreAttempt(containerWidth: 1440)
         state.noteRestoreSettled()
-        state.noteUserResize(actualSidebarWidth: 360, actualDetailWidth: 520, containerWidth: 1440)
+        XCTAssertTrue(
+            state.noteUserResize(actualSidebarWidth: 360, actualDetailWidth: 520, containerWidth: 1440)
+        )
 
         XCTAssertFalse(
             state.registerRequestedWidths(
@@ -83,5 +85,29 @@ final class AppKitTripleSplitViewTests: XCTestCase {
         )
         XCTAssertEqual(state.desiredSidebarWidth, 280, accuracy: 0.5)
         XCTAssertEqual(state.desiredDetailWidth, 440, accuracy: 0.5)
+    }
+
+    func testWidthStateDoesNotPersistWindowResizeAsPaneResize() {
+        var state = AppKitTripleSplitWidthState()
+
+        _ = state.registerRequestedWidths(
+            sidebarWidth: 360,
+            detailWidth: 520,
+            actualSidebarWidth: 360,
+            actualDetailWidth: 520
+        )
+        state.noteRestoreAttempt(containerWidth: 1440)
+        state.noteRestoreSettled()
+
+        XCTAssertFalse(
+            state.noteUserResize(
+                actualSidebarWidth: 280,
+                actualDetailWidth: 440,
+                containerWidth: 1200
+            ),
+            "Window-size changes can temporarily squeeze panes, but must not overwrite the user's saved divider widths."
+        )
+        XCTAssertEqual(state.desiredSidebarWidth, 360, accuracy: 0.5)
+        XCTAssertEqual(state.desiredDetailWidth, 520, accuracy: 0.5)
     }
 }

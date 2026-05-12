@@ -35,6 +35,22 @@ final class KubernetesRESTClient: @unchecked Sendable {
         localPortConflictMessage(port: port, address: address)
     }
 
+    static func _testTerminalResizeFrame(columns: Int, rows: Int) throws -> Data {
+        try terminalResizeFrame(columns: columns, rows: rows)
+    }
+
+    fileprivate static func terminalResizeFrame(columns: Int, rows: Int) throws -> Data {
+        let normalizedColumns = min(max(columns, 1), 500)
+        let normalizedRows = min(max(rows, 1), 200)
+        let payload = try JSONSerialization.data(
+            withJSONObject: ["Width": normalizedColumns, "Height": normalizedRows],
+            options: [.sortedKeys]
+        )
+        var frame = Data([4])
+        frame.append(payload)
+        return frame
+    }
+
     func listContexts(environment: [String: String]) async throws -> [KubeContext] {
         let config = try await normalizedConfig(environment: environment)
         return config.contexts
@@ -761,7 +777,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         namespace: String,
         deploymentName: String,
         revision: Int?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        dryRun: Bool = false
     ) async throws {
         let deploymentRaw = try await resourceJSON(
             environment: environment,
@@ -795,7 +812,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "No matching ReplicaSet revision was found for deployment \(deploymentName)")
         }
         let patch = String(decoding: try JSONSerialization.data(withJSONObject: ["spec": ["template": target.template]]), as: UTF8.self)
-        let path = try resourcePath(kind: .deployment, namespace: namespace, resource: "deployments", name: deploymentName, subresource: nil)
+        var path = try resourcePath(kind: .deployment, namespace: namespace, resource: "deployments", name: deploymentName, subresource: nil)
+        if dryRun {
+            path += "?dryRun=All"
+        }
         _ = try await rawRequest(
             environment: environment,
             contextName: contextName,
@@ -807,6 +827,62 @@ final class KubernetesRESTClient: @unchecked Sendable {
             ],
             body: patch,
             timeout: timeout
+        )
+    }
+
+    func verifyDeploymentRollout(
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        deploymentName: String,
+        timeout: TimeInterval,
+        pollInterval: TimeInterval
+    ) async throws -> DeploymentRolloutVerificationResult {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSnapshot: KubernetesJSON.DeploymentRolloutSnapshot?
+
+        while true {
+            let remaining = max(0.05, deadline.timeIntervalSinceNow)
+            let raw = try await resourceJSON(
+                environment: environment,
+                contextName: contextName,
+                kind: .deployment,
+                namespace: namespace,
+                name: deploymentName,
+                timeout: min(5, remaining)
+            )
+            let snapshot = try KubernetesJSON.deploymentRolloutSnapshot(from: raw, deploymentName: deploymentName)
+            lastSnapshot = snapshot
+
+            if let failureMessage = snapshot.progressFailureMessage {
+                return snapshot.result(status: .failed, message: failureMessage)
+            }
+            if snapshot.isReady {
+                return snapshot.result(
+                    status: .ready,
+                    message: "Deployment \(deploymentName) is ready \(snapshot.readyReplicas)/\(snapshot.desiredReplicas)."
+                )
+            }
+
+            let remainingBeforeSleep = deadline.timeIntervalSinceNow
+            guard remainingBeforeSleep > 0 else { break }
+            let sleepSeconds = min(pollInterval, remainingBeforeSleep)
+            try await Task.sleep(nanoseconds: UInt64(max(0.01, sleepSeconds) * 1_000_000_000))
+        }
+
+        let snapshot = lastSnapshot ?? KubernetesJSON.DeploymentRolloutSnapshot(
+            deploymentName: deploymentName,
+            desiredReplicas: 0,
+            readyReplicas: 0,
+            updatedReplicas: 0,
+            availableReplicas: 0,
+            observedGeneration: nil,
+            generation: nil,
+            progressFailureMessage: nil
+        )
+        return snapshot.result(
+            status: .timedOut,
+            message: "Timed out waiting for Deployment \(deploymentName) rollout readiness. Last observed readiness was \(snapshot.readyReplicas)/\(snapshot.desiredReplicas)."
         )
     }
 
@@ -2354,6 +2430,41 @@ private enum KubernetesJSON {
         let template: [String: Any]
     }
 
+    struct DeploymentRolloutSnapshot {
+        let deploymentName: String
+        let desiredReplicas: Int
+        let readyReplicas: Int
+        let updatedReplicas: Int
+        let availableReplicas: Int
+        let observedGeneration: Int?
+        let generation: Int?
+        let progressFailureMessage: String?
+
+        var isReady: Bool {
+            if desiredReplicas == 0 { return true }
+            if let observedGeneration, let generation, observedGeneration < generation {
+                return false
+            }
+            return readyReplicas >= desiredReplicas
+                && updatedReplicas >= desiredReplicas
+                && availableReplicas >= desiredReplicas
+        }
+
+        func result(
+            status: DeploymentRolloutVerificationStatus,
+            message: String
+        ) -> DeploymentRolloutVerificationResult {
+            DeploymentRolloutVerificationResult(
+                status: status,
+                desiredReplicas: desiredReplicas,
+                readyReplicas: readyReplicas,
+                updatedReplicas: updatedReplicas,
+                availableReplicas: availableReplicas,
+                message: message
+            )
+        }
+    }
+
     static func selectorMatchLabels(from raw: String) throws -> [String: String] {
         let object = try objectDictionary(from: raw)
         guard
@@ -2369,6 +2480,33 @@ private enum KubernetesJSON {
         let metadata = object["metadata"] as? [String: Any]
         let annotations = metadata?["annotations"] as? [String: Any]
         return (annotations?["deployment.kubernetes.io/revision"] as? String).flatMap(Int.init)
+    }
+
+    static func deploymentRolloutSnapshot(from raw: String, deploymentName fallbackName: String) throws -> DeploymentRolloutSnapshot {
+        let object = try objectDictionary(from: raw)
+        let metadata = object["metadata"] as? [String: Any]
+        let spec = object["spec"] as? [String: Any]
+        let status = object["status"] as? [String: Any]
+        let conditions = status?["conditions"] as? [[String: Any]] ?? []
+        let progressFailure = conditions.first { condition in
+            (condition["type"] as? String) == "Progressing"
+                && (condition["status"] as? String) == "False"
+                && (condition["reason"] as? String) == "ProgressDeadlineExceeded"
+        }.flatMap { condition -> String? in
+            let message = condition["message"] as? String
+            return message?.isEmpty == false ? message : "Deployment \(fallbackName) exceeded its progress deadline."
+        }
+
+        return DeploymentRolloutSnapshot(
+            deploymentName: metadata?["name"] as? String ?? fallbackName,
+            desiredReplicas: spec?["replicas"] as? Int ?? status?["replicas"] as? Int ?? 0,
+            readyReplicas: status?["readyReplicas"] as? Int ?? 0,
+            updatedReplicas: status?["updatedReplicas"] as? Int ?? 0,
+            availableReplicas: status?["availableReplicas"] as? Int ?? 0,
+            observedGeneration: status?["observedGeneration"] as? Int,
+            generation: metadata?["generation"] as? Int,
+            progressFailureMessage: progressFailure
+        )
     }
 
     static func replicaSetRolloutRevisions(from raw: String) throws -> [RolloutRevision] {
@@ -2536,28 +2674,66 @@ struct KubernetesRESTRequestCoalescingKey: Hashable, Sendable {
 }
 
 actor KubernetesRESTRequestCoalescer {
-    private var inFlight: [KubernetesRESTRequestCoalescingKey: Task<RESTResponse, Error>] = [:]
+    private struct Entry {
+        var task: Task<RESTResponse, Error>
+        var waiters: Set<UUID>
+    }
+
+    private var inFlight: [KubernetesRESTRequestCoalescingKey: Entry] = [:]
 
     func value(
         for key: KubernetesRESTRequestCoalescingKey,
         operation: @escaping @Sendable () async throws -> RESTResponse
     ) async throws -> RESTResponse {
-        if let existing = inFlight[key] {
-            return try await existing.value
-        }
+        let waiterID = UUID()
+        let task: Task<RESTResponse, Error>
 
-        let task = Task {
-            try await operation()
+        if var existing = inFlight[key] {
+            existing.waiters.insert(waiterID)
+            inFlight[key] = existing
+            task = existing.task
+        } else {
+            let newTask = Task {
+                try await operation()
+            }
+            inFlight[key] = Entry(task: newTask, waiters: [waiterID])
+            task = newTask
         }
-        inFlight[key] = task
 
         do {
-            let value = try await task.value
-            inFlight[key] = nil
+            let value = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                Task {
+                    await self.cancelWaiter(waiterID, for: key)
+                }
+            }
+            finishWaiter(waiterID, for: key)
             return value
         } catch {
-            inFlight[key] = nil
+            finishWaiter(waiterID, for: key)
             throw error
+        }
+    }
+
+    private func cancelWaiter(_ waiterID: UUID, for key: KubernetesRESTRequestCoalescingKey) {
+        guard var entry = inFlight[key] else { return }
+        entry.waiters.remove(waiterID)
+        if entry.waiters.isEmpty {
+            entry.task.cancel()
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = entry
+        }
+    }
+
+    private func finishWaiter(_ waiterID: UUID, for key: KubernetesRESTRequestCoalescingKey) {
+        guard var entry = inFlight[key] else { return }
+        entry.waiters.remove(waiterID)
+        if entry.waiters.isEmpty || entry.task.isCancelled {
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = entry
         }
     }
 }
@@ -3043,6 +3219,15 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
         task.send(.data(framed)) { error in
             if let error {
                 NSLog("[Rune][KubernetesExec] stdin send failed: %@", String(describing: error))
+            }
+        }
+    }
+
+    func resizeTerminal(columns: Int, rows: Int) throws {
+        let frame = try KubernetesRESTClient.terminalResizeFrame(columns: columns, rows: rows)
+        task.send(.data(frame)) { error in
+            if let error {
+                NSLog("[Rune][KubernetesExec] resize send failed: %@", String(describing: error))
             }
         }
     }

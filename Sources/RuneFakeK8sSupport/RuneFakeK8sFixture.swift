@@ -2,9 +2,17 @@ import Foundation
 
 public struct RuneFakeK8sFixture: Sendable {
     public let contexts: [RuneFakeK8sCluster]
+    public let listKindsOmittingRemainingItemCount: Set<String>
+    public let transientFailureTargets: Set<String>
 
-    public init(contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts) {
+    public init(
+        contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,
+        listKindsOmittingRemainingItemCount: Set<String> = [],
+        transientFailureTargets: Set<String> = []
+    ) {
         self.contexts = contexts
+        self.listKindsOmittingRemainingItemCount = listKindsOmittingRemainingItemCount
+        self.transientFailureTargets = transientFailureTargets
     }
 
     public static let defaultContextName = "fake-orbit-mesh"

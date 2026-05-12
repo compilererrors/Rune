@@ -26,6 +26,7 @@ struct ResourceTerminalWorkspaceView: View {
     let onClearInactivePortForwards: () -> Void
     let onSend: () -> Void
     let onSendControlSequence: (String) -> Void
+    let onResizeSession: (String, Int, Int) -> Void
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
@@ -96,6 +97,7 @@ struct ResourceTerminalWorkspaceView: View {
                         onReconnectSession: reconnectShellSession,
                         onSend: onSend,
                         onSendControlSequence: onSendControlSequence,
+                        onResizeSession: onResizeSession,
                         onDisconnect: onDisconnect,
                         onSelectSession: selectShellSession,
                         onCloseSession: closeShellSession,
@@ -285,6 +287,7 @@ struct ResourceTerminalDetailsView: View {
                 contextName: session.contextName,
                 namespace: session.namespace,
                 podName: session.podName,
+                containerName: session.containerName,
                 command: command
             )
         )

@@ -118,6 +118,15 @@ private final class RuneFakeK8sRequestRecorder: @unchecked Sendable {
         return value
     }
 
+    func count(target: String) -> Int {
+        lock.lock()
+        let value = lines.filter { line in
+            line.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) == target
+        }.count
+        lock.unlock()
+        return value
+    }
+
     func removeAll() {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
@@ -223,7 +232,7 @@ private final class ServerBox: @unchecked Sendable {
                 return
             }
             requestRecorder.append(String(line))
-            let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName)
+            let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
                 .route(requestLine: String(line))
             connection.sendHTTP(response)
         }
@@ -233,20 +242,25 @@ private final class ServerBox: @unchecked Sendable {
 private struct RuneFakeK8sRouter {
     let fixture: RuneFakeK8sFixture
     let contextName: String
+    let requestRecorder: RuneFakeK8sRequestRecorder
 
     func route(requestLine: String) -> RuneFakeK8sHTTPResponse {
         let parts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else {
             return .json(status: 400, object: status(message: "Malformed HTTP request"))
         }
-        guard parts[0] == "GET" else {
-            return .json(status: 405, object: status(message: "Only GET is supported by RuneFakeK8s REST."))
+        let method = parts[0]
+        guard method == "GET" || method == "PATCH" else {
+            return .json(status: 405, object: status(message: "Only GET and PATCH are supported by RuneFakeK8s REST."))
         }
         guard let cluster = fixture.cluster(named: contextName) else {
             return .json(status: 404, object: status(message: "Unknown fake context \(contextName)."))
         }
 
         let target = parts[1]
+        if fixture.transientFailureTargets.contains(target), requestRecorder.count(target: target) == 1 {
+            return .json(status: 503, object: status(message: "Synthetic transient failure for \(target)."))
+        }
         guard let components = URLComponents(string: "http://fake\(target)") else {
             return .json(status: 400, object: status(message: "Invalid request target \(target)."))
         }
@@ -360,7 +374,7 @@ private struct RuneFakeK8sRouter {
             if pathParts.count >= 6,
                Array(pathParts[0...3]) == ["apis", "apps", "v1", "namespaces"],
                let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }) {
-                return routeAppsNamespaced(pathParts: pathParts, namespace: namespace, query: query)
+                return routeAppsNamespaced(method: method, pathParts: pathParts, namespace: namespace, query: query)
             }
 
             if pathParts.count >= 6,
@@ -504,12 +518,16 @@ private struct RuneFakeK8sRouter {
     }
 
     private func routeAppsNamespaced(
+        method: String,
         pathParts: [String],
         namespace: RuneFakeK8sNamespace,
         query: [String: String]
     ) -> RuneFakeK8sHTTPResponse {
         switch pathParts.count {
         case 6 where pathParts[5] == "deployments":
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET is supported for deployment lists."))
+            }
             return .json(status: 200, object: listObject(
                 apiVersion: "apps/v1",
                 kind: "DeploymentList",
@@ -521,6 +539,16 @@ private struct RuneFakeK8sRouter {
                 return .json(status: 404, object: status(message: "Deployment \(pathParts[6]) was not found."))
             }
             return .json(status: 200, object: deploymentObject(deployment, namespace: namespace.name))
+        case 6 where pathParts[5] == "replicasets":
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET is supported for ReplicaSet lists."))
+            }
+            return .json(status: 200, object: listObject(
+                apiVersion: "apps/v1",
+                kind: "ReplicaSetList",
+                items: filteredReplicaSets(replicaSetObjects(namespace), query: query),
+                query: query
+            ))
         default:
             return .json(status: 404, object: status(message: "Unsupported apps namespaced route."))
         }
@@ -695,7 +723,8 @@ private struct RuneFakeK8sRouter {
             "metadata": [
                 "name": deployment.name,
                 "namespace": namespace,
-                "creationTimestamp": "2026-04-25T10:00:00Z"
+                "creationTimestamp": "2026-04-25T10:00:00Z",
+                "annotations": ["deployment.kubernetes.io/revision": "2"]
             ],
             "spec": [
                 "replicas": deployment.replicas,
@@ -712,6 +741,54 @@ private struct RuneFakeK8sRouter {
                 "availableReplicas": deployment.readyReplicas
             ]
         ]
+    }
+
+    private func replicaSetObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        namespace.deployments.flatMap { deployment in
+            [1, 2].map { revision in
+                [
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "metadata": [
+                        "name": "\(deployment.name)-rs\(revision)",
+                        "namespace": namespace.name,
+                        "creationTimestamp": "2026-04-25T10:0\(revision):00Z",
+                        "annotations": [
+                            "deployment.kubernetes.io/revision": "\(revision)",
+                            "kubernetes.io/change-cause": revision == 1 ? "synthetic bootstrap" : "synthetic rollout"
+                        ],
+                        "labels": deployment.selector
+                    ],
+                    "spec": [
+                        "selector": ["matchLabels": deployment.selector],
+                        "template": [
+                            "metadata": ["labels": deployment.selector],
+                            "spec": [
+                                "containers": [[
+                                    "name": deployment.name,
+                                    "image": "ghcr.io/rune/\(deployment.name):fake-\(revision)"
+                                ]]
+                            ]
+                        ]
+                    ]
+                ] as [String: Any]
+            }
+        }
+    }
+
+    private func filteredReplicaSets(_ objects: [[String: Any]], query: [String: String]) -> [[String: Any]] {
+        guard let selector = query["labelSelector"], !selector.isEmpty else { return objects }
+        let requirements = selector.split(separator: ",").compactMap { pair -> (String, String)? in
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return nil }
+            return (parts[0], parts[1])
+        }
+        guard !requirements.isEmpty else { return objects }
+        return objects.filter { object in
+            let metadata = object["metadata"] as? [String: Any]
+            let labels = metadata?["labels"] as? [String: String] ?? [:]
+            return requirements.allSatisfy { labels[$0.0] == $0.1 }
+        }
     }
 
     private func serviceObject(_ service: RuneFakeK8sService, namespace: String) -> [String: Any] {
@@ -922,7 +999,9 @@ private struct RuneFakeK8sRouter {
         let remaining = max(0, items.count - end)
         var metadata: [String: Any] = ["resourceVersion": "fake-1"]
         if query["limit"] != nil {
-            metadata["remainingItemCount"] = remaining
+            if !fixture.listKindsOmittingRemainingItemCount.contains(kind) {
+                metadata["remainingItemCount"] = remaining
+            }
             metadata["continue"] = remaining > 0 ? String(end) : ""
         }
         return [

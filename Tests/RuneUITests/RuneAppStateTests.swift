@@ -7,6 +7,142 @@ import XCTest
 @testable import RuneUI
 
 final class RuneAppStateTests: XCTestCase {
+    func testFileBackedContextPreferencesStoreRoundTripsVersionedPreferences() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.fileBacked.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+
+        let store = FileBackedContextPreferencesStore(url: url)
+        store.saveFavoriteContextNames(["beta", "alpha", "alpha"])
+        store.saveFavoriteResourceIDs(["context-alpha|pod|default|api"])
+        store.saveFavoriteNamespaceIDs(["context-alpha|namespace|default"])
+        store.saveManualProductionContextIDs(["context-alpha"])
+        store.saveManualNamespaces(["zeta", "alpha", "alpha"], for: "context-alpha")
+        store.savePreferredNamespace("zeta", for: "context-alpha")
+
+        let reloaded = FileBackedContextPreferencesStore(url: url)
+
+        XCTAssertEqual(reloaded.loadFavoriteContextNames(), ["alpha", "beta"])
+        XCTAssertEqual(reloaded.loadFavoriteResourceIDs(), ["context-alpha|pod|default|api"])
+        XCTAssertEqual(reloaded.loadFavoriteNamespaceIDs(), ["context-alpha|namespace|default"])
+        XCTAssertEqual(reloaded.loadManualProductionContextIDs(), ["context-alpha"])
+        XCTAssertEqual(reloaded.loadManualNamespaces(for: "context-alpha"), ["alpha", "zeta"])
+        XCTAssertEqual(reloaded.loadPreferredNamespace(for: "context-alpha"), "zeta")
+
+        let json = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(json.contains("\"schemaVersion\""))
+        XCTAssertTrue(json.contains("\(FileBackedContextPreferencesStore.currentSchemaVersion)"))
+    }
+
+    func testFileBackedContextPreferencesStoreRecoversFromBackupWhenPrimaryIsCorrupt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.fileBackedRecovery.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+        let backupURL = directory.appendingPathComponent("context-preferences.json.bak")
+        let corruptURL = directory.appendingPathComponent("context-preferences.json.corrupt")
+
+        let store = FileBackedContextPreferencesStore(url: url, backupURL: backupURL, corruptURL: corruptURL)
+        store.saveFavoriteContextNames(["context-alpha"])
+        store.saveFavoriteContextNames(["context-beta"])
+        try Data("not-json".utf8).write(to: url, options: .atomic)
+
+        let recovered = FileBackedContextPreferencesStore(url: url, backupURL: backupURL, corruptURL: corruptURL)
+
+        XCTAssertEqual(recovered.loadFavoriteContextNames(), ["context-alpha"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: corruptURL.path))
+        XCTAssertEqual(try String(contentsOf: corruptURL, encoding: .utf8), "not-json")
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).contains("context-alpha"))
+    }
+
+    func testFileBackedContextPreferencesStoreMigratesLegacyDefaultsWithoutSensitivePayloadFields() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.fileBackedMigration.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+
+        let suiteName = "RuneAppStateTests.legacyPreferences.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacy = UserDefaultsContextPreferencesStore(defaults: defaults)
+        legacy.saveFavoriteContextNames(["context-alpha"])
+        legacy.saveFavoriteResourceIDs(["context-alpha|deployment|default|api"])
+        legacy.saveFavoriteNamespaceIDs(["context-alpha|namespace|default"])
+        legacy.saveManualProductionContextIDs(["context-alpha"])
+        legacy.saveManualNamespaces(["default"], for: "context-alpha")
+        legacy.savePreferredNamespace("default", for: "context-alpha")
+
+        let migrated = FileBackedContextPreferencesStore(url: url, legacyStore: legacy)
+
+        XCTAssertEqual(migrated.loadFavoriteContextNames(), ["context-alpha"])
+        XCTAssertEqual(migrated.loadManualNamespaces(for: "context-alpha"), ["default"])
+        XCTAssertEqual(migrated.loadPreferredNamespace(for: "context-alpha"), "default")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        let json = try String(contentsOf: url, encoding: .utf8).lowercased()
+        XCTAssertFalse(json.contains("kubeconfig"))
+        XCTAssertFalse(json.contains("bearer"))
+        XCTAssertFalse(json.contains("token"))
+        XCTAssertFalse(json.contains("client-certificate-data"))
+        XCTAssertFalse(json.contains("client-key-data"))
+        XCTAssertFalse(json.contains("secretvalue"))
+    }
+
+    func testFileBackedContextPreferencesStoreMigratesOlderSchemaDocument() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.fileBackedOlderSchema.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+        try Data(
+            """
+            {
+              "favoriteContextNames": ["context-beta", "context-alpha"],
+              "favoriteResourceIDs": ["context-alpha|service|default|api"],
+              "manualNamespaces": {
+                "context-alpha": ["zeta", "default"]
+              }
+            }
+            """.utf8
+        ).write(to: url, options: .atomic)
+
+        let migrated = FileBackedContextPreferencesStore(url: url)
+
+        XCTAssertEqual(migrated.loadFavoriteContextNames(), ["context-alpha", "context-beta"])
+        XCTAssertEqual(migrated.loadFavoriteResourceIDs(), ["context-alpha|service|default|api"])
+        XCTAssertEqual(migrated.loadManualNamespaces(for: "context-alpha"), ["default", "zeta"])
+
+        migrated.savePreferredNamespace("default", for: "context-alpha")
+
+        let json = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(json.contains("\"schemaVersion\""))
+        XCTAssertTrue(json.contains("\(FileBackedContextPreferencesStore.currentSchemaVersion)"))
+    }
+
+    func testWriteSafetySettingsDefaultOnAndPersistAsUserPreferences() {
+        let suiteName = "RuneAppStateTests.writeSafety.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(defaults.runeWriteSafetyRequireApplyDryRun)
+        XCTAssertTrue(defaults.runeWriteSafetyRequireRolloutDryRun)
+        XCTAssertTrue(defaults.runeWriteSafetyRequireHelmDryRun)
+        XCTAssertTrue(defaults.runeWriteSafetyShowRollbackPlan)
+        XCTAssertTrue(defaults.runeWriteSafetyRequireCopyableCommand)
+        XCTAssertTrue(defaults.runeWriteSafetyRequirePostActionVerification)
+        XCTAssertTrue(defaults.runeWriteSafetyRequireProductionSecondConfirmation)
+
+        defaults.runeWriteSafetyRequireApplyDryRun = false
+        defaults.runeWriteSafetyRequireProductionSecondConfirmation = false
+
+        XCTAssertFalse(defaults.runeWriteSafetyRequireApplyDryRun)
+        XCTAssertFalse(defaults.runeWriteSafetyRequireProductionSecondConfirmation)
+    }
+
     @MainActor
     func testViewModelRestoresAndPersistsSplitPaneVisibility() {
         let defaults = UserDefaults.standard
@@ -97,6 +233,52 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(state.resourceYAML.contains("kind: Pod"))
         XCTAssertTrue(state.resourceDescribe.contains("Name:"))
         XCTAssertTrue(state.podLogs.contains("demo API"))
+    }
+
+    @MainActor
+    func testEventsSortBySelectedColumn() {
+        let state = RuneAppState()
+        state.setEvents([
+            EventSummary(
+                type: "Normal",
+                reason: "Started",
+                objectName: "api-2",
+                message: "Started container api",
+                lastTimestamp: "2026-05-05T10:02:00Z",
+                involvedKind: "Pod",
+                involvedNamespace: "backend"
+            ),
+            EventSummary(
+                type: "Warning",
+                reason: "BackOff",
+                objectName: "api-1",
+                message: "Back-off restarting container",
+                lastTimestamp: "2026-05-05T10:03:00Z",
+                involvedKind: "Pod",
+                involvedNamespace: "backend"
+            ),
+            EventSummary(
+                type: "Normal",
+                reason: "Scheduled",
+                objectName: "web-0",
+                message: "Assigned pod to node",
+                lastTimestamp: "2026-05-05T10:01:00Z",
+                involvedKind: "Pod",
+                involvedNamespace: "frontend"
+            )
+        ])
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.visibleEvents.map(\.reason), ["BackOff", "Scheduled", "Started"])
+
+        viewModel.toggleEventSort(.lastSeen)
+        XCTAssertEqual(viewModel.visibleEvents.map(\.objectName), ["api-1", "api-2", "web-0"])
+
+        viewModel.toggleEventSort(.lastSeen)
+        XCTAssertEqual(viewModel.visibleEvents.map(\.objectName), ["web-0", "api-2", "api-1"])
+
+        viewModel.toggleEventSort(.namespace)
+        XCTAssertEqual(viewModel.visibleEvents.map(\.objectName), ["api-1", "api-2", "web-0"])
     }
 
     @MainActor
@@ -274,7 +456,7 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testContextMenuOptionsAreAlphabeticalWithoutFavoriteGrouping() {
+    func testContextMenuOptionsUseFavoriteFirstOrdering() {
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer {
@@ -294,7 +476,7 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(state: state)
         state.setFavoriteContextNames(["prod"])
 
-        XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["alpha", "Beta", "prod"])
+        XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["prod", "alpha", "Beta"])
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["prod", "alpha", "Beta"])
     }
 
@@ -444,6 +626,22 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertNil(state.selectedPod)
         XCTAssertFalse(state.isLoadingResourceDetails)
+    }
+
+    @MainActor
+    func testNavigationClearsObsoleteInspectorAndLogLoadingState() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.isLoadingResourceDetails = true
+        state.isLoadingLogs = true
+
+        viewModel.selectPod(nil)
+
+        XCTAssertNil(state.selectedPod)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+        XCTAssertFalse(state.isLoadingLogs)
     }
 
     @MainActor
@@ -710,6 +908,111 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testReapplyResourceYAMLBaselineUsesInSessionSnapshotForNonSecrets() {
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
+        defer {
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setSelectedConfigMap(
+            ClusterResourceSummary(
+                kind: .configMap,
+                name: "settings",
+                namespace: "default",
+                primaryText: "2 keys",
+                secondaryText: "ConfigMap"
+            )
+        )
+        let baseline = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: settings
+        data:
+          mode: old
+        """
+        let edited = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: settings
+        data:
+          mode: edited
+        """
+        state.setResourceYAML(baseline)
+        state.updateResourceYAMLDraft(edited)
+
+        XCTAssertTrue(viewModel.canReapplyResourceYAMLBaseline)
+
+        viewModel.requestReapplyResourceYAMLBaseline()
+
+        guard case let .apply(kind, name, yaml, actionBaseline)? = viewModel.pendingWriteAction else {
+            return XCTFail("Expected pending apply action")
+        }
+        XCTAssertEqual(kind, .configMap)
+        XCTAssertEqual(name, "settings")
+        XCTAssertEqual(yaml, baseline)
+        XCTAssertEqual(actionBaseline, edited)
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("YAML diff preview"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("-   mode: edited"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("+   mode: old"))
+    }
+
+    @MainActor
+    func testReapplyResourceYAMLBaselineIsDisabledForSecrets() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .secret
+        state.setSelectedSecret(
+            ClusterResourceSummary(
+                kind: .secret,
+                name: "api-token",
+                namespace: "default",
+                primaryText: "2 keys",
+                secondaryText: "Opaque"
+            )
+        )
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: api-token
+            """
+        )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: api-token
+              labels:
+                app: api
+            """
+        )
+
+        XCTAssertFalse(viewModel.canReapplyResourceYAMLBaseline)
+
+        viewModel.requestReapplyResourceYAMLBaseline()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: Re-apply snapshot fallback is disabled for Secrets. Review the diff and apply YAML explicitly."
+        )
+    }
+
+    @MainActor
     func testReplacePodLogReadOverwritesCachedSnapshotWithoutMergingPriorFetch() {
         let state = RuneAppState()
         let firstDate = Date(timeIntervalSince1970: 1_776_000_000)
@@ -916,6 +1219,12 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testPendingApplyMessageIncludesServerDryRunStatus() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
         state.selectedContext = KubeContext(name: "demo")
@@ -957,6 +1266,57 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.pendingWriteDryRunStatus, "Checking with Kubernetes API...")
         XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Server dry-run:"))
         XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Checking with Kubernetes API..."))
+    }
+
+    @MainActor
+    func testDisabledApplyDryRunSettingSkipsApplyDryRunPreview() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setSelectedConfigMap(
+            ClusterResourceSummary(
+                kind: .configMap,
+                name: "settings",
+                namespace: "default",
+                primaryText: "1 data key",
+                secondaryText: "2m"
+            )
+        )
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+            data:
+              mode: old
+            """
+        )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+            data:
+              mode: new
+            """
+        )
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNotNil(viewModel.pendingWriteAction)
+        XCTAssertNil(viewModel.pendingWriteDryRunStatus)
+        XCTAssertFalse(viewModel.pendingWriteActionMessage.contains("Server dry-run:"))
     }
 
     @MainActor
@@ -1478,6 +1838,83 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(reloadedViewModel.namespaceOptions, ["team-a"])
     }
 
+    @MainActor
+    func testManualProductionContextMarkPersistsAndTriggersProductionConfirmationForSyntheticContext() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let suiteName = "RuneAppStateTests.manualProduction.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let context = KubeContext(name: "staging-west")
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        state.selectedContext = context
+        state.selectedNamespace = "default"
+
+        XCTAssertFalse(viewModel.isProductionContext)
+        viewModel.toggleProductionMark(for: context)
+        XCTAssertTrue(viewModel.isManuallyMarkedProduction(context))
+
+        let reloadedState = RuneAppState()
+        let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
+        reloadedState.selectedContext = context
+        reloadedState.selectedNamespace = "default"
+        reloadedViewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
+
+        XCTAssertTrue(reloadedViewModel.isProductionContext)
+        XCTAssertTrue(reloadedViewModel.pendingWriteActionMessage.contains("Destructive production actions require a second confirmation"))
+    }
+
+    @MainActor
+    func testUnmarkProductionContextRemovesManualOverrideWithoutDisablingAutoDetection() {
+        let suiteName = "RuneAppStateTests.manualProductionUnmark.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let viewModel = RuneAppViewModel(state: RuneAppState(), contextPreferences: store)
+        let staging = KubeContext(name: "staging-west")
+
+        viewModel.toggleProductionMark(for: staging)
+        XCTAssertTrue(viewModel.isManuallyMarkedProduction(staging))
+        XCTAssertTrue(viewModel.isProductionContext(staging))
+
+        viewModel.toggleProductionMark(for: staging)
+        XCTAssertFalse(viewModel.isManuallyMarkedProduction(staging))
+        XCTAssertFalse(viewModel.isProductionContext(staging))
+        XCTAssertTrue(viewModel.isProductionContext(KubeContext(name: "production-blue")))
+    }
+
+    @MainActor
+    func testManualProductionContextPersistenceDoesNotStoreKubeconfigPayloads() {
+        let suiteName = "RuneAppStateTests.manualProductionPrivacy.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "manualProductionContexts"
+        let store = UserDefaultsContextPreferencesStore(
+            defaults: defaults,
+            manualProductionContextsKey: storageKey
+        )
+        let viewModel = RuneAppViewModel(state: RuneAppState(), contextPreferences: store)
+
+        viewModel.toggleProductionMark(for: KubeContext(name: "staging-synthetic"))
+
+        let stored = defaults.stringArray(forKey: storageKey) ?? []
+        XCTAssertEqual(stored, ["staging-synthetic"])
+        let serialized = stored.joined(separator: "\n")
+        XCTAssertFalse(serialized.contains("apiVersion"))
+        XCTAssertFalse(serialized.contains("clusters:"))
+        XCTAssertFalse(serialized.contains("certificate-authority-data"))
+        XCTAssertFalse(serialized.contains("token"))
+        XCTAssertFalse(serialized.contains("users:"))
+        XCTAssertFalse(serialized.contains("KUBECONFIG"))
+    }
+
     func testPodSummaryExposesContainerNamesForLogSelection() {
         let pod = PodSummary(
             name: "api",
@@ -1532,7 +1969,7 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testPodMetricSortsUseNumericValuesBeforeFavorites() {
+    func testPodFavoritesSortFirstWhilePreservingMetricSortWithinGroups() {
         let state = RuneAppState()
         let suiteName = "RuneAppStateTests.podMetricSort.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1545,25 +1982,60 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "default"
         state.setPods([
             PodSummary(name: "favorite-low-cpu-old", namespace: "default", status: "Running", ageDescription: "13d", cpuUsage: "1m"),
+            PodSummary(name: "favorite-high-cpu-middle", namespace: "default", status: "Running", ageDescription: "1d", cpuUsage: "42m"),
             PodSummary(name: "mid-cpu-new", namespace: "default", status: "Running", ageDescription: "4h", cpuUsage: "3m"),
-            PodSummary(name: "high-cpu-middle", namespace: "default", status: "Running", ageDescription: "1d", cpuUsage: "42m"),
             PodSummary(name: "missing-cpu", namespace: "default", status: "Running", ageDescription: "2d")
         ])
         viewModel.toggleFavoriteResource(kind: .pod, namespace: "default", name: "favorite-low-cpu-old")
+        viewModel.toggleFavoriteResource(kind: .pod, namespace: "default", name: "favorite-high-cpu-middle")
 
         viewModel.togglePodSort(.cpu)
 
         XCTAssertEqual(
             viewModel.visiblePods.map(\.name),
-            ["high-cpu-middle", "mid-cpu-new", "favorite-low-cpu-old", "missing-cpu"]
+            ["favorite-high-cpu-middle", "favorite-low-cpu-old", "mid-cpu-new", "missing-cpu"]
         )
 
         viewModel.togglePodSort(.age)
 
         XCTAssertEqual(
             viewModel.visiblePods.map(\.name),
-            ["mid-cpu-new", "high-cpu-middle", "missing-cpu", "favorite-low-cpu-old"]
+            ["favorite-high-cpu-middle", "favorite-low-cpu-old", "mid-cpu-new", "missing-cpu"]
         )
+    }
+
+    @MainActor
+    func testDeploymentAndServiceFavoritesSortFirstWithoutDroppingActiveSort() {
+        let state = RuneAppState()
+        let suiteName = "RuneAppStateTests.workloadFavoriteSort.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let viewModel = RuneAppViewModel(
+            state: state,
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
+        )
+        state.selectedContext = KubeContext(name: "sort-contract")
+        state.selectedNamespace = "default"
+        state.setDeployments([
+            DeploymentSummary(name: "api", namespace: "default", readyReplicas: 1, desiredReplicas: 3),
+            DeploymentSummary(name: "worker", namespace: "default", readyReplicas: 3, desiredReplicas: 3),
+            DeploymentSummary(name: "checkout", namespace: "default", readyReplicas: 0, desiredReplicas: 2)
+        ])
+        state.setServices([
+            ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.30"),
+            ServiceSummary(name: "gateway", namespace: "default", type: "LoadBalancer", clusterIP: "10.0.0.10"),
+            ServiceSummary(name: "worker", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.20")
+        ])
+
+        viewModel.toggleFavoriteResource(kind: .deployment, namespace: "default", name: "checkout")
+        viewModel.toggleDeploymentSort(.replicas)
+
+        XCTAssertEqual(viewModel.visibleDeployments.map(\.name), ["checkout", "worker", "api"])
+
+        viewModel.toggleFavoriteResource(kind: .service, namespace: "default", name: "gateway")
+        viewModel.toggleServiceSort(.type)
+
+        XCTAssertEqual(viewModel.visibleServices.map(\.name), ["gateway", "api", "worker"])
     }
 
     @MainActor
@@ -1737,6 +2209,57 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testOperatorResourcesSortBySelectedColumnWithFavoritesFirst() {
+        let state = RuneAppState()
+        let suiteName = "RuneAppStateTests.operatorSort.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        state.selectedContext = KubeContext(name: "demo")
+        state.setOperatorResources([
+            OperatorResourceSummary(
+                family: "Flux",
+                kind: "Kustomizations",
+                apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/default/kustomizations",
+                name: "frontend",
+                namespace: "default",
+                status: "Ready",
+                message: ""
+            ),
+            OperatorResourceSummary(
+                family: "ArgoCD",
+                kind: "Applications",
+                apiPath: "/apis/argoproj.io/v1alpha1/namespaces/default/applications",
+                name: "payments",
+                namespace: "default",
+                status: "Progressing",
+                message: ""
+            ),
+            OperatorResourceSummary(
+                family: "Custom Resources",
+                kind: "Widgets",
+                apiPath: "/apis/example.io/v1/widgets",
+                name: "cluster-widget",
+                namespace: nil,
+                status: "Unknown",
+                message: ""
+            )
+        ])
+
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["payments", "cluster-widget", "frontend"])
+
+        viewModel.toggleOperatorResourceSort(.status)
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["payments", "frontend", "cluster-widget"])
+
+        viewModel.toggleOperatorResourceSort(.status)
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["cluster-widget", "frontend", "payments"])
+
+        viewModel.toggleFavoriteOperatorResource(state.operatorResources[1])
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name).first, "payments")
+    }
+
+    @MainActor
     func testOperatorResourcesArePagedForLargeCRDBrowsing() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
@@ -1896,6 +2419,12 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testProductionDestructiveWriteRequiresSecondConfirmation() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
         state.selectedContext = KubeContext(name: "prod")
@@ -1920,6 +2449,105 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testProductionRolloutRollbackRequiresSecondConfirmation() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "prod")
+        state.selectedNamespace = "default"
+        viewModel.pendingWriteAction = .rolloutUndo(deploymentName: "api", revision: 2)
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertEqual(viewModel.pendingProductionDestructiveConfirmation, .rolloutUndo(deploymentName: "api", revision: 2))
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Rollback")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Final confirmation required"))
+    }
+
+    @MainActor
+    func testProductionHelmRollbackRequiresSecondConfirmationAndDoesNotRunAutomatically() {
+        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
+        defer {
+            restoreUserDefaultsValue(previousProduction, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "prod")
+        state.selectedNamespace = "payments"
+        state.setSelectedHelmRelease(
+            HelmReleaseSummary(
+                name: "api",
+                namespace: "payments",
+                revision: 3,
+                updated: "2026-05-05 10:00:00",
+                status: "deployed",
+                chart: "api-1.2.0",
+                appVersion: "1.2.0"
+            )
+        )
+
+        viewModel.requestHelmRollback(revision: 2)
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Helm dry-run is not available"))
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertEqual(
+            viewModel.pendingProductionDestructiveConfirmation,
+            .helmRollback(releaseName: "api", namespace: "payments", revision: 2, wait: true, timeout: "5m", cleanupOnFail: true)
+        )
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+    }
+
+    @MainActor
+    func testDisabledProductionSecondConfirmationSettingUsesSingleConfirmationLabel() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "prod")
+        state.selectedNamespace = "default"
+        viewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete")
+        XCTAssertFalse(viewModel.pendingWriteActionMessage.contains("Destructive production actions require a second confirmation"))
+    }
+
+    @MainActor
+    func testDisabledCopyableCommandSettingHidesPendingWriteCommandPreview() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        UserDefaults.standard.runeWriteSafetyRequireCopyableCommand = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        viewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
+
+        XCTAssertEqual(viewModel.pendingWriteActionKubectlCommand, "")
+    }
+
+    @MainActor
     func testPendingApplyDiffPreviewTruncatesLargeYAML() {
         let baseline = (0..<40).map { "key\($0): old" }.joined(separator: "\n")
         let edited = (0..<40).map { "key\($0): new" }.joined(separator: "\n")
@@ -1940,6 +2568,211 @@ final class RuneAppStateTests: XCTestCase {
         let command = action.kubectlCommand(contextName: "prod west", namespace: "payments")
 
         XCTAssertEqual(command, "kubectl --context 'prod west' --namespace payments scale deployment 'api service' --replicas 3")
+
+        XCTAssertEqual(
+            PendingWriteAction.rolloutUndo(deploymentName: "api", revision: nil)
+                .kubectlCommand(contextName: "dev", namespace: "default"),
+            "kubectl --context dev --namespace default rollout undo deployment api"
+        )
+        XCTAssertEqual(
+            PendingWriteAction.rolloutUndo(deploymentName: "api", revision: 7)
+                .kubectlCommand(contextName: "dev", namespace: "default"),
+            "kubectl --context dev --namespace default rollout undo deployment api --to-revision=7"
+        )
+        XCTAssertEqual(
+            PendingWriteAction.controllerRolloutUndo(kind: .statefulSet, name: "postgres data", revision: 4)
+                .kubectlCommand(contextName: "dev", namespace: "storage"),
+            "kubectl --context dev --namespace storage rollout undo statefulset 'postgres data' --to-revision=4"
+        )
+        XCTAssertEqual(
+            PendingWriteAction.controllerRolloutUndo(kind: .daemonSet, name: "node-agent", revision: nil)
+                .kubectlCommand(contextName: "dev", namespace: "kube-system"),
+            "kubectl --context dev --namespace kube-system rollout undo daemonset node-agent"
+        )
+        XCTAssertEqual(
+            PendingWriteAction.helmRollback(
+                releaseName: "api service",
+                namespace: "payments",
+                revision: 4,
+                wait: true,
+                timeout: "10m",
+                cleanupOnFail: true
+            )
+            .kubectlCommand(contextName: "prod west", namespace: "ignored"),
+            "helm --kube-context 'prod west' --namespace payments rollback 'api service' 4 --wait --timeout 10m --cleanup-on-fail"
+        )
+    }
+
+    @MainActor
+    func testRolloutRollbackConfirmationShowsPlanAndDryRunStatusWhenSafetySettingsAreEnabled() {
+        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        defer {
+            restoreUserDefaultsValue(previousPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "payments"
+        state.setSelectedDeployment(
+            DeploymentSummary(
+                name: "api",
+                namespace: "payments",
+                readyReplicas: 2,
+                desiredReplicas: 3,
+                selector: ["app": "api", "tier": "web"]
+            )
+        )
+        state.setDeploymentRolloutHistory(
+            """
+            REVISION\tREPLICASET\tCHANGE-CAUSE
+            1\tapi-5f4d\tbootstrap
+            2\tapi-6d7c\trollout
+            """
+        )
+        viewModel.rolloutRevisionInput = "1"
+
+        viewModel.requestRolloutUndoSelectedDeployment()
+
+        let message = viewModel.pendingWriteActionMessage
+        XCTAssertTrue(message.contains("Rollback plan:"))
+        XCTAssertTrue(message.contains("Target resource: deployment/api"))
+        XCTAssertTrue(message.contains("Namespace: payments"))
+        XCTAssertTrue(message.contains("Current revision: 2"))
+        XCTAssertTrue(message.contains("Target revision: 1"))
+        XCTAssertTrue(message.contains("Affected selector/pods: app=api, tier=web"))
+        XCTAssertTrue(message.contains("kubectl --context demo --namespace payments rollout undo deployment api --to-revision=1"))
+        XCTAssertTrue(message.contains("Server dry-run:"))
+    }
+
+    @MainActor
+    func testDisabledRollbackPlanAndDryRunSettingsUseLowerFrictionRollbackConfirmation() {
+        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = false
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = false
+        defer {
+            restoreUserDefaultsValue(previousPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "payments"
+        state.setSelectedDeployment(
+            DeploymentSummary(name: "api", namespace: "payments", readyReplicas: 2, desiredReplicas: 3)
+        )
+
+        viewModel.requestRolloutUndoSelectedDeployment()
+
+        XCTAssertFalse(viewModel.pendingWriteActionMessage.contains("Rollback plan:"))
+        XCTAssertFalse(viewModel.pendingWriteActionMessage.contains("Server dry-run:"))
+        XCTAssertNil(viewModel.pendingRollbackPlan)
+        XCTAssertNil(viewModel.pendingWriteDryRunStatus)
+    }
+
+    @MainActor
+    func testControllerRollbackConfirmationShowsPlanAndBlocksAutomaticExecution() async throws {
+        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        defer {
+            restoreUserDefaultsValue(previousPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "storage"
+        state.selectedWorkloadKind = .statefulSet
+        state.setSelectedStatefulSet(
+            ClusterResourceSummary(
+                kind: .statefulSet,
+                name: "postgres",
+                namespace: "storage",
+                primaryText: "2/3 ready",
+                secondaryText: "app=postgres"
+            )
+        )
+        viewModel.rolloutRevisionInput = "4"
+
+        viewModel.requestRolloutUndoSelectedController()
+
+        let message = viewModel.pendingWriteActionMessage
+        XCTAssertTrue(message.contains("Rollout rollback command preview only"))
+        XCTAssertTrue(message.contains("Rollback plan:"))
+        XCTAssertTrue(message.contains("Target resource: statefulset/postgres"))
+        XCTAssertTrue(message.contains("Namespace: storage"))
+        XCTAssertTrue(message.contains("Target revision: 4"))
+        XCTAssertTrue(message.contains("kubectl --context demo --namespace storage rollout undo statefulset postgres --to-revision=4"))
+        XCTAssertTrue(message.contains("StatefulSet rollback dry-run is not available"))
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        try await waitUntilForRuneAppState {
+            !state.writeAuditLog.isEmpty
+        }
+        XCTAssertEqual(state.writeAuditLog.first?.action, "Controller Rollout Undo")
+        XCTAssertEqual(state.writeAuditLog.first?.resource, "statefulset/postgres revision=4")
+        XCTAssertEqual(state.writeAuditLog.first?.status, "Blocked")
+        XCTAssertTrue(state.writeAuditLog.first?.message.contains("did not run this rollback automatically") == true)
+    }
+
+    @MainActor
+    func testHelmRollbackConfirmationShowsPlanAndBlocksAutomaticExecution() async throws {
+        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
+        defer {
+            restoreUserDefaultsValue(previousPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "payments"
+        state.setSelectedHelmRelease(
+            HelmReleaseSummary(
+                name: "api",
+                namespace: "payments",
+                revision: 3,
+                updated: "2026-05-05 10:00:00",
+                status: "deployed",
+                chart: "api-1.2.0",
+                appVersion: "1.2.0"
+            )
+        )
+
+        viewModel.requestHelmRollback(revision: 2)
+
+        let message = viewModel.pendingWriteActionMessage
+        XCTAssertTrue(message.contains("Helm rollback command preview only"))
+        XCTAssertTrue(message.contains("Rollback plan:"))
+        XCTAssertTrue(message.contains("Target release: payments/api"))
+        XCTAssertTrue(message.contains("Current revision: 3"))
+        XCTAssertTrue(message.contains("Target revision: 2"))
+        XCTAssertTrue(message.contains("helm --kube-context demo --namespace payments rollback api 2 --wait --timeout 5m --cleanup-on-fail"))
+        XCTAssertTrue(message.contains("Helm dry-run is not available"))
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        try await waitUntilForRuneAppState {
+            !state.writeAuditLog.isEmpty
+        }
+        XCTAssertEqual(state.writeAuditLog.first?.action, "Helm Rollback")
+        XCTAssertEqual(state.writeAuditLog.first?.status, "Blocked")
+        XCTAssertTrue(state.writeAuditLog.first?.message.contains("did not run Helm automatically") == true)
     }
 
     @MainActor
@@ -2232,6 +3065,14 @@ private struct CancelledFileExporter: FileExporting {
 private struct EmptyKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         []
+    }
+}
+
+private func restoreUserDefaultsValue(_ value: Any?, forKey key: String) {
+    if let value {
+        UserDefaults.standard.set(value, forKey: key)
+    } else {
+        UserDefaults.standard.removeObject(forKey: key)
     }
 }
 

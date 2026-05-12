@@ -862,6 +862,17 @@ public struct RuneRootView: View {
                                 viewModel.setContext(context)
                             }
                         }
+                        if let context = viewModel.state.selectedContext {
+                            Divider()
+                            Button {
+                                viewModel.toggleProductionMark(for: context)
+                            } label: {
+                                Label(
+                                    viewModel.isManuallyMarkedProduction(context) ? "Unmark Production" : "Mark as Production",
+                                    systemImage: viewModel.isManuallyMarkedProduction(context) ? "shield.slash" : "exclamationmark.shield"
+                                )
+                            }
+                        }
                     }
 
                     Menu(namespaceMenuTitle) {
@@ -943,8 +954,10 @@ public struct RuneRootView: View {
                             viewModel.cancelPendingWriteAction()
                         }
 
-                        Button("Copy kubectl command") {
-                            viewModel.copyPendingWriteActionKubectlCommand()
+                        if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
+                            Button("Copy kubectl command") {
+                                viewModel.copyPendingWriteActionKubectlCommand()
+                            }
                         }
                     } message: {
                         Text(pendingWriteActionDialogMessage)
@@ -975,8 +988,10 @@ public struct RuneRootView: View {
                     viewModel.cancelPendingWriteAction()
                 }
 
-                Button("Copy kubectl command") {
-                    viewModel.copyPendingWriteActionKubectlCommand()
+                if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
+                    Button("Copy kubectl command") {
+                        viewModel.copyPendingWriteActionKubectlCommand()
+                    }
                 }
             } message: {
                 Text(pendingWriteActionDialogMessage)
@@ -1840,6 +1855,12 @@ public struct RuneRootView: View {
                         .font(.body.weight(.medium))
                         .lineLimit(1)
                         .help(context.name)
+                    if viewModel.isProductionContext(context) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .help(viewModel.isManuallyMarkedProduction(context) ? "Marked as production" : "Production context detected")
+                    }
                     Spacer()
                 }
                 .padding(.horizontal, 8)
@@ -1847,6 +1868,16 @@ public struct RuneRootView: View {
                 .runeSidebarSelection(isSelected: viewModel.state.selectedContext == context)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    viewModel.toggleProductionMark(for: context)
+                } label: {
+                    Label(
+                        viewModel.isManuallyMarkedProduction(context) ? "Unmark Production" : "Mark as Production",
+                        systemImage: viewModel.isManuallyMarkedProduction(context) ? "shield.slash" : "exclamationmark.shield"
+                    )
+                }
+            }
 
             Button {
                 viewModel.toggleFavorite(for: context)
@@ -2750,120 +2781,59 @@ public struct RuneRootView: View {
                     .disabled(!viewModel.canPageOperatorResourcesForward)
                 }
 
-                ForEach(viewModel.pagedOperatorResources) { resource in
-                    Button {
+                AppKitOperatorResourceListView(
+                    resources: viewModel.pagedOperatorResources,
+                    selectedResourceID: viewModel.state.selectedOperatorResource?.id,
+                    sortColumn: viewModel.operatorResourceSortColumn,
+                    sortAscending: viewModel.operatorResourceSortAscending,
+                    isFavorite: viewModel.isFavoriteOperatorResource,
+                    onSelectResource: { resource in
                         viewModel.selectOperatorResource(resource)
                         genericResourceManifestTab = .describe
                         yamlManifestIsEditing = false
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text("\(resource.family) · \(resource.kind)")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                if viewModel.isFavoriteOperatorResource(resource) {
-                                    Image(systemName: "star.fill")
-                                        .font(.caption2)
-                                        .foregroundStyle(.yellow)
-                                        .accessibilityLabel("Favorite")
-                                }
-                                Spacer()
-                                Text(resource.status)
-                                    .font(.caption.weight(.semibold))
-                                    .lineLimit(1)
-                            }
-                            Text(resource.name)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                                .help(resource.name)
-                            if !resource.message.isEmpty {
-                                Text(resource.message)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .help(resource.message)
-                            }
-                            HStack(spacing: 6) {
-                                operatorPinnedColumn(resource.namespace ?? "Cluster", systemImage: "square.stack.3d.up")
-                                operatorPinnedColumn(resource.status, systemImage: "checkmark.seal")
-                                operatorPinnedColumn(resource.apiPath, systemImage: "curlybraces")
-                            }
-                        }
-                        .runeListRowCard(isSelected: viewModel.state.selectedOperatorResource == resource, verticalPadding: 5)
+                    },
+                    onToggleSort: viewModel.toggleOperatorResourceSort,
+                    onToggleFavorite: viewModel.toggleFavoriteOperatorResource,
+                    onOpenDescribe: { resource in
+                        viewModel.selectOperatorResource(resource)
+                        genericResourceManifestTab = .describe
+                        yamlManifestIsEditing = false
+                    },
+                    onOpenYAML: { resource in
+                        viewModel.selectOperatorResource(resource)
+                        genericResourceManifestTab = .yaml
+                        yamlManifestIsEditing = false
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button {
-                            viewModel.toggleFavoriteOperatorResource(resource)
-                        } label: {
-                            Label(
-                                viewModel.isFavoriteOperatorResource(resource) ? "Remove Favorite" : "Favorite Resource",
-                                systemImage: viewModel.isFavoriteOperatorResource(resource) ? "star.slash" : "star"
-                            )
-                        }
-                        copyMenuItem(value: resource.name, label: "\(resource.kind) name")
-                        if let namespace = resource.namespace {
-                            copyMenuItem(value: namespace, label: "namespace")
-                        }
-                    }
-                }
+                )
+                .frame(height: operatorResourceListHeight(count: viewModel.pagedOperatorResources.count))
             }
         }
         .padding(.bottom, 8)
     }
 
-    private func operatorPinnedColumn(_ value: String, systemImage: String) -> some View {
-        Label(value, systemImage: systemImage)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
+    private func operatorResourceListHeight(count: Int) -> CGFloat {
+        min(max(170, CGFloat(count) * 38 + 42), 520)
     }
 
     private var eventsPane: some View {
-        List(viewModel.visibleEvents) { event in
-            Button {
-                viewModel.selectEvent(event)
-            } label: {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(event.reason)
-                                .font(.subheadline.weight(.bold))
-                            Spacer()
-                            Text(event.type)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(event.type.lowercased() == "warning" ? .orange : .green)
-                        }
-
-                        Text(event.objectName)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-
-                        Text(event.message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-                .runeListRowCard(isSelected: viewModel.state.selectedEvent == event)
+        Group {
+            if viewModel.visibleEvents.isEmpty {
+                resourceFilterEmptyState(kindTitle: "Events", totalCount: 0)
+            } else {
+                AppKitEventListView(
+                    events: viewModel.visibleEvents,
+                    selectedEventID: viewModel.state.selectedEvent?.id,
+                    sortColumn: viewModel.eventSortColumn,
+                    sortAscending: viewModel.eventSortAscending,
+                    onSelectEvent: viewModel.selectEvent,
+                    onToggleSort: viewModel.toggleEventSort
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .help(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "")
             }
-            .buttonStyle(.plain)
-            .help(eventHint(for: event))
-            .contextMenu {
-                copyMenuItem(value: event.objectName, label: "object name")
-                if let namespace = event.involvedNamespace {
-                    copyMenuItem(value: namespace, label: "namespace")
-                }
-            }
-            .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
-            .listRowBackground(Color.clear)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .padding(.horizontal, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var sectionPlaceholder: some View {
@@ -3201,6 +3171,10 @@ public struct RuneRootView: View {
                                                     Text("Revision \(entry.revision)")
                                                         .font(.subheadline.weight(.semibold))
                                                     Spacer()
+                                                    Button("Rollback") {
+                                                        viewModel.requestHelmRollback(revision: entry.revision)
+                                                    }
+                                                    .disabled(!viewModel.canApplyClusterMutations)
                                                     Text(entry.status.capitalized)
                                                         .font(.caption.weight(.semibold))
                                                         .foregroundStyle(statusColor(for: entry.status))
@@ -3594,6 +3568,21 @@ public struct RuneRootView: View {
                         inspectorInfoRow("Status", value: resource.secondaryText, symbol: "text.alignleft")
                     }
 
+                    if resource.kind == .statefulSet || resource.kind == .daemonSet {
+                        HStack(spacing: 10) {
+                            TextField("Revision (optional)", text: $viewModel.rolloutRevisionInput)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 160)
+
+                            Button("Rollback") {
+                                viewModel.requestRolloutUndoSelectedController()
+                            }
+                            .disabled(!viewModel.canApplyClusterMutations)
+
+                            Spacer()
+                        }
+                    }
+
                     RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
                         ForEach(GenericResourceManifestTab.allCases) { tab in
                             Text(tab.title).tag(tab)
@@ -3802,7 +3791,9 @@ public struct RuneRootView: View {
             validationIssues: viewModel.state.resourceYAMLValidationIssues,
             isValidating: viewModel.state.isValidatingResourceYAML,
             canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
+            canReapplySnapshot: viewModel.canReapplyResourceYAMLBaseline,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onReapplySnapshot: { viewModel.requestReapplyResourceYAMLBaseline() },
             onUndoEdit: { viewModel.undoResourceYAMLEdit() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
             onImport: { viewModel.importResourceYAMLFromFile() },
@@ -3824,9 +3815,11 @@ public struct RuneRootView: View {
             isValidating: viewModel.state.isValidatingResourceYAML,
             statusText: manifestStatusText,
             canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
+            canReapplySnapshot: viewModel.canReapplyResourceYAMLBaseline,
             isInlineEditing: $yamlManifestIsEditing,
             inlineEditorImplementation: resolvedManifestInlineEditorImplementation,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onReapplySnapshot: { viewModel.requestReapplyResourceYAMLBaseline() },
             onOpenEditor: { openYAMLEditorSheet() },
             onUndoEdit: { viewModel.undoResourceYAMLEdit() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
@@ -4041,6 +4034,7 @@ public struct RuneRootView: View {
             },
             onSend: { viewModel.sendTerminalSessionInput() },
             onSendControlSequence: { text in viewModel.sendTerminalControlSequence(text) },
+            onResizeSession: { id, columns, rows in viewModel.resizeTerminalSession(id: id, columns: columns, rows: rows) },
             onDisconnect: { viewModel.stopTerminalSession() },
             onSelectSession: { id in viewModel.selectTerminalSession(id: id) },
             onCloseSession: { id in viewModel.closeTerminalSession(id: id) },

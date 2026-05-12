@@ -110,10 +110,11 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         let initBlock = String(contents[initRange.lowerBound..<bodyRange.lowerBound])
         XCTAssertTrue(initBlock.contains("RuneSettingsKeys.registerDefaults()"))
         XCTAssertTrue(initBlock.contains("RuneLaunchEnvironment.applyProcessOverrides()"))
-        XCTAssertTrue(initBlock.contains("_viewModel = StateObject(wrappedValue: RuneAppViewModel())"))
+        XCTAssertTrue(initBlock.contains("_viewModel = StateObject("))
+        XCTAssertTrue(initBlock.contains("contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore()"))
         XCTAssertLessThan(
             initBlock.range(of: "RuneSettingsKeys.registerDefaults()")!.lowerBound,
-            initBlock.range(of: "_viewModel = StateObject(wrappedValue: RuneAppViewModel())")!.lowerBound
+            initBlock.range(of: "_viewModel = StateObject(")!.lowerBound
         )
     }
 }

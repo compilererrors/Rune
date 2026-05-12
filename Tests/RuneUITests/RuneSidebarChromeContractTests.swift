@@ -92,6 +92,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                     onClearInactivePortForwards: {},
                     onSend: {},
                     onSendControlSequence: { _ in },
+                    onResizeSession: { _, _, _ in },
                     onDisconnect: {},
                     onSelectSession: { _ in },
                     onCloseSession: { _ in },
@@ -157,6 +158,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 onReconnectSession: { _, _, _ in },
                 onSend: {},
                 onSendControlSequence: { _ in },
+                onResizeSession: { _, _, _ in },
                 onDisconnect: {},
                 onSelectSession: { _ in },
                 onCloseSession: { _ in },
@@ -772,6 +774,27 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("try await kubeClient.writeToPodTerminalSession(id: session.id, text: text)"))
     }
 
+    func testTerminalSurfaceReportsStableGridSizeForResizePropagation() throws {
+        let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
+        let workspaceSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
+
+        let grid = TerminalTranscriptSurface.terminalGridSize(
+            surfaceSize: CGSize(width: 824, height: 342),
+            fontSize: 13
+        )
+
+        XCTAssertEqual(grid.columns, 99)
+        XCTAssertEqual(grid.rows, 18)
+        XCTAssertTrue(shellSource.contains("onResizeSession(session.id, columns, rows)"))
+        XCTAssertTrue(workspaceSource.contains("let onResizeSession: (String, Int, Int) -> Void"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.resizeTerminalSession(id: id, columns: columns, rows: rows)"))
+        XCTAssertTrue(viewModelSource.contains("public func resizeTerminalSession(id: String, columns: Int, rows: Int)"))
+        XCTAssertTrue(kubeClientSource.contains("public func resizePodTerminalSession(id: String, columns: Int, rows: Int) async throws"))
+    }
+
     func testTerminalAndPortForwardExposeCopyKubectlCommands() throws {
         let terminalViewSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
         let portForwardSource = try String(contentsOfFile: terminalPortForwardPanelViewPath, encoding: .utf8)
@@ -796,6 +819,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 command: "printenv | sort"
             ),
             "kubectl --context dev --namespace default exec -it api -- sh -lc 'printenv | sort'"
+        )
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.exec(
+                contextName: "dev",
+                namespace: "default",
+                podName: "api",
+                containerName: "sidecar",
+                command: "printenv | sort"
+            ),
+            "kubectl --context dev --namespace default exec -it api --container sidecar -- sh -lc 'printenv | sort'"
         )
         XCTAssertEqual(
             TerminalKubectlCommandBuilder.portForward(
@@ -870,6 +903,36 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(preferencesSource.contains("Slider("))
         XCTAssertTrue(preferencesSource.contains("Button(\"Reset\")"))
         XCTAssertTrue(preferencesSource.contains("terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault"))
+    }
+
+    func testPreferencesExposeWriteAndRollbackSafetySettings() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
+        let restClientSource = try String(contentsOfFile: kubernetesRESTClientPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequireApplyDryRun"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequireRolloutDryRun"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequireHelmDryRun"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyShowRollbackPlan"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequireCopyableCommand"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequirePostActionVerification"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyRequireProductionSecondConfirmation"))
+        XCTAssertTrue(preferencesSource.contains("case safety"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Write safety\")"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Rollback safety\")"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.writeSafetyRequireApplyDryRun)"))
+        XCTAssertTrue(rootViewSource.contains("if !viewModel.pendingWriteActionKubectlCommand.isEmpty"))
+        XCTAssertTrue(viewModelSource.contains("runeWriteSafetyRequireRolloutDryRun"))
+        XCTAssertTrue(viewModelSource.contains("pendingRollbackPlan"))
+        XCTAssertTrue(viewModelSource.contains("requestHelmRollback(revision:"))
+        XCTAssertTrue(viewModelSource.contains("Helm dry-run is not available"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.requestHelmRollback(revision: entry.revision)"))
+        XCTAssertTrue(kubeClientSource.contains("dryRunRollbackDeploymentRollout"))
+        XCTAssertTrue(restClientSource.contains("dryRun: Bool = false"))
+        XCTAssertTrue(restClientSource.contains("dryRun=All"))
     }
 
     func testFontSizePreferenceScalesRootInterfaceAndManifestText() throws {
@@ -1515,6 +1578,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("updateHelmSortIndicator"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)"))
         XCTAssertFalse(rootViewSource.contains("ForEach(viewModel.visibleHelmReleases)"))
+        XCTAssertTrue(rootViewSource.contains("AppKitEventListView("))
+        XCTAssertTrue(appKitPodTableSource.contains("struct AppKitEventListView"))
+        XCTAssertTrue(appKitPodTableSource.contains("private enum EventColumn"))
+        XCTAssertTrue(appKitPodTableSource.contains("EventListSortColumn"))
+        XCTAssertTrue(rootViewSource.contains("sortColumn: viewModel.eventSortColumn"))
+        XCTAssertTrue(rootViewSource.contains("sortAscending: viewModel.eventSortAscending"))
+        XCTAssertTrue(rootViewSource.contains("onToggleSort: viewModel.toggleEventSort"))
+        XCTAssertTrue(appKitPodTableSource.contains("updateEventSortIndicator"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertFalse(rootViewSource.contains("List(viewModel.visibleEvents)"))
         XCTAssertTrue(appKitPodTableSource.contains("Open Unified Logs"))
         XCTAssertTrue(rootViewSource.contains("Open YAML"))
         XCTAssertTrue(rootViewSource.contains("Describe"))
@@ -1677,8 +1750,27 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("Destructive production actions require a second confirmation"))
         XCTAssertTrue(confirmBlock.contains("isProductionContext"))
         XCTAssertTrue(confirmBlock.contains("action.isDestructive"))
+        XCTAssertTrue(confirmBlock.contains("runeWriteSafetyRequireProductionSecondConfirmation"))
         XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation != action"))
         XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation = action"))
+    }
+
+    func testContextMenuExposesManualProductionMarking() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
+        let preferencesSource = try String(contentsOfFile: contextPreferencesStorePath, encoding: .utf8)
+
+        XCTAssertTrue(preferencesSource.contains("loadManualProductionContextIDs"))
+        XCTAssertTrue(preferencesSource.contains("rune.manual.production.contexts"))
+        XCTAssertTrue(stateSource.contains("manualProductionContextIDs"))
+        XCTAssertTrue(viewModelSource.contains("public func toggleProductionMark(for context: KubeContext)"))
+        XCTAssertTrue(viewModelSource.contains("public func isManuallyMarkedProduction(_ context: KubeContext)"))
+        XCTAssertTrue(rootViewSource.contains("Mark as Production"))
+        XCTAssertTrue(rootViewSource.contains("Unmark Production"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.isProductionContext(context)"))
+        XCTAssertTrue(rootViewSource.contains("Production context detected"))
+        XCTAssertTrue(rootViewSource.contains("Marked as production"))
     }
 
     func testCustomResourceBrowserUsesPaginationAndPinnedColumns() throws {
@@ -1688,9 +1780,12 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(viewModelSource.contains("private static let operatorResourcePageSize = 40"))
         XCTAssertTrue(viewModelSource.contains("public var pagedOperatorResources"))
-        XCTAssertTrue(rootViewSource.contains("ForEach(viewModel.pagedOperatorResources)"))
-        XCTAssertTrue(rootViewSource.contains("operatorPinnedColumn(resource.namespace ?? \"Cluster\""))
-        XCTAssertTrue(rootViewSource.contains("operatorPinnedColumn(resource.apiPath"))
+        XCTAssertTrue(viewModelSource.contains("OperatorResourceListSortColumn"))
+        XCTAssertTrue(viewModelSource.contains("toggleOperatorResourceSort"))
+        XCTAssertTrue(rootViewSource.contains("AppKitOperatorResourceListView("))
+        XCTAssertTrue(rootViewSource.contains("resources: viewModel.pagedOperatorResources"))
+        XCTAssertTrue(rootViewSource.contains("sortColumn: viewModel.operatorResourceSortColumn"))
+        XCTAssertTrue(rootViewSource.contains("onToggleSort: viewModel.toggleOperatorResourceSort"))
         XCTAssertTrue(kubeClientSource.contains(".prefix(48)"))
         XCTAssertTrue(kubeClientSource.contains(".prefix(16)"))
         XCTAssertTrue(kubeClientSource.contains("if output.count >= 500 { return output }"))
@@ -1879,6 +1974,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalKubectlCommandBuilder.swift").path
     }
 
+    private var runePreferencesViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift").path
+    }
+
     private var kubernetesClientPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -1886,6 +1990,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneKube/KubernetesClient.swift").path
+    }
+
+    private var kubernetesRESTClientPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneKube/KubernetesAPI/KubernetesRESTClient.swift").path
     }
 
     private var runeGlassShellPath: String {
@@ -1931,6 +2044,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneCore/State/RuneAppState.swift").path
+    }
+
+    private var contextPreferencesStorePath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Services/ContextPreferencesStore.swift").path
     }
 
     private var runeSettingsKeysPath: String {

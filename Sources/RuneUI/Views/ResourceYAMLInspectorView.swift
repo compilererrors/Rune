@@ -55,9 +55,11 @@ struct ResourceYAMLInspectorPane: View {
     let isValidating: Bool
     let statusText: String
     let canUndoEdit: Bool
+    let canReapplySnapshot: Bool
     @Binding var isInlineEditing: Bool
     let inlineEditorImplementation: ManifestInlineEditorImplementation
     let onApply: () -> Void
+    let onReapplySnapshot: () -> Void
     let onOpenEditor: () -> Void
     let onUndoEdit: () -> Void
     let onRevert: () -> Void
@@ -88,6 +90,10 @@ struct ResourceYAMLInspectorPane: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
+
+                    Button("Re-apply Snapshot", action: onReapplySnapshot)
+                        .buttonStyle(.bordered)
+                        .disabled(!canReapplySnapshot)
 
                     if inlineEditorImplementation.supportsInlineEditing {
                         Button(isInlineEditing ? "Done" : "Quick Edit") {
@@ -296,7 +302,9 @@ struct ResourceYAMLEditorSheetView: View {
     let validationIssues: [YAMLValidationIssue]
     let isValidating: Bool
     let canUndoEdit: Bool
+    let canReapplySnapshot: Bool
     let onApply: () -> Void
+    let onReapplySnapshot: () -> Void
     let onUndoEdit: () -> Void
     let onRevert: () -> Void
     let onImport: () -> Void
@@ -334,6 +342,10 @@ struct ResourceYAMLEditorSheetView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing this sheet does not." : "No local YAML changes to apply.")
+
+                    Button("Re-apply Snapshot", action: onReapplySnapshot)
+                        .buttonStyle(.bordered)
+                        .disabled(!canReapplySnapshot)
 
                     Button("Revert", action: onRevert)
                         .buttonStyle(.bordered)

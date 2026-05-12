@@ -64,15 +64,16 @@ struct AppKitTripleSplitWidthState {
         actualSidebarWidth: CGFloat,
         actualDetailWidth: CGFloat,
         containerWidth: CGFloat
-    ) {
-        guard hasAppliedInitialRestore else { return }
-        guard abs(containerWidth - lastAppliedContainerWidth) <= 1 else { return }
+    ) -> Bool {
+        guard hasAppliedInitialRestore else { return false }
+        guard abs(containerWidth - lastAppliedContainerWidth) <= 1 else { return false }
 
         desiredSidebarWidth = actualSidebarWidth
         desiredDetailWidth = actualDetailWidth
         pendingUserDrivenSidebarWidth = actualSidebarWidth
         pendingUserDrivenDetailWidth = actualDetailWidth
         needsWidthRestore = false
+        return true
     }
 
     mutating func noteRestoreAttempt(containerWidth: CGFloat) {
@@ -268,17 +269,15 @@ extension AppKitTripleSplitView {
 
         override func splitViewDidResizeSubviews(_ notification: Notification) {
             guard !pendingRestore, !isUpdatingHostedContent else {
-                guard widthState.hasAppliedInitialRestore else { return }
-                scheduleWidthReport()
                 return
             }
 
-            widthState.noteUserResize(
+            let acceptedUserResize = widthState.noteUserResize(
                 actualSidebarWidth: sidebarController.view.frame.width,
                 actualDetailWidth: detailController.view.frame.width,
                 containerWidth: splitView.bounds.width
             )
-            guard widthState.hasAppliedInitialRestore else { return }
+            guard acceptedUserResize else { return }
             scheduleWidthReport()
         }
 
@@ -328,7 +327,6 @@ extension AppKitTripleSplitView {
             let detailNeedsResize = detailVisible && abs(actualDetail - detail) > 1
             guard sidebarNeedsResize || detailNeedsResize else {
                 widthState.noteRestoreSettled()
-                reportWidthsIfNeeded()
                 return
             }
 

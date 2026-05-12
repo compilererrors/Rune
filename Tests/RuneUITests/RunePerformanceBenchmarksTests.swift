@@ -966,6 +966,10 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     checksum += genericWidths.selection + genericWidths.name + genericWidths.primary + genericWidths.secondary + genericWidths.namespace + genericWidths.favorite
                     let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
                     checksum += helmWidths.name + helmWidths.status + helmWidths.namespace + helmWidths.revision + helmWidths.chart + helmWidths.appVersion
+                    let eventWidths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
+                    checksum += eventWidths.reason + eventWidths.type + eventWidths.object + eventWidths.namespace + eventWidths.lastSeen + eventWidths.message
+                    let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
+                    checksum += operatorWidths.name + operatorWidths.family + operatorWidths.kind + operatorWidths.namespace + operatorWidths.status + operatorWidths.apiPath + operatorWidths.favorite
                 }
             }
             XCTAssertGreaterThan(checksum, 0)
@@ -1034,6 +1038,41 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertEqual(helmTotal, max(helmUsableWidth, helmMinimumTotal), accuracy: 0.5)
             XCTAssertLessThanOrEqual(helmTotal, RuneAppKitResourceListLayout.helmMaximumContentWidth)
 
+            let eventWidths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
+            let eventPrimaryTotal = eventWidths.reason + eventWidths.type + eventWidths.object
+            let eventMetadataTotal = eventWidths.namespace + eventWidths.lastSeen + eventWidths.message
+            let eventTotal = eventPrimaryTotal + eventMetadataTotal
+            let eventMinimumTotal = RuneAppKitResourceListLayout.eventMinimumReasonColumnWidth
+                + RuneAppKitResourceListLayout.eventTypeColumnWidth
+                + RuneAppKitResourceListLayout.eventObjectColumnWidth
+                + RuneAppKitResourceListLayout.eventNamespaceColumnWidth
+                + RuneAppKitResourceListLayout.eventLastSeenColumnWidth
+                + RuneAppKitResourceListLayout.eventMessageColumnWidth
+            let eventUsableWidth = min(
+                RuneAppKitResourceListLayout.eventMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.eventTrailingBreathingRoom
+            )
+            XCTAssertEqual(eventTotal, max(eventUsableWidth, eventMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(eventTotal, RuneAppKitResourceListLayout.eventMaximumContentWidth)
+
+            let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
+            let operatorPrimaryTotal = operatorWidths.name + operatorWidths.family + operatorWidths.kind
+            let operatorMetadataTotal = operatorWidths.namespace + operatorWidths.status + operatorWidths.apiPath + operatorWidths.favorite
+            let operatorTotal = operatorPrimaryTotal + operatorMetadataTotal
+            let operatorMinimumTotal = RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth
+                + RuneAppKitResourceListLayout.operatorFamilyColumnWidth
+                + RuneAppKitResourceListLayout.operatorKindColumnWidth
+                + RuneAppKitResourceListLayout.operatorNamespaceColumnWidth
+                + RuneAppKitResourceListLayout.operatorStatusColumnWidth
+                + RuneAppKitResourceListLayout.operatorAPIPathColumnWidth
+                + RuneAppKitResourceListLayout.operatorFavoriteColumnWidth
+            let operatorUsableWidth = min(
+                RuneAppKitResourceListLayout.operatorMaximumContentWidth,
+                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.operatorTrailingBreathingRoom
+            )
+            XCTAssertEqual(operatorTotal, max(operatorUsableWidth, operatorMinimumTotal), accuracy: 0.5)
+            XCTAssertLessThanOrEqual(operatorTotal, RuneAppKitResourceListLayout.operatorMaximumContentWidth)
+
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.deploymentReplicaColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Ready", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceClusterIPColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Cluster IP", reservesSortIndicator: true))
@@ -1045,6 +1084,15 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmRevisionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Rev", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmChartColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Chart", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmAppVersionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "App", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventObjectColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Object", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventLastSeenColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Last Seen", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorFamilyColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Family", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorKindColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Kind", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorStatusColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorAPIPathColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "API Path", reservesSortIndicator: true))
         }
 
         let wideDeployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: 1320)
@@ -1056,6 +1104,16 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThanOrEqual(wideGeneric.primary, 144)
         XCTAssertLessThanOrEqual(wideGeneric.secondary, 164)
         XCTAssertLessThanOrEqual(wideGeneric.namespace, 132)
+
+        let wideEvents = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: 1320)
+        XCTAssertGreaterThanOrEqual(wideEvents.reason, 300)
+        XCTAssertLessThanOrEqual(wideEvents.type, 120)
+        XCTAssertLessThanOrEqual(wideEvents.namespace, 140)
+
+        let wideOperators = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: 1320)
+        XCTAssertGreaterThanOrEqual(wideOperators.name, 280)
+        XCTAssertLessThanOrEqual(wideOperators.family, 140)
+        XCTAssertLessThanOrEqual(wideOperators.status, 130)
 
         let started = ContinuousClock.now
         var checksum: CGFloat = 0
@@ -1069,6 +1127,10 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 checksum += generic.selection + generic.name + generic.primary + generic.secondary + generic.namespace + generic.favorite
                 let helm = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
                 checksum += helm.name + helm.status + helm.namespace + helm.revision + helm.chart + helm.appVersion
+                let event = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
+                checksum += event.reason + event.type + event.object + event.namespace + event.lastSeen + event.message
+                let operatorResource = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
+                checksum += operatorResource.name + operatorResource.family + operatorResource.kind + operatorResource.namespace + operatorResource.status + operatorResource.apiPath + operatorResource.favorite
             }
         }
         let elapsed = started.duration(to: .now)
@@ -1194,7 +1256,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsed = started.duration(to: .now)
 
         XCTAssertEqual(visible.count, 5_000)
-        XCTAssertEqual(visible.prefix(3).map(\.cpuDisplay), ["249m", "249m", "249m"])
+        XCTAssertEqual(visible.prefix(3).map(\.name), ["pod-0999", "pod-1998", "pod-2997"])
         XCTAssertLessThan(seconds(elapsed), 0.35, "KPI: numeric pod CPU sorting should stay below 350ms for 5,000 rows in debug.")
     }
 
@@ -1226,6 +1288,42 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(visible.count, 2_000)
         XCTAssertEqual(visible.prefix(3), ["namespace-0000", "namespace-0200", "namespace-0400"])
         XCTAssertLessThan(seconds(elapsed), 0.2)
+    }
+
+    func testFileBackedContextPreferencesLoadBenchmarkKPI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RunePerformanceBenchmarksTests.contextPreferences.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+        let store = FileBackedContextPreferencesStore(url: url)
+        store.saveFavoriteContextNames((0..<100).map { "context-\(String(format: "%03d", $0))" }.reduce(into: Set<String>()) { $0.insert($1) })
+        store.saveFavoriteResourceIDs((0..<5_000).map { "context-\($0 % 10)|deployment|namespace-\($0 % 50)|resource-\(String(format: "%04d", $0))" }.reduce(into: Set<String>()) { $0.insert($1) })
+        store.saveFavoriteNamespaceIDs((0..<500).map { "context-\($0 % 10)|namespace|namespace-\(String(format: "%03d", $0))" }.reduce(into: Set<String>()) { $0.insert($1) })
+        store.saveManualProductionContextIDs(["context-001", "context-009"])
+        for index in 0..<20 {
+            store.saveManualNamespaces(["default", "namespace-\(index)"], for: "context-\(String(format: "%03d", index))")
+            store.savePreferredNamespace("namespace-\(index)", for: "context-\(String(format: "%03d", index))")
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let reloaded = FileBackedContextPreferencesStore(url: url)
+            _ = reloaded.loadFavoriteContextNames()
+            _ = reloaded.loadFavoriteResourceIDs()
+            _ = reloaded.loadFavoriteNamespaceIDs()
+            _ = reloaded.loadManualProductionContextIDs()
+            _ = reloaded.loadManualNamespaces(for: "context-005")
+            _ = reloaded.loadPreferredNamespace(for: "context-005")
+        }
+
+        let started = ContinuousClock.now
+        let reloaded = FileBackedContextPreferencesStore(url: url)
+        XCTAssertEqual(reloaded.loadFavoriteResourceIDs().count, 5_000)
+        XCTAssertEqual(reloaded.loadFavoriteNamespaceIDs().count, 500)
+        XCTAssertEqual(reloaded.loadPreferredNamespace(for: "context-005"), "namespace-5")
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(seconds(elapsed), 0.08, "KPI: preferences load should stay below 80ms for a realistic local app-state file in debug.")
     }
 
     @MainActor
@@ -1566,6 +1664,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     onReconnectSession: { _, _, _ in },
                     onSend: {},
                     onSendControlSequence: { _ in },
+                    onResizeSession: { _, _, _ in },
                     onDisconnect: {},
                     onSelectSession: { _ in },
                     onCloseSession: { _ in },
@@ -1594,6 +1693,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 onReconnectSession: { _, _, _ in },
                 onSend: {},
                 onSendControlSequence: { _ in },
+                onResizeSession: { _, _, _ in },
                 onDisconnect: {},
                 onSelectSession: { _ in },
                 onCloseSession: { _ in },

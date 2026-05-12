@@ -9,11 +9,13 @@ struct TerminalTranscriptSurface: View {
     let resetID: String
     let fontSize: CGFloat
     var onPasteText: (String) -> Void = { _ in }
+    var onResizeGrid: (Int, Int) -> Void = { _, _ in }
     @State private var isSearchVisible = false
     @State private var searchQuery = ""
     @State private var searchMatchCase = false
     @State private var selectedSearchMatchIndex = 0
     @State private var isLargeTextPinnedToBottom = true
+    @State private var lastReportedGridSize: (columns: Int, rows: Int)?
 
     private var shouldUseLargeTextSurface: Bool {
         text.utf8.count > 250_000
@@ -59,6 +61,20 @@ struct TerminalTranscriptSurface: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(height: height)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        reportGridSize(proxy.size)
+                    }
+                    .onChange(of: proxy.size) { _, newSize in
+                        reportGridSize(newSize)
+                    }
+                    .onChange(of: fontSize) { _, _ in
+                        reportGridSize(proxy.size)
+                    }
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if isSearchVisible {
                 searchBar(searchIndex: model.searchIndex, resolvedSearchMatchIndex: resolvedSearchMatchIndex)
@@ -182,6 +198,26 @@ struct TerminalTranscriptSurface: View {
         let count = searchIndex.ranges.count
         guard count > 0 else { return }
         selectedSearchMatchIndex = (resolvedSearchMatchIndex + delta + count) % count
+    }
+
+    private func reportGridSize(_ size: CGSize) {
+        let grid = TerminalTranscriptSurface.terminalGridSize(surfaceSize: size, fontSize: fontSize)
+        guard lastReportedGridSize?.columns != grid.columns || lastReportedGridSize?.rows != grid.rows else {
+            return
+        }
+        lastReportedGridSize = grid
+        onResizeGrid(grid.columns, grid.rows)
+    }
+
+    nonisolated static func terminalGridSize(surfaceSize: CGSize, fontSize: CGFloat) -> (columns: Int, rows: Int) {
+        let innerWidth = max(0, surfaceSize.width - 24)
+        let innerHeight = max(0, surfaceSize.height - 20)
+        let characterWidth = max(1, fontSize * 0.62)
+        let lineHeight = max(1, fontSize * 1.34)
+        return (
+            columns: max(20, Int(innerWidth / characterWidth)),
+            rows: max(4, Int(innerHeight / lineHeight))
+        )
     }
 }
 

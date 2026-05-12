@@ -93,6 +93,8 @@ public enum PendingWriteAction: Equatable, Sendable {
     case scale(deploymentName: String, replicas: Int)
     case rolloutRestart(deploymentName: String)
     case rolloutUndo(deploymentName: String, revision: Int?)
+    case controllerRolloutUndo(kind: KubeResourceKind, name: String, revision: Int?)
+    case helmRollback(releaseName: String, namespace: String, revision: Int, wait: Bool, timeout: String, cleanupOnFail: Bool)
     case exec(podName: String, command: [String])
     case createJobFromCronJob(cronJobName: String, jobName: String)
 
@@ -113,6 +115,13 @@ public enum PendingWriteAction: Equatable, Sendable {
                 return "Rollback deployment \(deploymentName) to revision \(revision)?"
             }
             return "Rollback deployment \(deploymentName) to previous revision?"
+        case let .controllerRolloutUndo(kind, name, revision):
+            if let revision {
+                return "Copy rollback command for \(kind.kubernetesResourceName) \(name) to revision \(revision)?"
+            }
+            return "Copy rollback command for \(kind.kubernetesResourceName) \(name) to previous revision?"
+        case let .helmRollback(releaseName, namespace, revision, _, _, _):
+            return "Rollback Helm release \(namespace)/\(releaseName) to revision \(revision)?"
         case let .exec(podName, command):
             return "Run command in pod \(podName)? (\(command.joined(separator: " ")))"
         case let .createJobFromCronJob(cronJobName, _):
@@ -139,6 +148,12 @@ public enum PendingWriteAction: Equatable, Sendable {
             return "Pods in the deployment will be recreated according to rollout strategy."
         case .rolloutUndo:
             return "Deployment rollout will be reverted to an earlier revision."
+        case .controllerRolloutUndo:
+            return "Rollout rollback command preview only. Rune will not run this controller rollback automatically yet."
+        case let .helmRollback(_, _, revision, wait, timeout, cleanupOnFail):
+            let waitText = wait ? "wait for Kubernetes resources" : "not wait for Kubernetes resources"
+            let cleanupText = cleanupOnFail ? "cleanup-on-fail enabled" : "cleanup-on-fail disabled"
+            return "Helm rollback command preview only. Rune will not run Helm automatically yet.\n\nTarget revision: \(revision)\nOptions: \(waitText), timeout \(timeout), \(cleanupText)."
         case .exec:
             return "This runs a command inside the selected pod."
         case let .createJobFromCronJob(_, jobName):
@@ -154,6 +169,8 @@ public enum PendingWriteAction: Equatable, Sendable {
         case .scale: return "Scale"
         case .rolloutRestart: return "Restart"
         case .rolloutUndo: return "Rollback"
+        case .controllerRolloutUndo: return "Copy Command"
+        case .helmRollback: return "Copy Command"
         case .exec: return "Run"
         case .createJobFromCronJob: return "Create Job"
         }
@@ -161,8 +178,8 @@ public enum PendingWriteAction: Equatable, Sendable {
 
     var isDestructive: Bool {
         switch self {
-        case .delete, .deleteMany: return true
-        case .apply, .scale, .rolloutRestart, .rolloutUndo, .exec, .createJobFromCronJob: return false
+        case .delete, .deleteMany, .rolloutUndo, .controllerRolloutUndo, .helmRollback: return true
+        case .apply, .scale, .rolloutRestart, .exec, .createJobFromCronJob: return false
         }
     }
 
@@ -203,6 +220,25 @@ public enum PendingWriteAction: Equatable, Sendable {
             var parts = namespaced + ["rollout", "undo", "deployment", deploymentName]
             if let revision {
                 parts.append("--to-revision=\(revision)")
+            }
+            return Self.shellCommand(parts)
+        case let .controllerRolloutUndo(kind, name, revision):
+            var parts = namespaced + ["rollout", "undo", kind.kubernetesResourceName, name]
+            if let revision {
+                parts.append("--to-revision=\(revision)")
+            }
+            return Self.shellCommand(parts)
+        case let .helmRollback(releaseName, namespace, revision, wait, timeout, cleanupOnFail):
+            var parts = ["helm", "--kube-context", contextName, "--namespace", namespace, "rollback", releaseName, "\(revision)"]
+            if wait {
+                parts.append("--wait")
+            }
+            if !timeout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parts.append("--timeout")
+                parts.append(timeout)
+            }
+            if cleanupOnFail {
+                parts.append("--cleanup-on-fail")
             }
             return Self.shellCommand(parts)
         case let .exec(podName, command):
@@ -331,6 +367,23 @@ public enum HelmReleaseListSortColumn: String, Sendable {
     case revision
     case chart
     case appVersion
+}
+
+public enum EventListSortColumn: String, Sendable {
+    case reason
+    case type
+    case object
+    case namespace
+    case lastSeen
+}
+
+public enum OperatorResourceListSortColumn: String, Sendable {
+    case family
+    case kind
+    case name
+    case namespace
+    case status
+    case apiPath
 }
 
 private struct NavigationCheckpoint: Equatable, Sendable {
@@ -523,11 +576,20 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var genericResourceSortAscending: Bool = true
     @Published public private(set) var helmReleaseSortColumn: HelmReleaseListSortColumn = .name
     @Published public private(set) var helmReleaseSortAscending: Bool = true
+    @Published public private(set) var eventSortColumn: EventListSortColumn = .reason
+    @Published public private(set) var eventSortAscending: Bool = true
+    @Published public private(set) var operatorResourceSortColumn: OperatorResourceListSortColumn = .family
+    @Published public private(set) var operatorResourceSortAscending: Bool = true
     @Published public private(set) var operatorResourcePage: Int = 0
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
             if pendingWriteAction != oldValue {
                 pendingProductionDestructiveConfirmation = nil
+                if case .rolloutUndo? = pendingWriteAction {
+                } else if case .controllerRolloutUndo? = pendingWriteAction {
+                } else {
+                    pendingRollbackPlan = nil
+                }
             }
         }
     }
@@ -539,6 +601,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
+    @Published public private(set) var pendingRollbackPlan: String?
     @Published public var isSidebarVisible: Bool = UserDefaults.standard.runeLayoutSidebarVisible
     @Published public var isDetailPaneVisible: Bool = UserDefaults.standard.runeLayoutDetailPaneVisible
     @Published public var isLiveStatusUpdatesEnabled: Bool = false {
@@ -676,6 +739,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.state.setFavoriteContextNames(contextPreferences.loadFavoriteContextNames())
         self.state.setFavoriteResourceIDs(contextPreferences.loadFavoriteResourceIDs())
         self.state.setFavoriteNamespaceIDs(contextPreferences.loadFavoriteNamespaceIDs())
+        self.state.setManualProductionContextIDs(contextPreferences.loadManualProductionContextIDs())
 
         state.objectWillChange
             .sink { [weak self] _ in
@@ -993,7 +1057,14 @@ public final class RuneAppViewModel: ObservableObject {
 
     public var contextMenuOptions: [KubeContext] {
         contextsIncludingEnabledDemo(state.contexts).sorted { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            let leftFavorite = state.isFavorite(lhs)
+            let rightFavorite = state.isFavorite(rhs)
+
+            if leftFavorite != rightFavorite {
+                return leftFavorite && !rightFavorite
+            }
+
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
@@ -1078,6 +1149,7 @@ public final class RuneAppViewModel: ObservableObject {
         filtered(state.events) { event in
             "\(event.type) \(event.reason) \(event.objectName) \(event.message)"
         }
+        .sorted(by: eventComparator)
     }
 
     public var visibleHelmReleases: [HelmReleaseSummary] {
@@ -1088,7 +1160,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var visibleOperatorResources: [OperatorResourceSummary] {
-        favoriteSortedOperatorResources(filtered(state.operatorResources) { resource in
+        operatorResourceSorted(filtered(state.operatorResources) { resource in
             "\(resource.family) \(resource.kind) \(resource.name) \(resource.namespace ?? "") \(resource.status) \(resource.message)"
         })
     }
@@ -1117,12 +1189,11 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var isProductionContext: Bool {
-        guard let context = state.selectedContext?.name.lowercased() else {
+        guard let context = state.selectedContext else {
             return false
         }
 
-        let markers = ["prod", "production", "live", "critical"]
-        return markers.contains { context.contains($0) }
+        return isProductionContext(context)
     }
 
     public var pendingWriteActionTitle: String {
@@ -1136,11 +1207,17 @@ public final class RuneAppViewModel: ObservableObject {
         if let pendingWriteDryRunStatus, !pendingWriteDryRunStatus.isEmpty {
             message += "\n\nServer dry-run:\n\(pendingWriteDryRunStatus)"
         }
+        if let pendingRollbackPlan, !pendingRollbackPlan.isEmpty {
+            message += "\n\nRollback plan:\n\(pendingRollbackPlan)"
+        }
         if state.isReadOnlyMode {
             return "READ-ONLY MODE: turn off read-only before running write actions."
         }
         if isProductionContext {
             if pendingWriteAction.isDestructive {
+                guard UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation else {
+                    return "PRODUCTION CONTEXT: \(message)"
+                }
                 if pendingProductionDestructiveConfirmation == pendingWriteAction {
                     return "PRODUCTION CONTEXT: Final confirmation required. \(message)"
                 }
@@ -1152,6 +1229,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var pendingWriteActionKubectlCommand: String {
+        guard UserDefaults.standard.runeWriteSafetyRequireCopyableCommand else { return "" }
         guard let pendingWriteAction,
               let contextName = state.selectedContext?.name
         else { return "" }
@@ -1162,6 +1240,7 @@ public final class RuneAppViewModel: ObservableObject {
         guard let pendingWriteAction else { return "Confirm" }
         if isProductionContext,
            pendingWriteAction.isDestructive,
+           UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation,
            pendingProductionDestructiveConfirmation != pendingWriteAction
         {
             return "Review Production Action"
@@ -1186,10 +1265,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func copyPendingWriteActionKubectlCommand() {
         let command = pendingWriteActionKubectlCommand
-        guard !command.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(command, forType: .string)
+        copyCommandToPasteboard(command)
     }
 
     public func bootstrapIfNeeded() {
@@ -1805,6 +1881,25 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func toggleEventSort(_ column: EventListSortColumn) {
+        if eventSortColumn == column {
+            eventSortAscending.toggle()
+        } else {
+            eventSortColumn = column
+            eventSortAscending = column == .lastSeen ? false : true
+        }
+    }
+
+    public func toggleOperatorResourceSort(_ column: OperatorResourceListSortColumn) {
+        if operatorResourceSortColumn == column {
+            operatorResourceSortAscending.toggle()
+        } else {
+            operatorResourceSortColumn = column
+            operatorResourceSortAscending = true
+        }
+        operatorResourcePage = 0
+    }
+
     public func setReadOnlyMode(_ value: Bool) {
         state.isReadOnlyMode = value
     }
@@ -2183,6 +2278,27 @@ public final class RuneAppViewModel: ObservableObject {
     public func toggleFavorite(for context: KubeContext) {
         state.toggleFavoriteContext(named: context.name)
         contextPreferences.saveFavoriteContextNames(state.favoriteContextNames)
+    }
+
+    public func toggleProductionMark(for context: KubeContext) {
+        guard let id = productionContextID(for: context) else { return }
+        state.toggleManualProductionContext(id: id)
+        contextPreferences.saveManualProductionContextIDs(state.manualProductionContextIDs)
+    }
+
+    public func isManuallyMarkedProduction(_ context: KubeContext) -> Bool {
+        guard let id = productionContextID(for: context) else { return false }
+        return state.isManualProductionContext(id: id)
+    }
+
+    public func isProductionContext(_ context: KubeContext) -> Bool {
+        if isManuallyMarkedProduction(context) {
+            return true
+        }
+
+        let normalized = context.name.lowercased()
+        let markers = ["prod", "production", "live", "critical"]
+        return markers.contains { normalized.contains($0) }
     }
 
     public func toggleFavoriteResource(kind: KubeResourceKind, namespace: String?, name: String) {
@@ -3596,6 +3712,14 @@ public final class RuneAppViewModel: ObservableObject {
             for check in AuthDoctorKubeconfigInspector().inspect(sources: state.kubeConfigSources) {
                 record(check.id, check.title, check.status, check.message)
             }
+            if UserDefaults.standard.runeWriteSafetyRequireHelmDryRun {
+                record(
+                    "helm-rollback-dry-run",
+                    "Helm rollback dry-run",
+                    .warning,
+                    "Native Helm rollback dry-run is not available in Rune yet. Rune does not run Helm automatically; rollback remains a copyable command preview after review."
+                )
+            }
 
             let contexts: [KubeContext]
             do {
@@ -4177,6 +4301,35 @@ public final class RuneAppViewModel: ObservableObject {
         runPendingApplyDryRunPreview(yaml: state.resourceYAML, action: action)
     }
 
+    public var canReapplyResourceYAMLBaseline: Bool {
+        guard let (kind, _) = currentWritableResource() else { return false }
+        guard kind != .secret else { return false }
+        return state.resourceYAMLHasUnsavedEdits
+            && !state.resourceYAMLBaseline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public func requestReapplyResourceYAMLBaseline() {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        guard let (kind, name) = currentWritableResource() else { return }
+        guard kind != .secret else {
+            state.setError(RuneError.invalidInput(message: "Re-apply snapshot fallback is disabled for Secrets. Review the diff and apply YAML explicitly."))
+            return
+        }
+        guard canReapplyResourceYAMLBaseline else { return }
+
+        let action = PendingWriteAction.apply(
+            kind: kind,
+            name: name,
+            yaml: state.resourceYAMLBaseline,
+            baseline: state.resourceYAML
+        )
+        pendingWriteAction = action
+        runPendingApplyDryRunPreview(yaml: state.resourceYAMLBaseline, action: action)
+    }
+
     public func requestScaleSelectedDeployment() {
         guard writeActionsEnabled else {
             state.setError(RuneError.readOnlyMode)
@@ -4204,9 +4357,72 @@ public final class RuneAppViewModel: ObservableObject {
 
         do {
             let revision = try parseOptionalRevisionInput(rolloutRevisionInput)
-            pendingWriteAction = .rolloutUndo(deploymentName: deployment.name, revision: revision)
+            let action = PendingWriteAction.rolloutUndo(deploymentName: deployment.name, revision: revision)
+            pendingWriteAction = action
+            pendingRollbackPlan = rollbackPlan(for: deployment, revision: revision, action: action)
+            runPendingRolloutDryRunPreview(deploymentName: deployment.name, revision: revision, action: action)
         } catch {
             state.setError(error)
+        }
+    }
+
+    public func requestRolloutUndoSelectedController() {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+
+        let resource: ClusterResourceSummary?
+        switch state.selectedWorkloadKind {
+        case .statefulSet:
+            resource = state.selectedStatefulSet
+        case .daemonSet:
+            resource = state.selectedDaemonSet
+        default:
+            resource = nil
+        }
+        guard let resource else { return }
+
+        do {
+            let revision = try parseOptionalRevisionInput(rolloutRevisionInput)
+            let action = PendingWriteAction.controllerRolloutUndo(
+                kind: resource.kind,
+                name: resource.name,
+                revision: revision
+            )
+            pendingWriteAction = action
+            pendingRollbackPlan = controllerRollbackPlan(for: resource, revision: revision, action: action)
+            if UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun {
+                pendingWriteDryRunStatus = "\(resource.kind.singularTypeName) rollback dry-run is not available through Rune's native backend yet. Rune will not run this rollback automatically; copy the command and run it explicitly after review."
+            } else {
+                pendingWriteDryRunStatus = nil
+            }
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    public func requestHelmRollback(revision: Int) {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        guard let release = state.selectedHelmRelease else { return }
+
+        let action = PendingWriteAction.helmRollback(
+            releaseName: release.name,
+            namespace: release.namespace,
+            revision: revision,
+            wait: true,
+            timeout: "5m",
+            cleanupOnFail: true
+        )
+        pendingWriteAction = action
+        pendingRollbackPlan = helmRollbackPlan(for: release, revision: revision, action: action)
+        if UserDefaults.standard.runeWriteSafetyRequireHelmDryRun {
+            pendingWriteDryRunStatus = "Helm dry-run is not available through Rune's native backend yet. Rune will not run Helm automatically; copy the command and run it explicitly after review."
+        } else {
+            pendingWriteDryRunStatus = nil
         }
     }
 
@@ -4368,6 +4584,19 @@ public final class RuneAppViewModel: ObservableObject {
         Task {
             do {
                 try await kubeClient.writeToPodTerminalSession(id: session.id, text: text)
+            } catch {
+                state.setError(error)
+            }
+        }
+    }
+
+    public func resizeTerminalSession(id: String, columns: Int, rows: Int) {
+        guard let session = state.terminalSessions.first(where: { $0.id == id }) else { return }
+        guard session.status == .connected else { return }
+
+        Task {
+            do {
+                try await kubeClient.resizePodTerminalSession(id: id, columns: columns, rows: rows)
             } catch {
                 state.setError(error)
             }
@@ -4609,18 +4838,21 @@ public final class RuneAppViewModel: ObservableObject {
         pendingProductionDestructiveConfirmation = nil
         pendingWriteAction = nil
         pendingWriteDryRunStatus = nil
+        pendingRollbackPlan = nil
     }
 
     public func confirmPendingWriteAction() {
         guard writeActionsEnabled else {
             pendingWriteAction = nil
             pendingWriteDryRunStatus = nil
+            pendingRollbackPlan = nil
             state.setError(RuneError.readOnlyMode)
             return
         }
         guard let action = pendingWriteAction else { return }
         if isProductionContext,
            action.isDestructive,
+           UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation,
            pendingProductionDestructiveConfirmation != action
         {
             pendingProductionDestructiveConfirmation = action
@@ -4629,6 +4861,7 @@ public final class RuneAppViewModel: ObservableObject {
         pendingWriteAction = nil
         pendingProductionDestructiveConfirmation = nil
         pendingWriteDryRunStatus = nil
+        pendingRollbackPlan = nil
 
         Task {
             do {
@@ -4655,15 +4888,17 @@ public final class RuneAppViewModel: ObservableObject {
                         )
                     }
                 case let .apply(_, _, yaml, _):
-                    let dryRunIssues = try await kubeClient.validateResourceYAML(
-                        from: state.kubeConfigSources,
-                        context: context,
-                        namespace: state.selectedNamespace,
-                        yaml: yaml
-                    )
-                    let blockingIssues = dryRunIssues.filter { $0.severity == .error }
-                    guard blockingIssues.isEmpty else {
-                        throw RuneError.invalidInput(message: "Server dry-run failed: \(blockingIssues.map(\.message).joined(separator: " "))")
+                    if UserDefaults.standard.runeWriteSafetyRequireApplyDryRun {
+                        let dryRunIssues = try await kubeClient.validateResourceYAML(
+                            from: state.kubeConfigSources,
+                            context: context,
+                            namespace: state.selectedNamespace,
+                            yaml: yaml
+                        )
+                        let blockingIssues = dryRunIssues.filter { $0.severity == .error }
+                        guard blockingIssues.isEmpty else {
+                            throw RuneError.invalidInput(message: "Server dry-run failed: \(blockingIssues.map(\.message).joined(separator: " "))")
+                        }
                     }
                     try await kubeClient.applyYAML(
                         from: state.kubeConfigSources,
@@ -4687,6 +4922,15 @@ public final class RuneAppViewModel: ObservableObject {
                         deploymentName: deploymentName
                     )
                 case let .rolloutUndo(deploymentName, revision):
+                    if UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun {
+                        try await kubeClient.dryRunRollbackDeploymentRollout(
+                            from: state.kubeConfigSources,
+                            context: context,
+                            namespace: state.selectedNamespace,
+                            deploymentName: deploymentName,
+                            revision: revision
+                        )
+                    }
                     try await kubeClient.rollbackDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
@@ -4694,6 +4938,22 @@ public final class RuneAppViewModel: ObservableObject {
                         deploymentName: deploymentName,
                         revision: revision
                     )
+                case .controllerRolloutUndo:
+                    copyCommandToPasteboard(action.kubectlCommand(contextName: context.name, namespace: state.selectedNamespace))
+                    appendWriteAudit(
+                        audit,
+                        status: "Blocked",
+                        message: "Controller rollback command copied; Rune did not run this rollback automatically"
+                    )
+                    return
+                case .helmRollback:
+                    copyCommandToPasteboard(action.kubectlCommand(contextName: context.name, namespace: state.selectedNamespace))
+                    appendWriteAudit(
+                        audit,
+                        status: "Blocked",
+                        message: "Helm rollback command copied; Rune did not run Helm automatically"
+                    )
+                    return
                 case let .exec(podName, command):
                     state.isExecutingCommand = true
                     defer { state.isExecutingCommand = false }
@@ -4730,7 +4990,14 @@ public final class RuneAppViewModel: ObservableObject {
                     namespace: state.selectedNamespace,
                     requestID: requestID
                 )
-                appendWriteAudit(audit, status: "Succeeded", message: "Write action completed")
+                appendWriteAudit(
+                    audit,
+                    status: "Succeeded",
+                    message: successAuditMessage(
+                        for: action,
+                        verificationMessage: await postActionVerificationMessage(for: action, context: context)
+                    )
+                )
             } catch {
                 if let context = state.selectedContext {
                     let audit = auditDetails(for: action, context: context, namespace: state.selectedNamespace)
@@ -4742,6 +5009,10 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func runPendingApplyDryRunPreview(yaml: String, action: PendingWriteAction) {
+        guard UserDefaults.standard.runeWriteSafetyRequireApplyDryRun else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
         guard case .apply = action,
               let context = state.selectedContext
         else {
@@ -4777,6 +5048,109 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func runPendingRolloutDryRunPreview(deploymentName: String, revision: Int?, action: PendingWriteAction) {
+        guard UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
+        guard let context = state.selectedContext else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
+        guard !state.kubeConfigSources.isEmpty else {
+            pendingWriteDryRunStatus = "Could not complete: No kubeconfig selected."
+            return
+        }
+
+        pendingWriteDryRunStatus = "Checking with Kubernetes API..."
+        Task {
+            do {
+                try await kubeClient.dryRunRollbackDeploymentRollout(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    deploymentName: deploymentName,
+                    revision: revision
+                )
+                guard self.pendingWriteAction == action else { return }
+                self.pendingWriteDryRunStatus = "Server accepted rollback dry-run."
+            } catch {
+                guard self.pendingWriteAction == action else { return }
+                self.pendingWriteDryRunStatus = "Could not complete: \(error.localizedDescription)"
+                self.diagnostics.log("pending rollout rollback dry-run failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func rollbackPlan(
+        for deployment: DeploymentSummary,
+        revision: Int?,
+        action: PendingWriteAction
+    ) -> String? {
+        guard UserDefaults.standard.runeWriteSafetyShowRollbackPlan else { return nil }
+        let targetRevision = revision.map(String.init) ?? "previous revision"
+        let selector = deployment.selector?
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ", ")
+        let command = action.kubectlCommand(contextName: state.selectedContext?.name ?? "", namespace: state.selectedNamespace)
+
+        var rows = [
+            "Target resource: deployment/\(deployment.name)",
+            "Namespace: \(deployment.namespace)",
+            "Current revision: \(currentDeploymentRevisionText())",
+            "Target revision: \(targetRevision)",
+            "Affected selector/pods: \(selector?.isEmpty == false ? selector! : "unknown")",
+            "Command: \(command)"
+        ]
+        if !deployment.replicaText.isEmpty {
+            rows.insert("Current replicas: \(deployment.replicaText)", at: 3)
+        }
+        return rows.joined(separator: "\n")
+    }
+
+    private func helmRollbackPlan(
+        for release: HelmReleaseSummary,
+        revision: Int,
+        action: PendingWriteAction
+    ) -> String? {
+        guard UserDefaults.standard.runeWriteSafetyShowRollbackPlan else { return nil }
+        return [
+            "Target release: \(release.namespace)/\(release.name)",
+            "Current revision: \(release.revision)",
+            "Target revision: \(revision)",
+            "Current status: \(release.status)",
+            "Chart: \(release.chart)",
+            "Command: \(action.kubectlCommand(contextName: state.selectedContext?.name ?? "", namespace: release.namespace))"
+        ].joined(separator: "\n")
+    }
+
+    private func controllerRollbackPlan(
+        for resource: ClusterResourceSummary,
+        revision: Int?,
+        action: PendingWriteAction
+    ) -> String? {
+        guard UserDefaults.standard.runeWriteSafetyShowRollbackPlan else { return nil }
+        return [
+            "Target resource: \(resource.kind.kubernetesResourceName)/\(resource.name)",
+            "Namespace: \(resource.namespace ?? state.selectedNamespace)",
+            "Target revision: \(revision.map(String.init) ?? "previous revision")",
+            "Current status: \(resource.primaryText)",
+            "Command: \(action.kubectlCommand(contextName: state.selectedContext?.name ?? "", namespace: resource.namespace ?? state.selectedNamespace))"
+        ].joined(separator: "\n")
+    }
+
+    private func currentDeploymentRevisionText() -> String {
+        let revisions = state.deploymentRolloutHistory
+            .split(separator: "\n")
+            .compactMap { line -> Int? in
+                let first = line.split(whereSeparator: \.isWhitespace).first
+                return first.flatMap { Int($0) }
+            }
+        guard let current = revisions.max() else { return "unknown" }
+        return "\(current)"
+    }
+
     private func auditDetails(
         for action: PendingWriteAction,
         context: KubeContext,
@@ -4804,6 +5178,12 @@ public final class RuneAppViewModel: ObservableObject {
         case let .rolloutUndo(deploymentName, revision):
             actionName = "Rollout Undo"
             resource = revision.map { "deployment/\(deploymentName) revision=\($0)" } ?? "deployment/\(deploymentName)"
+        case let .controllerRolloutUndo(kind, name, revision):
+            actionName = "Controller Rollout Undo"
+            resource = revision.map { "\(kind.kubernetesResourceName)/\(name) revision=\($0)" } ?? "\(kind.kubernetesResourceName)/\(name)"
+        case let .helmRollback(releaseName, namespace, revision, _, timeout, cleanupOnFail):
+            actionName = "Helm Rollback"
+            resource = "helmrelease/\(namespace)/\(releaseName) revision=\(revision) timeout=\(timeout) cleanupOnFail=\(cleanupOnFail)"
         case let .exec(podName, command):
             actionName = "Exec"
             resource = "pod/\(podName) \(command.joined(separator: " "))"
@@ -4813,6 +5193,65 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         return (actionName, resource, context.name, namespace)
+    }
+
+    private func postActionVerificationMessage(for action: PendingWriteAction, context: KubeContext) async -> String? {
+        guard UserDefaults.standard.runeWriteSafetyRequirePostActionVerification else { return nil }
+
+        switch action {
+        case let .rolloutUndo(deploymentName, _):
+            do {
+                let result = try await kubeClient.verifyDeploymentRollout(
+                    from: state.kubeConfigSources,
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    deploymentName: deploymentName
+                )
+                switch result.status {
+                case .ready:
+                    return "Post-action verification: \(result.message)"
+                case .progressing:
+                    return "Post-action verification: \(result.message)"
+                case .timedOut:
+                    return "Post-action verification: \(result.message)"
+                case .failed:
+                    return "Post-action verification failed: \(result.message)"
+                }
+            } catch {
+                diagnostics.log("post-action rollout verification failed: \(error.localizedDescription)")
+            }
+
+            guard let deployment = state.deployments.first(where: {
+                $0.name == deploymentName && $0.namespace == state.selectedNamespace
+            }) else {
+                return "Post-action verification: deployment was not found after refresh."
+            }
+            if deployment.desiredReplicas == 0 {
+                return "Post-action verification: deployment refreshed at 0 desired replicas."
+            }
+            if deployment.readyReplicas >= deployment.desiredReplicas {
+                return "Post-action verification: deployment is ready \(deployment.replicaText) after refresh."
+            }
+            return "Post-action verification: rollout still in progress \(deployment.replicaText) ready after refresh."
+        default:
+            return nil
+        }
+    }
+
+    private func successAuditMessage(for action: PendingWriteAction, verificationMessage: String? = nil) -> String {
+        let baseMessage: String
+        switch action {
+        case .rolloutUndo:
+            if UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun {
+                baseMessage = "Rollback completed after server dry-run"
+            } else {
+                baseMessage = "Rollback completed"
+            }
+        default:
+            baseMessage = "Write action completed"
+        }
+        guard let verificationMessage else { return baseMessage }
+        return "\(baseMessage). \(verificationMessage)"
     }
 
     private func appendWriteAudit(
@@ -4830,6 +5269,13 @@ public final class RuneAppViewModel: ObservableObject {
                 message: message
             )
         )
+    }
+
+    private func copyCommandToPasteboard(_ command: String) {
+        guard !command.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(command, forType: .string)
     }
 
     public func saveVisibleWriteAuditLog() {
@@ -7359,10 +7805,22 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func prepareNavigationMutation(trackHistory: Bool) {
+        cancelObsoleteSelectionRequests()
         guard trackHistory, !isApplyingNavigationCheckpoint, navigationHistory.isEmpty else { return }
         navigationHistory.append(currentNavigationCheckpoint())
         navigationIndex = 0
         updateNavigationAvailability()
+    }
+
+    private func cancelObsoleteSelectionRequests() {
+        cancelPendingLogReload()
+        resourceDetailsTask?.cancel()
+        resourceDetailsTask = nil
+        latestResourceDetailsRequestID = UUID()
+        if state.isLoadingResourceDetails {
+            state.finishResourceDetailLoad()
+        }
+        state.isLoadingLogs = false
     }
 
     private func recordNavigationCheckpoint() {
@@ -8463,6 +8921,16 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func podComparator(_ lhs: PodSummary, _ rhs: PodSummary) -> Bool {
+        if let favoriteOrder = resourceFavoriteOrder(
+            kind: .pod,
+            lhsNamespace: lhs.namespace,
+            lhsName: lhs.name,
+            rhsNamespace: rhs.namespace,
+            rhsName: rhs.name
+        ) {
+            return favoriteOrder
+        }
+
         let ascending = podSortAscending
         let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
 
@@ -8517,6 +8985,16 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func deploymentComparator(_ lhs: DeploymentSummary, _ rhs: DeploymentSummary) -> Bool {
+        if let favoriteOrder = resourceFavoriteOrder(
+            kind: .deployment,
+            lhsNamespace: lhs.namespace,
+            lhsName: lhs.name,
+            rhsNamespace: rhs.namespace,
+            rhsName: rhs.name
+        ) {
+            return favoriteOrder
+        }
+
         let ascending = deploymentSortAscending
         let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
 
@@ -8540,6 +9018,16 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func serviceComparator(_ lhs: ServiceSummary, _ rhs: ServiceSummary) -> Bool {
+        if let favoriteOrder = resourceFavoriteOrder(
+            kind: .service,
+            lhsNamespace: lhs.namespace,
+            lhsName: lhs.name,
+            rhsNamespace: rhs.namespace,
+            rhsName: rhs.name
+        ) {
+            return favoriteOrder
+        }
+
         let ascending = serviceSortAscending
         let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
 
@@ -8575,16 +9063,23 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func genericResourceSorted(_ values: [ClusterResourceSummary]) -> [ClusterResourceSummary] {
-        values.sorted(by: genericResourceComparator)
+        values
+            .map { resource in
+                (
+                    resource: resource,
+                    isFavorite: isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.isFavorite != rhs.isFavorite {
+                    return lhs.isFavorite && !rhs.isFavorite
+                }
+                return genericResourceComparator(lhs.resource, rhs.resource)
+            }
+            .map(\.resource)
     }
 
     private func genericResourceComparator(_ lhs: ClusterResourceSummary, _ rhs: ClusterResourceSummary) -> Bool {
-        let lhsFavorite = isFavoriteResource(kind: lhs.kind, namespace: lhs.namespace, name: lhs.name)
-        let rhsFavorite = isFavoriteResource(kind: rhs.kind, namespace: rhs.namespace, name: rhs.name)
-        if lhsFavorite != rhsFavorite {
-            return lhsFavorite && !rhsFavorite
-        }
-
         let ascending = genericResourceSortAscending
         let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
 
@@ -8661,6 +9156,48 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         guard let orderedAscending else { return nameOrder }
+        return ascending ? orderedAscending : !orderedAscending
+    }
+
+    private func eventComparator(_ lhs: EventSummary, _ rhs: EventSummary) -> Bool {
+        let ascending = eventSortAscending
+        let reasonOrder = lhs.reason.localizedCaseInsensitiveCompare(rhs.reason) == .orderedAscending
+
+        let orderedAscending: Bool?
+        switch eventSortColumn {
+        case .reason:
+            orderedAscending = reasonOrder
+        case .type:
+            if lhs.type != rhs.type {
+                orderedAscending = lhs.type.localizedCaseInsensitiveCompare(rhs.type) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .object:
+            if lhs.objectName != rhs.objectName {
+                orderedAscending = lhs.objectName.localizedStandardCompare(rhs.objectName) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .namespace:
+            let lhsNamespace = lhs.involvedNamespace ?? ""
+            let rhsNamespace = rhs.involvedNamespace ?? ""
+            if lhsNamespace != rhsNamespace {
+                orderedAscending = lhsNamespace.localizedCaseInsensitiveCompare(rhsNamespace) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .lastSeen:
+            let lhsTimestamp = lhs.lastTimestamp ?? ""
+            let rhsTimestamp = rhs.lastTimestamp ?? ""
+            if lhsTimestamp != rhsTimestamp {
+                orderedAscending = lhsTimestamp.localizedStandardCompare(rhsTimestamp) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        }
+
+        guard let orderedAscending else { return reasonOrder }
         return ascending ? orderedAscending : !orderedAscending
     }
 
@@ -8837,13 +9374,32 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    private func favoriteSortedOperatorResources(_ values: [OperatorResourceSummary]) -> [OperatorResourceSummary] {
-        values.sorted { lhs, rhs in
-            let lhsFavorite = isFavoriteOperatorResource(lhs)
-            let rhsFavorite = isFavoriteOperatorResource(rhs)
-            if lhsFavorite != rhsFavorite {
-                return lhsFavorite && !rhsFavorite
-            }
+    private func operatorResourceSorted(_ values: [OperatorResourceSummary]) -> [OperatorResourceSummary] {
+        values.sorted(by: operatorResourceComparator)
+    }
+
+    private func resourceFavoriteOrder(
+        kind: KubeResourceKind,
+        lhsNamespace: String?,
+        lhsName: String,
+        rhsNamespace: String?,
+        rhsName: String
+    ) -> Bool? {
+        let lhsFavorite = isFavoriteResource(kind: kind, namespace: lhsNamespace, name: lhsName)
+        let rhsFavorite = isFavoriteResource(kind: kind, namespace: rhsNamespace, name: rhsName)
+        guard lhsFavorite != rhsFavorite else { return nil }
+        return lhsFavorite && !rhsFavorite
+    }
+
+    private func operatorResourceComparator(_ lhs: OperatorResourceSummary, _ rhs: OperatorResourceSummary) -> Bool {
+        let lhsFavorite = isFavoriteOperatorResource(lhs)
+        let rhsFavorite = isFavoriteOperatorResource(rhs)
+        if lhsFavorite != rhsFavorite {
+            return lhsFavorite && !rhsFavorite
+        }
+
+        let ascending = operatorResourceSortAscending
+        let defaultOrder: Bool = {
             if lhs.family != rhs.family {
                 return lhs.family.localizedCaseInsensitiveCompare(rhs.family) == .orderedAscending
             }
@@ -8851,7 +9407,48 @@ public final class RuneAppViewModel: ObservableObject {
                 return lhs.kind.localizedCaseInsensitiveCompare(rhs.kind) == .orderedAscending
             }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }()
+
+        let orderedAscending: Bool?
+        switch operatorResourceSortColumn {
+        case .family:
+            orderedAscending = defaultOrder
+        case .kind:
+            if lhs.kind != rhs.kind {
+                orderedAscending = lhs.kind.localizedCaseInsensitiveCompare(rhs.kind) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .name:
+            if lhs.name != rhs.name {
+                orderedAscending = lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .namespace:
+            let lhsNamespace = lhs.namespace ?? ""
+            let rhsNamespace = rhs.namespace ?? ""
+            if lhsNamespace != rhsNamespace {
+                orderedAscending = lhsNamespace.localizedCaseInsensitiveCompare(rhsNamespace) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .status:
+            if lhs.status != rhs.status {
+                orderedAscending = lhs.status.localizedCaseInsensitiveCompare(rhs.status) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
+        case .apiPath:
+            if lhs.apiPath != rhs.apiPath {
+                orderedAscending = lhs.apiPath.localizedStandardCompare(rhs.apiPath) == .orderedAscending
+            } else {
+                orderedAscending = nil
+            }
         }
+
+        guard let orderedAscending else { return defaultOrder }
+        return ascending ? orderedAscending : !orderedAscending
     }
 
     private func favoriteResourceID(kind: KubeResourceKind, namespace: String?, name: String) -> String? {
@@ -8877,6 +9474,11 @@ public final class RuneAppViewModel: ObservableObject {
         let normalizedNamespace = namespace.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedNamespace.isEmpty else { return nil }
         return [contextName, "namespace", normalizedNamespace].joined(separator: "|")
+    }
+
+    private func productionContextID(for context: KubeContext) -> String? {
+        let normalized = context.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func favoriteOperatorResourceID(_ resource: OperatorResourceSummary) -> String {

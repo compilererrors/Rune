@@ -96,6 +96,49 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("Synthetic forced pod log failure"))
     }
 
+    func testNativeClientRetriesTransientRESTReadFailure() async throws {
+        let target = "/api/v1/namespaces/alpha-zone/pods"
+        let fixture = RuneFakeK8sFixture(transientFailureTargets: [target])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let pods = try await client.listPods(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone"
+        )
+        let podListRequests = server.requestLines().filter { line in
+            line.contains(" \(target) ")
+        }
+
+        XCTAssertEqual(pods.map(\.name), ["ember-gate-75c9f746b8-kq2wm", "orbit-lens-6f58d7d89b-hx9q2"])
+        XCTAssertEqual(podListRequests.count, 2)
+    }
+
+    func testNativeClientSendsDryRunAllForDeploymentRollbackPreview() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        try await client.dryRunRollbackDeploymentRollout(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone",
+            deploymentName: "orbit-lens",
+            revision: 1
+        )
+        let requests = server.requestLines().joined(separator: "\n")
+
+        XCTAssertTrue(requests.contains("GET /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens "))
+        XCTAssertTrue(requests.contains("GET /apis/apps/v1/namespaces/alpha-zone/replicasets?labelSelector=app%3Dorbit-lens "))
+        XCTAssertTrue(requests.contains("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens?dryRun=All "))
+    }
+
     func testRESTFakeSupportsKubernetesPaginationMetadata() async throws {
         let server = try await RuneFakeK8sRESTServer.start()
         defer { server.stop() }
@@ -111,6 +154,61 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(metadata?["remainingItemCount"] as? Int, 1)
         XCTAssertEqual(metadata?["continue"] as? String, "1")
         XCTAssertEqual(items?.count, 1)
+    }
+
+    func testNativeCountUsesPagedRESTFallbackWhenRemainingItemCountIsMissing() async throws {
+        let base = RuneFakeK8sFixture.defaultContexts[0]
+        let pods = (0..<251).map { index in
+            RuneFakeK8sPod(
+                name: String(format: "paged-pod-%03d", index),
+                deploymentName: "paged",
+                phase: "Running",
+                restarts: 0,
+                cpu: "1m",
+                memory: "8Mi",
+                podIP: "10.42.9.\(index % 250)",
+                nodeName: "orbit-node-a",
+                labels: ["app": "paged"],
+                containers: ["app"]
+            )
+        }
+        let fixture = RuneFakeK8sFixture(
+            contexts: [
+                RuneFakeK8sCluster(
+                    contextName: base.contextName,
+                    defaultNamespace: "alpha-zone",
+                    namespaces: [
+                        RuneFakeK8sNamespace(
+                            name: "alpha-zone",
+                            pods: pods,
+                            deployments: [],
+                            services: []
+                        )
+                    ],
+                    nodes: base.nodes,
+                    operatorResources: base.operatorResources
+                )
+            ],
+            listKindsOmittingRemainingItemCount: ["PodList"]
+        )
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let count = try await client.countNamespacedResources(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone",
+            resource: "pods"
+        )
+        let requests = server.requestLines().joined(separator: "\n")
+
+        XCTAssertEqual(count, 251)
+        XCTAssertTrue(requests.contains("/api/v1/namespaces/alpha-zone/pods?limit=1"))
+        XCTAssertTrue(requests.contains("/api/v1/namespaces/alpha-zone/pods?limit=250"))
+        XCTAssertTrue(requests.contains("continue=250"))
     }
 
     func testOperatorResourceProbeReturnsEmptyWhenCRDsAreAbsent() async throws {

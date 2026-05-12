@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import RuneCore
+@testable import RuneKube
 @testable import RuneStore
 @testable import RuneUI
 
@@ -189,6 +190,178 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposeRollbackSafetyFlowAgainstFakeCluster() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            restoreDemoSetting(previousDemoSetting)
+            restoreUserDefault(previousRolloutDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+            restoreUserDefault(previousHelmDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+            restoreUserDefault(previousRollbackPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefault(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let client = KubernetesClient(commandTimeout: 10)
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let deploymentName = "rune-it-rollback-\(Self.shortTestID())"
+        defer {
+            Task {
+                try? await client.deleteResource(
+                    from: [KubeConfigSource(url: harness.kubeconfigURL)],
+                    context: context,
+                    namespace: namespace,
+                    kind: .deployment,
+                    name: deploymentName
+                )
+            }
+        }
+
+        try await client.applyYAML(
+            from: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            yaml: Self.rollbackDeploymentYAML(
+                name: deploymentName,
+                namespace: namespace,
+                marker: "rollback-baseline"
+            )
+        )
+        try await client.applyYAML(
+            from: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            yaml: Self.rollbackDeploymentYAML(
+                name: deploymentName,
+                namespace: namespace,
+                marker: "rollback-edited"
+            )
+        )
+        try await waitForRolloutHistory(
+            client: client,
+            sources: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            revisions: [1, 2]
+        )
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+        try await waitUntil(timeout: 30) {
+            harness.state.deployments.contains { $0.name == deploymentName }
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == deploymentName })
+        harness.viewModel.selectDeployment(deployment)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedDeployment?.name == deploymentName
+                && harness.state.deploymentRolloutHistory.contains("1")
+                && harness.state.deploymentRolloutHistory.contains("2")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.viewModel.toggleProductionMark(for: context)
+        harness.viewModel.rolloutRevisionInput = "1"
+        harness.viewModel.requestRolloutUndoSelectedDeployment()
+
+        try await waitUntil(timeout: 30) {
+            harness.viewModel.pendingWriteDryRunStatus?.contains("Server accepted rollback dry-run") == true
+        }
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Rollback plan:"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Target resource: deployment/\(deploymentName)"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Target revision: 1"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Server accepted rollback dry-run"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("rollout undo deployment \(deploymentName) --to-revision=1"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        XCTAssertEqual(
+            harness.viewModel.pendingProductionDestructiveConfirmation,
+            .rolloutUndo(deploymentName: deploymentName, revision: 1)
+        )
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Rollback")
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil(timeout: 60) {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Undo"
+                    && entry.resource.contains("deployment/\(deploymentName)")
+                    && entry.status == "Succeeded"
+                    && entry.message.contains("server dry-run")
+            }
+        }
+        try await waitForDeploymentYAML(
+            client: client,
+            sources: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            contains: "rollback-baseline"
+        )
+
+        harness.viewModel.setSection(.helm)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .helm
+                && harness.state.helmReleases.contains { $0.name == "orbit-lens" }
+                && !harness.state.isLoading
+        }
+        let release = try XCTUnwrap(harness.state.helmReleases.first { $0.name == "orbit-lens" })
+        harness.viewModel.selectHelmRelease(release)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedHelmRelease?.name == "orbit-lens"
+                && !harness.state.helmHistory.isEmpty
+        }
+
+        let targetRevision = try XCTUnwrap(harness.state.helmHistory.map(\.revision).min())
+        harness.viewModel.requestHelmRollback(revision: targetRevision)
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Helm rollback command preview only"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Rollback plan:"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Target release: \(release.namespace)/\(release.name)"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Helm dry-run is not available"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("helm --kube-context fake-orbit-mesh --namespace \(release.namespace) rollback \(release.name) \(targetRevision)"))
+
+        harness.viewModel.confirmPendingWriteAction()
+        XCTAssertEqual(
+            harness.viewModel.pendingProductionDestructiveConfirmation,
+            .helmRollback(
+                releaseName: release.name,
+                namespace: release.namespace,
+                revision: targetRevision,
+                wait: true,
+                timeout: "5m",
+                cleanupOnFail: true
+            )
+        )
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil(timeout: 10) {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Helm Rollback"
+                    && entry.resource.contains("helmrelease/\(release.namespace)/\(release.name)")
+                    && entry.status == "Blocked"
+                    && entry.message.contains("did not run Helm automatically")
+            }
+        }
+
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let kubeconfigURL: URL
         let state: RuneAppState
@@ -266,10 +439,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     }
 
     private func restoreDemoSetting(_ value: Any?) {
+        restoreUserDefault(value, forKey: RuneSettingsKeys.enableDemoCluster)
+    }
+
+    private func restoreUserDefault(_ value: Any?, forKey key: String) {
         if let value {
-            UserDefaults.standard.set(value, forKey: RuneSettingsKeys.enableDemoCluster)
+            UserDefaults.standard.set(value, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            UserDefaults.standard.removeObject(forKey: key)
         }
     }
 
@@ -287,5 +464,100 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
+    }
+
+    private func waitForRolloutHistory(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        revisions: Set<Int>,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastHistory = ""
+        while Date() < deadline {
+            lastHistory = try await client.deploymentRolloutHistory(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                deploymentName: deploymentName
+            )
+            let seen = Set(lastHistory.split(separator: "\n").compactMap { line -> Int? in
+                line.split(whereSeparator: \.isWhitespace).first.flatMap { Int($0) }
+            })
+            if revisions.isSubset(of: seen) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        XCTFail("Timed out waiting for rollout history \(revisions). Last history: \(lastHistory)")
+    }
+
+    private func waitForDeploymentYAML(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        contains marker: String,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastYAML = ""
+        while Date() < deadline {
+            lastYAML = try await client.resourceYAML(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: .deployment,
+                name: deploymentName
+            )
+            if lastYAML.contains(marker) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        XCTFail("Timed out waiting for deployment YAML to contain \(marker). Last YAML: \(lastYAML)")
+    }
+
+    private static func shortTestID() -> String {
+        String(UUID().uuidString.prefix(8)).lowercased()
+    }
+
+    private static func rollbackDeploymentYAML(name: String, namespace: String, marker: String) -> String {
+        """
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: \(name)
+          namespace: \(namespace)
+          labels:
+            app: \(name)
+            app.kubernetes.io/managed-by: rune-integration-test
+          annotations:
+            kubernetes.io/change-cause: \(marker)
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: \(name)
+          template:
+            metadata:
+              labels:
+                app: \(name)
+              annotations:
+                rune.test/rollback-marker: \(marker)
+            spec:
+              containers:
+                - name: app
+                  image: nginx:1.27-alpine
+                  command: ["/bin/sh", "-ec"]
+                  args:
+                    - |
+                      echo \(marker) >/usr/share/nginx/html/index.html
+                      nginx -g 'daemon off;'
+        """
     }
 }

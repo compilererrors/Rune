@@ -17,6 +17,7 @@ struct TerminalShellPanelView: View {
     let onReconnectSession: (PodTerminalSession, PodSummary, String?) -> Void
     let onSend: () -> Void
     let onSendControlSequence: (String) -> Void
+    let onResizeSession: (String, Int, Int) -> Void
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
@@ -174,7 +175,8 @@ struct TerminalShellPanelView: View {
                 height: transcriptHeight,
                 resetID: "terminal:\(session?.id ?? "empty")",
                 fontSize: terminalFontSize,
-                onPasteText: pasteIntoPrompt
+                onPasteText: pasteIntoPrompt,
+                onResizeGrid: reportTerminalResize
             )
 
             multilinePasteConfirmationNote
@@ -422,6 +424,11 @@ struct TerminalShellPanelView: View {
         if send.shouldSend {
             onSend()
         }
+    }
+
+    private func reportTerminalResize(columns: Int, rows: Int) {
+        guard let session, session.status == .connected else { return }
+        onResizeSession(session.id, columns, rows)
     }
 
     nonisolated static func normalizedTerminalPasteForPrompt(_ text: String) -> (text: String, requiresConfirmation: Bool) {

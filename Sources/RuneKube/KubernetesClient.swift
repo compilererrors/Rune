@@ -4,6 +4,38 @@ import RuneCore
 import RuneDiagnostics
 import RuneSecurity
 
+public enum DeploymentRolloutVerificationStatus: String, Sendable, Equatable {
+    case ready
+    case progressing
+    case timedOut
+    case failed
+}
+
+public struct DeploymentRolloutVerificationResult: Sendable, Equatable {
+    public let status: DeploymentRolloutVerificationStatus
+    public let desiredReplicas: Int
+    public let readyReplicas: Int
+    public let updatedReplicas: Int
+    public let availableReplicas: Int
+    public let message: String
+
+    public init(
+        status: DeploymentRolloutVerificationStatus,
+        desiredReplicas: Int,
+        readyReplicas: Int,
+        updatedReplicas: Int,
+        availableReplicas: Int,
+        message: String
+    ) {
+        self.status = status
+        self.desiredReplicas = desiredReplicas
+        self.readyReplicas = readyReplicas
+        self.updatedReplicas = updatedReplicas
+        self.availableReplicas = availableReplicas
+        self.message = message
+    }
+}
+
 public final class KubernetesClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ManifestValidationService, ResourceWriteService, HelmReleaseService, @unchecked Sendable {
     private let parser: KubernetesOutputParser
     private let restClient: KubernetesRESTClient
@@ -792,19 +824,50 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         environment: [String: String],
         progress: ((Int) -> Void)?
     ) async -> Int? {
-        var request = firstRequest
-        var total = 0
-
-        for _ in 0..<pagedCountMaxPages {
-            let raw: String
-            do {
-                raw = try await restClient.rawGET(
+        await Self.pagedCollectionCount(
+            firstRequest: firstRequest,
+            nextRequest: nextRequest,
+            maxPages: pagedCountMaxPages,
+            progress: progress,
+            fetch: { [restClient] request in
+                try await restClient.rawGET(
                     environment: environment,
                     contextName: context.name,
                     apiPath: request.apiPath,
                     timeout: 45
                 )
+            },
+            fallbackTotal: { [weak self] in
+                guard let self else { return nil }
+                return await self.collectionListTotalFromMetadataProbe(
+                    context: context,
+                    environment: environment,
+                    apiPath: firstRequest.apiPath
+                )
+            }
+        )
+    }
+
+    static func pagedCollectionCount(
+        firstRequest: KubernetesRESTRequest,
+        nextRequest: (String) -> KubernetesRESTRequest?,
+        maxPages: Int,
+        progress: ((Int) -> Void)?,
+        fetch: (KubernetesRESTRequest) async throws -> String,
+        fallbackTotal: (() async -> Int?)?
+    ) async -> Int? {
+        var request = firstRequest
+        var total = 0
+        var completedPages = 0
+
+        for _ in 0..<maxPages {
+            let raw: String
+            do {
+                raw = try await fetch(request)
             } catch {
+                if completedPages > 0, isExpiredContinueTokenError(error) {
+                    return await fallbackTotal?()
+                }
                 return nil
             }
 
@@ -812,6 +875,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 return nil
             }
             total += page.itemsCount
+            completedPages += 1
             progress?(total)
 
             if let remaining = page.remainingItemCount {
@@ -832,6 +896,13 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
 
         return nil
+    }
+
+    private static func isExpiredContinueTokenError(_ error: Error) -> Bool {
+        guard case let RuneError.commandFailed(_, message) = error else { return false }
+        let normalized = message.lowercased()
+        return normalized.contains("http 410")
+            && (normalized.contains("continue") || normalized.contains("expired") || normalized.contains("too old"))
     }
 
     /// Cheap total via native REST `limit=1` list (`metadata.remainingItemCount` + 1). Returns `nil` on failure or when the server omits a derivable total.
@@ -1356,6 +1427,13 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         try handle.writeToStdin(Data(text.utf8))
     }
 
+    public func resizePodTerminalSession(id: String, columns: Int, rows: Int) async throws {
+        guard let handle = await terminalSessionRegistry.handle(id: id) else {
+            throw RuneError.commandFailed(command: "terminal session", message: "No active terminal session")
+        }
+        try handle.resizeTerminal(columns: columns, rows: rows)
+    }
+
     public func stopPodTerminalSession(id: String) async {
         let handle = await terminalSessionRegistry.remove(id: id)
         handle?.terminate()
@@ -1444,6 +1522,44 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             deploymentName: deploymentName,
             revision: revision,
             timeout: 90
+        )
+    }
+
+    public func dryRunRollbackDeploymentRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        revision: Int?
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        try await restClient.rollbackDeploymentRollout(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            revision: revision,
+            timeout: 90,
+            dryRun: true
+        )
+    }
+
+    public func verifyDeploymentRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        timeout: TimeInterval? = nil
+    ) async throws -> DeploymentRolloutVerificationResult {
+        let timeoutBudget = max(0.05, timeout ?? commandTimeout)
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await restClient.verifyDeploymentRollout(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            timeout: timeoutBudget,
+            pollInterval: min(1, max(0.05, timeoutBudget / 4))
         )
     }
 

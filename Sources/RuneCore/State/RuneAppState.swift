@@ -11,6 +11,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var favoriteContextNames: Set<String> = []
     @Published public private(set) var favoriteResourceIDs: Set<String> = []
     @Published public private(set) var favoriteNamespaceIDs: Set<String> = []
+    @Published public private(set) var manualProductionContextIDs: Set<String> = []
     @Published public private(set) var authDoctorChecks: [RuneHealthCheck] = []
     @Published public private(set) var isRunningAuthDoctor = false
     @Published public private(set) var snapshotFreshness = RuneSnapshotFreshness()
@@ -143,6 +144,10 @@ public final class RuneAppState: ObservableObject {
         favoriteNamespaceIDs = ids
     }
 
+    public func setManualProductionContextIDs(_ ids: Set<String>) {
+        manualProductionContextIDs = ids
+    }
+
     public func setAuthDoctorChecks(_ checks: [RuneHealthCheck]) {
         authDoctorChecks = checks
     }
@@ -175,6 +180,18 @@ public final class RuneAppState: ObservableObject {
 
     public func isFavorite(_ context: KubeContext) -> Bool {
         favoriteContextNames.contains(context.name)
+    }
+
+    public func toggleManualProductionContext(id: String) {
+        if manualProductionContextIDs.contains(id) {
+            manualProductionContextIDs.remove(id)
+        } else {
+            manualProductionContextIDs.insert(id)
+        }
+    }
+
+    public func isManualProductionContext(id: String) -> Bool {
+        manualProductionContextIDs.contains(id)
     }
 
     public func toggleFavoriteResource(id: String) {

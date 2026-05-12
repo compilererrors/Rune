@@ -38,6 +38,7 @@ public struct RunePreferencesView: View {
         case general
         case keyBindings
         case logs
+        case safety
         case diagnostics
         case performance
 
@@ -48,6 +49,7 @@ public struct RunePreferencesView: View {
             case .general: return "General"
             case .keyBindings: return "Key Bindings"
             case .logs: return "Logs"
+            case .safety: return "Safety"
             case .diagnostics: return "Diagnostics"
             case .performance: return "Performance"
             }
@@ -58,6 +60,7 @@ public struct RunePreferencesView: View {
             case .general: return "gearshape"
             case .keyBindings: return "keyboard"
             case .logs: return "text.alignleft"
+            case .safety: return "lock.shield"
             case .diagnostics: return "stethoscope"
             case .performance: return "speedometer"
             }
@@ -81,6 +84,13 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
+    @AppStorage(RuneSettingsKeys.writeSafetyRequireApplyDryRun) private var requireApplyDryRun = true
+    @AppStorage(RuneSettingsKeys.writeSafetyRequireRolloutDryRun) private var requireRolloutDryRun = true
+    @AppStorage(RuneSettingsKeys.writeSafetyRequireHelmDryRun) private var requireHelmDryRun = true
+    @AppStorage(RuneSettingsKeys.writeSafetyShowRollbackPlan) private var showRollbackPlan = true
+    @AppStorage(RuneSettingsKeys.writeSafetyRequireCopyableCommand) private var requireCopyableCommand = true
+    @AppStorage(RuneSettingsKeys.writeSafetyRequirePostActionVerification) private var requirePostActionVerification = true
+    @AppStorage(RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) private var requireProductionSecondConfirmation = true
     @State private var cacheClearStatus: String?
     @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
 
@@ -104,6 +114,12 @@ public struct RunePreferencesView: View {
                 .tag(PreferencesPane.logs)
                 .tabItem {
                     Label(PreferencesPane.logs.title, systemImage: PreferencesPane.logs.symbol)
+                }
+
+            safetySettingsForm
+                .tag(PreferencesPane.safety)
+                .tabItem {
+                    Label(PreferencesPane.safety.title, systemImage: PreferencesPane.safety.symbol)
                 }
 
             diagnosticsSettingsForm
@@ -311,6 +327,59 @@ public struct RunePreferencesView: View {
                 timeValueRaw: $customTwoTimeValueRaw,
                 timeUnitRaw: $customTwoTimeUnitRaw
             )
+        }
+    }
+
+    private var safetySettingsForm: some View {
+        settingsPane(
+            title: "Safety",
+            subtitle: "Write and rollback confirmation behavior."
+        ) {
+            settingsSection("Write safety") {
+                settingsToggleRow(
+                    "Require server dry-run before YAML apply",
+                    help: "Runs Kubernetes server-side validation before applying edited YAML. When off, Apply uses the existing direct write flow.",
+                    isOn: $requireApplyDryRun
+                )
+
+                settingsToggleRow(
+                    "Require copyable command display in confirmations",
+                    help: "Shows the equivalent command in write confirmations and keeps the copy command action available.",
+                    isOn: $requireCopyableCommand
+                )
+
+                settingsToggleRow(
+                    "Require production second confirmation",
+                    help: "Destructive actions in production-detected contexts require an extra review step before Rune sends the write.",
+                    isOn: $requireProductionSecondConfirmation
+                )
+            }
+
+            settingsSection("Rollback safety") {
+                settingsToggleRow(
+                    "Require rollout rollback dry-run when supported",
+                    help: "Rollout rollback workflows must validate the rollback plan with the Kubernetes API before execution when the API supports it.",
+                    isOn: $requireRolloutDryRun
+                )
+
+                settingsToggleRow(
+                    "Require Helm rollback dry-run when supported",
+                    help: "Helm rollback workflows must run a Helm dry-run first when the installed Helm version supports it.",
+                    isOn: $requireHelmDryRun
+                )
+
+                settingsToggleRow(
+                    "Show rollback plan before execution",
+                    help: "Displays the target resource, namespace, revision, affected pods when available, and copyable command before rollback.",
+                    isOn: $showRollbackPlan
+                )
+
+                settingsToggleRow(
+                    "Require post-action verification",
+                    help: "After write or rollback actions, Rune refreshes and verifies the resulting resource state when supported.",
+                    isOn: $requirePostActionVerification
+                )
+            }
         }
     }
 

@@ -33,12 +33,116 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(operationCount, 1)
     }
 
+    func testRESTRequestCoalescerCancelsUnderlyingReadWhenLastWaiterCancels() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let probe = RESTRequestCoalescerCancellationProbe()
+        let key = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"]
+        )
+
+        let task = Task {
+            try await coalescer.value(for: key) {
+                await probe.markStarted()
+                do {
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                    return RESTResponse(body: "late", contentType: "application/json")
+                } catch {
+                    await probe.markCancelled()
+                    throw error
+                }
+            }
+        }
+
+        for _ in 0..<100 where await !probe.started {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let didStart = await probe.started
+        XCTAssertTrue(didStart)
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancelled coalesced read to throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        for _ in 0..<100 where await !probe.cancelled {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let didCancel = await probe.cancelled
+        XCTAssertTrue(didCancel)
+    }
+
+    func testRESTRequestCoalescerKeepsSharedReadAliveForRemainingWaiter() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = RESTRequestCoalescerCounter()
+        let key = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"]
+        )
+
+        let first = Task {
+            try await coalescer.value(for: key) {
+                let count = await counter.increment()
+                try await Task.sleep(nanoseconds: 40_000_000)
+                return RESTResponse(body: "body-\(count)", contentType: "application/json")
+            }
+        }
+        for _ in 0..<100 where await counter.currentValue() == 0 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let startedOperationCount = await counter.currentValue()
+        XCTAssertEqual(startedOperationCount, 1)
+
+        let second = Task {
+            try await coalescer.value(for: key) {
+                let count = await counter.increment()
+                try await Task.sleep(nanoseconds: 40_000_000)
+                return RESTResponse(body: "body-\(count)", contentType: "application/json")
+            }
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+
+        first.cancel()
+        let secondResponse = try await second.value
+        _ = try? await first.value
+        let operationCount = await counter.currentValue()
+        XCTAssertEqual(secondResponse.body, "body-1")
+        XCTAssertEqual(operationCount, 1)
+    }
+
     func testRESTRequestCoalescingOnlyAllowsBodylessSafeReads() {
         XCTAssertTrue(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "GET", body: nil))
         XCTAssertTrue(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "head", body: nil))
         XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "GET", body: "{}"))
         XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "POST", body: nil))
         XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "PATCH", body: "{}"))
+    }
+
+    func testTerminalResizeFrameUsesKubernetesExecResizeChannel() throws {
+        let frame = try KubernetesRESTClient._testTerminalResizeFrame(columns: 120, rows: 32)
+
+        XCTAssertEqual(frame.first, 4)
+        let payload = try JSONSerialization.jsonObject(with: Data(frame.dropFirst())) as? [String: Int]
+        XCTAssertEqual(payload?["Width"], 120)
+        XCTAssertEqual(payload?["Height"], 32)
+    }
+
+    func testTerminalResizeFrameClampsInvalidDimensions() throws {
+        let frame = try KubernetesRESTClient._testTerminalResizeFrame(columns: 0, rows: 900)
+        let payload = try JSONSerialization.jsonObject(with: Data(frame.dropFirst())) as? [String: Int]
+
+        XCTAssertEqual(payload?["Width"], 1)
+        XCTAssertEqual(payload?["Height"], 200)
     }
 
     func testRESTClientLoadsContextsDirectlyFromKubeconfig() async throws {
@@ -124,6 +228,33 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(KubernetesListJSON.collectionPageInfo(from: raw)?.continueToken, "next")
     }
 
+    func testPagedCollectionCountFallsBackWhenContinueTokenExpires() async {
+        let first = KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250")
+        let second = KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250&continue=stale")
+        let count = await KubernetesClient.pagedCollectionCount(
+            firstRequest: first,
+            nextRequest: { token in
+                token == "stale" ? second : nil
+            },
+            maxPages: 4,
+            progress: nil,
+            fetch: { request in
+                if request == first {
+                    return #"{"metadata":{"continue":"stale"},"items":[{},{}]}"#
+                }
+                throw RuneError.commandFailed(
+                    command: "kubernetes REST GET \(request.apiPath)",
+                    message: #"HTTP 410: {"kind":"Status","reason":"Expired","message":"The provided continue parameter is too old."}"#
+                )
+            },
+            fallbackTotal: {
+                7
+            }
+        )
+
+        XCTAssertEqual(count, 7)
+    }
+
     func testPreferredPortForwardPodChoosesRunningPodDeterministically() {
         let pods = [
             PodSummary(name: "api-b", namespace: "default", status: "Pending"),
@@ -201,5 +332,18 @@ private actor RESTRequestCoalescerCounter {
 
     func currentValue() -> Int {
         count
+    }
+}
+
+private actor RESTRequestCoalescerCancellationProbe {
+    private(set) var started = false
+    private(set) var cancelled = false
+
+    func markStarted() {
+        started = true
+    }
+
+    func markCancelled() {
+        cancelled = true
     }
 }

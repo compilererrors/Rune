@@ -3,9 +3,20 @@ import Foundation
 import RuneCore
 
 enum TerminalKubectlCommandBuilder {
-    static func exec(contextName: String?, namespace: String, podName: String, command: String) -> String {
+    static func exec(
+        contextName: String?,
+        namespace: String,
+        podName: String,
+        containerName: String? = nil,
+        command: String
+    ) -> String {
         var parts = base(contextName: contextName, namespace: namespace)
-        parts += ["exec", "-it", podName, "--", "sh", "-lc", command]
+        parts += ["exec", "-it", podName]
+        let trimmedContainer = containerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedContainer.isEmpty {
+            parts += ["--container", trimmedContainer]
+        }
+        parts += ["--", "sh", "-lc", command]
         return shellCommand(parts)
     }
 

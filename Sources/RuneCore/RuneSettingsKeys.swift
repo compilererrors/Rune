@@ -52,6 +52,13 @@ public enum RuneSettingsKeys {
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
     public static let terminalScrollbackLineLimitMaximum = 200_000
+    public static let writeSafetyRequireApplyDryRun = "rune.settings.writeSafety.requireApplyDryRun"
+    public static let writeSafetyRequireRolloutDryRun = "rune.settings.writeSafety.requireRolloutDryRun"
+    public static let writeSafetyRequireHelmDryRun = "rune.settings.writeSafety.requireHelmDryRun"
+    public static let writeSafetyShowRollbackPlan = "rune.settings.writeSafety.showRollbackPlan"
+    public static let writeSafetyRequireCopyableCommand = "rune.settings.writeSafety.requireCopyableCommand"
+    public static let writeSafetyRequirePostActionVerification = "rune.settings.writeSafety.requirePostActionVerification"
+    public static let writeSafetyRequireProductionSecondConfirmation = "rune.settings.writeSafety.requireProductionSecondConfirmation"
 
     public static func clampedTerminalFontSize(_ value: Double) -> Double {
         min(terminalFontSizeMaximum, max(terminalFontSizeMinimum, value))
@@ -95,7 +102,14 @@ public enum RuneSettingsKeys {
             layoutDetailPaneVisible: true,
             layoutPodNameColumnWidth: 280.0,
             terminalFontSize: terminalFontSizeDefault,
-            terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault
+            terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault,
+            writeSafetyRequireApplyDryRun: true,
+            writeSafetyRequireRolloutDryRun: true,
+            writeSafetyRequireHelmDryRun: true,
+            writeSafetyShowRollbackPlan: true,
+            writeSafetyRequireCopyableCommand: true,
+            writeSafetyRequirePostActionVerification: true,
+            writeSafetyRequireProductionSecondConfirmation: true
         ])
     }
 }
@@ -159,6 +173,41 @@ public extension UserDefaults {
                 forKey: RuneSettingsKeys.terminalScrollbackLineLimit
             )
         }
+    }
+
+    var runeWriteSafetyRequireApplyDryRun: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun) }
+    }
+
+    var runeWriteSafetyRequireRolloutDryRun: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun) }
+    }
+
+    var runeWriteSafetyRequireHelmDryRun: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun) }
+    }
+
+    var runeWriteSafetyShowRollbackPlan: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan) }
+    }
+
+    var runeWriteSafetyRequireCopyableCommand: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand) }
+    }
+
+    var runeWriteSafetyRequirePostActionVerification: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification) }
+    }
+
+    var runeWriteSafetyRequireProductionSecondConfirmation: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) }
     }
 
     func runeCustomLogPresetConfig(slot: RuneCustomLogPresetSlot) -> RuneCustomLogPresetConfig {

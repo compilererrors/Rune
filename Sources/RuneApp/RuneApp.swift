@@ -44,7 +44,11 @@ struct RuneApplication: App {
     init() {
         RuneSettingsKeys.registerDefaults()
         RuneLaunchEnvironment.applyProcessOverrides()
-        _viewModel = StateObject(wrappedValue: RuneAppViewModel())
+        _viewModel = StateObject(
+            wrappedValue: RuneAppViewModel(
+                contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore()
+            )
+        )
     }
 
     var body: some Scene {

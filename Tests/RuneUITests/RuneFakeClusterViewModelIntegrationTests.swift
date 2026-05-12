@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import RuneCore
 @testable import RuneFakeK8sSupport
+@testable import RuneKube
 @testable import RuneStore
 @testable import RuneUI
 
@@ -315,6 +316,243 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testRollbackDryRunFailureBlocksRealRollbackAndAuditsFailureAgainstFakeCluster() async throws {
+        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defer {
+            restoreSetting(previousRolloutDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+            restoreSetting(previousRollbackPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreSetting(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == "orbit-lens" })
+        harness.viewModel.selectDeployment(deployment)
+
+        try await waitUntil {
+            harness.state.selectedDeployment?.name == "orbit-lens"
+                && harness.state.deploymentRolloutHistory.contains("REVISION")
+                && harness.state.deploymentRolloutHistory.contains("1")
+                && harness.state.deploymentRolloutHistory.contains("2")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.server.resetRequestLines()
+        harness.viewModel.rolloutRevisionInput = "99"
+        harness.viewModel.requestRolloutUndoSelectedDeployment()
+
+        try await waitUntil {
+            harness.viewModel.pendingWriteDryRunStatus?.contains("No matching ReplicaSet revision") == true
+        }
+
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Could not complete"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Rollback plan:"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Undo"
+                    && entry.status == "Failed"
+                    && entry.resource == "deployment/orbit-lens revision=99"
+                    && entry.message.contains("No matching ReplicaSet revision")
+            }
+        }
+
+        let auditEntry = try XCTUnwrap(harness.state.writeAuditLog.first { entry in
+            entry.action == "Rollout Undo"
+                && entry.resource == "deployment/orbit-lens revision=99"
+        })
+        let auditText = [
+            auditEntry.contextName,
+            auditEntry.namespace,
+            auditEntry.resource,
+            auditEntry.status,
+            auditEntry.message
+        ].joined(separator: "\n")
+        XCTAssertEqual(auditEntry.contextName, RuneFakeK8sFixture.defaultContextName)
+        XCTAssertEqual(auditEntry.namespace, "alpha-zone")
+        XCTAssertFalse(auditText.contains(harness.kubeconfigURL.path))
+        XCTAssertFalse(auditText.localizedCaseInsensitiveContains("token"))
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("GET /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens") })
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("GET /apis/apps/v1/namespaces/alpha-zone/replicasets") })
+        XCTAssertFalse(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens") })
+    }
+
+    func testRollbackSuccessAuditsPostActionReadinessVerificationAgainstFakeCluster() async throws {
+        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousPostActionVerification = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = true
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defer {
+            restoreSetting(previousRolloutDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+            restoreSetting(previousRollbackPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreSetting(previousPostActionVerification, forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+            restoreSetting(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == "orbit-lens" })
+        harness.viewModel.selectDeployment(deployment)
+
+        try await waitUntil {
+            harness.state.selectedDeployment?.name == "orbit-lens"
+                && harness.state.deploymentRolloutHistory.contains("1")
+                && harness.state.deploymentRolloutHistory.contains("2")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.server.resetRequestLines()
+        harness.viewModel.rolloutRevisionInput = "1"
+        harness.viewModel.requestRolloutUndoSelectedDeployment()
+
+        try await waitUntil {
+            harness.viewModel.pendingWriteDryRunStatus == "Server accepted rollback dry-run."
+        }
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Undo"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "deployment/orbit-lens revision=1"
+                    && entry.message.contains("Rollback completed after server dry-run")
+                    && entry.message.contains("Post-action verification: Deployment orbit-lens is ready 2/2.")
+            }
+        }
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens?dryRun=All") })
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens ") })
+    }
+
+    func testRollbackPostActionVerificationTimesOutWhenDeploymentDoesNotBecomeReadyAgainstFakeCluster() async throws {
+        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousPostActionVerification = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = true
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defer {
+            restoreSetting(previousRolloutDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+            restoreSetting(previousRollbackPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreSetting(previousPostActionVerification, forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+            restoreSetting(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let harness = try await makeHarness(kubeClient: KubernetesClient(commandTimeout: 0.15))
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == "ember-gate" })
+        harness.viewModel.selectDeployment(deployment)
+
+        try await waitUntil {
+            harness.state.selectedDeployment?.name == "ember-gate"
+                && harness.state.deploymentRolloutHistory.contains("1")
+                && harness.state.deploymentRolloutHistory.contains("2")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.server.resetRequestLines()
+        harness.viewModel.rolloutRevisionInput = "1"
+        harness.viewModel.requestRolloutUndoSelectedDeployment()
+
+        try await waitUntil {
+            harness.viewModel.pendingWriteDryRunStatus == "Server accepted rollback dry-run."
+        }
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil(timeout: 3) {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Undo"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "deployment/ember-gate revision=1"
+                    && entry.message.contains("Rollback completed after server dry-run")
+                    && entry.message.contains("Post-action verification: Timed out waiting for Deployment ember-gate rollout readiness.")
+                    && entry.message.contains("Last observed readiness was 1/2.")
+            }
+        }
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/ember-gate?dryRun=All") })
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/ember-gate ") })
+    }
+
+    func testAuthDoctorReportsHelmDryRunUnavailableWithoutRunningHelmCLI() async throws {
+        let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
+        defer {
+            restoreSetting(previousHelmDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+
+        harness.viewModel.runAuthDoctor()
+
+        try await waitUntil {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" }
+        }
+
+        let check = try XCTUnwrap(harness.state.authDoctorChecks.first { $0.id == "helm-rollback-dry-run" })
+        XCTAssertEqual(check.title, "Helm rollback dry-run")
+        XCTAssertEqual(check.status, .warning)
+        XCTAssertTrue(check.message.contains("Native Helm rollback dry-run is not available"))
+        XCTAssertTrue(check.message.contains("does not run Helm automatically"))
+        XCTAssertFalse(check.message.contains(harness.kubeconfigURL.path))
+        XCTAssertFalse(check.message.localizedCaseInsensitiveContains("token"))
+        XCTAssertFalse(harness.server.requestLines().contains { $0.localizedCaseInsensitiveContains("helm") })
+    }
+
     private struct Harness {
         let server: RuneFakeK8sRESTServer
         let kubeconfigURL: URL
@@ -327,13 +565,17 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         }
     }
 
-    private func makeHarness(fixture: RuneFakeK8sFixture = RuneFakeK8sFixture()) async throws -> Harness {
+    private func makeHarness(
+        fixture: RuneFakeK8sFixture = RuneFakeK8sFixture(),
+        kubeClient: KubernetesClient = KubernetesClient()
+    ) async throws -> Harness {
         let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
         let viewModel = RuneAppViewModel(
             state: state,
+            kubeClient: kubeClient,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -348,10 +590,14 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     private func restoreDemoSetting(_ value: Any?) {
+        restoreSetting(value, forKey: RuneSettingsKeys.enableDemoCluster)
+    }
+
+    private func restoreSetting(_ value: Any?, forKey key: String) {
         if let value {
-            UserDefaults.standard.set(value, forKey: RuneSettingsKeys.enableDemoCluster)
+            UserDefaults.standard.set(value, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            UserDefaults.standard.removeObject(forKey: key)
         }
     }
 
