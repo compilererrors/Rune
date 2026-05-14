@@ -1058,6 +1058,46 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(state.selectedOperatorResource?.name, "synthetic-resource-250")
     }
 
+    @MainActor
+    func testResourceContextMenuSelectionHighlightBenchmarkKPI() {
+        let tableView = NSTableView(frame: NSRect(x: 0, y: 0, width: 520, height: 500))
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
+        column.width = 500
+        tableView.addTableColumn(column)
+        tableView.rowHeight = 28
+        tableView.allowsMultipleSelection = false
+
+        let dataSource = BenchmarkTableDataSource(rowCount: 1_000)
+        tableView.dataSource = dataSource
+        tableView.delegate = dataSource
+        tableView.noteNumberOfRowsChanged()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for row in 0..<100 {
+                applyImmediateResourceContextMenuSelection(
+                    row: row,
+                    in: tableView
+                )
+            }
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            for row in 0..<200 {
+                applyImmediateResourceContextMenuSelection(
+                    row: row,
+                    in: tableView
+                )
+            }
+        }
+
+        XCTAssertEqual(tableView.selectedRow, 199)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.025,
+            "KPI: context-menu row highlight must be visual-first and stay below 25ms for 200 row selections in debug."
+        )
+    }
+
     func testPodNameColumnResizeLayoutBenchmarkKPI() {
         let translations = (-1000...1000).map { CGFloat($0) * 0.75 }
 
@@ -2510,6 +2550,26 @@ private final class CountingKubeConfigDiscoverer: KubeConfigDiscovering, @unchec
     func discoverCandidateFiles() -> [URL] {
         callCount += 1
         return []
+    }
+}
+
+private final class BenchmarkTableDataSource: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    let rowCount: Int
+
+    init(rowCount: Int) {
+        self.rowCount = rowCount
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        rowCount
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        NSTableRowView()
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        NSTextField(labelWithString: "row-\(row)")
     }
 }
 

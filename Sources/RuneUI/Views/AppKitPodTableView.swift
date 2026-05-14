@@ -226,6 +226,20 @@ private final class RuneAppKitColumnWidthStore {
 }
 
 @MainActor
+func applyImmediateResourceContextMenuSelection(
+    row: Int,
+    in tableView: NSTableView
+) {
+    tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) {
+        rowView.needsDisplay = true
+        rowView.displayIfNeeded()
+    } else {
+        tableView.setNeedsDisplay(tableView.rect(ofRow: row))
+    }
+}
+
+@MainActor
 private enum RuneAppKitResourceTableStyle {
     static let rowHeight: CGFloat = 34
     static let rowGap: CGFloat = 4
@@ -414,6 +428,21 @@ struct AppKitPodTableView: NSViewRepresentable {
             guard let column = PodColumn(rawValue: tableColumn.identifier.rawValue),
                   let sortColumn = column.sortColumn else { return }
             parent.onToggleSort(sortColumn)
+        }
+
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.pods.count else { return }
+            let pod = parent.pods[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard pod.id != parent.selectedPodID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.pods.first(where: { $0.id == pod.id })
+                else { return }
+                self.parent.onSelectPod(current)
+            }
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
@@ -811,6 +840,21 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             parent.onToggleSort(sortColumn)
         }
 
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.deployments.count else { return }
+            let deployment = parent.deployments[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard deployment.id != parent.selectedDeploymentID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.deployments.first(where: { $0.id == deployment.id })
+                else { return }
+                self.parent.onSelectDeployment(current)
+            }
+        }
+
         func tableViewColumnDidResize(_ notification: Notification) {
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue),
@@ -1107,6 +1151,21 @@ struct AppKitServiceListView: NSViewRepresentable {
             guard let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue),
                   let sortColumn = column.sortColumn else { return }
             parent.onToggleSort(sortColumn)
+        }
+
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.services.count else { return }
+            let service = parent.services[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard service.id != parent.selectedServiceID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.services.first(where: { $0.id == service.id })
+                else { return }
+                self.parent.onSelectService(current)
+            }
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
@@ -1427,6 +1486,21 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             parent.onToggleSort(sortColumn)
         }
 
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.resources.count else { return }
+            let resource = parent.resources[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard resource.id != parent.selectedResourceID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.resources.first(where: { $0.id == resource.id })
+                else { return }
+                self.parent.onSelectResource(current)
+            }
+        }
+
         func tableViewColumnDidResize(_ notification: Notification) {
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue),
@@ -1742,6 +1816,21 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             parent.onToggleSort(column.sortColumn)
         }
 
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.releases.count else { return }
+            let release = parent.releases[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard release.id != parent.selectedReleaseID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.releases.first(where: { $0.id == release.id })
+                else { return }
+                self.parent.onSelectRelease(current)
+            }
+        }
+
         func tableViewColumnDidResize(_ notification: Notification) {
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue),
@@ -2046,6 +2135,21 @@ struct AppKitEventListView: NSViewRepresentable {
             guard let column = EventColumn(rawValue: tableColumn.identifier.rawValue),
                   let sortColumn = column.sortColumn else { return }
             parent.onToggleSort(sortColumn)
+        }
+
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.events.count else { return }
+            let event = parent.events[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard event.id != parent.selectedEventID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.events.first(where: { $0.id == event.id })
+                else { return }
+                self.parent.onSelectEvent(current)
+            }
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
@@ -2362,6 +2466,21 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             parent.onToggleSort(sortColumn)
         }
 
+        func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
+            guard row >= 0, row < parent.resources.count else { return }
+            let resource = parent.resources[row]
+            isApplyingSelection = true
+            defer { isApplyingSelection = false }
+            applyImmediateResourceContextMenuSelection(row: row, in: tableView)
+            guard resource.id != parent.selectedResourceID else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let current = self.parent.resources.first(where: { $0.id == resource.id })
+                else { return }
+                self.parent.onSelectResource(current)
+            }
+        }
+
         func tableViewColumnDidResize(_ notification: Notification) {
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue),
@@ -2551,7 +2670,7 @@ private final class PodNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2564,7 +2683,7 @@ private final class DeploymentNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2577,7 +2696,7 @@ private final class ServiceNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2590,7 +2709,7 @@ private final class GenericResourceNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2603,7 +2722,7 @@ private final class HelmReleaseNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2616,7 +2735,7 @@ private final class EventNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }
@@ -2629,7 +2748,7 @@ private final class OperatorResourceNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
 }

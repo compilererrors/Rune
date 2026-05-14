@@ -11,10 +11,10 @@ go/
 # Packaged .app from scripts/build-macos-app.sh (reproducible via swift build).
 dist/
 
-# Generated locally by fake-k3s (contains certificates) and should never be committed to main.
+# Local generated files.
 assets/readme/kubeconfig.fake-cluster.yaml
 
-# Local fake-k8s runtime state, wrappers, kubeconfig, and shell env exports.
+# Local runtime state.
 .rune-fake-k8s/
 .rune-compose-fake-k8s/
 
@@ -32,7 +32,7 @@ assets/screenshot/ui/update260503/app-store-connect-2880x1800/
 !assets/screenshot/ui/260510/*.png
 assets/screenshot/ui/260510/app-store-2880x1800/
 
-# Environment files should stay local; commit examples instead.
+# Local environment files.
 .env
 .env.*
 !.env.example

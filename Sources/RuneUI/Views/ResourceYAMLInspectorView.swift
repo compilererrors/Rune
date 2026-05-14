@@ -312,6 +312,16 @@ struct ManifestManagedFieldsToggle: View {
         .controlSize(.small)
         .disabled(isDisabled)
         .help(isDisabled ? "Managed fields are shown while editing so line numbers and validation ranges stay exact." : "Hide Kubernetes metadata.managedFields in this read-only view.")
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.62))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+        }
         .fixedSize(horizontal: true, vertical: false)
     }
 }

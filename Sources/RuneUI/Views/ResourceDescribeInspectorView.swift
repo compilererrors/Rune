@@ -12,12 +12,15 @@ struct ResourceDescribeInspectorPane: View {
     let onApply: () -> Void
     let onOpenYAMLEditor: () -> Void
     let readOnlyResetID: String
+    @State private var hidesManagedFields = true
 
     var body: some View {
         let canApplyYAML = canApplyMutations
             && hasUnsavedEdits
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !validationIssues.contains(where: { $0.severity == .error })
+        let managedFieldsFilter = DescribeManagedFieldsDisplayFilter.removingManagedFields(from: describeText)
+        let presentedDescribeText = hidesManagedFields ? managedFieldsFilter.text : describeText
 
         ResourceManifestInspectorLayout {
             ManifestInlineNote("Describe output is read-only. Edit YAML, then Apply.") {
@@ -25,6 +28,15 @@ struct ResourceDescribeInspectorPane: View {
             }
         } toolbar: {
             ManifestToolbarScrollRow {
+                if managedFieldsFilter.removedBlockCount > 0 {
+                    ManifestToolbarGroup {
+                        ManifestManagedFieldsToggle(
+                            hidesManagedFields: $hidesManagedFields,
+                            isDisabled: false
+                        )
+                    }
+                }
+
                 ManifestToolbarGroup {
                     Button("Apply", action: onApply)
                         .buttonStyle(.borderedProminent)
@@ -41,12 +53,52 @@ struct ResourceDescribeInspectorPane: View {
             ManifestStatusChip(text: statusText, systemImage: "clock")
         } surface: {
             DescribeTextSurface(
-                text: describeText,
+                text: presentedDescribeText,
                 minHeight: 280,
                 resetID: readOnlyResetID
             )
         } footer: {
             EmptyView()
         }
+    }
+}
+
+struct DescribeManagedFieldsDisplayFilter {
+    let text: String
+    let removedBlockCount: Int
+
+    static func removingManagedFields(from source: String) -> DescribeManagedFieldsDisplayFilter {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var output: [String] = []
+        var removedBlocks = 0
+        var isSkippingManagedFields = false
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let indent = line.prefix { $0 == " " || $0 == "\t" }.count
+
+            if isSkippingManagedFields {
+                if trimmed.isEmpty {
+                    continue
+                }
+                if indent > 0 {
+                    continue
+                }
+                isSkippingManagedFields = false
+            }
+
+            if trimmed.caseInsensitiveCompare("Managed Fields:") == .orderedSame {
+                removedBlocks += 1
+                isSkippingManagedFields = true
+                continue
+            }
+
+            output.append(line)
+        }
+
+        return DescribeManagedFieldsDisplayFilter(
+            text: output.joined(separator: "\n"),
+            removedBlockCount: removedBlocks
+        )
     }
 }

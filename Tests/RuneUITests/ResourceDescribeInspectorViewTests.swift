@@ -117,6 +117,40 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("hidesManagedFields = false"))
     }
 
+    func testDescribePaneCanHideManagedFieldsWithoutChangingSourceDescribeText() throws {
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(describeSource.contains("DescribeManagedFieldsDisplayFilter.removingManagedFields"))
+        XCTAssertTrue(describeSource.contains("ManifestManagedFieldsToggle("))
+        XCTAssertTrue(describeSource.contains("let presentedDescribeText = hidesManagedFields ? managedFieldsFilter.text : describeText"))
+        XCTAssertTrue(describeSource.contains("text: presentedDescribeText"))
+    }
+
+    func testDescribeManagedFieldsFilterRemovesOnlyManagedFieldsSection() {
+        let source = """
+        Name: api
+        Namespace: default
+        Managed Fields:
+          API Version: v1
+          Fields Type: FieldsV1
+          fieldsV1:
+            f:metadata:
+              f:labels: {}
+          Manager: kubectl
+        Events:
+          Type    Reason
+        """
+
+        let filtered = DescribeManagedFieldsDisplayFilter.removingManagedFields(from: source)
+
+        XCTAssertEqual(filtered.removedBlockCount, 1)
+        XCTAssertTrue(filtered.text.contains("Name: api"))
+        XCTAssertTrue(filtered.text.contains("Events:"))
+        XCTAssertFalse(filtered.text.contains("Managed Fields:"))
+        XCTAssertFalse(filtered.text.contains("fieldsV1"))
+        XCTAssertFalse(filtered.text.contains("Manager: kubectl"))
+    }
+
     func testYAMLToolbarConsolidatesSecondaryActionsIntoMenus() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
 
