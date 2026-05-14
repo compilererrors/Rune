@@ -89,45 +89,167 @@ public extension SupportBundleRequest {
         selectedResourceKind: String?,
         selectedResourceName: String?
     ) -> SupportBundleRequest {
-        SupportBundleRequest(
+        let sanitizer = SupportBundleSanitizer(redactedIdentifiers: [state.selectedContext?.name].compactMap { $0 })
+
+        return SupportBundleRequest(
             generatedAt: generatedAt,
-            contextName: state.selectedContext?.name,
-            namespace: state.selectedNamespace,
+            contextName: state.selectedContext.map { sanitizer.sanitizedContextName($0.name) },
+            namespace: sanitizer.sanitizedText(state.selectedNamespace),
             sectionTitle: state.selectedSection.title,
             readOnlyMode: state.isReadOnlyMode,
             resourceCounts: resourceCounts,
-            selectedResourceKind: selectedResourceKind,
-            selectedResourceName: selectedResourceName,
-            resourceYAML: state.resourceYAML,
-            resourceDescribe: state.resourceDescribe,
-            podLogs: state.podLogs,
-            unifiedLogs: state.unifiedServiceLogs,
-            unifiedLogPods: state.unifiedServiceLogPods,
-            deploymentRolloutHistory: state.deploymentRolloutHistory,
-            recentEvents: Array(state.events.prefix(25)),
-            portForwardSessions: state.portForwardSessions,
-            lastExecResult: state.lastExecResult,
-            authDoctorChecks: state.authDoctorChecks.map(sanitizedAuthDoctorCheck),
-            writeAuditLog: state.writeAuditLog
+            selectedResourceKind: selectedResourceKind.map(sanitizer.sanitizedText),
+            selectedResourceName: selectedResourceName.map(sanitizer.sanitizedText),
+            resourceYAML: sanitizer.sanitizedText(state.resourceYAML),
+            resourceDescribe: sanitizer.sanitizedText(state.resourceDescribe),
+            podLogs: sanitizer.sanitizedText(state.podLogs),
+            unifiedLogs: sanitizer.sanitizedText(state.unifiedServiceLogs),
+            unifiedLogPods: state.unifiedServiceLogPods.map(sanitizer.sanitizedText),
+            deploymentRolloutHistory: sanitizer.sanitizedText(state.deploymentRolloutHistory),
+            recentEvents: Array(state.events.prefix(25)).map(sanitizer.sanitizedEvent),
+            portForwardSessions: state.portForwardSessions.map(sanitizer.sanitizedPortForwardSession),
+            lastExecResult: state.lastExecResult.map(sanitizer.sanitizedPodExecResult),
+            authDoctorChecks: state.authDoctorChecks.map(sanitizer.sanitizedAuthDoctorCheck),
+            writeAuditLog: state.writeAuditLog.map(sanitizer.sanitizedWriteAuditEntry)
         )
     }
 
-    private static func sanitizedAuthDoctorCheck(_ check: RuneHealthCheck) -> RuneHealthCheck {
-        RuneHealthCheck(
-            id: check.id,
-            title: check.title,
-            status: check.status,
-            message: sanitizedSupportText(check.message)
-        )
-    }
+    private struct SupportBundleSanitizer {
+        let redactedIdentifiers: [String]
 
-    private static func sanitizedSupportText(_ text: String) -> String {
-        var sanitized = text
-        for token in sanitized.components(separatedBy: .whitespacesAndNewlines) {
-            let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:()[]{}\"'"))
-            guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { continue }
-            sanitized = sanitized.replacingOccurrences(of: trimmed, with: "<local-path>")
+        private let sensitiveKeys: Set<String> = [
+            "authorization",
+            "token",
+            "id-token",
+            "refresh-token",
+            "access-token",
+            "password",
+            "username",
+            "client-certificate-data",
+            "client-key-data",
+            "certificate-authority-data",
+            "client-certificate",
+            "client-key",
+            "certificate-authority"
+        ]
+
+        func sanitizedContextName(_ name: String) -> String {
+            redactedIdentifiers.contains(name) ? "<context-name>" : sanitizedText(name)
         }
-        return sanitized
+
+        func sanitizedText(_ text: String) -> String {
+            guard !text.isEmpty else { return text }
+
+            var sanitized = text
+            for identifier in redactedIdentifiers where !identifier.isEmpty {
+                sanitized = sanitized.replacingOccurrences(of: identifier, with: "<context-name>")
+            }
+
+            sanitized = sanitized.replacingOccurrences(
+                of: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s*:\s*[^ \n\r\t,;]+"#,
+                with: "$1: <redacted>",
+                options: .regularExpression
+            )
+            sanitized = sanitized.replacingOccurrences(
+                of: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s+[^ \n\r\t,;]+"#,
+                with: "$1 <redacted>",
+                options: .regularExpression
+            )
+
+            return sanitized
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { sanitizedLine(String($0)) }
+                .joined(separator: "\n")
+        }
+
+        func sanitizedEvent(_ event: EventSummary) -> EventSummary {
+            EventSummary(
+                type: sanitizedText(event.type),
+                reason: sanitizedText(event.reason),
+                objectName: sanitizedText(event.objectName),
+                message: sanitizedText(event.message),
+                lastTimestamp: event.lastTimestamp,
+                involvedKind: event.involvedKind.map(sanitizedText),
+                involvedNamespace: event.involvedNamespace.map(sanitizedText)
+            )
+        }
+
+        func sanitizedPortForwardSession(_ session: PortForwardSession) -> PortForwardSession {
+            PortForwardSession(
+                id: session.id,
+                contextName: sanitizedContextName(session.contextName),
+                namespace: sanitizedText(session.namespace),
+                targetKind: session.targetKind,
+                targetName: sanitizedText(session.targetName),
+                localPort: session.localPort,
+                remotePort: session.remotePort,
+                address: session.address,
+                status: session.status,
+                lastMessage: sanitizedText(session.lastMessage)
+            )
+        }
+
+        func sanitizedPodExecResult(_ result: PodExecResult) -> PodExecResult {
+            PodExecResult(
+                podName: sanitizedText(result.podName),
+                namespace: sanitizedText(result.namespace),
+                command: result.command.map(sanitizedText),
+                stdout: sanitizedText(result.stdout),
+                stderr: sanitizedText(result.stderr),
+                exitCode: result.exitCode
+            )
+        }
+
+        func sanitizedAuthDoctorCheck(_ check: RuneHealthCheck) -> RuneHealthCheck {
+            RuneHealthCheck(
+                id: check.id,
+                title: sanitizedText(check.title),
+                status: check.status,
+                message: sanitizedText(check.message)
+            )
+        }
+
+        func sanitizedWriteAuditEntry(_ entry: WriteAuditEntry) -> WriteAuditEntry {
+            WriteAuditEntry(
+                id: entry.id,
+                timestamp: entry.timestamp,
+                action: sanitizedText(entry.action),
+                contextName: sanitizedContextName(entry.contextName),
+                namespace: sanitizedText(entry.namespace),
+                resource: sanitizedText(entry.resource),
+                status: sanitizedText(entry.status),
+                message: sanitizedText(entry.message)
+            )
+        }
+
+        private func sanitizedLine(_ line: String) -> String {
+            let lineWithRedactedPath = sanitizedLocalPaths(in: line)
+
+            guard let colonIndex = lineWithRedactedPath.firstIndex(of: ":") else {
+                return lineWithRedactedPath
+            }
+
+            let key = lineWithRedactedPath[..<colonIndex]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "- "))
+                .lowercased()
+
+            guard sensitiveKeys.contains(key) else {
+                return lineWithRedactedPath
+            }
+
+            let prefix = lineWithRedactedPath[...colonIndex]
+            return "\(prefix) <redacted>"
+        }
+
+        private func sanitizedLocalPaths(in text: String) -> String {
+            var sanitized = text
+            for token in sanitized.components(separatedBy: .whitespacesAndNewlines) {
+                let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:()[]{}\"'"))
+                guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { continue }
+                sanitized = sanitized.replacingOccurrences(of: trimmed, with: "<local-path>")
+            }
+            return sanitized
+        }
     }
 }

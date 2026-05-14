@@ -1142,7 +1142,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("static let sortIndicatorGap: CGFloat = 4"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.horizontalInset = rowHorizontalInset"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)"))
-        XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.apply(to: tableView").count - 1, 5)
+        XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.apply(to: tableView").count - 1, 7)
         XCTAssertFalse(appKitPodTableSource.contains("usesAlternatingRowBackgroundColors = false\n        tableView.backgroundColor = .clear\n        tableView.gridStyleMask = []\n        tableView.headerView"))
         XCTAssertTrue(appKitPodTableSource.contains("lineBreakMode: NSLineBreakMode = .byTruncatingTail"))
         XCTAssertTrue(appKitPodTableSource.contains("titleLabel.lineBreakMode = .byTruncatingMiddle"))
@@ -1376,7 +1376,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(rootViewSource.contains("Add Cluster"))
         XCTAssertTrue(rootViewSource.contains("Import Kubeconfig"))
+        XCTAssertTrue(rootViewSource.contains("Paste Kubeconfig"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.importKubeConfigFromPasteboard()"))
+        XCTAssertTrue(rootViewSource.contains("Add Kubeconfig Folder"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.importKubeConfigFolder()"))
+        XCTAssertTrue(rootViewSource.contains("Favorite imported contexts"))
+        XCTAssertTrue(rootViewSource.contains("$viewModel.favoriteImportedKubeConfigContexts"))
+        XCTAssertTrue(rootViewSource.contains("Manual Server"))
+        XCTAssertTrue(rootViewSource.contains("Add Manual Token Cluster"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.importManualTokenKubeConfig()"))
         XCTAssertTrue(rootViewSource.contains("Use ~/.kube/config"))
+        XCTAssertTrue(rootViewSource.contains("KubeConfigImportReviewPanel"))
+        XCTAssertTrue(rootViewSource.contains("Text(\"Import Review\")"))
+        XCTAssertTrue(rootViewSource.contains("Redacted preview"))
+        XCTAssertTrue(rootViewSource.contains("Run Auth Doctor"))
+        XCTAssertTrue(rootViewSource.contains("update existing, import as copy, or skip"))
         XCTAssertTrue(rootViewSource.contains("Microsoft AKS"))
         XCTAssertTrue(rootViewSource.contains("Amazon EKS"))
         XCTAssertTrue(rootViewSource.contains("Google GKE"))
@@ -1384,7 +1398,24 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("az aks get-credentials"))
         XCTAssertTrue(rootViewSource.contains("aws eks update-kubeconfig"))
         XCTAssertTrue(rootViewSource.contains("gcloud container clusters get-credentials"))
+        XCTAssertTrue(rootViewSource.contains("Refresh Contexts"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.refreshKubeConfigSourcesFromDiscovery()"))
+        XCTAssertTrue(rootViewSource.contains("Run & Connect"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.runCloudKubeConfigImport"))
+        XCTAssertTrue(rootViewSource.contains("TextField(\"Cluster name\""))
+        XCTAssertTrue(rootViewSource.contains("Role ARN (optional)"))
+        XCTAssertTrue(rootViewSource.contains("Subscription ID or name (optional)"))
+        XCTAssertTrue(rootViewSource.contains("Project ID"))
+        XCTAssertTrue(rootViewSource.contains("Local cluster commands"))
+        XCTAssertTrue(rootViewSource.contains("kind get clusters && minikube status && k3d cluster list"))
+        XCTAssertTrue(rootViewSource.contains("minikube start"))
+        XCTAssertTrue(rootViewSource.contains("minikube stop"))
         XCTAssertTrue(viewModelSource.contains("func addDefaultKubeConfig()"))
+        XCTAssertTrue(viewModelSource.contains("func syncKubeConfigSourcesFromDiscovery(reason: String)"))
+        XCTAssertTrue(viewModelSource.contains("func runCloudKubeConfigImport"))
+        XCTAssertTrue(viewModelSource.contains("CloudKubeConfigImporting"))
+        XCTAssertTrue(viewModelSource.contains("kubeConfigSourceSyncNanoseconds"))
+        XCTAssertTrue(viewModelSource.contains("state.resourceYAMLHasUnsavedEdits"))
         XCTAssertTrue(viewModelSource.contains("APP_SANDBOX_CONTAINER_ID"))
         XCTAssertTrue(viewModelSource.contains("pickDefaultKubeConfig(at: url)"))
         XCTAssertTrue(viewModelSource.contains("getpwuid(getuid())"))
@@ -1393,6 +1424,19 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(pickerSource.contains("panel.showsHiddenFiles = true"))
         XCTAssertFalse(pickerSource.contains("allowedContentTypes"))
         XCTAssertTrue(kubernetesClientSource.contains("access.retainAccess(to: url)"))
+    }
+
+    func testAuthDoctorPanelExposesSupportBundleQuickAction() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let authDoctorBlock = try functionBlock(
+            named: "private var authDoctorPanel: some View",
+            endingBefore: "private func authDoctorSymbol",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(authDoctorBlock.contains("Label(\"Auth Doctor\", systemImage: \"stethoscope\")"))
+        XCTAssertTrue(authDoctorBlock.contains("Button(\"Save Bundle\")"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.saveSupportBundle()"))
     }
 
     func testLogInspectorTabsReloadWhenSelectedDirectly() throws {

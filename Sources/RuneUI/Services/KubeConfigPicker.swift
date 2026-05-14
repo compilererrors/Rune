@@ -6,7 +6,17 @@ public protocol KubeConfigPicking {
     func pickFiles() throws -> [URL]
 
     @MainActor
+    func pickFolder() throws -> URL?
+
+    @MainActor
     func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL?
+}
+
+public extension KubeConfigPicking {
+    @MainActor
+    func pickFolder() throws -> URL? {
+        nil
+    }
 }
 
 public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
@@ -26,6 +36,23 @@ public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
         }
 
         return panel.urls
+    }
+
+    @MainActor
+    public func pickFolder() throws -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Add Folder"
+        panel.message = "Select a folder containing kubeconfig files."
+
+        let result = panel.runModal()
+        guard result == .OK else {
+            return nil
+        }
+
+        return panel.url
     }
 
     @MainActor

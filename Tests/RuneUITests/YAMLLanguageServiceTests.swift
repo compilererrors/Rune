@@ -205,6 +205,49 @@ final class YAMLLanguageServiceTests: XCTestCase {
         XCTAssertEqual(issue.column, 9)
     }
 
+    func testAnalyzeReportsOutdentedManagedFieldsOwnershipKeys() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          managedFields:
+          - apiVersion: v1
+            fieldsType: FieldsV1
+            fieldsV1:
+            f:metadata:
+              f:labels: {}
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertTrue(analysis.validationIssues.contains {
+            $0.source == .kubernetes
+                && $0.severity == .error
+                && $0.line == 8
+                && $0.message.contains("aligned with fieldsV1")
+        })
+    }
+
+    func testAnalyzeAllowsManagedFieldsOwnershipKeysNestedUnderFieldsV1() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          managedFields:
+          - apiVersion: v1
+            fieldsType: FieldsV1
+            fieldsV1:
+              f:metadata:
+                f:labels: {}
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertFalse(analysis.validationIssues.contains {
+            $0.source == .kubernetes && $0.message.contains("aligned with fieldsV1")
+        })
+    }
+
     func testSuggestedIndentationFollowsMappingAndSequenceShapes() {
         XCTAssertEqual(YAMLLanguageService.suggestedIndentation(after: "metadata:"), "  ")
         XCTAssertEqual(YAMLLanguageService.suggestedIndentation(after: "  - name:"), "    ")

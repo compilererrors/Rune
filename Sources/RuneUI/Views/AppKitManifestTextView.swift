@@ -16,6 +16,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     var contentStyle: ContentStyle = .plainText
     var externalValidationIssues: [YAMLValidationIssue] = []
     var navigationRequest: YAMLTextNavigationRequest?
+    var showsLineNumbers = false
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -40,7 +41,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView(frame: .zero)
+        let scrollView = ManifestTextScrollView(frame: .zero)
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
@@ -57,12 +58,14 @@ struct AppKitManifestTextView: NSViewRepresentable {
             isEditable: isEditable,
             fontSize: clampedFontSize,
             contentStyle: contentStyle,
-            externalValidationIssues: externalValidationIssues
+            externalValidationIssues: externalValidationIssues,
+            showsLineNumbers: showsLineNumbers
         )
         textView.delegate = context.coordinator
         textView.setStringKeepingSelection(text)
 
         scrollView.documentView = textView
+        scrollView.configureLineNumberGutter(textView: textView, isVisible: contentStyle == .yaml && showsLineNumbers)
         return scrollView
     }
 
@@ -74,7 +77,8 @@ struct AppKitManifestTextView: NSViewRepresentable {
             isEditable: isEditable,
             fontSize: clampedFontSize,
             contentStyle: contentStyle,
-            externalValidationIssues: externalValidationIssues
+            externalValidationIssues: externalValidationIssues,
+            showsLineNumbers: showsLineNumbers
         )
 
         if textView.representedText != text {
@@ -90,10 +94,197 @@ struct AppKitManifestTextView: NSViewRepresentable {
         // Keep scroll/document geometry in sync even when the text itself is unchanged.
         textView.refreshViewportGeometry()
         textView.navigateIfNeeded(navigationRequest)
+        (scrollView as? ManifestTextScrollView)?.configureLineNumberGutter(
+            textView: textView,
+            isVisible: contentStyle == .yaml && showsLineNumbers
+        )
     }
 
     private var clampedFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
+    }
+}
+
+struct YAMLLineNumberGutterMetrics {
+    let font: NSFont
+    let lineCount: Int
+
+    private var digitCount: Int {
+        max(2, String(max(1, lineCount)).count)
+    }
+
+    var leadingPadding: CGFloat {
+        ceil(font.pointSize * 0.35)
+    }
+
+    var trailingPadding: CGFloat {
+        ceil(font.pointSize * 0.55)
+    }
+
+    var textPadding: CGFloat {
+        ceil(font.pointSize * 0.55)
+    }
+
+    var numberColumnWidth: CGFloat {
+        let sample = String(repeating: "8", count: digitCount) as NSString
+        return ceil(sample.size(withAttributes: [.font: numberFont]).width)
+    }
+
+    var gutterWidth: CGFloat {
+        ceil(leadingPadding + numberColumnWidth + trailingPadding)
+    }
+
+    var textInset: CGFloat {
+        gutterWidth + textPadding
+    }
+
+    var numberFont: NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: max(NSFont.smallSystemFontSize, font.pointSize - 1), weight: .regular)
+    }
+}
+
+private extension NSString {
+    func lineNumber(atUTF16Offset target: Int) -> Int {
+        let boundedTarget = max(0, min(target, length))
+        var line = 1
+        var index = 0
+        while index < boundedTarget {
+            if character(at: index) == 10 {
+                line += 1
+            }
+            index += 1
+        }
+        return line
+    }
+}
+
+final class ManifestTextScrollView: NSScrollView {
+    let lineNumberGutterView = YAMLLineNumberGutterOverlayView(frame: .zero)
+    private weak var manifestTextView: PlainManifestTextView?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureGutterView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureGutterView()
+    }
+
+    private func configureGutterView() {
+        lineNumberGutterView.isHidden = true
+        lineNumberGutterView.autoresizingMask = [.height]
+        addSubview(lineNumberGutterView)
+    }
+
+    fileprivate func configureLineNumberGutter(textView: PlainManifestTextView, isVisible: Bool) {
+        manifestTextView = textView
+        lineNumberGutterView.textView = textView
+        lineNumberGutterView.isHidden = !isVisible
+        refreshLineNumberGutter()
+    }
+
+    func refreshLineNumberGutter() {
+        guard let textView = manifestTextView, !lineNumberGutterView.isHidden else {
+            lineNumberGutterView.needsDisplay = true
+            return
+        }
+
+        let metrics = textView.currentLineNumberGutterMetrics
+        let contentFrame = contentView.frame
+        lineNumberGutterView.frame = NSRect(
+            x: contentFrame.minX,
+            y: contentFrame.minY,
+            width: metrics.gutterWidth,
+            height: contentFrame.height
+        )
+        lineNumberGutterView.needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+        refreshLineNumberGutter()
+    }
+
+    override func reflectScrolledClipView(_ clipView: NSClipView) {
+        super.reflectScrolledClipView(clipView)
+        lineNumberGutterView.needsDisplay = true
+    }
+}
+
+final class YAMLLineNumberGutterOverlayView: NSView {
+    fileprivate weak var textView: PlainManifestTextView?
+
+    override var isOpaque: Bool { true }
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let textView else { return }
+
+        let metrics = textView.currentLineNumberGutterMetrics
+        gutterBackgroundColor.setFill()
+        bounds.fill()
+        NSColor.separatorColor.withAlphaComponent(0.22).setStroke()
+        NSBezierPath.strokeLine(
+            from: NSPoint(x: bounds.maxX - 0.5, y: bounds.minY),
+            to: NSPoint(x: bounds.maxX - 0.5, y: bounds.maxY)
+        )
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: metrics.numberFont,
+            .foregroundColor: NSColor.tertiaryLabelColor
+        ]
+        for label in visibleLineNumberLabels() {
+            let text = "\(label.number)" as NSString
+            let size = text.size(withAttributes: attributes)
+            let x = metrics.leadingPadding + max(0, metrics.numberColumnWidth - size.width)
+            text.draw(at: NSPoint(x: x, y: label.y), withAttributes: attributes)
+        }
+    }
+
+    var gutterBackgroundColor: NSColor {
+        NSColor.controlBackgroundColor
+    }
+
+    func visibleLineNumberLabels() -> [(number: Int, y: CGFloat)] {
+        guard let textView,
+              let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer,
+              let scrollView = textView.enclosingScrollView
+        else { return [] }
+
+        let visibleRect = scrollView.contentView.bounds
+        let textOrigin = textView.textContainerOrigin
+        let glyphRange = layoutManager.glyphRange(
+            forBoundingRect: visibleRect.offsetBy(dx: -textOrigin.x, dy: -textOrigin.y),
+            in: textContainer
+        )
+        guard glyphRange.length > 0 else { return [] }
+
+        let nsString = textView.string as NSString
+        let characterRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let lineSearchRange = nsString.lineRange(for: characterRange)
+        var lineNumber = nsString.lineNumber(atUTF16Offset: lineSearchRange.location)
+        var labels: [(number: Int, y: CGFloat)] = []
+
+        nsString.enumerateSubstrings(in: lineSearchRange, options: [.byLines, .substringNotRequired]) { _, lineRange, enclosingRange, _ in
+            let layoutRange = enclosingRange.length > 0 ? enclosingRange : lineRange
+            let lineGlyphRange = layoutManager.glyphRange(forCharacterRange: layoutRange, actualCharacterRange: nil)
+            defer { lineNumber += 1 }
+
+            guard lineGlyphRange.length > 0,
+                  NSIntersectionRange(lineGlyphRange, glyphRange).length > 0
+            else { return }
+
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: lineGlyphRange.location, effectiveRange: nil)
+            labels.append((
+                number: lineNumber,
+                y: textOrigin.y + lineRect.minY - visibleRect.minY + max(0, (textView.currentBaseFont.pointSize - textView.currentLineNumberGutterMetrics.numberFont.pointSize) * 0.5)
+            ))
+        }
+
+        return labels
     }
 }
 
@@ -125,6 +316,7 @@ private final class PlainManifestTextView: NSTextView {
     private var documentRevision = 0
     private var documentLineMetricsCache: (revision: Int, metrics: DocumentLineMetrics)?
     private var documentSizeCache: (key: DocumentSizeCacheKey, size: NSSize)?
+    private var showsLineNumbers = false
 
     override var isOpaque: Bool { false }
 
@@ -141,14 +333,17 @@ private final class PlainManifestTextView: NSTextView {
         isEditable: Bool,
         fontSize: CGFloat,
         contentStyle: AppKitManifestTextView.ContentStyle,
-        externalValidationIssues: [YAMLValidationIssue]
+        externalValidationIssues: [YAMLValidationIssue],
+        showsLineNumbers: Bool
     ) {
         let styleChanged = self.contentStyle != contentStyle
         let fontSizeChanged = self.configuredFontSize != fontSize
         let issuesChanged = self.externalValidationIssues != externalValidationIssues
+        let lineNumbersChanged = self.showsLineNumbers != showsLineNumbers
         self.contentStyle = contentStyle
         self.configuredFontSize = fontSize
         self.externalValidationIssues = externalValidationIssues
+        self.showsLineNumbers = showsLineNumbers
 
         if self.isEditable != isEditable {
             self.isEditable = isEditable
@@ -158,12 +353,13 @@ private final class PlainManifestTextView: NSTextView {
         if isRichText != shouldUseRichText {
             isRichText = shouldUseRichText
         }
-        if fontSizeChanged {
+        if fontSizeChanged || lineNumbersChanged {
             documentSizeCache = nil
             applyFontConfiguration()
+            applyTextContainerInsets()
         }
 
-        if styleChanged || fontSizeChanged || issuesChanged {
+        if styleChanged || fontSizeChanged || issuesChanged || lineNumbersChanged {
             refreshLayout()
         } else {
             refreshViewportGeometry()
@@ -193,7 +389,7 @@ private final class PlainManifestTextView: NSTextView {
         minSize = .zero
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         autoresizingMask = [.height]
-        textContainerInset = NSSize(width: 10, height: 10)
+        applyTextContainerInsets()
         backgroundColor = .clear
         drawsBackground = false
         insertionPointColor = .controlAccentColor
@@ -225,6 +421,24 @@ private final class PlainManifestTextView: NSTextView {
         ]
     }
 
+    private func applyTextContainerInsets() {
+        let baseHorizontalInset = showsLineNumbers ? currentLineNumberGutterMetrics.textInset : 10
+        let targetInset = NSSize(width: baseHorizontalInset, height: 10)
+        guard abs(textContainerInset.width - targetInset.width) > 0.5
+            || abs(textContainerInset.height - targetInset.height) > 0.5
+        else {
+            refreshLineNumberGutterOverlay()
+            return
+        }
+        textContainerInset = targetInset
+        documentSizeCache = nil
+        refreshLineNumberGutterOverlay()
+    }
+
+    private func refreshLineNumberGutterOverlay() {
+        (enclosingScrollView as? ManifestTextScrollView)?.refreshLineNumberGutter()
+    }
+
     func setStringKeepingSelection(_ newValue: String) {
         let selected = selectedRanges
         representedText = newValue
@@ -232,6 +446,7 @@ private final class PlainManifestTextView: NSTextView {
             string = newValue
         }
         invalidateDocumentMetrics()
+        applyTextContainerInsets()
         refreshLayout()
         if !selected.isEmpty {
             selectedRanges = selected.map { range in
@@ -291,6 +506,7 @@ private final class PlainManifestTextView: NSTextView {
         updateDocumentSize()
         invalidateIntrinsicContentSize()
         needsDisplay = true
+        refreshLineNumberGutterOverlay()
     }
 
     private func yamlViewportAnalysisRange(in source: String) -> NSRange {
@@ -306,7 +522,7 @@ private final class PlainManifestTextView: NSTextView {
         return nsSource.lineRange(for: padded)
     }
 
-    private var currentBaseFont: NSFont {
+    fileprivate var currentBaseFont: NSFont {
         NSFont.monospacedSystemFont(ofSize: configuredFontSize, weight: .regular)
     }
 
@@ -314,6 +530,14 @@ private final class PlainManifestTextView: NSTextView {
         updateDocumentSize()
         invalidateIntrinsicContentSize()
         needsDisplay = true
+        refreshLineNumberGutterOverlay()
+    }
+
+    fileprivate var currentLineNumberGutterMetrics: YAMLLineNumberGutterMetrics {
+        YAMLLineNumberGutterMetrics(
+            font: currentBaseFont,
+            lineCount: max(1, documentLineMetrics(for: string).lineCount)
+        )
     }
 
     func navigateIfNeeded(_ request: YAMLTextNavigationRequest?) {
@@ -333,6 +557,7 @@ private final class PlainManifestTextView: NSTextView {
         super.didChangeText()
         representedText = string
         invalidateDocumentMetrics()
+        applyTextContainerInsets()
         refreshLayout()
     }
 

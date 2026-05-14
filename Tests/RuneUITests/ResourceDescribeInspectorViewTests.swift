@@ -106,6 +106,187 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertFalse(describePaneSource.contains("Text(statusText)"))
     }
 
+    func testYAMLPaneExposesManagedFieldsToggleWithoutHidingDuringEdit() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(yamlSource.contains("ManifestManagedFieldsToggle("))
+        XCTAssertTrue(yamlSource.contains("Label(\"Hide managed\", systemImage: \"eye.slash\")"))
+        XCTAssertTrue(yamlSource.contains("KubernetesManagedFieldsDisplayFilter.removingManagedFields"))
+        XCTAssertTrue(yamlSource.contains("isDisabled: isInlineEditing"))
+        XCTAssertTrue(yamlSource.contains("if isEditing"))
+        XCTAssertTrue(yamlSource.contains("hidesManagedFields = false"))
+    }
+
+    func testYAMLToolbarConsolidatesSecondaryActionsIntoMenus() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(yamlSource.contains("Label(\"Draft\", systemImage: \"clock.arrow.circlepath\")"))
+        XCTAssertTrue(yamlSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
+        XCTAssertTrue(yamlSource.contains("Button(\"Undo Draft Edit\""))
+        XCTAssertTrue(yamlSource.contains("Button(\"Revert Draft\""))
+        XCTAssertTrue(yamlSource.contains("Label(\"File\", systemImage: \"doc\")"))
+        XCTAssertTrue(yamlSource.contains("Button(\"Import YAML…\""))
+        XCTAssertTrue(yamlSource.contains("Button(\"Export YAML…\""))
+        XCTAssertFalse(yamlSource.contains("Re-apply Snapshot"))
+    }
+
+    func testManagedFieldsDisplayFilterRemovesNestedBlocksOnlyForDisplay() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: api
+          managedFields:
+          - apiVersion: v1
+            fieldsType: FieldsV1
+            fieldsV1:
+              f:metadata:
+                f:labels: {}
+          labels:
+            app: api
+        spec:
+          containers: []
+        """
+
+        let filtered = KubernetesManagedFieldsDisplayFilter.removingManagedFields(from: source)
+
+        XCTAssertEqual(filtered.removedBlockCount, 1)
+        XCTAssertFalse(filtered.text.contains("managedFields"))
+        XCTAssertFalse(filtered.text.contains("fieldsV1"))
+        XCTAssertTrue(filtered.text.contains("  labels:"))
+        XCTAssertTrue(filtered.text.contains("spec:"))
+    }
+
+    func testYAMLLineNumberGutterMetricsScaleWithFontAndLineCount() {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
+        let twoDigitMetrics = YAMLLineNumberGutterMetrics(font: font, lineCount: 45)
+        let fourDigitMetrics = YAMLLineNumberGutterMetrics(font: font, lineCount: 1_200)
+
+        XCTAssertGreaterThan(fourDigitMetrics.gutterWidth, twoDigitMetrics.gutterWidth)
+        XCTAssertGreaterThan(twoDigitMetrics.textInset, twoDigitMetrics.gutterWidth)
+        XCTAssertGreaterThan(twoDigitMetrics.trailingPadding, twoDigitMetrics.leadingPadding)
+        XCTAssertEqual(
+            twoDigitMetrics.gutterWidth,
+            ceil(twoDigitMetrics.leadingPadding + twoDigitMetrics.numberColumnWidth + twoDigitMetrics.trailingPadding),
+            accuracy: 0.001
+        )
+    }
+
+    func testAppKitYAMLTextViewReservesIntegratedLineNumberGutter() async throws {
+        let text = Binding.constant("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n")
+        let host = NSHostingController(
+            rootView: AppKitManifestTextView(
+                text: text,
+                isEditable: true,
+                contentStyle: .yaml,
+                showsLineNumbers: true
+            )
+            .frame(width: 460, height: 260)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        guard let scrollView = findTextScrollView(in: host.view) else {
+            return XCTFail("Expected YAML NSTextView-backed scroll view")
+        }
+
+        let manifestScrollView = try XCTUnwrap(scrollView as? ManifestTextScrollView)
+        XCTAssertFalse(manifestScrollView.lineNumberGutterView.isHidden)
+        XCTAssertTrue(manifestScrollView.lineNumberGutterView.isOpaque)
+        XCTAssertEqual(manifestScrollView.lineNumberGutterView.gutterBackgroundColor.alphaComponent, 1, accuracy: 0.001)
+        XCTAssertGreaterThan(manifestScrollView.lineNumberGutterView.frame.width, 20)
+        XCTAssertLessThan(manifestScrollView.lineNumberGutterView.frame.width, 48)
+        XCTAssertEqual(
+            Array(manifestScrollView.lineNumberGutterView.visibleLineNumberLabels().map { $0.number }.prefix(4)),
+            [1, 2, 3, 4]
+        )
+
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        let font = try XCTUnwrap(textView.font)
+        let expectedMetrics = YAMLLineNumberGutterMetrics(font: font, lineCount: 5)
+
+        XCTAssertFalse(scrollView.hasVerticalRuler)
+        XCTAssertFalse(scrollView.rulersVisible)
+        XCTAssertNil(scrollView.verticalRulerView)
+        XCTAssertEqual(scrollView.contentInsets.left, 0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(textView.textContainerInset.width, expectedMetrics.textInset - 0.5)
+        XCTAssertGreaterThan(textView.textContainerInset.width, expectedMetrics.gutterWidth)
+        XCTAssertLessThan(textView.textContainerInset.width, 48)
+
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        let textContainer = try XCTUnwrap(textView.textContainer)
+        layoutManager.ensureLayout(for: textContainer)
+        let firstGlyphRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: 0, length: 1), in: textContainer)
+        let firstGlyphXInDocument = textView.textContainerOrigin.x + firstGlyphRect.minX
+
+        XCTAssertGreaterThanOrEqual(
+            firstGlyphXInDocument,
+            expectedMetrics.gutterWidth + expectedMetrics.textPadding - 1,
+            "YAML text should start after the integrated line-number gutter, with right-side padding reserved."
+        )
+    }
+
+    func testAppKitYAMLTextViewExpandsLineNumberGutterWhenLineCountGrows() async throws {
+        var yamlText = "apiVersion: v1\nkind: Pod\n"
+        let binding = Binding(
+            get: { yamlText },
+            set: { yamlText = $0 }
+        )
+        let host = NSHostingController(
+            rootView: AppKitManifestTextView(
+                text: binding,
+                isEditable: true,
+                contentStyle: .yaml,
+                showsLineNumbers: true
+            )
+            .frame(width: 460, height: 260)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let initialTextView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+        let initialInset = initialTextView.textContainerInset.width
+
+        yamlText = (0..<1_200)
+            .map { "key\($0): value" }
+            .joined(separator: "\n")
+        host.rootView = AppKitManifestTextView(
+            text: binding,
+            isEditable: true,
+            contentStyle: .yaml,
+            showsLineNumbers: true
+        )
+        .frame(width: 460, height: 260)
+
+        try await settle(window: window)
+
+        let updatedTextView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+        XCTAssertGreaterThan(
+            updatedTextView.textContainerInset.width,
+            initialInset,
+            "Line-number gutter should grow from the document line count, not use a fixed width."
+        )
+    }
+
     func testDescribePaneAllowsScrollingLongDescribeOutput() async throws {
         let describeText = makeLongDescribeText()
         let (host, window) = makeDescribeHost(describeText: describeText)

@@ -43,6 +43,7 @@ struct InspectorReadOnlyTextView: View {
     var largeTextScrollTargetLine: Int?
     var largeTextScrollTargetRevision: Int?
     var largeTextShowsLineNumbers = true
+    var showsLineNumbers = false
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     private var shouldUseLargeTextSurface: Bool {
@@ -78,7 +79,8 @@ struct InspectorReadOnlyTextView: View {
                     resetScrollOnExternalChange: resetScrollOnExternalChange,
                     contentStyle: contentStyle,
                     externalValidationIssues: externalValidationIssues,
-                    navigationRequest: navigationRequest
+                    navigationRequest: navigationRequest,
+                    showsLineNumbers: showsLineNumbers
                 )
             }
         }

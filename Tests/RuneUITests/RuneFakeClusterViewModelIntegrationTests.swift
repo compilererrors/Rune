@@ -79,6 +79,8 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             "ember-gate-75c9f746b8-kq2wm",
             "orbit-lens-6f58d7d89b-hx9q2"
         ])
+        XCTAssertEqual(harness.state.deployments.count, 2)
+        XCTAssertEqual(harness.state.services.count, 2)
         XCTAssertEqual(harness.state.overviewDeploymentsCount, 2)
         XCTAssertEqual(harness.state.overviewServicesCount, 2)
         XCTAssertEqual(harness.state.overviewIngressesCount, 1)

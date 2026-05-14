@@ -217,11 +217,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(first.scrollIdentityToken, second.scrollIdentityToken)
     }
 
-    func testLargeUnfilteredLogsStillUseSharedInspectorTextSurface() {
+    func testLargeUnfilteredLogsUseVirtualizedTextSurface() {
         let text = String(repeating: "INFO synthetic benchmark line\n", count: 12_000)
         let result = ResourceLogSearchResult.make(text: text, query: "")
 
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
     func testSmallUnfilteredLogsRenderImmediately() {
@@ -230,7 +230,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
-    func testLargeSearchedLogsStillUseSharedInspectorTextSurface() {
+    func testLargeSearchedLogsUseVirtualizedTextSurfaceWithoutCappingData() {
         let text = (0..<12_000)
             .map { index in
                 index.isMultiple(of: 1_000)
@@ -244,7 +244,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(result.displayedText.contains("INFO synthetic line 1"))
         XCTAssertTrue(result.displayedText.contains("INFO synthetic line 11999"))
         XCTAssertEqual(result.matchRanges.count, 12)
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
     func testWideFewLineLogsRenderWithRegularTextSurfaceInsteadOfVirtualizedSurface() throws {
@@ -278,7 +278,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(result.displayedText, text)
         XCTAssertTrue(result.displayedText.contains("INFO full output line 11999"))
         XCTAssertEqual(result.matchRanges.count, 8)
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
     func testLargeLogSearchNavigationKeepsFocusWhenNextMatchStaysOnSameLine() throws {
@@ -351,9 +351,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
+        defer { closeTestWindow(window) }
 
         try await settle(window: window)
 
@@ -381,8 +382,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         )
     }
 
-    /// Many lines plus large UTF-8: same shared AppKit surface as other presets; scrollable content must still span
-    /// the full line count (not an ~80-line-tall blank cut-off).
+    /// Many lines plus large UTF-8 use the virtualized log surface; scrollable content must still span the full
+    /// line count (not an ~80-line-tall blank cut-off).
     @MainActor
     func testDeepSyntheticPodLogsScrollExceedsEightyLineStride() async throws {
         let lineCount = 1_100
@@ -391,7 +392,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
         XCTAssertGreaterThanOrEqual(result.textIndex.lineCount, ResourceLogsDeferredRenderingPolicy.deferredLineCountThreshold)
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
 
         let host = NSHostingController(
             rootView: PodLogsInspectorPane(
@@ -424,9 +425,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
+        defer { closeTestWindow(window) }
 
         try await settle(window: window)
 
@@ -484,9 +486,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
+        defer { closeTestWindow(window) }
 
         try await settle(window: window)
 
@@ -545,6 +548,13 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             try await Task.sleep(nanoseconds: 25_000_000)
         }
+    }
+
+    @MainActor
+    private func closeTestWindow(_ window: NSWindow) {
+        window.orderOut(nil)
+        window.contentViewController = nil
+        window.contentView = nil
     }
 
     @MainActor

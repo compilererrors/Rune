@@ -693,13 +693,22 @@ private struct ResourceLogsOutputSurface: View {
                             selectedIndex: selectedSearchMatchIndex,
                             sequence: searchNavigationSequence
                         )
+                        let usesLargeTextSurface = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: searchResult)
                         InspectorReadOnlyTextView(
                             text: searchResult.displayedText,
                             resetID: outputResetID,
                             resetScrollOnExternalChange: false,
                             contentStyle: .ansiLogs,
-                            navigationRequest: navigationRequest,
-                            allowsAutomaticLargeTextSurface: false
+                            navigationRequest: usesLargeTextSurface ? nil : navigationRequest,
+                            usesLargeTextSurface: usesLargeTextSurface,
+                            allowsAutomaticLargeTextSurface: false,
+                            largeTextIndex: searchResult.textIndex,
+                            largeTextScrollTargetLine: searchResult.matchLineNumber(selectedIndex: selectedSearchMatchIndex),
+                            largeTextScrollTargetRevision: searchResult.largeTextNavigationRevision(
+                                selectedIndex: selectedSearchMatchIndex,
+                                sequence: searchNavigationSequence
+                            ),
+                            largeTextShowsLineNumbers: false
                         )
                     }
                 }
@@ -712,8 +721,9 @@ enum ResourceLogsDeferredRenderingPolicy {
     static let deferredOutputThreshold = 250_000
     static let deferredLineCountThreshold = 1_000
 
-    static func shouldDeferOutputMount(for _: ResourceLogSearchResult) -> Bool {
-        false
+    static func shouldDeferOutputMount(for result: ResourceLogSearchResult) -> Bool {
+        result.displayedText.utf8.count > deferredOutputThreshold
+            && result.textIndex.lineCount >= deferredLineCountThreshold
     }
 }
 

@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/ui/update260503/overview-context-overview.png)
+![Rune overview](assets/screenshot/ui/260510/1overview.png)
 
 ## Why Rune
 
@@ -21,6 +21,7 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 - Check pod and node metrics when your cluster exposes metrics.
 - Move quickly with a command palette and k9s-style resource jumps.
 - Enter namespaces manually and favorite namespaces per context when RBAC prevents listing namespaces.
+- Add clusters with zero-config kubeconfig discovery, paste/file/folder import, manual token kubeconfig, or guided EKS, AKS, and GKE cloud import.
 - Run Auth Doctor to check kubeconfig, context, namespace, pod/log/exec/port-forward permissions, and API transport.
 - Load a small in-memory demo cluster from the Rune menu without starting a server.
 - Stay local: Rune does not use analytics, tracking, advertising, or telemetry.
@@ -32,11 +33,11 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 [Jump to the full screenshot grid](#full-screenshot-grid).
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-unsaved-errors.png" alt="Rune pod YAML editor with validation errors" width="100%">
+  <img src="assets/screenshot/ui/260510/4deployyamledit.png" alt="Rune YAML editor with validation feedback" width="100%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/terminal-port-forward-pod-shell.png" alt="Rune terminal with pod shell and port-forwarding" width="100%">
+  <img src="assets/screenshot/ui/260510/9terminal.png" alt="Rune terminal with pod shell and port-forwarding" width="100%">
 </p>
 
 ## Navigation
@@ -144,100 +145,26 @@ You can also support development through PayPal:
 ## Full Screenshot Grid
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-overview.png" alt="Rune pod overview" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-logs.png" alt="Rune pod logs" width="49%">
+  <img src="assets/screenshot/ui/260510/1overview.png" alt="Rune overview" width="49%">
+  <img src="assets/screenshot/ui/260510/2podlogs.png" alt="Rune pod logs" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-describe.png" alt="Rune pod describe output" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml.png" alt="Rune pod YAML" width="49%">
+  <img src="assets/screenshot/ui/260510/3deployyaml.png" alt="Rune deployment YAML" width="49%">
+  <img src="assets/screenshot/ui/260510/4deployyamledit.png" alt="Rune deployment YAML editing" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-describe.png" alt="Rune deployment describe output" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-unified-logs.png" alt="Rune deployment unified logs" width="49%">
+  <img src="assets/screenshot/ui/260510/5deploydescribe.png" alt="Rune deployment describe output" width="49%">
+  <img src="assets/screenshot/ui/260510/6configdescribe.png" alt="Rune ConfigMap describe output" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-unified-logs-wide-panel.png" alt="Rune expanded deployment unified logs" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-statefulsets-statefulset-describe.png" alt="Rune StatefulSet describe output" width="49%">
+  <img src="assets/screenshot/ui/260510/7events.png" alt="Rune events" width="49%">
+  <img src="assets/screenshot/ui/260510/8helmhistory.png" alt="Rune Helm history" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/update260503/workloads-daemonsets-daemonset-describe.png" alt="Rune DaemonSet describe output" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-daemonsets-daemonset-yaml.png" alt="Rune DaemonSet YAML" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/workloads-jobs-job-yaml.png" alt="Rune Job YAML" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-cronjobs-cronjob-yaml.png" alt="Rune CronJob YAML" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/workloads-hpas-hpa-describe.png" alt="Rune HPA describe output" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-hpas-hpa-yaml.png" alt="Rune HPA YAML" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/workloads-replicasets-replicaset-describe.png" alt="Rune ReplicaSet describe output" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-replicasets-replicaset-yaml-errors.png" alt="Rune ReplicaSet YAML validation" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-editor-modal.png" alt="Rune YAML editor" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors.png" alt="Rune YAML validation error" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/workloads-deployments-deployment-yaml-errors-scrolled.png" alt="Rune YAML validation scrolled" width="49%">
-  <img src="assets/screenshot/ui/update260503/workloads-pods-pod-yaml-from-event.png" alt="Rune pod YAML opened from an event" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/networking-services-service-overview.png" alt="Rune service overview" width="49%">
-  <img src="assets/screenshot/ui/update260503/networking-services-service-describe.png" alt="Rune service describe output" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/networking-services-service-yaml.png" alt="Rune service YAML" width="49%">
-  <img src="assets/screenshot/ui/update260503/networking-services-service-unified-logs.png" alt="Rune service unified logs" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/networking-ingresses-ingress-yaml.png" alt="Rune ingress YAML" width="49%">
-  <img src="assets/screenshot/ui/update260503/networking-networkpolicies-networkpolicy-yaml.png" alt="Rune network policy YAML" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/config-configmaps-configmap-yaml.png" alt="Rune ConfigMap YAML" width="49%">
-  <img src="assets/screenshot/ui/update260503/storage-pvcs-pvc-yaml.png" alt="Rune PVC YAML" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/rbac-roles-role-yaml.png" alt="Rune RBAC role YAML" width="49%">
-  <img src="assets/screenshot/ui/update260503/helm-release-overview.png" alt="Rune Helm release overview" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/events-pulled-go-to-pod.png" alt="Rune event linked to pod source" width="49%">
-  <img src="assets/screenshot/ui/update260503/terminal-port-forward-expanded.png" alt="Rune expanded port-forwarding" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/terminal-pod-shell-session-picker.png" alt="Rune shell session picker" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/command-palette-default-actions.png" alt="Rune command palette actions" width="49%">
-  <img src="assets/screenshot/ui/update260503/command-palette-pods-search-results.png" alt="Rune command palette pods" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/command-palette-deployments-search-results.png" alt="Rune command palette deployments" width="49%">
-  <img src="assets/screenshot/ui/update260503/command-palette-services-search-results.png" alt="Rune command palette services" width="49%">
-</p>
-
-<p>
-  <img src="assets/screenshot/ui/update260503/command-palette-namespaces-search-results.png" alt="Rune command palette namespaces" width="49%">
-  <img src="assets/screenshot/ui/update260503/command-palette-cronjobs-shortcut.png" alt="Rune command palette CronJobs" width="49%">
+  <img src="assets/screenshot/ui/260510/9terminal.png" alt="Rune terminal" width="49%">
+  <img src="assets/screenshot/ui/260510/10commandpalette.png" alt="Rune command palette" width="49%">
 </p>

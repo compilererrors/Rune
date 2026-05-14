@@ -15,6 +15,32 @@ public protocol PortForwardBrowserOpening {
     func open(_ url: URL)
 }
 
+private struct KubeConfigSourceFingerprint: Equatable {
+    private struct Entry: Equatable {
+        let path: String
+        let exists: Bool
+        let fileSize: Int64
+        let modifiedAt: TimeInterval
+    }
+
+    private let entries: [Entry]
+
+    init(sources: [KubeConfigSource]) {
+        entries = sources
+            .map { source in
+                let url = source.url.standardizedFileURL
+                let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                return Entry(
+                    path: url.path,
+                    exists: FileManager.default.fileExists(atPath: url.path),
+                    fileSize: Int64(values?.fileSize ?? -1),
+                    modifiedAt: values?.contentModificationDate?.timeIntervalSince1970 ?? -1
+                )
+            }
+            .sorted { $0.path < $1.path }
+    }
+}
+
 public struct WorkspacePortForwardBrowserOpener: PortForwardBrowserOpening {
     public init() {}
 
@@ -581,6 +607,14 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var operatorResourceSortColumn: OperatorResourceListSortColumn = .family
     @Published public private(set) var operatorResourceSortAscending: Bool = true
     @Published public private(set) var operatorResourcePage: Int = 0
+    @Published public private(set) var kubeConfigImportReviews: [KubeConfigImportReview] = []
+    @Published public var favoriteImportedKubeConfigContexts: Bool = false
+    private var namespaceResolutionLookupCache: (namespaces: [String], lookup: [String: String])?
+    @Published public var manualKubeConfigName: String = ""
+    @Published public var manualKubeConfigServer: String = ""
+    @Published public var manualKubeConfigNamespace: String = "default"
+    @Published public var manualKubeConfigToken: String = ""
+    @Published public private(set) var cloudKubeConfigImportStatus: String?
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
             if pendingWriteAction != oldValue {
@@ -625,6 +659,9 @@ public final class RuneAppViewModel: ObservableObject {
     private let exporter: FileExporting
     private let supportBundleBuilder: any SupportBundleBuilding
     private let contextPreferences: ContextPreferencesStoring
+    private let kubeConfigImportValidator: KubeConfigImportValidator
+    private let kubeConfigImportStore: KubeConfigImportStoring
+    private let cloudKubeConfigImporter: CloudKubeConfigImporting
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
     private let namespaceListPersistence: NamespaceListPersisting
     private let portForwardBrowserOpener: PortForwardBrowserOpening
@@ -634,6 +671,8 @@ public final class RuneAppViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var hasBootstrapped = false
     private var bootstrapTask: Task<Void, Never>?
+    private var kubeConfigSourceSyncTask: Task<Void, Never>?
+    private var latestKubeConfigSourceFingerprint: KubeConfigSourceFingerprint?
     private var clusterLoadGeneration = UUID()
     private var launchExperienceStartedAt = ContinuousClock.now
     private var latestSnapshotRequestID = UUID()
@@ -683,6 +722,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let terminalOutputFlushNanoseconds: UInt64 = 33_000_000
     private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     private let liveStatusUpdateNanoseconds: UInt64 = 12_000_000_000
+    private let kubeConfigSourceSyncNanoseconds: UInt64 = 2_000_000_000
     private let launchExperienceMinimumNanoseconds: UInt64 = 320_000_000
     /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
     private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
@@ -717,6 +757,9 @@ public final class RuneAppViewModel: ObservableObject {
         exporter: FileExporting = SavePanelExporter(),
         supportBundleBuilder: any SupportBundleBuilding = JSONSupportBundleBuilder(),
         contextPreferences: ContextPreferencesStoring = UserDefaultsContextPreferencesStore(),
+        kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
+        kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
+        cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
         namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
         portForwardBrowserOpener: PortForwardBrowserOpening = WorkspacePortForwardBrowserOpener(),
@@ -731,6 +774,9 @@ public final class RuneAppViewModel: ObservableObject {
         self.exporter = exporter
         self.supportBundleBuilder = supportBundleBuilder
         self.contextPreferences = contextPreferences
+        self.kubeConfigImportValidator = kubeConfigImportValidator
+        self.kubeConfigImportStore = kubeConfigImportStore
+        self.cloudKubeConfigImporter = cloudKubeConfigImporter
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
         self.namespaceListPersistence = namespaceListPersistence
         self.portForwardBrowserOpener = portForwardBrowserOpener
@@ -848,6 +894,27 @@ public final class RuneAppViewModel: ObservableObject {
 
     public var podLogContainerOptions: [String] {
         state.selectedPod?.containerNames ?? []
+    }
+
+    public var overviewUnhealthyItems: [OverviewSignalItem] {
+        overviewInsightsProjector.unhealthyItems()
+    }
+
+    public var overviewIncidentTimelineItems: [OverviewSignalItem] {
+        overviewInsightsProjector.incidentTimelineItems()
+    }
+
+    public var overviewDependencyItems: [OverviewDependencyItem] {
+        overviewInsightsProjector.dependencyItems()
+    }
+
+    private var overviewInsightsProjector: OverviewInsightsProjector {
+        OverviewInsightsProjector(
+            pods: state.overviewPods,
+            deployments: state.deployments,
+            services: state.services,
+            events: state.overviewEvents
+        )
     }
 
     public var selectedPodCount: Int {
@@ -1072,7 +1139,7 @@ public final class RuneAppViewModel: ObservableObject {
         let values = filtered(state.pods) { pod in
             "\(pod.name) \(pod.status) \(pod.namespace) \(pod.ageDescription) \(pod.cpuDisplay) \(pod.memoryDisplay) \(pod.totalRestarts)"
         }
-        return values.sorted(by: podComparator)
+        return sortedPods(values)
     }
 
     public var visibleDeployments: [DeploymentSummary] {
@@ -1285,6 +1352,8 @@ public final class RuneAppViewModel: ObservableObject {
                 let discoveredURLs = self.kubeConfigDiscoverer.discoverCandidateFiles()
                 guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
                 self.diagnostics.log("bootstrap discovered kubeconfig files: \(discoveredURLs.map(\.path).joined(separator: ", "))")
+                await Task.yield()
+                guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
 
                 let sources = try self.resolvedKubeConfigSources(
                     fallbackURLs: discoveredURLs
@@ -1294,7 +1363,9 @@ public final class RuneAppViewModel: ObservableObject {
                 if self.state.kubeConfigSources != sources {
                     self.state.setSources(sources)
                 }
+                self.latestKubeConfigSourceFingerprint = self.kubeConfigSourceFingerprint(for: sources)
                 self.diagnostics.log("bootstrap resolved sources count=\(sources.count)")
+                self.startKubeConfigSourceSync()
 
                 guard !sources.isEmpty else {
                     self.clearClusterDataForEmptyBootstrapIfNeeded()
@@ -1432,19 +1503,283 @@ public final class RuneAppViewModel: ObservableObject {
                 let files = try picker.pickFiles()
                 guard !files.isEmpty else { return }
 
-                for file in files {
-                    try? bookmarkManager.addKubeConfig(url: file)
+                let payloads = try files.map { file in
+                    (
+                        raw: try String(contentsOf: file, encoding: .utf8),
+                        sourceName: file.lastPathComponent
+                    )
                 }
-
-                let sources = try resolvedKubeConfigSources(fallbackURLs: files)
-                state.setSources(sources)
-                diagnostics.log("importKubeConfig loaded files count=\(files.count), sources count=\(sources.count)")
-                try await reloadContexts()
+                try await importKubeConfigPayloads(payloads, logLabel: "importKubeConfig")
             } catch {
                 diagnostics.log("importKubeConfig failed: \(error.localizedDescription)")
                 state.setError(error)
             }
         }
+    }
+
+    public func importKubeConfigFromPasteboard() {
+        guard let raw = NSPasteboard.general.string(forType: .string),
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            state.setError(RuneError.invalidInput(message: "Pasteboard does not contain kubeconfig YAML."))
+            return
+        }
+
+        importKubeConfig(raw: raw, sourceName: "pasted-kubeconfig.yaml")
+    }
+
+    public func importKubeConfigFolder() {
+        Task {
+            do {
+                guard let folder = try picker.pickFolder() else { return }
+                let files = try kubeConfigFiles(in: folder)
+                guard !files.isEmpty else {
+                    throw RuneError.invalidInput(message: "No kubeconfig files were found in \(folder.lastPathComponent).")
+                }
+
+                let payloads = try files.map { file in
+                    (
+                        raw: try String(contentsOf: file, encoding: .utf8),
+                        sourceName: file.lastPathComponent
+                    )
+                }
+                try await importKubeConfigPayloads(payloads, logLabel: "importKubeConfigFolder")
+            } catch {
+                diagnostics.log("importKubeConfigFolder failed: \(error.localizedDescription)")
+                state.setError(error)
+            }
+        }
+    }
+
+    public func importKubeConfig(raw: String, sourceName: String = "pasted-kubeconfig.yaml") {
+        Task {
+            do {
+                try await importKubeConfigPayloads([(raw: raw, sourceName: sourceName)], logLabel: "importKubeConfigPaste")
+            } catch {
+                diagnostics.log("importKubeConfigPaste failed: \(error.localizedDescription)")
+                state.setError(error)
+            }
+        }
+    }
+
+    public func importManualTokenKubeConfig() {
+        Task {
+            do {
+                let raw = try manualTokenKubeConfigYAML()
+                manualKubeConfigToken = ""
+                try await importKubeConfigPayloads([(raw: raw, sourceName: "manual-token-kubeconfig.yaml")], logLabel: "importManualTokenKubeConfig")
+            } catch {
+                diagnostics.log("importManualTokenKubeConfig failed: \(error.localizedDescription)")
+                state.setError(error)
+            }
+        }
+    }
+
+    public func cloudKubeConfigCommandPreview(for request: CloudKubeConfigImportRequest) -> String {
+        do {
+            return try cloudKubeConfigImporter.commandPreview(for: request).displayCommand
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    public func runCloudKubeConfigImport(_ request: CloudKubeConfigImportRequest) {
+        cloudKubeConfigImportStatus = "Running \(request.provider.rawValue.uppercased()) import..."
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.cloudKubeConfigImporter.importCluster(request)
+                self.kubeConfigImportReviews = result.reviews
+                let blockingIssues = self.blockingKubeConfigImportIssues(in: result.reviews)
+                guard blockingIssues.isEmpty else {
+                    self.setKubeConfigImportFailureAuthDoctorChecks(for: blockingIssues)
+                    throw RuneError.invalidInput(message: self.kubeConfigImportErrorMessage(for: blockingIssues))
+                }
+
+                let sources = try self.resolvedKubeConfigSources(fallbackURLs: result.discoveredURLs)
+                self.state.setSources(sources)
+                self.latestKubeConfigSourceFingerprint = self.kubeConfigSourceFingerprint(for: sources)
+                self.startKubeConfigSourceSync()
+                self.cloudKubeConfigImportStatus = "Imported \(request.provider.rawValue.uppercased()) kubeconfig context."
+                try await self.reloadContexts()
+            } catch {
+                self.cloudKubeConfigImportStatus = "Cloud import failed."
+                self.diagnostics.log("cloud kubeconfig import failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
+    }
+
+    private func manualTokenKubeConfigYAML() throws -> String {
+        let server = manualKubeConfigServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = manualKubeConfigToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let namespace = manualKubeConfigNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: server),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              components.host?.isEmpty == false else {
+            throw RuneError.invalidInput(message: "Manual cluster server must be a valid HTTP or HTTPS URL.")
+        }
+        guard !token.isEmpty else {
+            throw RuneError.invalidInput(message: "Manual cluster token is required.")
+        }
+
+        let fallbackName = components.host ?? "manual-cluster"
+        let contextName = normalizedManualKubeConfigName(from: manualKubeConfigName, fallback: fallbackName)
+        let clusterName = "\(contextName)-cluster"
+        let userName = "\(contextName)-user"
+        let namespaceLine = namespace.isEmpty ? "" : "\n    namespace: \(yamlQuoted(namespace))"
+
+        return """
+        apiVersion: v1
+        kind: Config
+        current-context: \(yamlQuoted(contextName))
+        clusters:
+        - name: \(yamlQuoted(clusterName))
+          cluster:
+            server: \(yamlQuoted(server))
+        contexts:
+        - name: \(yamlQuoted(contextName))
+          context:
+            cluster: \(yamlQuoted(clusterName))
+            user: \(yamlQuoted(userName))\(namespaceLine)
+        users:
+        - name: \(yamlQuoted(userName))
+          user:
+            token: \(yamlQuoted(token))
+        """
+    }
+
+    private func normalizedManualKubeConfigName(from raw: String, fallback: String) -> String {
+        let candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : raw
+        let normalized = candidate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .map { character -> Character in
+                if character.isLetter || character.isNumber || character == "-" || character == "_" || character == "." {
+                    return character
+                }
+                return "-"
+            }
+            .reduce(into: "") { partial, character in
+                if character == "-", partial.last == "-" { return }
+                partial.append(character)
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
+        return normalized.isEmpty ? "manual-cluster" : normalized
+    }
+
+    private func yamlQuoted(_ value: String) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let data = try? encoder.encode(value),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return "\"\""
+        }
+        return encoded
+    }
+
+    private func kubeConfigFiles(in folder: URL) throws -> [URL] {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        return urls
+            .filter { url in
+                guard ((try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false) else {
+                    return false
+                }
+
+                let filename = url.lastPathComponent.lowercased()
+                let ext = url.pathExtension.lowercased()
+                return filename == "config" || ext == "yaml" || ext == "yml"
+            }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private func importKubeConfigPayloads(
+        _ payloads: [(raw: String, sourceName: String)],
+        logLabel: String
+    ) async throws {
+        let reviews = payloads.map { payload in
+            kubeConfigImportValidator.validate(raw: payload.raw, sourceName: payload.sourceName)
+        }
+        kubeConfigImportReviews = reviews
+
+        let blockingIssues = blockingKubeConfigImportIssues(in: reviews)
+        guard blockingIssues.isEmpty else {
+            setKubeConfigImportFailureAuthDoctorChecks(for: blockingIssues)
+            throw RuneError.invalidInput(message: kubeConfigImportErrorMessage(for: blockingIssues))
+        }
+
+        persistKubeConfigImportContextPreferences(from: reviews)
+
+        var importedFiles: [URL] = []
+        for payload in payloads {
+            let imported = try kubeConfigImportStore.saveImportedKubeConfig(
+                raw: payload.raw,
+                sourceName: payload.sourceName
+            )
+            try? bookmarkManager.addKubeConfig(url: imported)
+            importedFiles.append(imported)
+        }
+
+        let sources = try resolvedKubeConfigSources(fallbackURLs: importedFiles)
+        state.setSources(sources)
+        latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
+        startKubeConfigSourceSync()
+        diagnostics.log("\(logLabel) loaded payloads count=\(importedFiles.count), sources count=\(sources.count)")
+        try await reloadContexts()
+    }
+
+    private func persistKubeConfigImportContextPreferences(from reviews: [KubeConfigImportReview]) {
+        let contexts = reviews.flatMap(\.contexts)
+
+        for context in contexts {
+            if let namespace = context.namespace?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !namespace.isEmpty {
+                contextPreferences.savePreferredNamespace(namespace, for: context.name)
+            }
+        }
+
+        guard favoriteImportedKubeConfigContexts else { return }
+
+        var favorites = state.favoriteContextNames
+        for context in contexts {
+            favorites.insert(context.name)
+        }
+        state.setFavoriteContextNames(favorites)
+        contextPreferences.saveFavoriteContextNames(favorites)
+    }
+
+    private func blockingKubeConfigImportIssues(in reviews: [KubeConfigImportReview]) -> [KubeConfigImportIssue] {
+        reviews
+            .flatMap(\.issues)
+            .filter { $0.severity == .error }
+    }
+
+    private func kubeConfigImportErrorMessage(for issues: [KubeConfigImportIssue]) -> String {
+        issues.prefix(3).map(\.message).joined(separator: " ")
+    }
+
+    private func setKubeConfigImportFailureAuthDoctorChecks(for issues: [KubeConfigImportIssue]) {
+        var checks = [
+            RuneHealthCheck(
+                id: "kubeconfig-import",
+                title: "Kubeconfig import",
+                status: .failed,
+                message: "Import was stopped before saving access because the kubeconfig review found blocking issues."
+            )
+        ]
+        checks.append(contentsOf: issues.prefix(5).map { issue in
+            RuneHealthCheck(
+                id: "kubeconfig-import-\(issue.id)",
+                title: "Import review",
+                status: .failed,
+                message: issue.message
+            )
+        })
+        state.setAuthDoctorChecks(checks)
     }
 
     public func addDefaultKubeConfig() {
@@ -1467,6 +1802,8 @@ public final class RuneAppViewModel: ObservableObject {
                 try? bookmarkManager.addKubeConfig(url: selectedURL)
                 let sources = try resolvedKubeConfigSources(fallbackURLs: [selectedURL])
                 state.setSources(sources)
+                latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
+                startKubeConfigSourceSync()
                 diagnostics.log("addDefaultKubeConfig loaded \(selectedURL.path), sources count=\(sources.count)")
                 try await reloadContexts()
             } catch {
@@ -1579,6 +1916,83 @@ public final class RuneAppViewModel: ObservableObject {
                 try? bookmarkManager.addKubeConfig(url: url)
             }
         }
+    }
+
+    public func refreshKubeConfigSourcesFromDiscovery() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.syncKubeConfigSourcesFromDiscovery(reason: "manual")
+            } catch {
+                self.diagnostics.log("manual kubeconfig sync failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
+    }
+
+    @discardableResult
+    public func syncKubeConfigSourcesFromDiscovery(reason: String) async throws -> Bool {
+        let discoveredURLs = kubeConfigDiscoverer.discoverCandidateFiles()
+        let sources = try resolvedKubeConfigSources(fallbackURLs: discoveredURLs)
+        let fingerprint = kubeConfigSourceFingerprint(for: sources)
+        let sourceSetChanged = state.kubeConfigSources != sources
+        let contentChanged = latestKubeConfigSourceFingerprint.map { $0 != fingerprint } ?? sourceSetChanged
+        guard sourceSetChanged || contentChanged else { return false }
+
+        latestKubeConfigSourceFingerprint = fingerprint
+        if sourceSetChanged {
+            state.setSources(sources)
+            persistDiscoveredKubeConfigsInBackground(discoveredURLs)
+        }
+
+        guard !state.resourceYAMLHasUnsavedEdits else {
+            diagnostics.log("kubeconfig sync deferred reason=\(reason) because YAML has unsaved edits")
+            return true
+        }
+
+        diagnostics.log("kubeconfig sync detected change reason=\(reason), sources count=\(sources.count)")
+        if sources.isEmpty {
+            clearClusterDataForEmptyBootstrapIfNeeded()
+            state.setContexts([])
+            state.setNamespaces([])
+            return true
+        }
+
+        try await reloadContexts(
+            loadInitialSnapshotSynchronously: false,
+            showsLoadingIndicator: false
+        )
+        return true
+    }
+
+    private func startKubeConfigSourceSync() {
+        kubeConfigSourceSyncTask?.cancel()
+        kubeConfigSourceSyncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: self.kubeConfigSourceSyncNanoseconds)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                guard self.state.selectedContext?.name != self.demoContextName else { continue }
+                do {
+                    _ = try await self.syncKubeConfigSourcesFromDiscovery(reason: "watch")
+                } catch {
+                    self.diagnostics.log("kubeconfig watch sync failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func stopKubeConfigSourceSync() {
+        kubeConfigSourceSyncTask?.cancel()
+        kubeConfigSourceSyncTask = nil
+    }
+
+    private func kubeConfigSourceFingerprint(for sources: [KubeConfigSource]) -> KubeConfigSourceFingerprint {
+        KubeConfigSourceFingerprint(sources: sources)
     }
 
     /// - Parameter debounced: When `false`, reload runs immediately (⌘R, panel refresh). When `true`, waits briefly to coalesce rapid triggers.
@@ -1804,6 +2218,13 @@ public final class RuneAppViewModel: ObservableObject {
         state.isCommandPalettePresented = false
     }
 
+    @discardableResult
+    public func reviewKubeConfigImport(raw: String, sourceName: String? = nil) -> KubeConfigImportReview {
+        let review = kubeConfigImportValidator.validate(raw: raw, sourceName: sourceName)
+        kubeConfigImportReviews = [review]
+        return review
+    }
+
     public func setContextSearchQuery(_ query: String) {
         state.contextSearchQuery = query
     }
@@ -1965,11 +2386,21 @@ public final class RuneAppViewModel: ObservableObject {
         rememberRecentContext(context.name)
         // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
         state.setNamespaces([])
-        let requestedPreferredNamespace = preferredNamespace?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? contextPreferences.loadPreferredNamespace(for: context.name)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? ""
+        let carriedNamespace = isChangingContext ? state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let savedNamespace = contextPreferences.loadPreferredNamespace(for: context.name)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let requestedPreferredNamespace: String
+        let namespaceCandidates: [String]
+        if let preferredNamespace {
+            requestedPreferredNamespace = preferredNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+            namespaceCandidates = [requestedPreferredNamespace, savedNamespace]
+        } else if !carriedNamespace.isEmpty {
+            requestedPreferredNamespace = carriedNamespace
+            namespaceCandidates = [carriedNamespace, savedNamespace]
+        } else {
+            requestedPreferredNamespace = savedNamespace
+            namespaceCandidates = [savedNamespace]
+        }
         if requestedPreferredNamespace.isEmpty, context.name != previousContextName {
             pendingNamespaceRevalidationContextName = context.name
         } else {
@@ -1983,6 +2414,13 @@ public final class RuneAppViewModel: ObservableObject {
             state.selectedNamespace = resolvedNamespace(
                 contextName: context.name,
                 preferred: requestedPreferredNamespace,
+                availableNamespaces: cachedNamespaces,
+                contextDefaultNamespace: nil
+            )
+        } else if !cachedNamespaces.isEmpty {
+            state.selectedNamespace = resolvedNamespace(
+                contextName: context.name,
+                preferredCandidates: namespaceCandidates,
                 availableNamespaces: cachedNamespaces,
                 contextDefaultNamespace: nil
             )
@@ -2072,6 +2510,60 @@ public final class RuneAppViewModel: ObservableObject {
         }
         refreshCurrentView()
         recordNavigationCheckpoint()
+    }
+
+    public func openOverviewSignal(_ item: OverviewSignalItem) {
+        guard let target = item.target else { return }
+        openOverviewReference(target)
+    }
+
+    public func openOverviewDependency(_ item: OverviewDependencyItem) {
+        guard let target = item.primaryTarget else { return }
+        openOverviewReference(target)
+    }
+
+    private func openOverviewReference(_ reference: OverviewResourceReference) {
+        let namespace = reference.namespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !namespace.isEmpty,
+           namespace.caseInsensitiveCompare(state.selectedNamespace) != .orderedSame {
+            setNamespace(namespace, trackHistory: false, triggerReload: false)
+        }
+
+        switch reference.kind {
+        case .pod:
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
+            let pod = state.pods.first { $0.name == reference.name && $0.namespace == namespace }
+                ?? state.overviewPods.first { $0.name == reference.name && (namespace.isEmpty || $0.namespace == namespace) }
+                ?? PodSummary(name: reference.name, namespace: namespace.isEmpty ? state.selectedNamespace : namespace, status: "Unknown")
+            selectPod(pod, trackHistory: true)
+        case .deployment:
+            setSection(.workloads, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.deployment, trackHistory: false, triggerReload: false)
+            if let deployment = state.deployments.first(where: { $0.name == reference.name && (namespace.isEmpty || $0.namespace == namespace) }) {
+                selectDeployment(deployment, trackHistory: true)
+            } else {
+                refreshCurrentView()
+                recordNavigationCheckpoint()
+            }
+        case .service:
+            setSection(.networking, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.service, trackHistory: false, triggerReload: false)
+            if let service = state.services.first(where: { $0.name == reference.name && (namespace.isEmpty || $0.namespace == namespace) }) {
+                selectService(service, trackHistory: true)
+            } else {
+                refreshCurrentView()
+                recordNavigationCheckpoint()
+            }
+        case .event:
+            if let event = (state.overviewEvents + state.events).first(where: { $0.id == reference.name }) {
+                openEventSource(event)
+            } else {
+                openOverviewModule(.events)
+            }
+        default:
+            openOverviewModule(.pods)
+        }
     }
 
     /// Sets section, namespace, and selection from an event `involvedObject` (workload or namespaced resource).
@@ -3832,6 +4324,7 @@ public final class RuneAppViewModel: ObservableObject {
         clusterLoadGeneration = UUID()
         bootstrapTask?.cancel()
         bootstrapTask = nil
+        stopKubeConfigSourceSync()
         scheduledRefreshTask?.cancel()
         pendingCurrentViewRefreshID = nil
         cancelPendingLogReload()
@@ -4315,7 +4808,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
         guard let (kind, name) = currentWritableResource() else { return }
         guard kind != .secret else {
-            state.setError(RuneError.invalidInput(message: "Re-apply snapshot fallback is disabled for Secrets. Review the diff and apply YAML explicitly."))
+            state.setError(RuneError.invalidInput(message: "Apply last fetched YAML is disabled for Secrets. Review the diff and apply YAML explicitly."))
             return
         }
         guard canReapplyResourceYAMLBaseline else { return }
@@ -5732,33 +6225,33 @@ public final class RuneAppViewModel: ObservableObject {
         let trimmedContextDefault = contextDefaultNamespace?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let shouldRevalidateNamespace = pendingNamespaceRevalidationContextName == context.name
-        let preferredForResolution: String
+        let preferredCandidatesForResolution: [String]
         if loadedNamespaces.isEmpty {
             // No verified namespace list yet: keep explicit UI/checkpoint input, then a persisted
             // user-entered namespace for this context. Do not invent "default" without kubeconfig proof.
             let manualNamespaces = contextPreferences.loadManualNamespaces(for: context.name)
             if !trimmedIncoming.isEmpty {
-                preferredForResolution = trimmedIncoming
+                preferredCandidatesForResolution = [trimmedIncoming, savedForContext]
             } else if !savedForContext.isEmpty,
                       manualNamespaces.contains(where: { $0.caseInsensitiveCompare(savedForContext) == .orderedSame }) {
-                preferredForResolution = savedForContext
+                preferredCandidatesForResolution = [savedForContext]
             } else {
-                preferredForResolution = ""
+                preferredCandidatesForResolution = []
             }
         } else if shouldRevalidateNamespace {
             // Fresh context switch without an explicit namespace: ignore carried/saved namespace for this one pass
             // and let context default / namespace suffix heuristics choose from the live namespace list.
-            preferredForResolution = ""
+            preferredCandidatesForResolution = []
         } else if !trimmedIncoming.isEmpty {
-            preferredForResolution = trimmedIncoming
+            preferredCandidatesForResolution = [trimmedIncoming, savedForContext]
         } else if !trimmedContextDefault.isEmpty {
             // On context switch with an empty incoming namespace, prefer kubeconfig's context default
             // over any older saved namespace for this context.
-            preferredForResolution = ""
+            preferredCandidatesForResolution = []
         } else if !savedForContext.isEmpty {
-            preferredForResolution = savedForContext
+            preferredCandidatesForResolution = [savedForContext]
         } else {
-            preferredForResolution = ""
+            preferredCandidatesForResolution = []
         }
 
         guard snapshotRequestIsCurrent(requestID, context: context, expectedNamespace: namespace) else {
@@ -5773,7 +6266,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         let effectiveNamespace = resolvedNamespace(
             contextName: context.name,
-            preferred: preferredForResolution,
+            preferredCandidates: preferredCandidatesForResolution,
             availableNamespaces: loadedNamespaces,
             contextDefaultNamespace: contextDefaultNamespace,
             preferContextSuffixOverContextDefault: shouldRevalidateNamespace
@@ -8638,7 +9131,7 @@ public final class RuneAppViewModel: ObservableObject {
         return current.caseInsensitiveCompare(expected) == .orderedSame
     }
 
-    private func resolvedNamespace(
+    func resolvedNamespace(
         contextName: String,
         preferred: String,
         availableNamespaces: [String],
@@ -8658,8 +9151,9 @@ public final class RuneAppViewModel: ObservableObject {
             return ""
         }
 
+        let namespaceLookup = namespaceResolutionLookup(for: availableNamespaces)
         if !trimmedPreferred.isEmpty,
-           let match = availableNamespaces.first(where: { $0.caseInsensitiveCompare(trimmedPreferred) == .orderedSame }) {
+           let match = namespaceLookup[trimmedPreferred.lowercased()] {
             return match
         }
 
@@ -8669,7 +9163,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         if !trimmedContextDefault.isEmpty,
-           let match = availableNamespaces.first(where: { $0.caseInsensitiveCompare(trimmedContextDefault) == .orderedSame }) {
+           let match = namespaceLookup[trimmedContextDefault.lowercased()] {
             return match
         }
 
@@ -8692,6 +9186,63 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         return availableNamespaces[0]
+    }
+
+    func resolvedNamespace(
+        contextName: String,
+        preferredCandidates: [String],
+        availableNamespaces: [String],
+        contextDefaultNamespace: String?,
+        preferContextSuffixOverContextDefault: Bool = false
+    ) -> String {
+        let candidates = preferredCandidates
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { result, namespace in
+                if !result.contains(where: { $0.caseInsensitiveCompare(namespace) == .orderedSame }) {
+                    result.append(namespace)
+                }
+            }
+
+        guard !availableNamespaces.isEmpty else {
+            if let firstCandidate = candidates.first {
+                return firstCandidate
+            }
+            let trimmedContextDefault = contextDefaultNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmedContextDefault
+        }
+
+        let namespaceLookup = namespaceResolutionLookup(for: availableNamespaces)
+        for candidate in candidates {
+            if let match = namespaceLookup[candidate.lowercased()] {
+                return match
+            }
+        }
+
+        return resolvedNamespace(
+            contextName: contextName,
+            preferred: "",
+            availableNamespaces: availableNamespaces,
+            contextDefaultNamespace: contextDefaultNamespace,
+            preferContextSuffixOverContextDefault: preferContextSuffixOverContextDefault
+        )
+    }
+
+    private func namespaceResolutionLookup(for availableNamespaces: [String]) -> [String: String] {
+        if let cached = namespaceResolutionLookupCache, cached.namespaces == availableNamespaces {
+            return cached.lookup
+        }
+
+        var lookup: [String: String] = [:]
+        lookup.reserveCapacity(availableNamespaces.count)
+        for namespace in availableNamespaces {
+            let key = namespace.lowercased()
+            if lookup[key] == nil {
+                lookup[key] = namespace
+            }
+        }
+        namespaceResolutionLookupCache = (availableNamespaces, lookup)
+        return lookup
     }
 
     /// Namespaces whose names are a case-insensitive suffix of `contextName` (e.g. `cluster-example-service` → `example-service`).
@@ -8782,7 +9333,7 @@ public final class RuneAppViewModel: ObservableObject {
             let mergedCronJobsCount = cached.cronJobs.isEmpty ? cachedOverview.cronJobsCount : cached.cronJobs.count
             // Node rows are cluster-scoped RAM cache; keep node count tied to live RAM rows while CPU/MEM can use
             // the fresh per-context overview cache.
-            let mergedNodesCount = cachedNodes.isEmpty ? 0 : cachedNodes.count
+            let mergedNodesCount = cachedNodes.isEmpty ? cachedOverview.nodesCount : cachedNodes.count
             let mergedEvents = cached.events.isEmpty ? cachedOverview.events : cached.events
             state.setOverviewSnapshot(
                 pods: mergedPods,
@@ -8920,6 +9471,76 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private struct PodSortRecord {
+        let pod: PodSummary
+        let isFavorite: Bool
+        let cpuMilli: Int?
+        let memoryBytes: Int64?
+        let ageSeconds: Int?
+    }
+
+    private func sortedPods(_ values: [PodSummary]) -> [PodSummary] {
+        let records = values.map { pod in
+            PodSortRecord(
+                pod: pod,
+                isFavorite: isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name),
+                cpuMilli: cpuMilliValue(pod.cpuUsage),
+                memoryBytes: memoryByteValue(pod.memoryUsage),
+                ageSeconds: ageSeconds(pod.ageDescription)
+            )
+        }
+        let ascending = podSortAscending
+        let sortColumn = podSortColumn
+
+        return records.sorted { lhs, rhs in
+            if lhs.isFavorite != rhs.isFavorite {
+                return lhs.isFavorite && !rhs.isFavorite
+            }
+
+            let nameOrder = lhs.pod.name.localizedCaseInsensitiveCompare(rhs.pod.name) == .orderedAscending
+            switch sortColumn {
+            case .name:
+                return ascending ? nameOrder : !nameOrder
+            case .status:
+                let statusOrder: Bool = {
+                    if lhs.pod.status != rhs.pod.status {
+                        return lhs.pod.status.localizedCaseInsensitiveCompare(rhs.pod.status) == .orderedAscending
+                    }
+                    return nameOrder
+                }()
+                return ascending ? statusOrder : !statusOrder
+            case .restarts:
+                return comparePodsMetric(
+                    ascending: ascending,
+                    lhsValue: lhs.pod.totalRestarts,
+                    rhsValue: rhs.pod.totalRestarts,
+                    tieBreak: nameOrder
+                )
+            case .cpu:
+                return comparePodsOptionalMetric(
+                    ascending: ascending,
+                    lhsValue: lhs.cpuMilli,
+                    rhsValue: rhs.cpuMilli,
+                    tieBreak: nameOrder
+                )
+            case .memory:
+                return comparePodsOptionalMetric(
+                    ascending: ascending,
+                    lhsValue: lhs.memoryBytes,
+                    rhsValue: rhs.memoryBytes,
+                    tieBreak: nameOrder
+                )
+            case .age:
+                return comparePodsOptionalMetric(
+                    ascending: ascending,
+                    lhsValue: lhs.ageSeconds,
+                    rhsValue: rhs.ageSeconds,
+                    tieBreak: nameOrder
+                )
+            }
+        }.map(\.pod)
+    }
+
     private func podComparator(_ lhs: PodSummary, _ rhs: PodSummary) -> Bool {
         if let favoriteOrder = resourceFavoriteOrder(
             kind: .pod,
@@ -8947,8 +9568,6 @@ public final class RuneAppViewModel: ObservableObject {
             return ascending ? statusOrder : !statusOrder
         case .restarts:
             return comparePodsMetric(
-                lhs: lhs,
-                rhs: rhs,
                 ascending: ascending,
                 lhsValue: lhs.totalRestarts,
                 rhsValue: rhs.totalRestarts,
@@ -8956,8 +9575,6 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .cpu:
             return comparePodsOptionalMetric(
-                lhs: lhs,
-                rhs: rhs,
                 ascending: ascending,
                 lhsValue: cpuMilliValue(lhs.cpuUsage),
                 rhsValue: cpuMilliValue(rhs.cpuUsage),
@@ -8965,8 +9582,6 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .memory:
             return comparePodsOptionalMetric(
-                lhs: lhs,
-                rhs: rhs,
                 ascending: ascending,
                 lhsValue: memoryByteValue(lhs.memoryUsage),
                 rhsValue: memoryByteValue(rhs.memoryUsage),
@@ -8974,8 +9589,6 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .age:
             return comparePodsOptionalMetric(
-                lhs: lhs,
-                rhs: rhs,
                 ascending: ascending,
                 lhsValue: ageSeconds(lhs.ageDescription),
                 rhsValue: ageSeconds(rhs.ageDescription),
@@ -9222,8 +9835,6 @@ public final class RuneAppViewModel: ObservableObject {
 
     /// Missing metrics sort last regardless of ascending/descending direction.
     private func comparePodsOptionalMetric<T: Comparable>(
-        lhs: PodSummary,
-        rhs: PodSummary,
         ascending: Bool,
         lhsValue: T?,
         rhsValue: T?,
@@ -9245,8 +9856,6 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func comparePodsMetric(
-        lhs: PodSummary,
-        rhs: PodSummary,
         ascending: Bool,
         lhsValue: Int,
         rhsValue: Int,

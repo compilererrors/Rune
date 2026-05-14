@@ -114,8 +114,88 @@ enum YAMLLanguageService {
         let highlights = model.tokens.map {
             YAMLHighlightSpan(range: $0.range, kind: YAMLHighlightKind(tokenKind: $0.kind))
         }
-        let issues = deduplicated(model.diagnostics + flowDelimiterDiagnostics(in: source))
+        let issues = deduplicated(
+            model.diagnostics
+                + flowDelimiterDiagnostics(in: source)
+                + kubernetesManagedFieldsDiagnostics(in: source)
+        )
         return YAMLTextAnalysis(highlights: highlights, validationIssues: issues)
+    }
+
+    private static func kubernetesManagedFieldsDiagnostics(in source: String) -> [YAMLValidationIssue] {
+        struct SourceLine {
+            let text: String
+            let trimmed: String
+            let indent: Int
+            let lineNumber: Int
+            let offset: Int
+        }
+
+        var lines: [SourceLine] = []
+        var offset = 0
+        for (index, line) in source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).enumerated() {
+            lines.append(SourceLine(
+                text: line,
+                trimmed: line.trimmingCharacters(in: .whitespaces),
+                indent: line.prefix { $0 == " " }.count,
+                lineNumber: index + 1,
+                offset: offset
+            ))
+            offset += (line as NSString).length + 1
+        }
+
+        var issues: [YAMLValidationIssue] = []
+        var managedFieldsIndent: Int?
+
+        func nextMeaningfulLine(after index: Int) -> SourceLine? {
+            guard index + 1 < lines.count else { return nil }
+            for candidate in lines[(index + 1)...] {
+                if !candidate.trimmed.isEmpty, !candidate.trimmed.hasPrefix("#") {
+                    return candidate
+                }
+            }
+            return nil
+        }
+
+        for index in lines.indices {
+            let line = lines[index]
+            guard !line.trimmed.isEmpty, !line.trimmed.hasPrefix("#") else { continue }
+
+            if let indent = managedFieldsIndent,
+               line.indent < indent || (line.indent == indent && !line.trimmed.hasPrefix("-")) {
+                managedFieldsIndent = nil
+            }
+
+            if line.trimmed == "managedFields:" || line.trimmed.hasPrefix("managedFields: ") {
+                managedFieldsIndent = line.indent
+                continue
+            }
+
+            guard managedFieldsIndent != nil, line.trimmed == "fieldsV1:" else { continue }
+            guard let next = nextMeaningfulLine(after: index) else { continue }
+            if next.indent == line.indent, isManagedFieldsOwnershipKey(next.trimmed) {
+                issues.append(YAMLValidationIssue(
+                    source: .kubernetes,
+                    severity: .error,
+                    message: "ManagedFields ownership key is aligned with fieldsV1. Indent it under fieldsV1 or hide managed fields before editing.",
+                    line: next.lineNumber,
+                    column: next.indent + 1,
+                    range: YAMLValidationRange(
+                        location: next.offset + next.indent,
+                        length: min((next.trimmed as NSString).length, max(1, next.text.count - next.indent))
+                    )
+                ))
+            }
+        }
+
+        return issues
+    }
+
+    private static func isManagedFieldsOwnershipKey(_ trimmed: String) -> Bool {
+        trimmed.hasPrefix("f:")
+            || trimmed.hasPrefix("k:")
+            || trimmed == ".:"
+            || trimmed.hasPrefix(".: ")
     }
 
     private static func flowDelimiterDiagnostics(in source: String) -> [YAMLValidationIssue] {

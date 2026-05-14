@@ -362,6 +362,65 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposeOverviewSignalsAreDistinctClickableAndBounded() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.overview)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .overview
+                && !harness.state.overviewPods.isEmpty
+                && !harness.state.overviewEvents.isEmpty
+                && !harness.state.isLoading
+        }
+
+        let unhealthy = harness.viewModel.overviewUnhealthyItems
+        let incidents = harness.viewModel.overviewIncidentTimelineItems
+        let dependencies = harness.viewModel.overviewDependencyItems
+
+        XCTAssertLessThanOrEqual(unhealthy.count, 8)
+        XCTAssertLessThanOrEqual(incidents.count, 8)
+        XCTAssertLessThanOrEqual(dependencies.count, 8)
+        XCTAssertFalse(unhealthy.contains { $0.badge == "Event" })
+        XCTAssertTrue(incidents.allSatisfy { $0.target?.kind == .event })
+
+        if let signal = unhealthy.first(where: { $0.target?.kind == .pod }) {
+            harness.viewModel.openOverviewSignal(signal)
+            try await waitUntil(timeout: 20) {
+                harness.state.selectedSection == .workloads
+                    && harness.state.selectedWorkloadKind == .pod
+                    && harness.state.selectedPod?.name == signal.target?.name
+            }
+        }
+
+        if let dependency = dependencies.first(where: { $0.primaryTarget?.kind == .deployment }) {
+            harness.viewModel.setSection(.overview)
+            harness.viewModel.openOverviewDependency(dependency)
+            try await waitUntil(timeout: 20) {
+                harness.state.selectedSection == .workloads
+                    && harness.state.selectedWorkloadKind == .deployment
+                    && harness.state.selectedDeployment?.name == dependency.primaryTarget?.name
+            }
+        }
+
+        if let incident = incidents.first {
+            let objectName = incident.title.components(separatedBy: " • ").last ?? ""
+            harness.viewModel.setSection(.overview)
+            harness.viewModel.openOverviewSignal(incident)
+            try await waitUntil(timeout: 20) {
+                harness.state.selectedSection == .events
+                    || harness.state.selectedPod?.name == objectName
+            }
+        }
+
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let kubeconfigURL: URL
         let state: RuneAppState

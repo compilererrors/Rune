@@ -22,7 +22,8 @@ struct ResourceYAMLEditorSurface: View {
                         resetID: readOnlyResetID,
                         contentStyle: .yaml,
                         externalValidationIssues: validationIssues,
-                        navigationRequest: navigationRequest
+                        navigationRequest: navigationRequest,
+                        showsLineNumbers: true
                     )
                 case .swiftUITextEditor:
                     TextEditor(text: $text)
@@ -35,7 +36,8 @@ struct ResourceYAMLEditorSurface: View {
                         isEditable: true,
                         contentStyle: .yaml,
                         externalValidationIssues: validationIssues,
-                        navigationRequest: navigationRequest
+                        navigationRequest: navigationRequest,
+                        showsLineNumbers: true
                     )
                 }
             }
@@ -66,14 +68,19 @@ struct ResourceYAMLInspectorPane: View {
     let onImport: () -> Void
     let onExport: () -> Void
     let readOnlyResetID: String
+    @State private var hidesManagedFields = false
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
     @State private var issueNavigationSequence = 0
 
     var body: some View {
+        let filteredYAML = KubernetesManagedFieldsDisplayFilter.removingManagedFields(from: yamlDisplayText)
+        let canHideManagedFields = filteredYAML.removedBlockCount > 0 && !isInlineEditing
+        let displayedYAML = hidesManagedFields && canHideManagedFields ? filteredYAML.text : yamlDisplayText
         let presentedIssues = YAMLIssuePresentation.presentedIssues(
             text: yamlText,
             externalIssues: validationIssues
         )
+        let surfaceIssues = hidesManagedFields && canHideManagedFields ? [] : presentedIssues
         let canApplyYAML = canApplyMutations
             && hasUnsavedEdits
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -91,10 +98,6 @@ struct ResourceYAMLInspectorPane: View {
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
-                    Button("Re-apply Snapshot", action: onReapplySnapshot)
-                        .buttonStyle(.bordered)
-                        .disabled(!canReapplySnapshot)
-
                     if inlineEditorImplementation.supportsInlineEditing {
                         Button(isInlineEditing ? "Done" : "Quick Edit") {
                             isInlineEditing.toggle()
@@ -106,33 +109,54 @@ struct ResourceYAMLInspectorPane: View {
                     Button("Edit…", action: onOpenEditor)
                         .buttonStyle(.bordered)
                         .disabled(yamlText.isEmpty)
-
-                    Button("Undo") {
-                        onUndoEdit()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!canUndoEdit)
-                    .help("Restore the previous YAML draft where Rune has a local edit snapshot")
-
-                    Button("Revert") {
-                        onRevert()
-                        isInlineEditing = false
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!hasUnsavedEdits)
                 }
 
                 ManifestToolbarGroup {
-                    Button("Import…") {
-                        onImport()
-                        onOpenEditor()
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Replace the editor with the contents of a YAML file")
+                    Menu {
+                        Button("Apply Last Fetched YAML", action: onReapplySnapshot)
+                            .disabled(!canReapplySnapshot)
+                            .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
 
-                    Button("Export…", action: onExport)
-                        .buttonStyle(.bordered)
-                        .disabled(yamlText.isEmpty)
+                        Divider()
+
+                        Button("Undo Draft Edit") {
+                            onUndoEdit()
+                        }
+                        .disabled(!canUndoEdit)
+                        .help("Restore the previous local YAML draft.")
+
+                        Button("Revert Draft") {
+                            onRevert()
+                            isInlineEditing = false
+                        }
+                        .disabled(!hasUnsavedEdits)
+                        .help("Discard local YAML edits and return to the current loaded draft.")
+                    } label: {
+                        Label("Draft", systemImage: "clock.arrow.circlepath")
+                    }
+
+                    Menu {
+                        Button("Import YAML…") {
+                            onImport()
+                            onOpenEditor()
+                        }
+                        .help("Replace the editor with the contents of a YAML file.")
+
+                        Button("Export YAML…", action: onExport)
+                            .disabled(yamlText.isEmpty)
+                            .help("Export the current YAML text to a file.")
+                    } label: {
+                        Label("File", systemImage: "doc")
+                    }
+                }
+
+                if filteredYAML.removedBlockCount > 0 {
+                    ManifestToolbarGroup {
+                        ManifestManagedFieldsToggle(
+                            hidesManagedFields: $hidesManagedFields,
+                            isDisabled: isInlineEditing
+                        )
+                    }
                 }
             }
         } status: {
@@ -147,11 +171,11 @@ struct ResourceYAMLInspectorPane: View {
         } surface: {
             ResourceYAMLEditorSurface(
                 text: $yamlText,
-                displayText: yamlDisplayText,
+                displayText: displayedYAML,
                 readOnlyResetID: readOnlyResetID,
                 inlineEditing: isInlineEditing,
                 implementation: inlineEditorImplementation,
-                validationIssues: presentedIssues,
+                validationIssues: surfaceIssues,
                 navigationRequest: issueNavigationRequest
             )
         } footer: {
@@ -164,6 +188,11 @@ struct ResourceYAMLInspectorPane: View {
         }
         .onChange(of: baseline) { _, _ in
             isInlineEditing = false
+        }
+        .onChange(of: isInlineEditing) { _, isEditing in
+            if isEditing {
+                hidesManagedFields = false
+            }
         }
     }
 
@@ -268,6 +297,25 @@ struct ManifestToolbarGroup<Content: View>: View {
     }
 }
 
+struct ManifestManagedFieldsToggle: View {
+    @Binding var hidesManagedFields: Bool
+    let isDisabled: Bool
+
+    var body: some View {
+        Toggle(isOn: $hidesManagedFields) {
+            Label("Hide managed", systemImage: "eye.slash")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .disabled(isDisabled)
+        .help(isDisabled ? "Managed fields are shown while editing so line numbers and validation ranges stay exact." : "Hide Kubernetes metadata.managedFields in this read-only view.")
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 struct ManifestStatusChip: View {
     let text: String
     var systemImage = "clock"
@@ -343,24 +391,30 @@ struct ResourceYAMLEditorSheetView: View {
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing this sheet does not." : "No local YAML changes to apply.")
 
-                    Button("Re-apply Snapshot", action: onReapplySnapshot)
-                        .buttonStyle(.bordered)
-                        .disabled(!canReapplySnapshot)
+                    Menu {
+                        Button("Apply Last Fetched YAML", action: onReapplySnapshot)
+                            .disabled(!canReapplySnapshot)
+                            .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
 
-                    Button("Revert", action: onRevert)
-                        .buttonStyle(.bordered)
-                        .disabled(!hasUnsavedEdits)
+                        Divider()
 
-                    Button("Undo", action: onUndoEdit)
-                        .buttonStyle(.bordered)
-                        .disabled(!canUndoEdit)
+                        Button("Undo Draft Edit", action: onUndoEdit)
+                            .disabled(!canUndoEdit)
 
-                    Button("Import…", action: onImport)
-                        .buttonStyle(.bordered)
+                        Button("Revert Draft", action: onRevert)
+                            .disabled(!hasUnsavedEdits)
+                    } label: {
+                        Label("Draft", systemImage: "clock.arrow.circlepath")
+                    }
 
-                    Button("Export…", action: onExport)
-                        .buttonStyle(.bordered)
-                        .disabled(yamlText.isEmpty)
+                    Menu {
+                        Button("Import YAML…", action: onImport)
+
+                        Button("Export YAML…", action: onExport)
+                            .disabled(yamlText.isEmpty)
+                    } label: {
+                        Label("File", systemImage: "doc")
+                    }
 
                     Spacer(minLength: 0)
                 }
@@ -575,5 +629,47 @@ private enum YAMLIssuePresentation {
         return (localIssues + remoteIssues).filter { issue in
             seen.insert(issue.id).inserted
         }
+    }
+}
+
+struct KubernetesManagedFieldsDisplayFilter {
+    let text: String
+    let removedBlockCount: Int
+
+    static func removingManagedFields(from source: String) -> KubernetesManagedFieldsDisplayFilter {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var output: [String] = []
+        var removedBlocks = 0
+        var skippingIndent: Int?
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let indent = line.prefix { $0 == " " }.count
+
+            if let blockIndent = skippingIndent {
+                if trimmed.isEmpty {
+                    continue
+                }
+                if indent > blockIndent || (indent == blockIndent && trimmed.hasPrefix("-")) {
+                    continue
+                }
+                skippingIndent = nil
+            }
+
+            if trimmed == "managedFields:" || trimmed.hasPrefix("managedFields: ") {
+                removedBlocks += 1
+                if trimmed == "managedFields:" {
+                    skippingIndent = indent
+                }
+                continue
+            }
+
+            output.append(line)
+        }
+
+        return KubernetesManagedFieldsDisplayFilter(
+            text: output.joined(separator: "\n"),
+            removedBlockCount: removedBlocks
+        )
     }
 }

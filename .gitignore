@@ -28,6 +28,9 @@ assets/screenshot/ui/*
 !assets/screenshot/ui/update260503/
 !assets/screenshot/ui/update260503/*.png
 assets/screenshot/ui/update260503/app-store-connect-2880x1800/
+!assets/screenshot/ui/260510/
+!assets/screenshot/ui/260510/*.png
+assets/screenshot/ui/260510/app-store-2880x1800/
 
 # Environment files should stay local; commit examples instead.
 .env

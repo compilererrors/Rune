@@ -1,20 +1,21 @@
 import Foundation
 
-public protocol KubeConfigDiscovering {
+public protocol KubeConfigDiscovering: Sendable {
     func discoverCandidateFiles() -> [URL]
 }
 
 public struct KubeConfigDiscoverer: KubeConfigDiscovering {
+    private static let runeKubeconfigVariable = "RUNE_KUBECONFIG"
     private static let disableDefaultConfigDiscoveryVariable = "RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY"
     private static let isolatedKubeconfigVariable = "RUNE_ISOLATED_KUBECONFIG"
-    private let environmentProvider: () -> [String: String]
-    private let homeDirectoryProvider: () -> URL
-    private let fileExists: (String) -> Bool
+    private let environmentProvider: @Sendable () -> [String: String]
+    private let homeDirectoryProvider: @Sendable () -> URL
+    private let fileExists: @Sendable (String) -> Bool
 
     public init(
-        environmentProvider: @escaping () -> [String: String] = { ProcessInfo.processInfo.environment },
-        homeDirectoryProvider: @escaping () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
-        fileExists: @escaping (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) }
+        environmentProvider: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
+        homeDirectoryProvider: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
+        fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) }
     ) {
         self.environmentProvider = environmentProvider
         self.homeDirectoryProvider = homeDirectoryProvider
@@ -31,7 +32,10 @@ public struct KubeConfigDiscoverer: KubeConfigDiscovering {
             return [URL(fileURLWithPath: expanded).standardizedFileURL]
         }
 
-        if let kubeconfig = environment["KUBECONFIG"], !kubeconfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let kubeconfigValue = environment[Self.runeKubeconfigVariable]
+            ?? environment["KUBECONFIG"]
+        if let kubeconfig = kubeconfigValue,
+           !kubeconfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             for path in kubeconfig.split(separator: ":").map(String.init) {
                 let expanded = NSString(string: path).expandingTildeInPath
                 candidates.append(URL(fileURLWithPath: expanded))

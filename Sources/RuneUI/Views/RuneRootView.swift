@@ -1,5 +1,6 @@
 import AppKit
 import RuneCore
+import RuneSecurity
 import SwiftUI
 
 /// Layout metrics for regression tests (`RuneRootViewLayoutRegressionTests`) and optional `RUNE_DEBUG_LAYOUT` logging — not the removed step-by-step scenario runner.
@@ -364,6 +365,15 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    var cloudProvider: CloudKubeConfigProvider? {
+        switch self {
+        case .aks: return .aks
+        case .eks: return .eks
+        case .gke: return .gke
+        case .local: return nil
+        }
+    }
+
     var command: String {
         switch self {
         case .aks:
@@ -377,17 +387,51 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    var auxiliaryCommands: [(title: String, command: String)] {
+        switch self {
+        case .local:
+            return [
+                ("Status", "kind get clusters && minikube status && k3d cluster list"),
+                ("Start", "minikube start"),
+                ("Stop", "minikube stop")
+            ]
+        case .aks, .eks, .gke:
+            return []
+        }
+    }
+
     var note: String {
         switch self {
         case .aks:
-            return "Rune reads the kubeconfig after Azure writes the context. If the context uses exec auth, Rune invokes the configured plugin."
+            return "Rune reads the kubeconfig after Azure writes the context. Fill the command, run it in your terminal, then refresh contexts. If the context uses exec auth, Rune invokes the configured plugin."
         case .eks:
-            return "Rune reads the kubeconfig after AWS writes the context. The generated exec auth stays in kubeconfig."
+            return "Rune reads the kubeconfig after AWS writes the context. Fill the command, run it in your terminal, then refresh contexts. The generated exec auth stays in kubeconfig."
         case .gke:
-            return "Rune reads the kubeconfig after gcloud writes the context. Install gke-gcloud-auth-plugin if the kubeconfig requires it."
+            return "Rune reads the kubeconfig after gcloud writes the context. Fill the command, run it in your terminal, then refresh contexts. Install gke-gcloud-auth-plugin if the kubeconfig requires it."
         case .local:
-            return "Create or start the local cluster first, then import the kubeconfig or use ~/.kube/config."
+            return "Rune only shows copyable local-cluster commands here. Run the command yourself, then import the kubeconfig or use ~/.kube/config."
         }
+    }
+}
+
+private struct CloudCredentialDraft {
+    var clusterName = ""
+    var regionOrLocation = ""
+    var resourceGroup = ""
+    var projectID = ""
+    var profileOrSubscription = ""
+    var roleARN = ""
+
+    func request(provider: CloudKubeConfigProvider) -> CloudKubeConfigImportRequest {
+        CloudKubeConfigImportRequest(
+            provider: provider,
+            clusterName: clusterName,
+            regionOrLocation: regionOrLocation,
+            resourceGroup: resourceGroup,
+            projectID: projectID,
+            profileOrSubscription: profileOrSubscription,
+            roleARN: roleARN
+        )
     }
 }
 
@@ -503,6 +547,12 @@ private enum RuneRootTextInputFocus: Hashable {
     case resourceFilter
 }
 
+private enum OverviewInsightPanelID: Hashable {
+    case unhealthy
+    case incidents
+    case dependencies
+}
+
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
@@ -536,9 +586,11 @@ public struct RuneRootView: View {
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
     @State private var overviewCardSelectionIndex = 0
+    @State private var expandedOverviewInsightPanels: Set<OverviewInsightPanelID> = []
     @State private var localKeyEventMonitor: Any?
     @State private var addClusterPopoverPresented = false
     @State private var selectedAddClusterProvider: RuneAddClusterProvider?
+    @State private var cloudCredentialDraft = CloudCredentialDraft()
     @State private var hasMountedWorkspaceChrome = false
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
@@ -1743,6 +1795,12 @@ public struct RuneRootView: View {
             }
 
             VStack(spacing: 8) {
+                Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 addClusterQuickAction(
                     title: "Import Kubeconfig",
                     subtitle: "YAML, yml or config file",
@@ -1753,13 +1811,55 @@ public struct RuneRootView: View {
                 }
 
                 addClusterQuickAction(
+                    title: "Paste Kubeconfig",
+                    subtitle: "Validate clipboard YAML before saving",
+                    symbolName: "doc.on.clipboard"
+                ) {
+                    addClusterPopoverPresented = false
+                    viewModel.importKubeConfigFromPasteboard()
+                }
+
+                addClusterQuickAction(
+                    title: "Add Kubeconfig Folder",
+                    subtitle: "Import config, yaml and yml files",
+                    symbolName: "folder.badge.plus"
+                ) {
+                    addClusterPopoverPresented = false
+                    viewModel.importKubeConfigFolder()
+                }
+
+                addClusterQuickAction(
                     title: "Use ~/.kube/config",
                     subtitle: "Load the standard kubeconfig path",
-                    symbolName: "folder.badge.plus"
+                    symbolName: "folder"
                 ) {
                     addClusterPopoverPresented = false
                     viewModel.addDefaultKubeConfig()
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Manual Server")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("Context name", text: $viewModel.manualKubeConfigName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("https://cluster.example.invalid", text: $viewModel.manualKubeConfigServer)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Namespace", text: $viewModel.manualKubeConfigNamespace)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Bearer token", text: $viewModel.manualKubeConfigToken)
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    addClusterPopoverPresented = false
+                    viewModel.importManualTokenKubeConfig()
+                } label: {
+                    Label("Add Manual Token Cluster", systemImage: "key")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             Text("Providers")
@@ -1770,6 +1870,16 @@ public struct RuneRootView: View {
                 ForEach(RuneAddClusterProvider.allCases) { provider in
                     providerTileButton(provider)
                 }
+            }
+
+            if let review = viewModel.kubeConfigImportReviews.last {
+                KubeConfigImportReviewPanel(
+                    review: review,
+                    onRunAuthDoctor: {
+                        addClusterPopoverPresented = false
+                        viewModel.runAuthDoctor()
+                    }
+                )
             }
         }
         .padding(14)
@@ -1840,6 +1950,130 @@ public struct RuneRootView: View {
         }
         .buttonStyle(.plain)
         .help(provider.title)
+    }
+
+    private struct KubeConfigImportReviewPanel: View {
+        let review: KubeConfigImportReview
+        let onRunAuthDoctor: () -> Void
+
+        private var statusColor: Color {
+            review.isValid ? .green : .orange
+        }
+
+        private var statusText: String {
+            if review.isValid {
+                return review.contexts.count == 1 ? "1 context ready to import" : "\(review.contexts.count) contexts ready to import"
+            }
+            return review.issues.contains { $0.severity == .error } ? "Import review needs attention" : "Import review has warnings"
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 8, height: 8)
+                    Text("Import Review")
+                        .font(.caption.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Text(statusText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if review.contexts.isEmpty {
+                    Text("No contexts were found in the selected kubeconfig.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(context.name)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                Text(contextDetailText(context))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+
+                        if review.contexts.count > 3 {
+                            Text("\(review.contexts.count - 3) more contexts")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if !review.issues.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(Array(review.issues.prefix(3).enumerated()), id: \.offset) { _, issue in
+                            Label(issue.message, systemImage: issue.severity == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(issue.severity == .error ? .red : .orange)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                if review.issues.contains(where: { $0.id.contains("duplicate") }) {
+                    Text("Duplicate handling will require an explicit choice: update existing, import as copy, or skip.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                DisclosureGroup {
+                    Text(redactedPreviewSnippet)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Text("Redacted preview")
+                        .font(.caption.weight(.semibold))
+                }
+
+                Button {
+                    onRunAuthDoctor()
+                } label: {
+                    Label("Run Auth Doctor", systemImage: "stethoscope")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(10)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+            }
+        }
+
+        private var redactedPreviewSnippet: String {
+            review.redactedPreview
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .prefix(8)
+                .joined(separator: "\n")
+        }
+
+        private func contextDetailText(_ context: KubeConfigImportContextPreview) -> String {
+            [
+                context.providerHint,
+                context.authType,
+                context.namespace.map { "namespace \($0)" },
+                context.serverHost
+            ]
+            .compactMap { $0 }
+            .joined(separator: " • ")
+        }
     }
 
     private func contextRow(_ context: KubeContext) -> some View {
@@ -1916,7 +2150,12 @@ public struct RuneRootView: View {
                 Text("Credential command")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(provider.command)
+
+                if provider != .local {
+                    providerCredentialFields(provider)
+                }
+
+                Text(providerCredentialCommand(provider))
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(10)
@@ -1927,11 +2166,60 @@ public struct RuneRootView: View {
                     )
             }
 
+            if !provider.auxiliaryCommands.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Local cluster commands")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(provider.auxiliaryCommands, id: \.title) { item in
+                        HStack(spacing: 8) {
+                            Text(item.title)
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 44, alignment: .leading)
+                            Text(item.command)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Spacer(minLength: 0)
+                            Button {
+                                copyToPasteboard(item.command)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy \(item.title.lowercased()) command")
+                        }
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                        )
+                    }
+                }
+            }
+
             HStack(spacing: 10) {
                 Button {
-                    copyToPasteboard(provider.command)
+                    copyToPasteboard(providerCredentialCommand(provider))
                 } label: {
                     Label("Copy Command", systemImage: "doc.on.doc")
+                }
+
+                if let cloudProvider = provider.cloudProvider {
+                    Button {
+                        viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
+                    } label: {
+                        Label("Run & Connect", systemImage: "icloud.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Button {
+                    viewModel.refreshKubeConfigSourcesFromDiscovery()
+                } label: {
+                    Label("Refresh Contexts", systemImage: "arrow.clockwise")
                 }
 
                 Button {
@@ -1949,9 +2237,52 @@ public struct RuneRootView: View {
                 }
                 .keyboardShortcut(.defaultAction)
             }
+
+            if let status = viewModel.cloudKubeConfigImportStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
         .frame(width: 520)
+    }
+
+    @ViewBuilder
+    private func providerCredentialFields(_ provider: RuneAddClusterProvider) -> some View {
+        VStack(spacing: 8) {
+            TextField("Cluster name", text: $cloudCredentialDraft.clusterName)
+                .textFieldStyle(.roundedBorder)
+
+            switch provider {
+            case .aks:
+                TextField("Resource group", text: $cloudCredentialDraft.resourceGroup)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Subscription ID or name (optional)", text: $cloudCredentialDraft.profileOrSubscription)
+                    .textFieldStyle(.roundedBorder)
+            case .eks:
+                TextField("Region", text: $cloudCredentialDraft.regionOrLocation)
+                    .textFieldStyle(.roundedBorder)
+                TextField("AWS profile (optional)", text: $cloudCredentialDraft.profileOrSubscription)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Role ARN (optional)", text: $cloudCredentialDraft.roleARN)
+                    .textFieldStyle(.roundedBorder)
+            case .gke:
+                TextField("Location, region or zone", text: $cloudCredentialDraft.regionOrLocation)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Project ID", text: $cloudCredentialDraft.projectID)
+                    .textFieldStyle(.roundedBorder)
+            case .local:
+                EmptyView()
+            }
+        }
+    }
+
+    private func providerCredentialCommand(_ provider: RuneAddClusterProvider) -> String {
+        guard let cloudProvider = provider.cloudProvider else {
+            return provider.command
+        }
+        return viewModel.cloudKubeConfigCommandPreview(for: cloudCredentialDraft.request(provider: cloudProvider))
     }
 
     private func copyToPasteboard(_ value: String) {
@@ -2268,15 +2599,37 @@ public struct RuneRootView: View {
                         Text("Rune is GUI-first. After a kubeconfig is loaded, contexts, namespaces, and resources appear here.")
                             .foregroundStyle(.secondary)
 
+                        Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
+                            .toggleStyle(.checkbox)
+                            .controlSize(.small)
+                            .font(.caption)
+
                         HStack(spacing: 10) {
                             Button("Import Kubeconfig…") {
                                 viewModel.importKubeConfig()
                             }
                             .buttonStyle(.borderedProminent)
 
+                            Button("Paste Kubeconfig") {
+                                viewModel.importKubeConfigFromPasteboard()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Add Folder") {
+                                viewModel.importKubeConfigFolder()
+                            }
+                            .buttonStyle(.bordered)
+
                             Button("Open Command Palette") {
                                 viewModel.presentCommandPalette()
                             }
+                        }
+
+                        if let review = viewModel.kubeConfigImportReviews.last {
+                            KubeConfigImportReviewPanel(
+                                review: review,
+                                onRunAuthDoctor: viewModel.runAuthDoctor
+                            )
                         }
                     }
                     .runePanelCard(padding: 14)
@@ -2376,6 +2729,12 @@ public struct RuneRootView: View {
                         viewModel.openOverviewModule(.events)
                     }
                 }
+
+                overviewInsightsPanel(
+                    unhealthy: viewModel.overviewUnhealthyItems,
+                    incidents: viewModel.overviewIncidentTimelineItems,
+                    dependencies: viewModel.overviewDependencyItems
+                )
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Pod Health")
@@ -5483,6 +5842,9 @@ public struct RuneRootView: View {
                         viewModel.runAuthDoctor()
                     }
                     .disabled(viewModel.state.isRunningAuthDoctor)
+                    Button("Save Bundle") {
+                        viewModel.saveSupportBundle()
+                    }
                 }
 
                 ForEach(viewModel.state.authDoctorChecks) { check in
@@ -5612,6 +5974,302 @@ public struct RuneRootView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private func overviewInsightsPanel(
+        unhealthy: [OverviewSignalItem],
+        incidents: [OverviewSignalItem],
+        dependencies: [OverviewDependencyItem]
+    ) -> some View {
+        let activeCount = unhealthy.count + incidents.count + dependencies.count
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle")
+                    .foregroundStyle(activeCount == 0 ? Color.secondary : Color.orange)
+                    .frame(width: 18)
+                Text("Cluster Signals")
+                    .font(.headline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(activeCount == 0 ? "Clear" : "\(activeCount) item\(activeCount == 1 ? "" : "s")")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+            }
+
+            VStack(spacing: 0) {
+                overviewSignalInsightSection(
+                    id: .unhealthy,
+                    title: "Unhealthy",
+                    symbol: "exclamationmark.octagon",
+                    emptyText: "No unhealthy pods or deployments in the current snapshot.",
+                    items: unhealthy
+                )
+
+                overviewPanelDivider
+
+                overviewSignalInsightSection(
+                    id: .incidents,
+                    title: "Incident Timeline",
+                    symbol: "waveform.path.ecg",
+                    emptyText: "No warning events in the current snapshot.",
+                    items: incidents
+                )
+
+                overviewPanelDivider
+
+                overviewDependencyInsightSection(
+                    id: .dependencies,
+                    items: dependencies
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .runePanelCard(padding: 12)
+    }
+
+    private var overviewPanelDivider: some View {
+        Divider()
+            .overlay(Color.white.opacity(0.04))
+            .padding(.leading, 28)
+    }
+
+    private func overviewSignalInsightSection(
+        id: OverviewInsightPanelID,
+        title: String,
+        symbol: String,
+        emptyText: String,
+        items: [OverviewSignalItem]
+    ) -> some View {
+        let isExpanded = expandedOverviewInsightPanels.contains(id)
+        let severity = items.first?.severity ?? .info
+        let summary = items.first.map { $0.title + " - " + $0.detail } ?? emptyText
+
+        return VStack(alignment: .leading, spacing: 8) {
+            overviewInsightDisclosureHeader(
+                id: id,
+                title: title,
+                symbol: symbol,
+                badge: items.isEmpty ? "Clean" : "\(items.count)",
+                summary: summary,
+                severity: severity,
+                isExpanded: isExpanded
+            )
+
+            if isExpanded {
+                if items.isEmpty {
+                    overviewInsightEmptyText(emptyText)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items) { item in
+                            overviewSignalRow(item) {
+                                viewModel.openOverviewSignal(item)
+                            }
+                        }
+                    }
+                    .padding(.leading, 28)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func overviewDependencyInsightSection(
+        id: OverviewInsightPanelID,
+        items: [OverviewDependencyItem]
+    ) -> some View {
+        let isExpanded = expandedOverviewInsightPanels.contains(id)
+        let summary = items.first.map { $0.source + " to " + $0.target } ?? "No service or workload relationships loaded."
+
+        return VStack(alignment: .leading, spacing: 8) {
+            overviewInsightDisclosureHeader(
+                id: id,
+                title: "Dependency Map",
+                symbol: "point.3.connected.trianglepath.dotted",
+                badge: items.isEmpty ? "None" : "\(items.count)",
+                summary: summary,
+                severity: .info,
+                isExpanded: isExpanded
+            )
+
+            if isExpanded {
+                if items.isEmpty {
+                    overviewInsightEmptyText("No service or workload relationships loaded.")
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items) { item in
+                            overviewDependencyRow(item) {
+                                viewModel.openOverviewDependency(item)
+                            }
+                        }
+                    }
+                    .padding(.leading, 28)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func overviewInsightDisclosureHeader(
+        id: OverviewInsightPanelID,
+        title: String,
+        symbol: String,
+        badge: String,
+        summary: String,
+        severity: OverviewSignalSeverity,
+        isExpanded: Bool
+    ) -> some View {
+        Button {
+            if isExpanded {
+                expandedOverviewInsightPanels.remove(id)
+            } else {
+                expandedOverviewInsightPanels.insert(id)
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 10)
+                Image(systemName: symbol)
+                    .foregroundStyle(overviewSignalColor(severity))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text(badge)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func overviewInsightEmptyText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 28)
+    }
+
+    private func overviewSignalPanelHeader(
+        title: String,
+        symbol: String,
+        badge: String,
+        severity: OverviewSignalSeverity
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(overviewSignalColor(severity))
+                .frame(width: 18)
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(badge)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+    }
+
+    private func overviewSignalRow(_ item: OverviewSignalItem, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 7) {
+                Circle()
+                    .fill(overviewSignalColor(item.severity))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(item.title)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Text(item.badge)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func overviewDependencyRow(_ item: OverviewDependencyItem, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 7) {
+                Circle()
+                    .fill(Color.secondary.opacity(0.75))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(item.source)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                        Text(item.target)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                    }
+                    Text(item.relation + " • " + item.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func overviewSignalColor(_ severity: OverviewSignalSeverity) -> Color {
+        switch severity {
+        case .critical:
+            return .red
+        case .warning:
+            return .orange
+        case .info:
+            return .secondary
+        }
     }
 
     private func healthBadge(label: String, value: Int, color: Color) -> some View {
