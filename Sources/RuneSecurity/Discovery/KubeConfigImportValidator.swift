@@ -358,6 +358,25 @@ private struct ParsedKubeConfig {
                 continue
             }
 
+            if trimmed.hasPrefix("- cluster:") || trimmed.hasPrefix("- context:") || trimmed.hasPrefix("- user:") {
+                let key = String(trimmed.dropFirst(2).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                switch (section, key) {
+                case (.clusters, "cluster"):
+                    finishCluster(&currentCluster)
+                    currentCluster = Cluster(name: "")
+                case (.contexts, "context"):
+                    finishContext(&currentContextEntry)
+                    currentContextEntry = Context(name: "")
+                case (.users, "user"):
+                    finishUser(&currentUser)
+                    currentUser = User(name: "")
+                default:
+                    break
+                }
+                nestedKey = key
+                continue
+            }
+
             if trimmed.hasSuffix(":") {
                 nestedKey = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
                 continue
@@ -367,6 +386,8 @@ private struct ParsedKubeConfig {
             case (.clusters?, "cluster"):
                 if let value = Self.scalarValue(trimmed, key: "server") {
                     currentCluster?.serverHost = Self.serverHost(from: value)
+                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentCluster?.name = value
                 }
             case (.contexts?, "context"):
                 if let value = Self.scalarValue(trimmed, key: "cluster") {
@@ -375,6 +396,8 @@ private struct ParsedKubeConfig {
                     currentContextEntry?.userName = value
                 } else if let value = Self.scalarValue(trimmed, key: "namespace") {
                     currentContextEntry?.namespace = value
+                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentContextEntry?.name = value
                 }
             case (.users?, "user"):
                 if Self.scalarValue(trimmed, key: "token") != nil {
