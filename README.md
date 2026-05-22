@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/ui/260510/1overview.png)
+![Rune overview](assets/screenshot/ui/260522/app-store-2880x1800/overview.png)
 
 ## Why Rune
 
@@ -145,7 +145,7 @@ You can also support development through PayPal:
 ## Full Screenshot Grid
 
 <p>
-  <img src="assets/screenshot/ui/260510/1overview.png" alt="Rune overview" width="49%">
+  <img src="assets/screenshot/ui/260522/app-store-2880x1800/overview.png" alt="Rune overview" width="49%">
   <img src="assets/screenshot/ui/260510/2podlogs.png" alt="Rune pod logs" width="49%">
 </p>
 
