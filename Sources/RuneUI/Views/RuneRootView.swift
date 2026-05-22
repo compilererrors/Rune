@@ -343,7 +343,7 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         case .aks: return "Azure CLI or kubelogin"
         case .eks: return "AWS CLI"
         case .gke: return "gcloud auth plugin"
-        case .local: return "kind, k3d, minikube"
+        case .local: return "kind, k3s, k3d, minikube"
         }
     }
 
@@ -381,7 +381,7 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         case .eks:
             return "aws eks update-kubeconfig --region <region> --name <cluster-name>"
         case .gke:
-            return "gcloud container clusters get-credentials <cluster-name> --region <region> --project <project-id>"
+            return "gcloud container clusters get-credentials <cluster-name> --location <location> --project <project-id>"
         case .local:
             return "kind create cluster --name rune-dev"
         }
@@ -391,7 +391,10 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         switch self {
         case .local:
             return [
-                ("Status", "kind get clusters && minikube status && k3d cluster list"),
+                ("Status", "kind get clusters && minikube status && k3d cluster list && k3s kubectl config current-context"),
+                ("K3s config", "sudo cat /etc/rancher/k3s/k3s.yaml"),
+                ("K3d config", "k3d kubeconfig get <cluster-name>"),
+                ("Kind config", "kind get kubeconfig --name <cluster-name>"),
                 ("Start", "minikube start"),
                 ("Stop", "minikube stop")
             ]
@@ -1801,125 +1804,170 @@ public struct RuneRootView: View {
     }
 
     private var addClusterPopover: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill")
-                    .foregroundStyle(Color.accentColor)
-                Text("Add Cluster")
-                    .font(.headline)
-                Spacer(minLength: 0)
-            }
+        ZStack {
+            RuneGlassPaneSurface(role: .content)
 
-            VStack(alignment: .leading, spacing: 8) {
-                addClusterSectionLabel("Connect")
-
-                HStack(spacing: 8) {
-                    addClusterQuickAction(
-                        title: "Use ~/.kube/config",
-                        subtitle: "Default kubectl config",
-                        symbolName: "folder.badge.gearshape"
-                    ) {
-                        addClusterPopoverPresented = false
-                        viewModel.addDefaultKubeConfig()
-                    }
-
-                    Button {
-                        addClusterPopoverPresented = false
-                        viewModel.refreshKubeConfigSourcesFromDiscovery()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Refresh detected contexts")
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 9) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.accentColor.opacity(0.12)))
+                    Text("Add Cluster")
+                        .font(.headline)
+                    Spacer(minLength: 0)
                 }
 
-                Menu {
-                    Button {
-                        addClusterPopoverPresented = false
-                        viewModel.importKubeConfig()
-                    } label: {
-                        Label("Import File", systemImage: "doc.badge.plus")
+                addClusterDiscoveryStatus
+
+                VStack(alignment: .leading, spacing: 8) {
+                    addClusterSectionLabel("Standard")
+
+                    addClusterQuickAction(
+                        title: "Auto-detect Clusters",
+                        subtitle: "On - click to refresh detected contexts",
+                        symbolName: "checkmark.circle.fill",
+                        isActive: true
+                    ) {
+                        viewModel.refreshKubeConfigSourcesFromDiscovery()
                     }
 
-                    Button {
-                        addClusterPopoverPresented = false
-                        viewModel.importKubeConfigFromPasteboard()
-                    } label: {
-                        Label("Paste Kubeconfig", systemImage: "doc.on.clipboard")
+                    LazyVGrid(
+                        columns: addClusterGridColumns,
+                        spacing: 8
+                    ) {
+                        addClusterQuickAction(
+                            title: "Paste",
+                            subtitle: "Clipboard",
+                            symbolName: "doc.on.clipboard"
+                        ) {
+                            addClusterPopoverPresented = false
+                            viewModel.importKubeConfigFromPasteboard()
+                        }
+
+                        addClusterQuickAction(
+                            title: "Use Default",
+                            subtitle: "~/.kube/config",
+                            symbolName: "folder.badge.gearshape"
+                        ) {
+                            addClusterPopoverPresented = false
+                            viewModel.addDefaultKubeConfig()
+                        }
                     }
+                }
 
-                    Button {
-                        addClusterPopoverPresented = false
-                        viewModel.importKubeConfigFolder()
-                    } label: {
-                        Label("Import Folder", systemImage: "folder.badge.plus")
+                VStack(alignment: .leading, spacing: 8) {
+                    addClusterSectionLabel("Provider Login")
+
+                    LazyVGrid(
+                        columns: addClusterGridColumns,
+                        spacing: 8
+                    ) {
+                        ForEach(RuneAddClusterProvider.allCases) { provider in
+                            providerTileButton(provider)
+                        }
                     }
+                }
 
-                    Divider()
+                DisclosureGroup(isExpanded: $isManualAddClusterExpanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
 
-                    Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
+                            Menu {
+                                Button {
+                                    addClusterPopoverPresented = false
+                                    viewModel.importKubeConfig()
+                                } label: {
+                                    Label("Import File", systemImage: "doc.badge.plus")
+                                }
+
+                                Button {
+                                    addClusterPopoverPresented = false
+                                    viewModel.importKubeConfigFromPasteboard()
+                                } label: {
+                                    Label("Paste Kubeconfig", systemImage: "doc.on.clipboard")
+                                }
+
+                                Button {
+                                    addClusterPopoverPresented = false
+                                    viewModel.importKubeConfigFolder()
+                                } label: {
+                                    Label("Import Folder…", systemImage: "folder.badge.plus")
+                                }
+                            } label: {
+                                Label("Import Options", systemImage: "square.and.arrow.down")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.top, 2)
+
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 8) {
+                                TextField("Context name", text: $viewModel.manualKubeConfigName)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("https://cluster.example.invalid", text: $viewModel.manualKubeConfigServer)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Namespace", text: $viewModel.manualKubeConfigNamespace)
+                                    .textFieldStyle(.roundedBorder)
+                                SecureField("Bearer token", text: $viewModel.manualKubeConfigToken)
+                                    .textFieldStyle(.roundedBorder)
+
+                                Button {
+                                    addClusterPopoverPresented = false
+                                    viewModel.importManualTokenKubeConfig()
+                                } label: {
+                                    Label("Add Manual Token Cluster", systemImage: "key")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                            .padding(.top, 6)
+                        } label: {
+                            Label("Manual Token Server", systemImage: "key")
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                    .padding(.top, 8)
                 } label: {
-                    addClusterMenuLabel(
-                        title: "Import Kubeconfig",
-                        subtitle: "File, paste, or folder",
-                        symbolName: "square.and.arrow.down"
+                    Label("Advanced", systemImage: "slider.horizontal.3")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(RuneSurfaceBackground(kind: .inset))
+
+                if let review = viewModel.kubeConfigImportReviews.last {
+                    KubeConfigImportReviewPanel(
+                        review: review,
+                        onRunAuthDoctor: {
+                            addClusterPopoverPresented = false
+                            viewModel.runAuthDoctor()
+                        }
                     )
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize(horizontal: false, vertical: true)
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                addClusterSectionLabel("Cloud")
-
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(RuneAddClusterProvider.allCases) { provider in
-                        providerTileButton(provider)
-                    }
-                }
-            }
-
-            DisclosureGroup(isExpanded: $isManualAddClusterExpanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Context name", text: $viewModel.manualKubeConfigName)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("https://cluster.example.invalid", text: $viewModel.manualKubeConfigServer)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Namespace", text: $viewModel.manualKubeConfigNamespace)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("Bearer token", text: $viewModel.manualKubeConfigToken)
-                        .textFieldStyle(.roundedBorder)
-
-                    Button {
-                        addClusterPopoverPresented = false
-                        viewModel.importManualTokenKubeConfig()
-                    } label: {
-                        Label("Add Manual Token Cluster", systemImage: "key")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.top, 8)
-            } label: {
-                Label("Advanced manual server", systemImage: "slider.horizontal.3")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let review = viewModel.kubeConfigImportReviews.last {
-                KubeConfigImportReviewPanel(
-                    review: review,
-                    onRunAuthDoctor: {
-                        addClusterPopoverPresented = false
-                        viewModel.runAuthDoctor()
-                    }
-                )
-            }
+            .padding(14)
         }
-        .padding(14)
-        .frame(width: 380)
+        .frame(width: 400)
+        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        }
+        .onAppear {
+            viewModel.refreshKubeConfigSourcesFromDiscovery()
+        }
+    }
+
+    private var addClusterGridColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 8),
+            GridItem(.flexible(), spacing: 8)
+        ]
     }
 
     private func addClusterSectionLabel(_ text: String) -> some View {
@@ -1928,14 +1976,74 @@ public struct RuneRootView: View {
             .foregroundStyle(.secondary)
     }
 
+    private var addClusterDiscoveryStatus: some View {
+        let sourceCount = viewModel.state.kubeConfigSources.count
+        let contextCount = viewModel.state.contexts.filter { $0.name != "rune-demo" }.count
+        let isLoading = viewModel.state.isLoading || viewModel.isLaunchExperienceVisible
+        let statusText: String = {
+            if isLoading {
+                return "Reading cluster contexts..."
+            }
+            if contextCount > 0 {
+                return "\(contextCount) context\(contextCount == 1 ? "" : "s") available from \(sourceCount) source\(sourceCount == 1 ? "" : "s")"
+            }
+            if sourceCount > 0 {
+                return "\(sourceCount) kubeconfig source\(sourceCount == 1 ? "" : "s") loaded"
+            }
+            return "Watching for kubeconfig sources"
+        }()
+
+        return HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: contextCount > 0 || sourceCount > 0 ? "checkmark.circle.fill" : "dot.radiowaves.left.and.right")
+                    .foregroundStyle(contextCount > 0 || sourceCount > 0 ? Color.green : Color.accentColor)
+            }
+
+            Text(statusText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Button {
+                viewModel.refreshKubeConfigSourcesFromDiscovery()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color(nsColor: .controlBackgroundColor).opacity(0.72)))
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh detected contexts")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RuneSurfaceBackground(kind: .inset))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+        }
+    }
+
     private func addClusterQuickAction(
         title: String,
         subtitle: String,
         symbolName: String,
+        isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            addClusterActionContent(title: title, subtitle: subtitle, symbolName: symbolName)
+            addClusterActionContent(
+                title: title,
+                subtitle: subtitle,
+                symbolName: symbolName,
+                isActive: isActive
+            )
         }
         .buttonStyle(.plain)
     }
@@ -1951,31 +2059,42 @@ public struct RuneRootView: View {
     private func addClusterActionContent(
         title: String,
         subtitle: String,
-        symbolName: String
+        symbolName: String,
+        isActive: Bool = false
     ) -> some View {
-        HStack(spacing: 10) {
+        let accent = isActive ? Color.green : Color.accentColor
+
+        return HStack(spacing: 10) {
             Image(systemName: symbolName)
-                .frame(width: 18)
-                .foregroundStyle(Color.accentColor)
+                .font(.body.weight(.semibold))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(accent)
+                .background(Circle().fill(accent.opacity(0.11)))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
         }
         .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
+        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+        .background {
+            ZStack {
+                RuneSurfaceBackground(kind: .inset)
+                if isActive {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.green.opacity(0.045))
+                }
+            }
+        }
+        .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-        )
+                .strokeBorder(isActive ? Color.green.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+        }
     }
 
     private func providerTileButton(_ provider: RuneAddClusterProvider) -> some View {
@@ -2006,15 +2125,18 @@ public struct RuneRootView: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-            .background(
+            .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+            .background {
+                ZStack {
+                    RuneSurfaceBackground(kind: .inset)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(provider.accent.opacity(0.045))
+                }
+            }
+            .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-            )
+                    .strokeBorder(provider.accent.opacity(0.20), lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
         .help(provider.title)
@@ -2115,14 +2237,7 @@ public struct RuneRootView: View {
                 .controlSize(.small)
             }
             .padding(10)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-            }
+            .background(RuneSurfaceBackground(kind: .inset))
         }
 
         private var redactedPreviewSnippet: String {
@@ -2192,7 +2307,7 @@ public struct RuneRootView: View {
     }
 
     private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: provider.symbolName)
                     .font(.system(size: 24, weight: .semibold))
@@ -2209,62 +2324,26 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
 
-            Text(provider.note)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Credential command")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                if provider != .local {
-                    providerCredentialFields(provider)
-                }
-
-                Text(providerCredentialCommand(provider))
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.68))
-                    )
+            if provider != .local {
+                providerCredentialFields(provider)
             }
 
-            if !provider.auxiliaryCommands.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Local cluster commands")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    ForEach(provider.auxiliaryCommands, id: \.title) { item in
-                        HStack(spacing: 8) {
-                            Text(item.title)
-                                .font(.caption.weight(.semibold))
-                                .frame(width: 44, alignment: .leading)
-                            Text(item.command)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                            Spacer(minLength: 0)
-                            Button {
-                                copyToPasteboard(item.command)
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Copy \(item.title.lowercased()) command")
-                        }
-                        .padding(8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
-                        )
+            if provider == .local {
+                HStack(spacing: 8) {
+                    Button {
+                        selectedAddClusterProvider = nil
+                        viewModel.importKubeConfig()
+                    } label: {
+                        Label("Import Kubeconfig…", systemImage: "doc.badge.plus")
                     }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        viewModel.refreshKubeConfigSourcesFromDiscovery()
+                    } label: {
+                        Label("Refresh Contexts", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
 
@@ -2286,19 +2365,12 @@ public struct RuneRootView: View {
                 .buttonStyle(.bordered)
 
                 Button {
-                    viewModel.refreshKubeConfigSourcesFromDiscovery()
+                    viewModel.runAuthDoctor()
                 } label: {
-                    Label("Refresh Contexts", systemImage: "arrow.clockwise")
+                    Label("Auth Doctor", systemImage: "stethoscope")
                 }
                 .buttonStyle(.bordered)
-
-                Button {
-                    selectedAddClusterProvider = nil
-                    viewModel.importKubeConfig()
-                } label: {
-                    Label("Import Kubeconfig", systemImage: "doc.badge.plus")
-                }
-                .buttonStyle(.bordered)
+                .disabled(viewModel.state.isRunningAuthDoctor)
 
                 Spacer(minLength: 0)
 
@@ -2314,9 +2386,47 @@ public struct RuneRootView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(providerCredentialCommand(provider))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RuneSurfaceBackground(kind: .inset))
+
+                    ForEach(provider.auxiliaryCommands, id: \.title) { item in
+                        HStack(spacing: 8) {
+                            Text(item.title)
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 54, alignment: .leading)
+                            Text(item.command)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Spacer(minLength: 0)
+                            Button {
+                                copyToPasteboard(item.command)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy \(item.title.lowercased()) command")
+                        }
+                        .padding(8)
+                        .background(RuneSurfaceBackground(kind: .inset))
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("Command Details", systemImage: "terminal")
+                    .font(.caption.weight(.semibold))
+            }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(width: 440)
     }
 
     @ViewBuilder
@@ -4290,6 +4400,7 @@ public struct RuneRootView: View {
             statusText: manifestStatusText,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
             onOpenYAMLEditor: { openYAMLEditorSheet() },
+            onExport: { viewModel.saveCurrentResourceDescribe() },
             readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
         )
     }
@@ -5269,7 +5380,7 @@ public struct RuneRootView: View {
         case .logs:
             return openLogsInspectorForSelection()
         case .saveLogs:
-            return saveCurrentLogsFromKeyBinding()
+            return saveCurrentDetailFromKeyBinding()
         case .shell:
             return openShellOrScaleInspectorForSelection()
         case .edit:
@@ -5399,30 +5510,93 @@ public struct RuneRootView: View {
         return true
     }
 
-    private func saveCurrentLogsFromKeyBinding() -> Bool {
-        guard keyboardPaneFocus == .detail else { return false }
+    private func saveCurrentDetailFromKeyBinding() -> Bool {
+        guard keyboardPaneFocus == .content || keyboardPaneFocus == .detail else { return false }
 
         switch viewModel.state.selectedSection {
         case .workloads:
             switch viewModel.state.selectedWorkloadKind {
             case .pod:
-                guard podInspectorTab == .logs, viewModel.state.selectedPod != nil else { return false }
+                guard viewModel.state.selectedPod != nil else { return false }
+                switch podInspectorTab {
+                case .logs:
+                    viewModel.saveCurrentLogs()
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                case .overview, .exec, .portForward:
+                    return false
+                }
             case .deployment:
-                guard deploymentInspectorTab == .unifiedLogs, viewModel.state.selectedDeployment != nil else { return false }
+                guard viewModel.state.selectedDeployment != nil else { return false }
+                switch deploymentInspectorTab {
+                case .unifiedLogs:
+                    viewModel.saveCurrentLogs()
+                case .rollout:
+                    viewModel.saveCurrentRolloutHistory()
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                case .overview:
+                    return false
+                }
             default:
-                return false
+                guard hasGenericManifestSelection else { return false }
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                }
             }
         case .networking:
-            guard viewModel.state.selectedWorkloadKind == .service,
-                  serviceInspectorTab == .unifiedLogs,
-                  viewModel.state.selectedService != nil else {
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                guard viewModel.state.selectedService != nil else { return false }
+                switch serviceInspectorTab {
+                case .unifiedLogs:
+                    viewModel.saveCurrentLogs()
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                case .overview, .portForward:
+                    return false
+                }
+            default:
+                guard hasGenericManifestSelection else { return false }
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                }
+            }
+        case .config, .storage, .rbac:
+            guard hasGenericManifestSelection else { return false }
+            switch genericResourceManifestTab {
+            case .describe:
+                viewModel.saveCurrentResourceDescribe()
+            case .yaml:
+                viewModel.saveCurrentResourceYAML()
+            }
+        case .helm:
+            guard viewModel.state.selectedHelmRelease != nil else { return false }
+            switch helmInspectorTab {
+            case .values:
+                viewModel.saveCurrentHelmValues()
+            case .manifest:
+                viewModel.saveCurrentHelmManifest()
+            case .history:
+                viewModel.saveCurrentHelmHistory()
+            case .overview:
                 return false
             }
-        case .overview, .config, .storage, .rbac, .events, .helm, .terminal:
+        case .overview, .events, .terminal:
             return false
         }
-
-        viewModel.saveCurrentLogs()
         return true
     }
 

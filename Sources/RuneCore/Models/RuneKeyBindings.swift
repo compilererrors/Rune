@@ -135,7 +135,7 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .historyForward: return "History Forward"
         case .describe: return "Describe"
         case .logs: return "Logs"
-        case .saveLogs: return "Save Logs"
+        case .saveLogs: return "Save / Export"
         case .shell: return "Shell / Scale"
         case .edit: return "Edit"
         case .yaml: return "YAML"
@@ -160,7 +160,7 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .logs:
             return "Open pod logs or unified service/deployment logs."
         case .saveLogs:
-            return "Save the currently selected pod logs or unified logs when the log inspector has focus."
+            return "Save or export the active detail panel when supported: logs, YAML, Describe, rollout history, or Helm text."
         case .shell:
             return "Open pod exec, or deployment scale controls where Rune supports the k9s `s` workflow."
         case .edit:
@@ -204,6 +204,15 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "f", requiresShift: true)!
         case .rollout:
             return RuneKeyboardShortcut(key: "r", requiresShift: false)!
+        }
+    }
+
+    public var alternateShortcuts: [RuneKeyboardShortcut] {
+        switch self {
+        case .saveLogs:
+            return [RuneKeyboardShortcut(key: "s", requiresShift: false, requiresControl: true)!]
+        default:
+            return []
         }
     }
 
@@ -269,13 +278,15 @@ public struct RuneKeyBindingResolver: Sendable {
         guard !input.baseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
         return RuneKeyBindingAction.allCases.first { action in
-            shortcutProvider(action).matches(
-                baseKey: input.baseKey,
-                requiresShift: input.modifiers.contains(.shift),
-                requiresCommand: input.modifiers.contains(.command),
-                requiresOption: input.modifiers.contains(.option),
-                requiresControl: input.modifiers.contains(.control)
-            )
+            ([shortcutProvider(action)] + action.alternateShortcuts).contains { shortcut in
+                shortcut.matches(
+                    baseKey: input.baseKey,
+                    requiresShift: input.modifiers.contains(.shift),
+                    requiresCommand: input.modifiers.contains(.command),
+                    requiresOption: input.modifiers.contains(.option),
+                    requiresControl: input.modifiers.contains(.control)
+                )
+            }
         }
     }
 }

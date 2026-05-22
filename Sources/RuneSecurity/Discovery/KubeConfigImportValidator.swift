@@ -99,6 +99,16 @@ public struct KubeConfigImportValidator: Sendable {
             ))
         }
 
+        let currentContext = parsed.currentContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedContextNames = Set(parsed.contexts.map(\.name))
+        if !currentContext.isEmpty, !parsedContextNames.contains(currentContext) {
+            issues.append(.init(
+                id: "missing-current-context-reference",
+                severity: .error,
+                message: "Kubeconfig current-context \(currentContext) does not match any context."
+            ))
+        }
+
         for duplicate in parsed.duplicateContextNames {
             issues.append(.init(
                 id: "duplicate-context-\(duplicate)",
@@ -185,6 +195,7 @@ public struct KubeConfigImportValidator: Sendable {
         if combined.contains("eks") || combined.contains("aws") { return "EKS" }
         if combined.contains("gke") || combined.contains("gcloud") || combined.contains("google") { return "GKE" }
         if combined.contains("az") || combined.contains("azure") || combined.contains("kubelogin") { return "AKS" }
+        if combined.contains("k3s") { return "K3s" }
         return nil
     }
 
@@ -192,6 +203,7 @@ public struct KubeConfigImportValidator: Sendable {
         let name = contextName.lowercased()
         if name.contains("minikube") { return "Minikube" }
         if name.contains("kind-") || name == "kind" { return "kind" }
+        if name.contains("k3s") { return "K3s" }
         if name.contains("k3d") { return "k3d" }
         if name.contains("docker-desktop") { return "Docker Desktop" }
         if name.contains("orbstack") { return "OrbStack" }
@@ -260,6 +272,7 @@ private struct ParsedKubeConfig {
     var syntaxIssues: [KubeConfigImportIssue] = []
 
     init(raw: String) {
+        let raw = Self.normalized(raw)
         if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             syntaxIssues.append(.init(id: "empty", severity: .error, message: "Kubeconfig is empty."))
             return
@@ -279,6 +292,15 @@ private struct ParsedKubeConfig {
 
         func finishCluster(_ cluster: inout Cluster?) {
             if let value = cluster {
+                guard !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    syntaxIssues.append(.init(
+                        id: "cluster-missing-name",
+                        severity: .error,
+                        message: "Kubeconfig contains a cluster entry without a name."
+                    ))
+                    cluster = nil
+                    return
+                }
                 clusters.append(value)
                 clusterNameCounts[value.name, default: 0] += 1
             }
@@ -287,6 +309,15 @@ private struct ParsedKubeConfig {
 
         func finishContext(_ context: inout Context?) {
             if let value = context {
+                guard !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    syntaxIssues.append(.init(
+                        id: "context-missing-name",
+                        severity: .error,
+                        message: "Kubeconfig contains a context entry without a name."
+                    ))
+                    context = nil
+                    return
+                }
                 contexts.append(value)
                 contextNameCounts[value.name, default: 0] += 1
             }
@@ -295,6 +326,15 @@ private struct ParsedKubeConfig {
 
         func finishUser(_ user: inout User?) {
             if let value = user {
+                guard !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    syntaxIssues.append(.init(
+                        id: "user-missing-name",
+                        severity: .error,
+                        message: "Kubeconfig contains a user entry without a name."
+                    ))
+                    user = nil
+                    return
+                }
                 users.append(value)
                 userNameCounts[value.name, default: 0] += 1
             }
@@ -306,8 +346,28 @@ private struct ParsedKubeConfig {
         var currentUser: User?
 
         for line in raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let line = Self.removingInlineComment(from: line)
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            let indent = line.prefix { $0 == " " }.count
+
+            if let message = Self.unsupportedYAMLFeatureMessage(in: trimmed) {
+                syntaxIssues.append(.init(
+                    id: "unsupported-yaml-feature",
+                    severity: .error,
+                    message: message
+                ))
+                continue
+            }
+
+            if trimmed == "---" {
+                syntaxIssues.append(.init(
+                    id: "unsupported-multi-document",
+                    severity: .error,
+                    message: "Kubeconfig must contain exactly one YAML document."
+                ))
+                continue
+            }
 
             if !line.hasPrefix(" "), !line.hasPrefix("-") {
                 nestedKey = nil
@@ -316,17 +376,17 @@ private struct ParsedKubeConfig {
                     continue
                 }
                 switch trimmed {
-                case "clusters:":
+                case "clusters:", "clusters: []":
                     finishContext(&currentContextEntry)
                     finishUser(&currentUser)
                     section = .clusters
                     continue
-                case "contexts:":
+                case "contexts:", "contexts: []":
                     finishCluster(&currentCluster)
                     finishUser(&currentUser)
                     section = .contexts
                     continue
-                case "users:":
+                case "users:", "users: []":
                     finishCluster(&currentCluster)
                     finishContext(&currentContextEntry)
                     section = .users
@@ -339,7 +399,7 @@ private struct ParsedKubeConfig {
                 }
             }
 
-            if trimmed.hasPrefix("- name:") {
+            if trimmed.hasPrefix("- name:"), indent <= 2 {
                 let name = Self.scalarValue(trimmed, key: "- name") ?? ""
                 switch section {
                 case .clusters:
@@ -358,8 +418,80 @@ private struct ParsedKubeConfig {
                 continue
             }
 
+            if let listItemKey = Self.typedListItemKey(from: trimmed), indent <= 2 {
+                switch (section, listItemKey) {
+                case (.clusters?, "cluster"):
+                    finishCluster(&currentCluster)
+                    currentCluster = Cluster(name: "")
+                case (.contexts?, "context"):
+                    finishContext(&currentContextEntry)
+                    currentContextEntry = Context(name: "")
+                case (.users?, "user"):
+                    finishUser(&currentUser)
+                    currentUser = User(name: "")
+                case (nil, _):
+                    syntaxIssues.append(.init(
+                        id: "list-without-section",
+                        severity: .error,
+                        message: "Kubeconfig contains a list item outside clusters, contexts, or users."
+                    ))
+                default:
+                    syntaxIssues.append(.init(
+                        id: "malformed-yaml",
+                        severity: .error,
+                        message: "Kubeconfig contains a \(listItemKey) item in the wrong section."
+                    ))
+                }
+                nestedKey = listItemKey
+                continue
+            }
+
+            if Self.isAnchorOnlyListItem(trimmed), indent <= 2 {
+                switch section {
+                case .clusters:
+                    finishCluster(&currentCluster)
+                    currentCluster = Cluster(name: "")
+                case .contexts:
+                    finishContext(&currentContextEntry)
+                    currentContextEntry = Context(name: "")
+                case .users:
+                    finishUser(&currentUser)
+                    currentUser = User(name: "")
+                case nil:
+                    syntaxIssues.append(.init(id: "list-without-section", severity: .error, message: "Kubeconfig contains a list item outside clusters, contexts, or users."))
+                }
+                nestedKey = nil
+                continue
+            }
+
             if trimmed.hasSuffix(":") {
                 nestedKey = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                continue
+            }
+
+            if let value = Self.scalarValue(trimmed, key: "name") {
+                switch section {
+                case .clusters:
+                    if currentCluster == nil {
+                        currentCluster = Cluster(name: value)
+                    } else {
+                        currentCluster?.name = value
+                    }
+                case .contexts:
+                    if currentContextEntry == nil {
+                        currentContextEntry = Context(name: value)
+                    } else {
+                        currentContextEntry?.name = value
+                    }
+                case .users:
+                    if currentUser == nil {
+                        currentUser = User(name: value)
+                    } else {
+                        currentUser?.name = value
+                    }
+                case nil:
+                    break
+                }
                 continue
             }
 
@@ -367,6 +499,8 @@ private struct ParsedKubeConfig {
             case (.clusters?, "cluster"):
                 if let value = Self.scalarValue(trimmed, key: "server") {
                     currentCluster?.serverHost = Self.serverHost(from: value)
+                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentCluster?.name = value
                 }
             case (.contexts?, "context"):
                 if let value = Self.scalarValue(trimmed, key: "cluster") {
@@ -375,12 +509,16 @@ private struct ParsedKubeConfig {
                     currentContextEntry?.userName = value
                 } else if let value = Self.scalarValue(trimmed, key: "namespace") {
                     currentContextEntry?.namespace = value
+                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentContextEntry?.name = value
                 }
             case (.users?, "user"):
                 if Self.scalarValue(trimmed, key: "token") != nil {
                     currentUser?.hasToken = true
                 } else if Self.scalarValue(trimmed, key: "client-certificate-data") != nil {
                     currentUser?.hasClientCertificate = true
+                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentUser?.name = value
                 }
             case (.users?, "exec"):
                 if let value = Self.scalarValue(trimmed, key: "command") {
@@ -414,6 +552,86 @@ private struct ParsedKubeConfig {
         return String(line.dropFirst(prefix.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func normalized(_ raw: String) -> String {
+        var value = raw
+        if value.hasPrefix("\u{FEFF}") {
+            value.removeFirst()
+        }
+        value = value.replacingOccurrences(of: "\r\n", with: "\n")
+        value = value.replacingOccurrences(of: "\r", with: "\n")
+        return value
+    }
+
+    private static func removingInlineComment(from line: String) -> String {
+        var result = ""
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var previous: Character?
+
+        for character in line {
+            if character == "'", !inDoubleQuote {
+                inSingleQuote.toggle()
+            } else if character == "\"", !inSingleQuote, previous != "\\" {
+                inDoubleQuote.toggle()
+            } else if character == "#", !inSingleQuote, !inDoubleQuote {
+                if let last = result.last, last.isWhitespace {
+                    break
+                }
+            }
+
+            result.append(character)
+            previous = character
+        }
+
+        return trimmingTrailingWhitespace(result)
+    }
+
+    private static func typedListItemKey(from trimmed: String) -> String? {
+        switch trimmed {
+        case "- cluster:":
+            return "cluster"
+        case "- context:":
+            return "context"
+        case "- user:":
+            return "user"
+        default:
+            return nil
+        }
+    }
+
+    private static func isAnchorOnlyListItem(_ trimmed: String) -> Bool {
+        guard trimmed.hasPrefix("- &") else { return false }
+        let rest = trimmed.dropFirst(2)
+        return !rest.isEmpty && !rest.contains(" ") && !rest.contains(":")
+    }
+
+    private static func unsupportedYAMLFeatureMessage(in trimmed: String) -> String? {
+        if trimmed.hasPrefix("- *") {
+            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig importer."
+        }
+        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
+        let key = trimmed[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        if key == "<<" {
+            return "Kubeconfig uses YAML merge keys, which are not supported by Rune's safe kubeconfig importer."
+        }
+        if value.hasPrefix("*") {
+            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig importer."
+        }
+        if value.hasPrefix("&") {
+            return "Kubeconfig uses anchored scalar values, which are not supported by Rune's safe kubeconfig importer."
+        }
+        return nil
+    }
+
+    private static func trimmingTrailingWhitespace(_ value: String) -> String {
+        var result = value
+        while let last = result.last, last.isWhitespace {
+            result.removeLast()
+        }
+        return result
     }
 
     private static func serverHost(from raw: String) -> String? {

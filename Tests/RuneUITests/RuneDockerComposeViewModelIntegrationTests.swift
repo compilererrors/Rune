@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import RuneCore
 @testable import RuneKube
+@testable import RuneSecurity
 @testable import RuneStore
 @testable import RuneUI
 
@@ -329,12 +330,17 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let targetRevision = try XCTUnwrap(harness.state.helmHistory.map(\.revision).min())
         harness.viewModel.requestHelmRollback(revision: targetRevision)
 
+        try await waitUntil(timeout: 10) {
+            harness.viewModel.pendingWriteDryRunStatus?.contains("Helm accepted rollback dry-run") == true
+        }
+
         XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
-        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Helm rollback command preview only"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Rune will run Helm rollback after confirmation"))
         XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Rollback plan:"))
         XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Target release: \(release.namespace)/\(release.name)"))
-        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Helm dry-run is not available"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Helm accepted rollback dry-run"))
         XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("helm --kube-context fake-orbit-mesh --namespace \(release.namespace) rollback \(release.name) \(targetRevision)"))
+        XCTAssertEqual(harness.helmRunner.requests.map(\.dryRun), [true])
 
         harness.viewModel.confirmPendingWriteAction()
         XCTAssertEqual(
@@ -354,10 +360,11 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             harness.state.writeAuditLog.contains { entry in
                 entry.action == "Helm Rollback"
                     && entry.resource.contains("helmrelease/\(release.namespace)/\(release.name)")
-                    && entry.status == "Blocked"
-                    && entry.message.contains("did not run Helm automatically")
+                    && entry.status == "Succeeded"
+                    && entry.message.contains("Helm rollback completed after Helm dry-run")
             }
         }
+        XCTAssertEqual(harness.helmRunner.requests.map(\.dryRun), [true, true, false])
 
         XCTAssertNil(harness.state.lastError)
     }
@@ -425,6 +432,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let kubeconfigURL: URL
         let state: RuneAppState
         let viewModel: RuneAppViewModel
+        let helmRunner: DockerComposeRecordingHelmCommandRunner
     }
 
     private func makeHarness() throws -> Harness {
@@ -447,12 +455,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
+        let helmRunner = DockerComposeRecordingHelmCommandRunner()
         let viewModel = RuneAppViewModel(
             state: state,
+            helmCommandRunner: helmRunner,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
-        return Harness(kubeconfigURL: kubeconfig, state: state, viewModel: viewModel)
+        return Harness(kubeconfigURL: kubeconfig, state: state, viewModel: viewModel, helmRunner: helmRunner)
     }
 
     private func selectOrbitContext(in harness: Harness) async throws {
@@ -618,5 +628,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                       echo \(marker) >/usr/share/nginx/html/index.html
                       nginx -g 'daemon off;'
         """
+    }
+}
+
+private final class DockerComposeRecordingHelmCommandRunner: HelmCommandRunning, @unchecked Sendable {
+    private(set) var requests: [HelmRollbackRequest] = []
+
+    func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval) async throws -> HelmCommandResult {
+        requests.append(request)
+        return HelmCommandResult(exitCode: 0, stdout: "ok\n", stderr: "")
     }
 }

@@ -179,7 +179,7 @@ public enum PendingWriteAction: Equatable, Sendable {
         case let .helmRollback(_, _, revision, wait, timeout, cleanupOnFail):
             let waitText = wait ? "wait for Kubernetes resources" : "not wait for Kubernetes resources"
             let cleanupText = cleanupOnFail ? "cleanup-on-fail enabled" : "cleanup-on-fail disabled"
-            return "Helm rollback command preview only. Rune will not run Helm automatically yet.\n\nTarget revision: \(revision)\nOptions: \(waitText), timeout \(timeout), \(cleanupText)."
+            return "Rune will run Helm rollback after confirmation. If Helm dry-run safety is enabled, Rune runs `helm rollback --dry-run` before the real rollback.\n\nTarget revision: \(revision)\nOptions: \(waitText), timeout \(timeout), \(cleanupText)."
         case .exec:
             return "This runs a command inside the selected pod."
         case let .createJobFromCronJob(_, jobName):
@@ -196,7 +196,7 @@ public enum PendingWriteAction: Equatable, Sendable {
         case .rolloutRestart: return "Restart"
         case .rolloutUndo: return "Rollback"
         case .controllerRolloutUndo: return "Copy Command"
-        case .helmRollback: return "Copy Command"
+        case .helmRollback: return "Rollback"
         case .exec: return "Run"
         case .createJobFromCronJob: return "Create Job"
         }
@@ -662,6 +662,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let kubeConfigImportValidator: KubeConfigImportValidator
     private let kubeConfigImportStore: KubeConfigImportStoring
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
+    private let helmCommandRunner: HelmCommandRunning
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
     private let namespaceListPersistence: NamespaceListPersisting
     private let portForwardBrowserOpener: PortForwardBrowserOpening
@@ -760,6 +761,7 @@ public final class RuneAppViewModel: ObservableObject {
         kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
         kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
         cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
+        helmCommandRunner: HelmCommandRunning = ProcessHelmCommandRunner(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
         namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
         portForwardBrowserOpener: PortForwardBrowserOpening = WorkspacePortForwardBrowserOpener(),
@@ -777,6 +779,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeConfigImportValidator = kubeConfigImportValidator
         self.kubeConfigImportStore = kubeConfigImportStore
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
+        self.helmCommandRunner = helmCommandRunner
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
         self.namespaceListPersistence = namespaceListPersistence
         self.portForwardBrowserOpener = portForwardBrowserOpener
@@ -1601,8 +1604,17 @@ public final class RuneAppViewModel: ObservableObject {
                 self.startKubeConfigSourceSync()
                 self.cloudKubeConfigImportStatus = "Imported \(request.provider.rawValue.uppercased()) kubeconfig context."
                 try await self.reloadContexts()
+                self.runAuthDoctor()
             } catch {
                 self.cloudKubeConfigImportStatus = "Cloud import failed."
+                self.state.setAuthDoctorChecks([
+                    RuneHealthCheck(
+                        id: "cloud-login-\(request.provider.rawValue)",
+                        title: "\(request.provider.rawValue.uppercased()) cloud login",
+                        status: .failed,
+                        message: "Cloud kubeconfig import did not complete. Check the provider CLI login and required fields, then run Auth Doctor again."
+                    )
+                ])
                 self.diagnostics.log("cloud kubeconfig import failed: \(error.localizedDescription)")
                 self.state.setError(error)
             }
@@ -4103,6 +4115,21 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    public func saveCurrentResourceDescribe() {
+        do {
+            guard let (kind, name) = currentWritableResource(), !state.resourceDescribe.isEmpty else { return }
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+
+            _ = try exporter.save(
+                data: Data(state.resourceDescribe.utf8),
+                suggestedName: "\(kind.kubernetesResourceName)-\(name)-describe-\(timestamp).txt",
+                allowedFileTypes: ["txt", "log"]
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
     /// Discards edits in the YAML editor and restores the last manifest loaded from the cluster.
     public func revertResourceYAMLDraft() {
         yamlValidationTask?.cancel()
@@ -4204,15 +4231,6 @@ public final class RuneAppViewModel: ObservableObject {
             for check in AuthDoctorKubeconfigInspector().inspect(sources: state.kubeConfigSources) {
                 record(check.id, check.title, check.status, check.message)
             }
-            if UserDefaults.standard.runeWriteSafetyRequireHelmDryRun {
-                record(
-                    "helm-rollback-dry-run",
-                    "Helm rollback dry-run",
-                    .warning,
-                    "Native Helm rollback dry-run is not available in Rune yet. Rune does not run Helm automatically; rollback remains a copyable command preview after review."
-                )
-            }
-
             let contexts: [KubeContext]
             do {
                 contexts = try await kubeClient.listContexts(from: state.kubeConfigSources)
@@ -4913,7 +4931,7 @@ public final class RuneAppViewModel: ObservableObject {
         pendingWriteAction = action
         pendingRollbackPlan = helmRollbackPlan(for: release, revision: revision, action: action)
         if UserDefaults.standard.runeWriteSafetyRequireHelmDryRun {
-            pendingWriteDryRunStatus = "Helm dry-run is not available through Rune's native backend yet. Rune will not run Helm automatically; copy the command and run it explicitly after review."
+            runPendingHelmDryRunPreview(action: action)
         } else {
             pendingWriteDryRunStatus = nil
         }
@@ -5439,12 +5457,44 @@ public final class RuneAppViewModel: ObservableObject {
                         message: "Controller rollback command copied; Rune did not run this rollback automatically"
                     )
                     return
-                case .helmRollback:
-                    copyCommandToPasteboard(action.kubectlCommand(contextName: context.name, namespace: state.selectedNamespace))
+                case let .helmRollback(releaseName, namespace, revision, wait, timeout, cleanupOnFail):
+                    let request = HelmRollbackRequest(
+                        sources: state.kubeConfigSources,
+                        contextName: context.name,
+                        namespace: namespace,
+                        releaseName: releaseName,
+                        revision: revision,
+                        wait: wait,
+                        timeout: timeout,
+                        cleanupOnFail: cleanupOnFail,
+                        dryRun: false
+                    )
+                    if UserDefaults.standard.runeWriteSafetyRequireHelmDryRun {
+                        _ = try await helmCommandRunner.rollback(
+                            HelmRollbackRequest(
+                                sources: request.sources,
+                                contextName: request.contextName,
+                                namespace: request.namespace,
+                                releaseName: request.releaseName,
+                                revision: request.revision,
+                                wait: request.wait,
+                                timeout: request.timeout,
+                                cleanupOnFail: request.cleanupOnFail,
+                                dryRun: true
+                            ),
+                            timeout: 120
+                        )
+                    }
+                    _ = try await helmCommandRunner.rollback(request, timeout: 120)
+                    do {
+                        try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
+                    } catch {
+                        diagnostics.trace("helm", "post-rollback release refresh failed: \(error.localizedDescription)")
+                    }
                     appendWriteAudit(
                         audit,
-                        status: "Blocked",
-                        message: "Helm rollback command copied; Rune did not run Helm automatically"
+                        status: "Succeeded",
+                        message: "Helm rollback completed\(UserDefaults.standard.runeWriteSafetyRequireHelmDryRun ? " after Helm dry-run" : "")"
                     )
                     return
                 case let .exec(podName, command):
@@ -5571,6 +5621,51 @@ public final class RuneAppViewModel: ObservableObject {
                 guard self.pendingWriteAction == action else { return }
                 self.pendingWriteDryRunStatus = "Could not complete: \(error.localizedDescription)"
                 self.diagnostics.log("pending rollout rollback dry-run failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func runPendingHelmDryRunPreview(action: PendingWriteAction) {
+        guard UserDefaults.standard.runeWriteSafetyRequireHelmDryRun else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
+        guard let context = state.selectedContext else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
+        guard case let .helmRollback(releaseName, namespace, revision, wait, timeout, cleanupOnFail) = action else {
+            pendingWriteDryRunStatus = nil
+            return
+        }
+        guard !state.kubeConfigSources.isEmpty else {
+            pendingWriteDryRunStatus = "Could not complete: No kubeconfig selected."
+            return
+        }
+
+        pendingWriteDryRunStatus = "Checking with Helm dry-run..."
+        Task {
+            do {
+                _ = try await helmCommandRunner.rollback(
+                    HelmRollbackRequest(
+                        sources: state.kubeConfigSources,
+                        contextName: context.name,
+                        namespace: namespace,
+                        releaseName: releaseName,
+                        revision: revision,
+                        wait: wait,
+                        timeout: timeout,
+                        cleanupOnFail: cleanupOnFail,
+                        dryRun: true
+                    ),
+                    timeout: 120
+                )
+                guard self.pendingWriteAction == action else { return }
+                self.pendingWriteDryRunStatus = "Helm accepted rollback dry-run."
+            } catch {
+                guard self.pendingWriteAction == action else { return }
+                self.pendingWriteDryRunStatus = "Could not complete: \(error.localizedDescription)"
+                self.diagnostics.log("pending helm rollback dry-run failed: \(error.localizedDescription)")
             }
         }
     }

@@ -11,8 +11,9 @@ struct ResourceDescribeInspectorPane: View {
     let statusText: String
     let onApply: () -> Void
     let onOpenYAMLEditor: () -> Void
+    let onExport: () -> Void
     let readOnlyResetID: String
-    @State private var hidesManagedFields = true
+    @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
 
     var body: some View {
         let canApplyYAML = canApplyMutations
@@ -28,13 +29,11 @@ struct ResourceDescribeInspectorPane: View {
             }
         } toolbar: {
             ManifestToolbarScrollRow {
-                if managedFieldsFilter.removedBlockCount > 0 {
-                    ManifestToolbarGroup {
-                        ManifestManagedFieldsToggle(
-                            hidesManagedFields: $hidesManagedFields,
-                            isDisabled: false
-                        )
-                    }
+                ManifestToolbarGroup {
+                    ManifestManagedFieldsToggle(
+                        hidesManagedFields: $hidesManagedFields,
+                        isDisabled: managedFieldsFilter.removedBlockCount == 0
+                    )
                 }
 
                 ManifestToolbarGroup {
@@ -47,6 +46,11 @@ struct ResourceDescribeInspectorPane: View {
                         .buttonStyle(.bordered)
                         .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
+
+                    Button("Export Describe…", action: onExport)
+                        .buttonStyle(.bordered)
+                        .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Export the current describe output to a file.")
                 }
             }
         } status: {

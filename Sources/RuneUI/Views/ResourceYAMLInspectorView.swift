@@ -68,7 +68,7 @@ struct ResourceYAMLInspectorPane: View {
     let onImport: () -> Void
     let onExport: () -> Void
     let readOnlyResetID: String
-    @State private var hidesManagedFields = false
+    @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
     @State private var issueNavigationSequence = 0
 
@@ -189,11 +189,6 @@ struct ResourceYAMLInspectorPane: View {
         .onChange(of: baseline) { _, _ in
             isInlineEditing = false
         }
-        .onChange(of: isInlineEditing) { _, isEditing in
-            if isEditing {
-                hidesManagedFields = false
-            }
-        }
     }
 
     private func navigateToIssue(_ issue: YAMLValidationIssue) {
@@ -266,7 +261,7 @@ struct ManifestToolbarScrollRow<Content: View>: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
                 content
             }
             .fixedSize(horizontal: true, vertical: false)
@@ -279,12 +274,12 @@ struct ManifestToolbarGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
             content
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .frame(minHeight: 30)
+        .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
+        .padding(.vertical, RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding)
+        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarGroupMinHeight)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(0.04))

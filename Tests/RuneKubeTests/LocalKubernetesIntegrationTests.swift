@@ -57,6 +57,122 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertEqual(selectedContainerLogs, "sidecar line\n")
     }
 
+    func testNativeRESTClientUsesTypeFirstImportedKubeconfigAgainstLocalFixture() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeTypeFirstKubeconfig(serverURL: "http://127.0.0.1:\(server.port)")
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: "local-fixture")
+
+        let contexts = try await client.listContexts(from: sources)
+        let contextNamespace = try await client.contextNamespace(from: sources, context: context)
+        let namespaces = try await client.listNamespaces(from: sources, context: context)
+        let pods = try await client.listPods(from: sources, context: context, namespace: "default")
+
+        XCTAssertEqual(contexts.map(\.name), ["local-fixture"])
+        XCTAssertEqual(contextNamespace, "default")
+        XCTAssertEqual(namespaces, ["default"])
+        XCTAssertEqual(pods.map(\.name), ["api-0"])
+    }
+
+    func testNativeRESTClientUsesCloudStyleExecKubeconfigsAgainstLocalFixture() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+
+        let cases: [(name: String, userYAML: (URL) -> String, expectedArguments: [String], expectedEnvironment: [String: String])] = [
+            (
+                "eks",
+                { plugin in
+                    """
+                    exec:
+                      apiVersion: client.authentication.k8s.io/v1
+                      command: \(plugin.path)
+                      args:
+                        - eks
+                        - get-token
+                        - --region
+                        - eu-north-1
+                        - --cluster-name
+                        - synthetic-eks
+                      env:
+                        - name: AWS_PROFILE
+                          value: synthetic-profile
+                    """
+                },
+                ["eks", "get-token", "--region", "eu-north-1", "--cluster-name", "synthetic-eks"],
+                ["AWS_PROFILE": "synthetic-profile"]
+            ),
+            (
+                "aks",
+                { plugin in
+                    """
+                    exec:
+                      apiVersion: client.authentication.k8s.io/v1
+                      command: \(plugin.path)
+                      args:
+                        - get-token
+                        - --environment
+                        - AzurePublicCloud
+                        - --server-id
+                        - synthetic-server
+                        - --client-id
+                        - synthetic-client
+                        - --tenant-id
+                        - synthetic-tenant
+                        - --login
+                        - azurecli
+                    """
+                },
+                [
+                    "get-token", "--environment", "AzurePublicCloud",
+                    "--server-id", "synthetic-server",
+                    "--client-id", "synthetic-client",
+                    "--tenant-id", "synthetic-tenant",
+                    "--login", "azurecli"
+                ],
+                [:]
+            ),
+            (
+                "gke",
+                { plugin in
+                    """
+                    exec:
+                      apiVersion: client.authentication.k8s.io/v1
+                      command: \(plugin.path)
+                      env:
+                        - name: CLOUDSDK_CORE_PROJECT
+                          value: synthetic-project
+                    """
+                },
+                [],
+                ["CLOUDSDK_CORE_PROJECT": "synthetic-project"]
+            )
+        ]
+
+        for item in cases {
+            let execPlugin = try writeExecCredentialPlugin(
+                token: "local-token",
+                expectedArguments: item.expectedArguments,
+                expectedEnvironment: item.expectedEnvironment
+            )
+            defer { try? FileManager.default.removeItem(at: execPlugin) }
+            let kubeconfig = try writeKubeconfig(
+                serverURL: "http://127.0.0.1:\(server.port)",
+                userYAML: item.userYAML(execPlugin)
+            )
+            defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+            let namespaces = try await KubernetesClient(commandTimeout: 2).listNamespaces(
+                from: [KubeConfigSource(url: kubeconfig)],
+                context: KubeContext(name: "local-fixture")
+            )
+            XCTAssertEqual(namespaces, ["default"], item.name)
+        }
+    }
+
     func testNativeRESTClientDoesNotForceTextPlainAcceptHeaderForPodLogs() throws {
         let source = try String(contentsOfFile: kubernetesRESTClientPath, encoding: .utf8)
 
@@ -876,6 +992,32 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         return url
     }
 
+    private func writeTypeFirstKubeconfig(serverURL: String) throws -> URL {
+        let kubeconfig = """
+        \u{FEFF}apiVersion: v1
+        kind: Config
+        current-context: local-fixture
+        clusters:
+        - cluster: # type-first cluster as emitted by several tools
+            server: \(serverURL)
+          name: local-cluster
+        users:
+        - user:
+            token: local-token
+          name: local-user
+        contexts:
+        - context:
+            cluster: local-cluster
+            user: local-user
+            namespace: default
+          name: local-fixture
+        """
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-local-k8s-type-first-\(UUID().uuidString).yaml")
+        try kubeconfig.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
     private struct DockerComposeFakeK8sFixture {
         let kubeconfig: URL
         let sources: [KubeConfigSource]
@@ -1126,18 +1268,52 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         return try writeExecCredentialPlugin(jsonPayload: json, requireExecInfo: requireExecInfo)
     }
 
+    private func writeExecCredentialPlugin(
+        token: String,
+        expectedArguments: [String],
+        expectedEnvironment: [String: String]
+    ) throws -> URL {
+        let json = #"{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"\#(token)"}}"#
+        let expectedArgumentString = expectedArguments.joined(separator: " ")
+        let environmentChecks = expectedEnvironment.keys.sorted().map { key in
+            let value = expectedEnvironment[key] ?? ""
+            return """
+            if [ "${\(key):-}" != "\(value)" ]; then
+              echo "unexpected \(key)" >&2
+              exit 9
+            fi
+            """
+        }.joined(separator: "\n")
+        let argumentCheck = """
+        if [ "$*" != "\(expectedArgumentString)" ]; then
+          echo "unexpected exec args: $*" >&2
+          exit 8
+        fi
+        """
+        return try writeExecCredentialPlugin(
+            jsonPayload: json,
+            preflightShell: argumentCheck + "\n" + environmentChecks
+        )
+    }
+
     private func writeExecCredentialPlugin(jsonPayload: String, requireExecInfo: Bool = false) throws -> URL {
+        try writeExecCredentialPlugin(
+            jsonPayload: jsonPayload,
+            preflightShell: requireExecInfo ? """
+            if [ -z "${KUBERNETES_EXEC_INFO:-}" ]; then
+              echo "missing KUBERNETES_EXEC_INFO" >&2
+              exit 7
+            fi
+            """ : ""
+        )
+    }
+
+    private func writeExecCredentialPlugin(jsonPayload: String, preflightShell: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-exec-credential-\(UUID().uuidString).sh")
-        let execInfoCheck = requireExecInfo ? """
-        if [ -z "${KUBERNETES_EXEC_INFO:-}" ]; then
-          echo "missing KUBERNETES_EXEC_INFO" >&2
-          exit 7
-        fi
-        """ : ""
         let body = """
         #!/bin/sh
-        \(execInfoCheck)
+        \(preflightShell)
         cat <<'JSON'
         \(jsonPayload)
         JSON

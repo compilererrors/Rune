@@ -1,4 +1,5 @@
 import Foundation
+import RuneCore
 
 public enum CloudKubeConfigProvider: String, Sendable, CaseIterable {
     case aks
@@ -14,6 +15,7 @@ public struct CloudKubeConfigImportRequest: Sendable, Equatable {
     public let projectID: String
     public let profileOrSubscription: String
     public let roleARN: String
+    public let targetKubeconfigPath: String
     public let overwriteExisting: Bool
 
     public init(
@@ -24,6 +26,7 @@ public struct CloudKubeConfigImportRequest: Sendable, Equatable {
         projectID: String = "",
         profileOrSubscription: String = "",
         roleARN: String = "",
+        targetKubeconfigPath: String = "",
         overwriteExisting: Bool = true
     ) {
         self.provider = provider
@@ -33,6 +36,7 @@ public struct CloudKubeConfigImportRequest: Sendable, Equatable {
         self.projectID = projectID
         self.profileOrSubscription = profileOrSubscription
         self.roleARN = roleARN
+        self.targetKubeconfigPath = targetKubeconfigPath
         self.overwriteExisting = overwriteExisting
     }
 }
@@ -41,6 +45,19 @@ public struct CloudKubeConfigCommandPreview: Sendable, Equatable {
     public let executable: String
     public let arguments: [String]
     public let displayCommand: String
+    public let environment: [String: String]
+
+    public init(
+        executable: String,
+        arguments: [String],
+        displayCommand: String,
+        environment: [String: String] = [:]
+    ) {
+        self.executable = executable
+        self.arguments = arguments
+        self.displayCommand = displayCommand
+        self.environment = environment
+    }
 }
 
 public struct CloudKubeConfigCommandResult: Sendable, Equatable {
@@ -105,8 +122,10 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
 
     public func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
         let clusterName = try required(request.clusterName, "Cluster name")
+        let targetKubeconfigPath = request.targetKubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let executable: String
         var arguments: [String]
+        var environment: [String: String] = [:]
 
         switch request.provider {
         case .aks:
@@ -120,6 +139,7 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
             if request.overwriteExisting {
                 arguments.append("--overwrite-existing")
             }
+            appendOptional("--file", targetKubeconfigPath, to: &arguments)
             appendOptional("--subscription", request.profileOrSubscription, to: &arguments)
 
         case .eks:
@@ -130,6 +150,7 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
                 "--region", region,
                 "--name", clusterName
             ]
+            appendOptional("--kubeconfig", targetKubeconfigPath, to: &arguments)
             appendOptional("--profile", request.profileOrSubscription, to: &arguments)
             appendOptional("--role-arn", request.roleARN, to: &arguments)
 
@@ -143,13 +164,17 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
                 "--location", location,
                 "--project", projectID
             ]
+            if !targetKubeconfigPath.isEmpty {
+                environment["KUBECONFIG"] = targetKubeconfigPath
+            }
         }
 
         let parts = [executable] + arguments
         return CloudKubeConfigCommandPreview(
             executable: executable,
             arguments: arguments,
-            displayCommand: parts.map(Self.shellQuoted).joined(separator: " ")
+            displayCommand: parts.map(Self.shellQuoted).joined(separator: " "),
+            environment: environment
         )
     }
 
@@ -164,7 +189,7 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
             )
         }
 
-        let discoveredURLs = discoverer.discoverCandidateFiles()
+        let discoveredURLs = discoveredCandidateFiles(for: request)
         let reviews = discoveredURLs.map { url in
             let raw = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
             return validator.validate(raw: raw, sourceName: url.lastPathComponent)
@@ -175,6 +200,21 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
             discoveredURLs: discoveredURLs,
             reviews: reviews
         )
+    }
+
+    private func discoveredCandidateFiles(for request: CloudKubeConfigImportRequest) -> [URL] {
+        var urls: [URL] = []
+        let target = request.targetKubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !target.isEmpty {
+            urls.append(URL(fileURLWithPath: NSString(string: target).expandingTildeInPath))
+        }
+        urls.append(contentsOf: discoverer.discoverCandidateFiles())
+
+        var seen = Set<String>()
+        return urls.filter { url in
+            let key = url.standardizedFileURL.path
+            return seen.insert(key).inserted
+        }
     }
 
     private func required(_ value: String, _ name: String) throws -> String {
@@ -210,6 +250,12 @@ public struct ProcessCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = [command.executable] + command.arguments
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = RuneExecutableSearchPath.pathValue(from: environment)
+            for (key, value) in command.environment {
+                environment[key] = value
+            }
+            process.environment = environment
 
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()

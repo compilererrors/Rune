@@ -2,7 +2,16 @@ import Foundation
 import RuneCore
 
 public struct AuthDoctorKubeconfigInspector: Sendable {
-    public init() {}
+    private let fileExists: @Sendable (String) -> Bool
+    private let executableSearchPaths: [String]
+
+    public init(
+        fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) },
+        executableSearchPaths: [String] = RuneExecutableSearchPath.directories()
+    ) {
+        self.fileExists = fileExists
+        self.executableSearchPaths = executableSearchPaths
+    }
 
     public func inspect(sources: [KubeConfigSource]) -> [RuneHealthCheck] {
         guard !sources.isEmpty else { return [] }
@@ -53,6 +62,32 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
             ))
         }
 
+        let execCommands = Set(Self.execCommands(in: combined))
+        if !execCommands.isEmpty {
+            let missing = execCommands.filter { !commandExists($0) }.sorted()
+            checks.append(RuneHealthCheck(
+                id: "exec-auth-tools",
+                title: "Exec auth tools",
+                status: missing.isEmpty ? .passed : .warning,
+                message: missing.isEmpty
+                    ? "All kubeconfig exec auth commands were found on PATH."
+                    : "Rune could not find \(missing.joined(separator: ", ")) on PATH. Cloud login may require installing or signing in with the matching CLI."
+            ))
+        }
+
+        let cloudTools = requiredCloudTools(for: providers)
+        if !cloudTools.isEmpty {
+            let missing = cloudTools.filter { !commandExists($0) }.sorted()
+            checks.append(RuneHealthCheck(
+                id: "cloud-login-tools",
+                title: "Cloud login tools",
+                status: missing.isEmpty ? .passed : .warning,
+                message: missing.isEmpty
+                    ? "Detected cloud provider CLI tools are available on PATH."
+                    : "Missing \(missing.joined(separator: ", ")) on PATH. Install or sign in with the provider CLI before running cloud login."
+            ))
+        }
+
         if lowercased.contains("proxy-url:") || lowercased.contains("https_proxy") || lowercased.contains("http_proxy") {
             checks.append(RuneHealthCheck(
                 id: "proxy-profile",
@@ -72,6 +107,46 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         }
 
         return checks
+    }
+
+    private func commandExists(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.contains("/") {
+            return fileExists(NSString(string: trimmed).expandingTildeInPath)
+        }
+        return executableSearchPaths.contains { directory in
+            fileExists(URL(fileURLWithPath: directory).appendingPathComponent(trimmed).path)
+        }
+    }
+
+    private func requiredCloudTools(for providerHints: [String]) -> Set<String> {
+        var tools = Set<String>()
+        let joined = providerHints.joined(separator: " ").lowercased()
+        if joined.contains("eks") {
+            tools.insert("aws")
+        }
+        if joined.contains("gke") {
+            tools.insert("gcloud")
+            tools.insert("gke-gcloud-auth-plugin")
+        }
+        if joined.contains("aks") || joined.contains("kubelogin") {
+            tools.insert("az")
+            tools.insert("kubelogin")
+        }
+        return tools
+    }
+
+    private static func execCommands(in text: String) -> [String] {
+        text
+            .split(whereSeparator: \.isNewline)
+            .compactMap { rawLine -> String? in
+                let trimmed = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("command:") else { return nil }
+                let value = String(trimmed.dropFirst("command:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !value.isEmpty else { return nil }
+                return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
     }
 
     private func detectedProviderHints(in text: String) -> [String] {

@@ -94,6 +94,9 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarScrollRow"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarGroup"))
+        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupSpacing"))
+        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
+        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupMinHeight"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestStatusChip(text: statusText"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestInlineNote("))
 
@@ -113,8 +116,9 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("Label(\"Hide managed\", systemImage: \"eye.slash\")"))
         XCTAssertTrue(yamlSource.contains("KubernetesManagedFieldsDisplayFilter.removingManagedFields"))
         XCTAssertTrue(yamlSource.contains("isDisabled: isInlineEditing"))
-        XCTAssertTrue(yamlSource.contains("if isEditing"))
-        XCTAssertTrue(yamlSource.contains("hidesManagedFields = false"))
+        XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
+        XCTAssertTrue(yamlSource.contains("let canHideManagedFields = filteredYAML.removedBlockCount > 0 && !isInlineEditing"))
+        XCTAssertFalse(yamlSource.contains("hidesManagedFields = false"))
     }
 
     func testDescribePaneCanHideManagedFieldsWithoutChangingSourceDescribeText() throws {
@@ -122,7 +126,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(describeSource.contains("DescribeManagedFieldsDisplayFilter.removingManagedFields"))
         XCTAssertTrue(describeSource.contains("ManifestManagedFieldsToggle("))
+        XCTAssertTrue(describeSource.contains("isDisabled: managedFieldsFilter.removedBlockCount == 0"))
+        XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
         XCTAssertTrue(describeSource.contains("let presentedDescribeText = hidesManagedFields ? managedFieldsFilter.text : describeText"))
+        XCTAssertTrue(describeSource.contains("Button(\"Export Describe…\", action: onExport)"))
         XCTAssertTrue(describeSource.contains("text: presentedDescribeText"))
     }
 
@@ -384,6 +391,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
                 statusText: "Last updated 12:00:00",
                 onApply: {},
                 onOpenYAMLEditor: {},
+                onExport: {},
                 readOnlyResetID: "describe-scroll-test"
             )
             .frame(width: 640, height: 520)

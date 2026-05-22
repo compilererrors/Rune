@@ -36,6 +36,12 @@ enum RuneUILayoutMetrics {
     static let headerChipHeight: CGFloat = 28
     static let headerChipHorizontalPadding: CGFloat = 10
     static let contentHeaderMinimumScrollableWidth: CGFloat = 640
+    static let inspectorToolbarGroupSpacing: CGFloat = 8
+    static let inspectorToolbarControlSpacing: CGFloat = 8
+    static let inspectorToolbarGroupHorizontalPadding: CGFloat = 10
+    static let inspectorToolbarGroupVerticalPadding: CGFloat = 8
+    static let inspectorToolbarGroupMinHeight: CGFloat = 48
+    static let inspectorToolbarControlMinHeight: CGFloat = 30
 
     static let minWindowContentTopInset: CGFloat = 0
     static let maxWindowContentTopInset: CGFloat = 0

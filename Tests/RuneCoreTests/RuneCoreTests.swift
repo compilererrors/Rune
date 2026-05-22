@@ -106,6 +106,7 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [])), .describe)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "l", modifiers: [])), .logs)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command])), .saveLogs)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.control])), .saveLogs)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [])), .shell)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "e", modifiers: [])), .edit)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "y", modifiers: [])), .yaml)
@@ -144,6 +145,16 @@ final class RuneCoreTests: XCTestCase {
         let conflicts = grouped.filter { $0.value.count > 1 }
 
         XCTAssertTrue(conflicts.isEmpty, "Conflicting default shortcuts: \(conflicts)")
+    }
+
+    func testExecutableSearchPathKeepsShellPathAndAddsMacFallbacks() {
+        let directories = RuneExecutableSearchPath.directories(from: ["PATH": "/synthetic/bin:/usr/bin:/synthetic/bin"])
+
+        XCTAssertEqual(directories.first, "/synthetic/bin")
+        XCTAssertEqual(directories.filter { $0 == "/synthetic/bin" }.count, 1)
+        XCTAssertTrue(directories.contains("/usr/bin"))
+        XCTAssertTrue(directories.contains("/opt/homebrew/bin"))
+        XCTAssertTrue(directories.contains("/usr/local/bin"))
     }
 
     func testLogTimeFilterUsesSinceTimeOnlyForAbsoluteDate() {

@@ -208,6 +208,70 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(namespace, "platform")
     }
 
+    func testRESTClientMergesKubeconfigFilesWithFirstFileWinningNamedEntries() async throws {
+        let first = try writeKubeconfig(
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: shared
+            clusters:
+            - name: shared-cluster
+              cluster:
+                server: http://127.0.0.1:65535
+            contexts:
+            - name: shared
+              context:
+                cluster: shared-cluster
+                user: shared-user
+                namespace: first-namespace
+            users:
+            - name: shared-user
+              user:
+                token: first-token
+            """
+        )
+        let second = try writeKubeconfig(
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: later
+            clusters:
+            - name: shared-cluster
+              cluster:
+                server: http://127.0.0.1:65534
+            contexts:
+            - name: shared
+              context:
+                cluster: shared-cluster
+                user: shared-user
+                namespace: second-namespace
+            - name: later
+              context:
+                cluster: shared-cluster
+                user: shared-user
+                namespace: later-namespace
+            users:
+            - name: shared-user
+              user:
+                token: second-token
+            """
+        )
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+
+        let client = KubernetesClient()
+        let namespace = try await client.contextNamespace(
+            from: [KubeConfigSource(url: first), KubeConfigSource(url: second)],
+            context: KubeContext(name: "shared")
+        )
+        let contexts = try await client.listContexts(from: [KubeConfigSource(url: first), KubeConfigSource(url: second)])
+
+        XCTAssertEqual(namespace, "first-namespace")
+        XCTAssertEqual(contexts.map(\.name), ["later", "shared"])
+    }
+
     func testOutputParserParsesKubernetesPodJSON() throws {
         let raw = """
         {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}}]}

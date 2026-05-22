@@ -370,7 +370,7 @@ struct RuneInspectorActionRow<Content: View>: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
                 content
             }
             .fixedSize(horizontal: true, vertical: false)

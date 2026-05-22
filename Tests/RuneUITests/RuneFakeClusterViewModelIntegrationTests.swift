@@ -525,7 +525,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/ember-gate ") })
     }
 
-    func testAuthDoctorReportsHelmDryRunUnavailableWithoutRunningHelmCLI() async throws {
+    func testAuthDoctorDoesNotReportHelmRollbackAsAuthFailure() async throws {
         let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
         defer {
@@ -542,16 +542,14 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
 
         try await waitUntil {
             !harness.state.isRunningAuthDoctor
-                && harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" }
+                && harness.state.authDoctorChecks.contains { $0.id == "contexts" }
         }
 
-        let check = try XCTUnwrap(harness.state.authDoctorChecks.first { $0.id == "helm-rollback-dry-run" })
-        XCTAssertEqual(check.title, "Helm rollback dry-run")
-        XCTAssertEqual(check.status, .warning)
-        XCTAssertTrue(check.message.contains("Native Helm rollback dry-run is not available"))
-        XCTAssertTrue(check.message.contains("does not run Helm automatically"))
-        XCTAssertFalse(check.message.contains(harness.kubeconfigURL.path))
-        XCTAssertFalse(check.message.localizedCaseInsensitiveContains("token"))
+        XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" })
+        XCTAssertFalse(harness.state.authDoctorChecks.contains { check in
+            check.message.contains("Native Helm rollback dry-run is not available")
+                || check.message.contains("does not run Helm automatically")
+        })
         XCTAssertFalse(harness.server.requestLines().contains { $0.localizedCaseInsensitiveContains("helm") })
     }
 

@@ -48,6 +48,8 @@ public enum RuneSettingsKeys {
     public static let terminalFontSizeDefault = 12.0
     public static let terminalFontSizeMinimum = 10.0
     public static let terminalFontSizeMaximum = 20.0
+    /// When true, describe and YAML inspector surfaces hide Kubernetes managedFields by default.
+    public static let hideManagedFieldsByDefault = "rune.settings.appearance.hideManagedFieldsByDefault"
     public static let terminalScrollbackLineLimit = "rune.settings.terminal.scrollbackLineLimit"
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
@@ -102,6 +104,7 @@ public enum RuneSettingsKeys {
             layoutDetailPaneVisible: true,
             layoutPodNameColumnWidth: 280.0,
             terminalFontSize: terminalFontSizeDefault,
+            hideManagedFieldsByDefault: true,
             terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault,
             writeSafetyRequireApplyDryRun: true,
             writeSafetyRequireRolloutDryRun: true,
@@ -173,6 +176,11 @@ public extension UserDefaults {
                 forKey: RuneSettingsKeys.terminalScrollbackLineLimit
             )
         }
+    }
+
+    var runeHideManagedFieldsByDefault: Bool {
+        get { (object(forKey: RuneSettingsKeys.hideManagedFieldsByDefault) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.hideManagedFieldsByDefault) }
     }
 
     var runeWriteSafetyRequireApplyDryRun: Bool {

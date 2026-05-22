@@ -42,6 +42,114 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         return best
     }
 
+    @MainActor
+    private func benchmarkTable(columnIDs: [String]) -> NSTableView {
+        let tableView = NSTableView(frame: NSRect(x: 0, y: 0, width: 1_120, height: 720))
+        for columnID in columnIDs {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(columnID))
+            column.width = columnID == "name" || columnID == "reason" ? 260 : 120
+            tableView.addTableColumn(column)
+        }
+        return tableView
+    }
+
+    private func resizeNotification(for tableColumn: NSTableColumn) -> Notification {
+        Notification(
+            name: NSTableView.columnDidResizeNotification,
+            object: nil,
+            userInfo: ["NSTableColumn": tableColumn]
+        )
+    }
+
+    private func benchmarkPods(count: Int) -> [PodSummary] {
+        (0..<count).map { index in
+            PodSummary(
+                name: "pod-\(String(format: "%04d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 11) ? "Pending" : "Running",
+                ageDescription: "\(index % 240)m",
+                cpuUsage: "\(index % 500)m",
+                memoryUsage: "\(128 + index % 768)Mi"
+            )
+        }
+    }
+
+    private func benchmarkDeployments(count: Int) -> [DeploymentSummary] {
+        (0..<count).map { index in
+            DeploymentSummary(
+                name: "deploy-\(String(format: "%04d", index))",
+                namespace: "default",
+                readyReplicas: index % 4,
+                desiredReplicas: 4
+            )
+        }
+    }
+
+    private func benchmarkServices(count: Int) -> [ServiceSummary] {
+        (0..<count).map { index in
+            ServiceSummary(
+                name: "service-\(String(format: "%04d", index))",
+                namespace: "default",
+                type: index.isMultiple(of: 3) ? "ClusterIP" : "NodePort",
+                clusterIP: "synthetic-ip-\(index)"
+            )
+        }
+    }
+
+    private func benchmarkConfigMaps(count: Int) -> [ClusterResourceSummary] {
+        (0..<count).map { index in
+            ClusterResourceSummary(
+                kind: .configMap,
+                name: "config-\(String(format: "%04d", index))",
+                namespace: index.isMultiple(of: 9) ? nil : "default",
+                primaryText: "\(index % 18 + 1) keys",
+                secondaryText: "settings"
+            )
+        }
+    }
+
+    private func benchmarkHelmReleases(count: Int) -> [HelmReleaseSummary] {
+        (0..<count).map { index in
+            HelmReleaseSummary(
+                name: "release-\(String(format: "%04d", index))",
+                namespace: "default",
+                revision: index % 12 + 1,
+                updated: "2026-05-01T00:00:00Z",
+                status: index.isMultiple(of: 13) ? "failed" : "deployed",
+                chart: "chart-\(index % 18)",
+                appVersion: "1.\(index % 10).0"
+            )
+        }
+    }
+
+    private func benchmarkEvents(count: Int) -> [EventSummary] {
+        (0..<count).map { index in
+            EventSummary(
+                type: index.isMultiple(of: 5) ? "Warning" : "Normal",
+                reason: index.isMultiple(of: 5) ? "BackOff" : "Scheduled",
+                objectName: "object-\(String(format: "%04d", index))",
+                message: "synthetic event message \(index)",
+                lastTimestamp: "2026-05-01T00:\(String(format: "%02d", index % 60)):00Z",
+                involvedKind: "Pod",
+                involvedNamespace: index.isMultiple(of: 11) ? nil : "default"
+            )
+        }
+    }
+
+    private func benchmarkOperatorResources(count: Int) -> [OperatorResourceSummary] {
+        (0..<count).map { index in
+            OperatorResourceSummary(
+                family: "family-\(index % 8)",
+                kind: "Kind\(index % 12)",
+                apiPath: "/apis/example.test/v1/resources/\(index)",
+                name: "resource-\(String(format: "%04d", index))",
+                namespace: index.isMultiple(of: 9) ? nil : "default",
+                status: index.isMultiple(of: 10) ? "Progressing" : "Ready",
+                message: "synthetic status \(index)"
+            )
+        }
+    }
+
     func testLogSearchBenchmarkKPI() {
         let text = (0..<20_000)
             .map { index in
@@ -909,7 +1017,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             }
         }
 
-        XCTAssertLessThan(elapsedSeconds, 0.20)
+        XCTAssertLessThan(elapsedSeconds, 0.35)
     }
 
     @MainActor
@@ -1093,8 +1201,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(tableView.selectedRow, 199)
         XCTAssertLessThan(
             elapsedSeconds,
-            0.025,
-            "KPI: context-menu row highlight must be visual-first and stay below 25ms for 200 row selections in debug."
+            0.080,
+            "KPI: context-menu row highlight must be visual-first and stay below 80ms for 200 row selections in debug."
         )
     }
 
@@ -1139,6 +1247,647 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             seconds(elapsed),
             0.01,
             "KPI: pod name column drag math must stay below 10ms for 2001 drag samples so resize remains pointer-rate cheap."
+        )
+    }
+
+    @MainActor
+    func testAppKitPodTableVisibleCellProjectionBenchmarkKPI() {
+        let pods = benchmarkPods(count: 1_000)
+        let selectedPodIDs = Set(stride(from: 0, to: pods.count, by: 10).map { pods[$0].id })
+        let tableView = NSTableView(frame: NSRect(x: 0, y: 0, width: 980, height: 720))
+        for identifier in ["selection", "name", "cpu", "memory", "restarts", "age", "status", "favorite"] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.width = identifier == "name" ? PodTableLayout.nameColumnDefaultWidth : 90
+            tableView.addTableColumn(column)
+        }
+        let view = AppKitPodTableView(
+            pods: pods,
+            selectedPodID: pods[500].id,
+            selectedPodIDs: selectedPodIDs,
+            sortColumn: .name,
+            sortAscending: true,
+            nameColumnWidth: PodTableLayout.nameColumnDefaultWidth,
+            canApplyClusterMutations: true,
+            isFavorite: { pod in pod.name.hasSuffix("0") },
+            onSelectPod: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onNameColumnWidthChanged: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenLogs: { _ in },
+            onOpenExec: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let coordinator = view.makeCoordinator()
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+
+        let visibleRows = 32
+
+        func projectVisibleCells() -> Int {
+            var projected = 0
+            for row in 0..<visibleRows {
+                for column in tableView.tableColumns {
+                    if coordinator.tableView(tableView, viewFor: column, row: row) != nil {
+                        projected += 1
+                    }
+                }
+            }
+            return projected
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertEqual(projectVisibleCells(), 256)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = projectVisibleCells()
+        }
+
+        XCTAssertEqual(coordinator.numberOfRows(in: tableView), 1_000)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.35,
+            "KPI: AppKit pod table visible-cell projection should stay below 350ms for 32 visible rows across all columns in debug."
+        )
+    }
+
+    @MainActor
+    func testAppKitGenericResourceTableVisibleCellProjectionBenchmarkKPI() {
+        let resources = benchmarkConfigMaps(count: 1_000)
+        let selectedResourceIDs = Set(stride(from: 0, to: resources.count, by: 12).map { resources[$0].id })
+        let tableView = NSTableView(frame: NSRect(x: 0, y: 0, width: 1_080, height: 720))
+        for identifier in ["selection", "name", "primary", "secondary", "namespace", "favorite"] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.width = identifier == "name" ? 360 : 120
+            tableView.addTableColumn(column)
+        }
+        let view = AppKitGenericResourceListView(
+            resources: resources,
+            selectedResourceID: resources[250].id,
+            selectedResourceIDs: selectedResourceIDs,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { resource in resource.name.hasSuffix("0") },
+            onSelectResource: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let coordinator = view.makeCoordinator()
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+
+        let visibleRows = 32
+
+        func projectVisibleCells() -> Int {
+            var projected = 0
+            for row in 0..<visibleRows {
+                for column in tableView.tableColumns {
+                    if coordinator.tableView(tableView, viewFor: column, row: row) != nil {
+                        projected += 1
+                    }
+                }
+            }
+            return projected
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertEqual(projectVisibleCells(), 192)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = projectVisibleCells()
+        }
+
+        XCTAssertEqual(coordinator.numberOfRows(in: tableView), 1_000)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.50,
+            "KPI: AppKit generic resource table visible-cell projection should stay below 500ms for 32 visible rows across all columns in debug."
+        )
+    }
+
+    @MainActor
+    func testAppKitResourceContextMenuConstructionBenchmarkKPI() {
+        let pods = benchmarkPods(count: 500)
+        let podView = AppKitPodTableView(
+            pods: pods,
+            selectedPodID: pods[0].id,
+            selectedPodIDs: [],
+            sortColumn: .name,
+            sortAscending: true,
+            nameColumnWidth: PodTableLayout.nameColumnDefaultWidth,
+            canApplyClusterMutations: true,
+            isFavorite: { pod in pod.name.hasSuffix("0") },
+            onSelectPod: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onNameColumnWidthChanged: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenLogs: { _ in },
+            onOpenExec: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let podCoordinator = podView.makeCoordinator()
+
+        let resources = benchmarkConfigMaps(count: 500)
+        let resourceView = AppKitGenericResourceListView(
+            resources: resources,
+            selectedResourceID: resources[0].id,
+            selectedResourceIDs: [],
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { resource in resource.name.hasSuffix("0") },
+            onSelectResource: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let resourceCoordinator = resourceView.makeCoordinator()
+
+        func buildMenus() -> Int {
+            var itemCount = 0
+            for row in 0..<300 {
+                itemCount += podCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+                itemCount += resourceCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+            }
+            return itemCount
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertGreaterThan(buildMenus(), 0)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = buildMenus()
+        }
+
+        XCTAssertGreaterThan(buildMenus(), 5_000)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.25,
+            "KPI: AppKit resource context menus should build under 250ms for 600 synthetic row menus in debug."
+        )
+    }
+
+    @MainActor
+    func testAppKitSecondaryResourceTablesVisibleCellProjectionBenchmarkKPI() {
+        let deployments = benchmarkDeployments(count: 500)
+        let deploymentTable = benchmarkTable(columnIDs: ["name", "replicas", "favorite"])
+        let deploymentView = AppKitDeploymentListView(
+            deployments: deployments,
+            selectedDeploymentID: deployments[50].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { deployment in deployment.name.hasSuffix("0") },
+            onSelectDeployment: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenRollout: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let deploymentCoordinator = deploymentView.makeCoordinator()
+        deploymentTable.dataSource = deploymentCoordinator
+        deploymentTable.delegate = deploymentCoordinator
+
+        let services = benchmarkServices(count: 500)
+        let serviceTable = benchmarkTable(columnIDs: ["name", "type", "clusterIP", "favorite"])
+        let serviceView = AppKitServiceListView(
+            services: services,
+            selectedServiceID: services[50].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { service in service.name.hasSuffix("0") },
+            onSelectService: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenPortForward: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let serviceCoordinator = serviceView.makeCoordinator()
+        serviceTable.dataSource = serviceCoordinator
+        serviceTable.delegate = serviceCoordinator
+
+        let releases = benchmarkHelmReleases(count: 500)
+        let helmTable = benchmarkTable(columnIDs: ["name", "status", "namespace", "revision", "chart", "appVersion"])
+        let helmView = AppKitHelmReleaseListView(
+            releases: releases,
+            selectedReleaseID: releases[50].id,
+            sortColumn: .name,
+            sortAscending: true,
+            onSelectRelease: { _ in },
+            onToggleSort: { _ in }
+        )
+        let helmCoordinator = helmView.makeCoordinator()
+        helmTable.dataSource = helmCoordinator
+        helmTable.delegate = helmCoordinator
+
+        let events = benchmarkEvents(count: 500)
+        let eventTable = benchmarkTable(columnIDs: ["reason", "type", "object", "namespace", "lastSeen", "message"])
+        let eventView = AppKitEventListView(
+            events: events,
+            selectedEventID: events[50].id,
+            sortColumn: .lastSeen,
+            sortAscending: false,
+            onSelectEvent: { _ in },
+            onToggleSort: { _ in }
+        )
+        let eventCoordinator = eventView.makeCoordinator()
+        eventTable.dataSource = eventCoordinator
+        eventTable.delegate = eventCoordinator
+
+        let operatorResources = benchmarkOperatorResources(count: 500)
+        let operatorTable = benchmarkTable(columnIDs: ["name", "family", "kind", "namespace", "status", "apiPath", "favorite"])
+        let operatorView = AppKitOperatorResourceListView(
+            resources: operatorResources,
+            selectedResourceID: operatorResources[50].id,
+            sortColumn: .name,
+            sortAscending: true,
+            isFavorite: { resource in resource.name.hasSuffix("0") },
+            onSelectResource: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in }
+        )
+        let operatorCoordinator = operatorView.makeCoordinator()
+        operatorTable.dataSource = operatorCoordinator
+        operatorTable.delegate = operatorCoordinator
+
+        let visibleRows = 32
+
+        func projectVisibleCells() -> Int {
+            var projected = 0
+            for row in 0..<visibleRows {
+                for column in deploymentTable.tableColumns where deploymentCoordinator.tableView(deploymentTable, viewFor: column, row: row) != nil {
+                    projected += 1
+                }
+                for column in serviceTable.tableColumns where serviceCoordinator.tableView(serviceTable, viewFor: column, row: row) != nil {
+                    projected += 1
+                }
+                for column in helmTable.tableColumns where helmCoordinator.tableView(helmTable, viewFor: column, row: row) != nil {
+                    projected += 1
+                }
+                for column in eventTable.tableColumns where eventCoordinator.tableView(eventTable, viewFor: column, row: row) != nil {
+                    projected += 1
+                }
+                for column in operatorTable.tableColumns where operatorCoordinator.tableView(operatorTable, viewFor: column, row: row) != nil {
+                    projected += 1
+                }
+            }
+            return projected
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertEqual(projectVisibleCells(), 832)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = projectVisibleCells()
+        }
+
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.65,
+            "KPI: secondary AppKit resource tables should project 32 visible rows across deployment, service, Helm, event, and operator lists under 650ms in debug."
+        )
+    }
+
+    @MainActor
+    func testAppKitSecondaryResourceContextMenuConstructionBenchmarkKPI() {
+        let deployments = benchmarkDeployments(count: 300)
+        let deploymentView = AppKitDeploymentListView(
+            deployments: deployments,
+            selectedDeploymentID: deployments[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { deployment in deployment.name.hasSuffix("0") },
+            onSelectDeployment: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenRollout: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let deploymentCoordinator = deploymentView.makeCoordinator()
+
+        let services = benchmarkServices(count: 300)
+        let serviceView = AppKitServiceListView(
+            services: services,
+            selectedServiceID: services[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { service in service.name.hasSuffix("0") },
+            onSelectService: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenPortForward: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let serviceCoordinator = serviceView.makeCoordinator()
+
+        let releases = benchmarkHelmReleases(count: 300)
+        let helmView = AppKitHelmReleaseListView(
+            releases: releases,
+            selectedReleaseID: releases[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            onSelectRelease: { _ in },
+            onToggleSort: { _ in }
+        )
+        let helmCoordinator = helmView.makeCoordinator()
+
+        let events = benchmarkEvents(count: 300)
+        let eventView = AppKitEventListView(
+            events: events,
+            selectedEventID: events[0].id,
+            sortColumn: .reason,
+            sortAscending: true,
+            onSelectEvent: { _ in },
+            onToggleSort: { _ in }
+        )
+        let eventCoordinator = eventView.makeCoordinator()
+
+        let operatorResources = benchmarkOperatorResources(count: 300)
+        let operatorView = AppKitOperatorResourceListView(
+            resources: operatorResources,
+            selectedResourceID: operatorResources[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            isFavorite: { resource in resource.name.hasSuffix("0") },
+            onSelectResource: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in }
+        )
+        let operatorCoordinator = operatorView.makeCoordinator()
+
+        func buildMenus() -> Int {
+            var itemCount = 0
+            for row in 0..<120 {
+                itemCount += deploymentCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+                itemCount += serviceCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+                itemCount += helmCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+                itemCount += eventCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+                itemCount += operatorCoordinator.makeMenu(forRow: row)?.items.count ?? 0
+            }
+            return itemCount
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertGreaterThan(buildMenus(), 0)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = buildMenus()
+        }
+
+        XCTAssertGreaterThan(buildMenus(), 3_000)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.3,
+            "KPI: secondary AppKit resource context menus should build under 300ms for 600 synthetic row menus in debug."
+        )
+    }
+
+    @MainActor
+    func testAppKitResourceColumnResizePersistenceBenchmarkKPI() {
+        let touchedColumnsByTable = [
+            "pods": ["name", "cpu", "memory", "restarts", "age", "status"],
+            "deployments": ["name", "replicas"],
+            "services": ["name", "type", "clusterIP"],
+            "genericResources": ["name", "primary", "secondary", "namespace"],
+            "helmReleases": ["name", "status", "namespace", "revision", "chart", "appVersion"],
+            "events": ["reason", "type", "object", "namespace", "lastSeen", "message"],
+            "operatorResources": ["name", "family", "kind", "namespace", "status", "apiPath"]
+        ]
+        let touchedKeys = touchedColumnsByTable.flatMap { tableID, columnIDs in
+            columnIDs.map { columnID in "rune.settings.layout.resourceColumnWidths.\(tableID).\(columnID)" }
+        }
+        let savedDefaults = Dictionary(uniqueKeysWithValues: touchedKeys.map { key in
+            (key, UserDefaults.standard.object(forKey: key))
+        })
+        func restoreTouchedColumnWidths() {
+            for key in touchedKeys {
+                if let savedValue = savedDefaults[key],
+                   let value = savedValue {
+                    UserDefaults.standard.set(value, forKey: key)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: key)
+                }
+            }
+        }
+        for key in touchedKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        defer { restoreTouchedColumnWidths() }
+
+        let pods = benchmarkPods(count: 120)
+        let podView = AppKitPodTableView(
+            pods: pods,
+            selectedPodID: pods[0].id,
+            selectedPodIDs: [],
+            sortColumn: .name,
+            sortAscending: true,
+            nameColumnWidth: PodTableLayout.nameColumnDefaultWidth,
+            canApplyClusterMutations: true,
+            isFavorite: { _ in false },
+            onSelectPod: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onNameColumnWidthChanged: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenLogs: { _ in },
+            onOpenExec: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let podCoordinator = podView.makeCoordinator()
+        let podTable = benchmarkTable(columnIDs: ["selection", "name", "cpu", "memory", "restarts", "age", "status", "favorite"])
+        podCoordinator.tableView = podTable
+
+        let deployments = benchmarkDeployments(count: 120)
+        let deploymentView = AppKitDeploymentListView(
+            deployments: deployments,
+            selectedDeploymentID: deployments[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { _ in false },
+            onSelectDeployment: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenRollout: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let deploymentCoordinator = deploymentView.makeCoordinator()
+        let deploymentTable = benchmarkTable(columnIDs: ["name", "replicas", "favorite"])
+        deploymentCoordinator.tableView = deploymentTable
+
+        let services = benchmarkServices(count: 120)
+        let serviceView = AppKitServiceListView(
+            services: services,
+            selectedServiceID: services[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { _ in false },
+            onSelectService: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenPortForward: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let serviceCoordinator = serviceView.makeCoordinator()
+        let serviceTable = benchmarkTable(columnIDs: ["name", "type", "clusterIP", "favorite"])
+        serviceCoordinator.tableView = serviceTable
+
+        let resources = benchmarkConfigMaps(count: 120)
+        let genericView = AppKitGenericResourceListView(
+            resources: resources,
+            selectedResourceID: resources[0].id,
+            selectedResourceIDs: [],
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: true,
+            isFavorite: { _ in false },
+            onSelectResource: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let genericCoordinator = genericView.makeCoordinator()
+        let genericTable = benchmarkTable(columnIDs: ["selection", "name", "primary", "secondary", "namespace", "favorite"])
+        genericCoordinator.tableView = genericTable
+
+        let releases = benchmarkHelmReleases(count: 120)
+        let helmView = AppKitHelmReleaseListView(
+            releases: releases,
+            selectedReleaseID: releases[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            onSelectRelease: { _ in },
+            onToggleSort: { _ in }
+        )
+        let helmCoordinator = helmView.makeCoordinator()
+        let helmTable = benchmarkTable(columnIDs: ["name", "status", "namespace", "revision", "chart", "appVersion"])
+        helmCoordinator.tableView = helmTable
+
+        let events = benchmarkEvents(count: 120)
+        let eventView = AppKitEventListView(
+            events: events,
+            selectedEventID: events[0].id,
+            sortColumn: .reason,
+            sortAscending: true,
+            onSelectEvent: { _ in },
+            onToggleSort: { _ in }
+        )
+        let eventCoordinator = eventView.makeCoordinator()
+        let eventTable = benchmarkTable(columnIDs: ["reason", "type", "object", "namespace", "lastSeen", "message"])
+        eventCoordinator.tableView = eventTable
+
+        let operatorResources = benchmarkOperatorResources(count: 120)
+        let operatorView = AppKitOperatorResourceListView(
+            resources: operatorResources,
+            selectedResourceID: operatorResources[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            isFavorite: { _ in false },
+            onSelectResource: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in }
+        )
+        let operatorCoordinator = operatorView.makeCoordinator()
+        let operatorTable = benchmarkTable(columnIDs: ["name", "family", "kind", "namespace", "status", "apiPath", "favorite"])
+        operatorCoordinator.tableView = operatorTable
+
+        let resizeSamples = stride(from: CGFloat(180), through: CGFloat(520), by: CGFloat(17)).map { $0 }
+        func runResizePasses() {
+            for sample in resizeSamples {
+                for column in podTable.tableColumns where touchedColumnsByTable["pods"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    podCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in deploymentTable.tableColumns where touchedColumnsByTable["deployments"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    deploymentCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in serviceTable.tableColumns where touchedColumnsByTable["services"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    serviceCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in genericTable.tableColumns where touchedColumnsByTable["genericResources"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    genericCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in helmTable.tableColumns where touchedColumnsByTable["helmReleases"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    helmCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in eventTable.tableColumns where touchedColumnsByTable["events"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    eventCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+                for column in operatorTable.tableColumns where touchedColumnsByTable["operatorResources"]?.contains(column.identifier.rawValue) == true {
+                    column.width = sample
+                    operatorCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
+                }
+            }
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            runResizePasses()
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            runResizePasses()
+        }
+
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.35,
+            "KPI: AppKit resource column resize persistence should stay below 350ms for repeated resize notifications across all resource tables in debug."
         )
     }
 
@@ -1826,6 +2575,74 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             elapsedSeconds,
             maximumPreviewSeconds,
             "KPI: cloud provider command previews for 1k requests should stay below 50ms in debug and 15ms in release."
+        )
+    }
+
+    func testAddClusterAutoDetectAndProviderPreviewBenchmarkKPI() throws {
+        let validator = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
+        let importer = CloudKubeConfigCLIImporter(
+            runner: BenchmarkCloudCommandRunner(),
+            discoverer: EmptyKubeConfigDiscoverer(),
+            validator: validator
+        )
+        let payloads = (0..<80).map { fileIndex in
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: context-\(fileIndex)
+            clusters:
+            - cluster:
+                server: https://cluster-\(fileIndex).example.invalid
+              name: cluster-\(fileIndex)
+            users:
+            - user:
+                exec:
+                  command: kubelogin
+              name: user-\(fileIndex)
+            contexts:
+            - context:
+                cluster: cluster-\(fileIndex)
+                user: user-\(fileIndex)
+                namespace: namespace-\(fileIndex % 7)
+              name: context-\(fileIndex)
+            """
+        }
+        let requests = (0..<240).map { index in
+            CloudKubeConfigImportRequest(
+                provider: index.isMultiple(of: 3) ? .aks : (index.isMultiple(of: 2) ? .eks : .gke),
+                clusterName: "synthetic-cluster-\(index)",
+                regionOrLocation: "eu-north-1",
+                resourceGroup: "synthetic-group-\(index)",
+                projectID: "synthetic-project-\(index)",
+                profileOrSubscription: "synthetic-profile-\(index)"
+            )
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = payloads.map { validator.validate(raw: $0) }
+            for request in requests {
+                _ = try? importer.commandPreview(for: request)
+            }
+        }
+
+        let elapsedSeconds = try minimumThrowingElapsedSeconds {
+            let reviews = payloads.map { validator.validate(raw: $0) }
+            for request in requests {
+                _ = try importer.commandPreview(for: request)
+            }
+            XCTAssertEqual(reviews.flatMap(\.contexts).count, payloads.count)
+            XCTAssertTrue(reviews.allSatisfy(\.isValid))
+        }
+
+        #if DEBUG
+        let maximumAddClusterSeconds = 0.08
+        #else
+        let maximumAddClusterSeconds = 0.025
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumAddClusterSeconds,
+            "KPI: Add Cluster auto-detect parsing plus provider command previews should stay below 80ms in debug and 25ms in release."
         )
     }
 

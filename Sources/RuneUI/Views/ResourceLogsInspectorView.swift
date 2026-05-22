@@ -174,7 +174,7 @@ struct ResourceLogsToolbar: View {
 
 private extension View {
     func logToolbarButtonFrame(width: CGFloat? = nil) -> some View {
-        frame(minWidth: width, minHeight: 30, alignment: .center)
+        frame(minWidth: width, minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight, alignment: .center)
             .fixedSize(horizontal: true, vertical: false)
     }
 }
@@ -183,12 +183,12 @@ private struct LogToolbarGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
             content
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(minHeight: 48)
+        .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
+        .padding(.vertical, RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding)
+        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarGroupMinHeight)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(0.055))
@@ -206,7 +206,7 @@ private struct LogToolbarScrollRow<Content: View>: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
                 content
             }
             .fixedSize(horizontal: true, vertical: false)

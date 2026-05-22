@@ -1928,7 +1928,7 @@ private struct NormalizedKubeConfig: Decodable {
             mergedContexts.append(contentsOf: config.contexts)
             mergedClusters.append(contentsOf: config.clusters)
             mergedUsers.append(contentsOf: config.users)
-            if let current = config.currentContext, !current.isEmpty {
+            if currentContext == nil, let current = config.currentContext, !current.isEmpty {
                 currentContext = current
             }
         }
@@ -1967,10 +1967,10 @@ private struct NormalizedKubeConfig: Decodable {
     private static func deduplicateByName<T>(_ values: [T], name: (T) -> String) -> [T] {
         var seen = Set<String>()
         var output: [T] = []
-        for value in values.reversed() where seen.insert(name(value)).inserted {
+        for value in values where seen.insert(name(value)).inserted {
             output.append(value)
         }
-        return output.reversed()
+        return output
     }
 }
 
@@ -2074,6 +2074,7 @@ private struct DirectKubeConfigParser {
     let baseDirectory: String?
 
     func parse() throws -> NormalizedKubeConfig {
+        let raw = normalized(raw)
         var currentContext: String?
         var section: Section = .none
         var clusters: [NormalizedKubeConfig.NamedCluster] = []
@@ -2106,13 +2107,20 @@ private struct DirectKubeConfigParser {
             guard !trimmed.isEmpty else { continue }
             let indent = line.prefix { $0 == " " }.count
 
+            if trimmed == "---" {
+                throw RuneError.invalidInput(message: "Kubeconfig must contain exactly one YAML document.")
+            }
+            if let message = unsupportedYAMLFeatureMessage(in: trimmed) {
+                throw RuneError.invalidInput(message: message)
+            }
+
             if indent == 0, !trimmed.hasPrefix("-") {
                 switch trimmed {
-                case "clusters:":
+                case "clusters:", "clusters: []":
                     flushContext(); flushUser(); section = .clusters
-                case "contexts:":
+                case "contexts:", "contexts: []":
                     flushCluster(); flushUser(); section = .contexts
-                case "users:":
+                case "users:", "users: []":
                     flushCluster(); flushContext(); section = .users
                 default:
                     if let value = scalarValue(trimmed, key: "current-context") {
@@ -2124,7 +2132,7 @@ private struct DirectKubeConfigParser {
 
             switch section {
             case .clusters:
-                if trimmed.hasPrefix("- ") {
+                if trimmed.hasPrefix("- "), indent <= 2 {
                     flushCluster()
                     cluster = MutableCluster()
                     applyClusterLine(trimmed.dropFirst(2).description, to: &cluster)
@@ -2132,7 +2140,7 @@ private struct DirectKubeConfigParser {
                     applyClusterLine(trimmed, to: &cluster)
                 }
             case .contexts:
-                if trimmed.hasPrefix("- ") {
+                if trimmed.hasPrefix("- "), indent <= 2 {
                     flushContext()
                     context = MutableContext()
                     applyContextLine(trimmed.dropFirst(2).description, to: &context)
@@ -2140,7 +2148,7 @@ private struct DirectKubeConfigParser {
                     applyContextLine(trimmed, to: &context)
                 }
             case .users:
-                if trimmed.hasPrefix("- ") {
+                if trimmed.hasPrefix("- "), indent <= 2 {
                     flushUser()
                     user = MutableUser()
                     applyUserLine(trimmed.dropFirst(2).description, indent: indent, subsection: &userSubsection, pendingEnvName: &pendingEnvName, to: &user)
@@ -2280,6 +2288,35 @@ private struct DirectKubeConfigParser {
             return String(trimmed.dropFirst().dropLast())
         }
         return trimmed
+    }
+
+    private func normalized(_ raw: String) -> String {
+        var value = raw
+        if value.hasPrefix("\u{FEFF}") {
+            value.removeFirst()
+        }
+        value = value.replacingOccurrences(of: "\r\n", with: "\n")
+        value = value.replacingOccurrences(of: "\r", with: "\n")
+        return value
+    }
+
+    private func unsupportedYAMLFeatureMessage(in trimmed: String) -> String? {
+        if trimmed.hasPrefix("- *") {
+            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig loader."
+        }
+        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
+        let key = trimmed[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        if key == "<<" {
+            return "Kubeconfig uses YAML merge keys, which are not supported by Rune's safe kubeconfig loader."
+        }
+        if value.hasPrefix("*") {
+            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig loader."
+        }
+        if value.hasPrefix("&") {
+            return "Kubeconfig uses anchored scalar values, which are not supported by Rune's safe kubeconfig loader."
+        }
+        return nil
     }
 
     private func parseBool(_ raw: String) -> Bool? {
