@@ -2646,6 +2646,88 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testAuthDoctorKubeconfigHintInspectionBenchmarkKPI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-auth-doctor-benchmark-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sources = try (0..<160).map { index -> KubeConfigSource in
+            let providerCommand: String
+            let serverHost: String
+            switch index % 3 {
+            case 0:
+                providerCommand = "aws"
+                serverHost = "https://synthetic-\(index).eks.amazonaws.com"
+            case 1:
+                providerCommand = "gke-gcloud-auth-plugin"
+                serverHost = "https://container.googleapis.com/synthetic-\(index)"
+            default:
+                providerCommand = "kubelogin"
+                serverHost = "https://synthetic-\(index).aks.example.invalid"
+            }
+
+            let raw = """
+            apiVersion: v1
+            kind: Config
+            current-context: synthetic-context-\(index)
+            clusters:
+            - cluster:
+                server: \(serverHost)
+                certificate-authority-data: SYNTHETIC_CA_DATA
+              name: synthetic-cluster-\(index)
+            users:
+            - user:
+                exec:
+                  apiVersion: client.authentication.k8s.io/v1
+                  command: \(providerCommand)
+                  args:
+                  - get-token
+                  - --synthetic-index=\(index)
+              name: synthetic-user-\(index)
+            contexts:
+            - context:
+                cluster: synthetic-cluster-\(index)
+                user: synthetic-user-\(index)
+                namespace: synthetic-namespace-\(index % 9)
+              name: synthetic-context-\(index)
+            """
+            let url = directory.appendingPathComponent("config-\(index).yaml")
+            try raw.write(to: url, atomically: true, encoding: .utf8)
+            return KubeConfigSource(url: url)
+        }
+
+        let availableTools = Set(["aws", "az", "gcloud", "gke-gcloud-auth-plugin", "kubelogin"].map { "/synthetic/bin/" + $0 })
+        let inspector = AuthDoctorKubeconfigInspector(
+            fileExists: { availableTools.contains($0) },
+            executableSearchPaths: ["/synthetic/bin"]
+        )
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = inspector.inspect(sources: sources)
+        }
+
+        let checks = inspector.inspect(sources: sources)
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = inspector.inspect(sources: sources)
+        }
+
+        XCTAssertTrue(checks.contains { $0.id == "exec-auth-profile" })
+        XCTAssertTrue(checks.contains { $0.id == "exec-auth-tools" && $0.status == .passed })
+        XCTAssertTrue(checks.contains { $0.id == "cloud-login-tools" && $0.status == .passed })
+        XCTAssertFalse(checks.map(\.message).joined(separator: "\n").contains(directory.path))
+        #if DEBUG
+        let maximumAuthDoctorInspectionSeconds = 0.12
+        #else
+        let maximumAuthDoctorInspectionSeconds = 0.04
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumAuthDoctorInspectionSeconds,
+            "KPI: Auth Doctor local kubeconfig hint inspection for 160 exec/cloud profiles should stay below 120ms in debug and 40ms in release."
+        )
+    }
+
     @MainActor
     func testSupportBundleSanitizerBenchmarkKPI() throws {
         let state = RuneAppState()

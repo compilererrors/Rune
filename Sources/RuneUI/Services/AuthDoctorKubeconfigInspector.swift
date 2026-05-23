@@ -16,15 +16,16 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
     public func inspect(sources: [KubeConfigSource]) -> [RuneHealthCheck] {
         guard !sources.isEmpty else { return [] }
 
-        var combined = ""
+        var readableContents: [String] = []
         var unreadableCount = 0
         for source in sources {
             do {
-                combined += "\n" + (try String(contentsOf: source.url, encoding: .utf8))
+                readableContents.append(try String(contentsOf: source.url, encoding: .utf8))
             } catch {
                 unreadableCount += 1
             }
         }
+        let combined = readableContents.joined(separator: "\n")
 
         let lowercased = combined.lowercased()
         var checks: [RuneHealthCheck] = []

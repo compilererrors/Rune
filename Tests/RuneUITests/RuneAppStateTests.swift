@@ -4332,6 +4332,19 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(execTools.message.contains(kubeconfig.path))
         XCTAssertFalse(cloudTools.message.contains(kubeconfig.path))
     }
+
+    @MainActor
+    func testAuthDoctorOutputCanBeClearedWhenIdle() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.setAuthDoctorChecks([
+            RuneHealthCheck(id: "namespace-list", title: "Namespace list", status: .warning, message: "Synthetic warning")
+        ])
+
+        viewModel.clearAuthDoctorOutput()
+
+        XCTAssertTrue(state.authDoctorChecks.isEmpty)
+    }
 }
 
 @MainActor

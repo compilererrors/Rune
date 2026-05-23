@@ -1474,8 +1474,40 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
 
         XCTAssertTrue(authDoctorBlock.contains("Label(\"Auth Doctor\", systemImage: \"stethoscope\")"))
+        XCTAssertTrue(authDoctorBlock.contains("isAuthDoctorPanelExpanded.toggle()"))
+        XCTAssertTrue(authDoctorBlock.contains("authDoctorSummaryChip"))
+        XCTAssertTrue(authDoctorBlock.contains("shouldReserveAuthDoctorPanel"))
+        XCTAssertTrue(authDoctorBlock.contains("\"Run Auth Doctor\""))
+        XCTAssertTrue(authDoctorBlock.contains("\"Ready\""))
         XCTAssertTrue(authDoctorBlock.contains("Button(\"Save Bundle\")"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.saveSupportBundle()"))
+        XCTAssertTrue(authDoctorBlock.contains("Label(\"Clear\", systemImage: \"xmark.circle\")"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.clearAuthDoctorOutput()"))
+        XCTAssertTrue(authDoctorBlock.contains("if isAuthDoctorPanelExpanded"))
+        XCTAssertTrue(authDoctorBlock.contains("authDoctorCheckRow(check)"))
+        XCTAssertTrue(authDoctorBlock.contains("AuthDoctorEntryActionResolver.resolve"))
+        XCTAssertTrue(authDoctorBlock.contains("performAuthDoctorEntryAction(action)"))
+        XCTAssertTrue(authDoctorBlock.contains("private func performAuthDoctorEntryAction(_ action: AuthDoctorEntryResolution)"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.setSection(.workloads)"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.selectPod(pod)"))
+        XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .logs"))
+        XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .exec"))
+        XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .portForward"))
+        XCTAssertTrue(authDoctorBlock.contains("NSWorkspace.shared.open(url)"))
+
+        let authDoctorVisibilityBlock = try functionBlock(
+            named: "private var shouldReserveAuthDoctorPanel: Bool",
+            endingBefore: "@ViewBuilder\n    private var authDoctorSummaryChip",
+            in: rootViewSource
+        )
+        XCTAssertTrue(authDoctorVisibilityBlock.contains("case .overview, .workloads"))
+
+        let workloadsBlock = try functionBlock(
+            named: "private var workloadsPane: some View",
+            endingBefore: "private var networkingPane",
+            in: rootViewSource
+        )
+        XCTAssertTrue(workloadsBlock.contains("authDoctorPanel"))
     }
 
     func testAuthDoctorStaysReadOnlyAndDoesNotRunMutatingActions() throws {

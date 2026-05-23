@@ -152,6 +152,10 @@ public final class RuneAppState: ObservableObject {
         authDoctorChecks = checks
     }
 
+    public func clearAuthDoctorChecks() {
+        authDoctorChecks = []
+    }
+
     public func setAuthDoctorRunning(_ running: Bool) {
         isRunningAuthDoctor = running
     }

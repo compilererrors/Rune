@@ -613,6 +613,7 @@ public struct RuneRootView: View {
     @State private var hasMountedWorkspaceChrome = false
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
+    @State private var isAuthDoctorPanelExpanded = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     public init(
@@ -2990,140 +2991,146 @@ public struct RuneRootView: View {
     }
 
     private var workloadsPane: some View {
-        Group {
-            switch viewModel.state.selectedWorkloadKind {
-            case .pod:
-                VStack(alignment: .leading, spacing: 8) {
-                    if !viewModel.visiblePods.isEmpty || viewModel.selectedPodCount > 0 {
-                        podBulkSelectionControls
-                    }
-
-                    if viewModel.visiblePods.isEmpty {
-                        ScrollView {
-                            resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)
-                                .padding(.top, 4)
-                        }
-                    } else {
-                        AppKitPodTableView(
-                            pods: viewModel.visiblePods,
-                            selectedPodID: viewModel.state.selectedPod?.id,
-                            selectedPodIDs: viewModel.state.selectedPodIDs,
-                            sortColumn: viewModel.podSortColumn,
-                            sortAscending: viewModel.podSortAscending,
-                            nameColumnWidth: podNameColumnWidth,
-                            canApplyClusterMutations: viewModel.canApplyClusterMutations,
-                            isFavorite: { pod in
-                                viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
-                            },
-                            onSelectPod: viewModel.selectPod,
-                            onToggleBulkSelection: viewModel.togglePodBulkSelection,
-                            onToggleSort: viewModel.togglePodSort,
-                            onNameColumnWidthChanged: commitPodNameColumnWidth,
-                            onToggleFavorite: { pod in
-                                viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
-                            },
-                            onOpenLogs: { pod in
-                                viewModel.selectPod(pod)
-                                podInspectorTab = .logs
-                                viewModel.reloadLogsForSelection()
-                            },
-                            onOpenExec: { pod in
-                                viewModel.selectPod(pod)
-                                podInspectorTab = .exec
-                            },
-                            onOpenDescribe: { pod in
-                                viewModel.selectPod(pod)
-                                podInspectorTab = .describe
-                            },
-                            onOpenYAML: { pod in
-                                viewModel.selectPod(pod)
-                                podInspectorTab = .yaml
-                            },
-                            onDelete: { pod in
-                                viewModel.requestDeleteResource(kind: .pod, name: pod.name)
-                            }
-                        )
-                        .transaction { transaction in
-                            transaction.animation = nil
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
-
-            case .deployment:
-                if viewModel.visibleDeployments.isEmpty {
-                    resourceFilterEmptyState(kindTitle: "Deployments", totalCount: viewModel.state.deployments.count)
-                } else {
-                    AppKitDeploymentListView(
-                        deployments: viewModel.visibleDeployments,
-                        selectedDeploymentID: viewModel.state.selectedDeployment?.id,
-                        sortColumn: viewModel.deploymentSortColumn,
-                        sortAscending: viewModel.deploymentSortAscending,
-                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
-                        isFavorite: { deployment in
-                            viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
-                        },
-                        onSelectDeployment: viewModel.selectDeployment,
-                        onToggleSort: viewModel.toggleDeploymentSort,
-                        onToggleFavorite: { deployment in
-                            viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
-                        },
-                        onOpenUnifiedLogs: { deployment in
-                            viewModel.selectDeployment(deployment)
-                            deploymentInspectorTab = .unifiedLogs
-                            viewModel.reloadLogsForSelection()
-                        },
-                        onOpenRollout: { deployment in
-                            viewModel.selectDeployment(deployment)
-                            deploymentInspectorTab = .rollout
-                        },
-                        onOpenDescribe: { deployment in
-                            viewModel.selectDeployment(deployment)
-                            deploymentInspectorTab = .describe
-                        },
-                        onOpenYAML: { deployment in
-                            viewModel.selectDeployment(deployment)
-                            deploymentInspectorTab = .yaml
-                        },
-                        onDelete: { deployment in
-                            viewModel.requestDeleteResource(kind: .deployment, name: deployment.name)
-                        }
-                    )
-                }
-
-            case .statefulSet:
-                genericResourceList(viewModel.visibleStatefulSets, selection: viewModel.state.selectedStatefulSet, action: viewModel.selectStatefulSet)
-
-            case .daemonSet:
-                genericResourceList(viewModel.visibleDaemonSets, selection: viewModel.state.selectedDaemonSet, action: viewModel.selectDaemonSet)
-
-            case .job:
-                genericResourceList(viewModel.visibleJobs, selection: viewModel.state.selectedJob, action: viewModel.selectJob)
-
-            case .cronJob:
-                genericResourceList(viewModel.visibleCronJobs, selection: viewModel.state.selectedCronJob, action: viewModel.selectCronJob)
-
-            case .replicaSet:
-                genericResourceList(viewModel.visibleReplicaSets, selection: viewModel.state.selectedReplicaSet, action: viewModel.selectReplicaSet)
-
-            case .horizontalPodAutoscaler:
-                genericResourceList(
-                    viewModel.visibleHorizontalPodAutoscalers,
-                    selection: viewModel.state.selectedHorizontalPodAutoscaler,
-                    action: viewModel.selectHorizontalPodAutoscaler
-                )
-
-            case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-                EmptyView()
-
-            case .event:
-                EmptyView()
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            authDoctorPanel
+            workloadsContent
         }
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var workloadsContent: some View {
+        switch viewModel.state.selectedWorkloadKind {
+        case .pod:
+            VStack(alignment: .leading, spacing: 8) {
+                if !viewModel.visiblePods.isEmpty || viewModel.selectedPodCount > 0 {
+                    podBulkSelectionControls
+                }
+
+                if viewModel.visiblePods.isEmpty {
+                    ScrollView {
+                        resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(.top, 4)
+                    }
+                } else {
+                    AppKitPodTableView(
+                        pods: viewModel.visiblePods,
+                        selectedPodID: viewModel.state.selectedPod?.id,
+                        selectedPodIDs: viewModel.state.selectedPodIDs,
+                        sortColumn: viewModel.podSortColumn,
+                        sortAscending: viewModel.podSortAscending,
+                        nameColumnWidth: podNameColumnWidth,
+                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                        isFavorite: { pod in
+                            viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                        },
+                        onSelectPod: viewModel.selectPod,
+                        onToggleBulkSelection: viewModel.togglePodBulkSelection,
+                        onToggleSort: viewModel.togglePodSort,
+                        onNameColumnWidthChanged: commitPodNameColumnWidth,
+                        onToggleFavorite: { pod in
+                            viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                        },
+                        onOpenLogs: { pod in
+                            viewModel.selectPod(pod)
+                            podInspectorTab = .logs
+                            viewModel.reloadLogsForSelection()
+                        },
+                        onOpenExec: { pod in
+                            viewModel.selectPod(pod)
+                            podInspectorTab = .exec
+                        },
+                        onOpenDescribe: { pod in
+                            viewModel.selectPod(pod)
+                            podInspectorTab = .describe
+                        },
+                        onOpenYAML: { pod in
+                            viewModel.selectPod(pod)
+                            podInspectorTab = .yaml
+                        },
+                        onDelete: { pod in
+                            viewModel.requestDeleteResource(kind: .pod, name: pod.name)
+                        }
+                    )
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
+
+        case .deployment:
+            if viewModel.visibleDeployments.isEmpty {
+                resourceFilterEmptyState(kindTitle: "Deployments", totalCount: viewModel.state.deployments.count)
+            } else {
+                AppKitDeploymentListView(
+                    deployments: viewModel.visibleDeployments,
+                    selectedDeploymentID: viewModel.state.selectedDeployment?.id,
+                    sortColumn: viewModel.deploymentSortColumn,
+                    sortAscending: viewModel.deploymentSortAscending,
+                    canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                    isFavorite: { deployment in
+                        viewModel.isFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
+                    },
+                    onSelectDeployment: viewModel.selectDeployment,
+                    onToggleSort: viewModel.toggleDeploymentSort,
+                    onToggleFavorite: { deployment in
+                        viewModel.toggleFavoriteResource(kind: .deployment, namespace: deployment.namespace, name: deployment.name)
+                    },
+                    onOpenUnifiedLogs: { deployment in
+                        viewModel.selectDeployment(deployment)
+                        deploymentInspectorTab = .unifiedLogs
+                        viewModel.reloadLogsForSelection()
+                    },
+                    onOpenRollout: { deployment in
+                        viewModel.selectDeployment(deployment)
+                        deploymentInspectorTab = .rollout
+                    },
+                    onOpenDescribe: { deployment in
+                        viewModel.selectDeployment(deployment)
+                        deploymentInspectorTab = .describe
+                    },
+                    onOpenYAML: { deployment in
+                        viewModel.selectDeployment(deployment)
+                        deploymentInspectorTab = .yaml
+                    },
+                    onDelete: { deployment in
+                        viewModel.requestDeleteResource(kind: .deployment, name: deployment.name)
+                    }
+                )
+            }
+
+        case .statefulSet:
+            genericResourceList(viewModel.visibleStatefulSets, selection: viewModel.state.selectedStatefulSet, action: viewModel.selectStatefulSet)
+
+        case .daemonSet:
+            genericResourceList(viewModel.visibleDaemonSets, selection: viewModel.state.selectedDaemonSet, action: viewModel.selectDaemonSet)
+
+        case .job:
+            genericResourceList(viewModel.visibleJobs, selection: viewModel.state.selectedJob, action: viewModel.selectJob)
+
+        case .cronJob:
+            genericResourceList(viewModel.visibleCronJobs, selection: viewModel.state.selectedCronJob, action: viewModel.selectCronJob)
+
+        case .replicaSet:
+            genericResourceList(viewModel.visibleReplicaSets, selection: viewModel.state.selectedReplicaSet, action: viewModel.selectReplicaSet)
+
+        case .horizontalPodAutoscaler:
+            genericResourceList(
+                viewModel.visibleHorizontalPodAutoscalers,
+                selection: viewModel.state.selectedHorizontalPodAutoscaler,
+                action: viewModel.selectHorizontalPodAutoscaler
+            )
+
+        case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            EmptyView()
+
+        case .event:
+            EmptyView()
+        }
     }
 
     private var networkingPane: some View {
@@ -6085,33 +6092,67 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private var authDoctorPanel: some View {
-        if viewModel.state.isRunningAuthDoctor || !viewModel.state.authDoctorChecks.isEmpty {
+        if shouldReserveAuthDoctorPanel {
+            let hasChecks = !viewModel.state.authDoctorChecks.isEmpty
+            let runLabel = viewModel.state.isRunningAuthDoctor
+                ? "Running..."
+                : (hasChecks ? "Run Again" : "Run Auth Doctor")
+
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label("Auth Doctor", systemImage: "stethoscope")
-                        .font(.subheadline.weight(.semibold))
+                    Button {
+                        withAnimation(.snappy(duration: 0.16)) {
+                            isAuthDoctorPanelExpanded.toggle()
+                        }
+                    } label: {
+                        Label("Auth Doctor", systemImage: "stethoscope")
+                            .font(.subheadline.weight(.semibold))
+                        Image(systemName: isAuthDoctorPanelExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isAuthDoctorPanelExpanded ? "Collapse Auth Doctor output" : "Expand Auth Doctor output")
+
+                    authDoctorSummaryChip
+
                     Spacer()
-                    Button(viewModel.state.isRunningAuthDoctor ? "Running..." : "Run Again") {
+                    Button(runLabel) {
+                        isAuthDoctorPanelExpanded = true
                         viewModel.runAuthDoctor()
                     }
                     .disabled(viewModel.state.isRunningAuthDoctor)
+                    .buttonStyle(.bordered)
                     Button("Save Bundle") {
                         viewModel.saveSupportBundle()
                     }
+                    .buttonStyle(.bordered)
+                    Button {
+                        withAnimation(.snappy(duration: 0.16)) {
+                            viewModel.clearAuthDoctorOutput()
+                            isAuthDoctorPanelExpanded = false
+                        }
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.isRunningAuthDoctor || viewModel.state.authDoctorChecks.isEmpty)
                 }
 
-                ForEach(viewModel.state.authDoctorChecks) { check in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: authDoctorSymbol(for: check.status))
-                            .foregroundStyle(authDoctorColor(for: check.status))
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(check.title)
-                                .font(.caption.weight(.semibold))
-                            Text(check.message)
+                if isAuthDoctorPanelExpanded {
+                    if viewModel.state.authDoctorChecks.isEmpty, !viewModel.state.isRunningAuthDoctor {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "checkmark.shield")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16)
+                            Text("Run Auth Doctor to check kubeconfig, context auth, namespace access, logs, and RBAC before troubleshooting workloads.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        ForEach(viewModel.state.authDoctorChecks) { check in
+                            authDoctorCheckRow(check)
                         }
                     }
                 }
@@ -6119,6 +6160,104 @@ public struct RuneRootView: View {
             .padding(12)
             .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
         }
+    }
+
+    private func authDoctorCheckRow(_ check: RuneHealthCheck) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: authDoctorSymbol(for: check.status))
+                .foregroundStyle(authDoctorColor(for: check.status))
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(check.title)
+                    .font(.caption.weight(.semibold))
+                Text(check.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if let action = AuthDoctorEntryActionResolver.resolve(check: check, hasPodTarget: authDoctorTargetPod != nil) {
+                Button {
+                    performAuthDoctorEntryAction(action)
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(action.help)
+            }
+        }
+    }
+
+    private func performAuthDoctorEntryAction(_ action: AuthDoctorEntryResolution) {
+        switch action.destination {
+        case .overview:
+            viewModel.setSection(.overview)
+        case .pods:
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.pod)
+        case .podLogs:
+            guard let pod = authDoctorTargetPod else { return }
+            viewModel.setSection(.workloads)
+            viewModel.selectPod(pod)
+            podInspectorTab = .logs
+            viewModel.reloadLogsForSelection()
+        case .podExec:
+            guard let pod = authDoctorTargetPod else { return }
+            viewModel.setSection(.workloads)
+            viewModel.selectPod(pod)
+            podInspectorTab = .exec
+        case .podPortForward:
+            guard let pod = authDoctorTargetPod else { return }
+            viewModel.setSection(.workloads)
+            viewModel.selectPod(pod)
+            podInspectorTab = .portForward
+        case let .documentation(url):
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private var authDoctorTargetPod: PodSummary? {
+        viewModel.state.selectedPod
+            ?? viewModel.visiblePods.first
+            ?? viewModel.state.pods.first
+            ?? viewModel.state.overviewPods.first
+    }
+
+    private var shouldReserveAuthDoctorPanel: Bool {
+        switch viewModel.state.selectedSection {
+        case .overview, .workloads:
+            return true
+        default:
+            return viewModel.state.isRunningAuthDoctor || !viewModel.state.authDoctorChecks.isEmpty
+        }
+    }
+
+    @ViewBuilder
+    private var authDoctorSummaryChip: some View {
+        let checks = viewModel.state.authDoctorChecks
+        let failed = checks.filter { $0.status == .failed }.count
+        let warnings = checks.filter { $0.status == .warning }.count
+        let running = viewModel.state.isRunningAuthDoctor || checks.contains { $0.status == .running }
+        let text = running ? "Running" : (checks.isEmpty ? "Ready" : "\(checks.count) checks")
+        let detail = failed > 0 ? "\(failed) failed" : (warnings > 0 ? "\(warnings) warnings" : "OK")
+        HStack(spacing: 6) {
+            Circle()
+                .fill(running ? Color.blue : (failed > 0 ? Color.red : (warnings > 0 ? Color.orange : Color.green)))
+                .frame(width: 7, height: 7)
+            Text(text)
+            if !checks.isEmpty {
+                Text(detail)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 8)
+        .frame(minHeight: RuneUILayoutMetrics.headerChipHeight)
+        .background(panelFill, in: Capsule())
     }
 
     private func authDoctorSymbol(for status: RuneHealthCheckStatus) -> String {

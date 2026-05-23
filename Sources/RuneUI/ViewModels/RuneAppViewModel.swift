@@ -4201,6 +4201,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func runAuthDoctor() {
         guard !state.isRunningAuthDoctor else { return }
+        state.clearError()
         state.setAuthDoctorRunning(true)
         state.setAuthDoctorChecks([
             RuneHealthCheck(id: "start", title: "Auth Doctor", status: .running, message: "Checking kubeconfig, context, auth transport, namespace access, logs, exec, and port-forward permissions.")
@@ -4331,6 +4332,11 @@ public final class RuneAppViewModel: ObservableObject {
                 record("pod-list", "Pod list", .failed, error.localizedDescription)
             }
         }
+    }
+
+    public func clearAuthDoctorOutput() {
+        guard !state.isRunningAuthDoctor else { return }
+        state.clearAuthDoctorChecks()
     }
 
     public func loadDemoCluster() {
