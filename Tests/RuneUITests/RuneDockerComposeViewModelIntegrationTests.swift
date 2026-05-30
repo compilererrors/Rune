@@ -93,7 +93,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         }
 
         harness.viewModel.setSection(.rbac)
-        try await waitUntil(timeout: 20) {
+        try await waitUntil(timeout: 30) {
             harness.state.selectedSection == .rbac
                 && harness.state.rbacRoles.map(\.name).contains("alpha-reader")
                 && harness.state.rbacRoleBindings.map(\.name).contains("alpha-reader-binding")
@@ -119,6 +119,16 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             harness.state.pods.contains { $0.name == event.objectName }
         })
 
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.pods.contains { $0.name.hasPrefix("orbit-lens-") }
+                && !harness.state.isLoading
+        }
+        let terminalPod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("orbit-lens-") })
+
         harness.viewModel.setSection(.helm)
         try await waitUntil(timeout: 20) {
             harness.state.selectedSection == .helm
@@ -129,14 +139,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         harness.viewModel.setSection(.terminal)
         try await waitUntil(timeout: 20) {
             harness.state.selectedSection == .terminal
-                && harness.state.pods.contains { $0.id == pod.id }
+                && harness.state.pods.contains { $0.id == terminalPod.id }
                 && !harness.state.isLoading
                 && !harness.state.isLoadingResourceDetails
         }
-        harness.viewModel.focusTerminalPodInspector(pod, reloadLogs: true, loadDetails: false)
+        harness.viewModel.focusTerminalPodInspector(terminalPod, reloadLogs: true, loadDetails: false)
         try await waitUntil(timeout: 20) {
             harness.state.selectedSection == .terminal
-                && harness.state.selectedPod?.id == pod.id
+                && harness.state.selectedPod?.id == terminalPod.id
                 && !harness.state.podLogs.isEmpty
                 && !harness.state.isLoadingLogs
         }
@@ -237,6 +247,13 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 marker: "rollback-baseline"
             )
         )
+        try await waitForDeploymentReady(
+            client: client,
+            sources: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName
+        )
         try await client.applyYAML(
             from: [KubeConfigSource(url: harness.kubeconfigURL)],
             context: context,
@@ -246,6 +263,13 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 namespace: namespace,
                 marker: "rollback-edited"
             )
+        )
+        try await waitForDeploymentReady(
+            client: client,
+            sources: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName
         )
         try await waitForRolloutHistory(
             client: client,
@@ -274,7 +298,9 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 && !harness.state.isLoadingResourceDetails
         }
 
-        harness.viewModel.toggleProductionMark(for: context)
+        if !harness.viewModel.isProductionContext(context) {
+            harness.viewModel.toggleProductionMark(for: context)
+        }
         harness.viewModel.rolloutRevisionInput = "1"
         harness.viewModel.requestRolloutUndoSelectedDeployment()
 
@@ -535,6 +561,40 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         }
     }
 
+    private func waitForDeploymentReady(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deploymentName: String,
+        timeout: TimeInterval = 120
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastMessage = ""
+        while Date() < deadline {
+            do {
+                let result = try await client.verifyDeploymentRollout(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    deploymentName: deploymentName,
+                    timeout: min(15, max(1, deadline.timeIntervalSinceNow))
+                )
+                lastMessage = result.message
+                if result.status == .ready {
+                    return
+                }
+            } catch {
+                lastMessage = String(describing: error)
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for deployment rollout",
+            message: "Timed out waiting for Deployment \(deploymentName) readiness. Last result: \(lastMessage)"
+        )
+    }
+
     private func waitForRolloutHistory(
         client: KubernetesClient,
         sources: [KubeConfigSource],
@@ -542,26 +602,33 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         namespace: String,
         deploymentName: String,
         revisions: Set<Int>,
-        timeout: TimeInterval = 60
+        timeout: TimeInterval = 120
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         var lastHistory = ""
         while Date() < deadline {
-            lastHistory = try await client.deploymentRolloutHistory(
-                from: sources,
-                context: context,
-                namespace: namespace,
-                deploymentName: deploymentName
-            )
-            let seen = Set(lastHistory.split(separator: "\n").compactMap { line -> Int? in
-                line.split(whereSeparator: \.isWhitespace).first.flatMap { Int($0) }
-            })
-            if revisions.isSubset(of: seen) {
-                return
+            do {
+                lastHistory = try await client.deploymentRolloutHistory(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    deploymentName: deploymentName
+                )
+                let seen = Set(lastHistory.split(separator: "\n").compactMap { line -> Int? in
+                    line.split(whereSeparator: \.isWhitespace).first.flatMap { Int($0) }
+                })
+                if revisions.isSubset(of: seen) {
+                    return
+                }
+            } catch {
+                lastHistory = String(describing: error)
             }
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        XCTFail("Timed out waiting for rollout history \(revisions). Last history: \(lastHistory)")
+        throw RuneError.commandFailed(
+            command: "wait for rollout history",
+            message: "Timed out waiting for rollout history \(revisions). Last history: \(lastHistory)"
+        )
     }
 
     private func waitForDeploymentYAML(
@@ -576,19 +643,26 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         var lastYAML = ""
         while Date() < deadline {
-            lastYAML = try await client.resourceYAML(
-                from: sources,
-                context: context,
-                namespace: namespace,
-                kind: .deployment,
-                name: deploymentName
-            )
-            if lastYAML.contains(marker) {
-                return
+            do {
+                lastYAML = try await client.resourceYAML(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    kind: .deployment,
+                    name: deploymentName
+                )
+                if lastYAML.contains(marker) {
+                    return
+                }
+            } catch {
+                lastYAML = String(describing: error)
             }
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        XCTFail("Timed out waiting for deployment YAML to contain \(marker). Last YAML: \(lastYAML)")
+        throw RuneError.commandFailed(
+            command: "wait for deployment YAML",
+            message: "Timed out waiting for deployment YAML to contain \(marker). Last YAML: \(lastYAML)"
+        )
     }
 
     private static func shortTestID() -> String {

@@ -123,6 +123,10 @@ enum YAMLLanguageService {
     }
 
     private static func kubernetesManagedFieldsDiagnostics(in source: String) -> [YAMLValidationIssue] {
+        guard source.contains("managedFields:"), source.contains("fieldsV1:") else {
+            return []
+        }
+
         struct SourceLine {
             let text: String
             let trimmed: String
@@ -199,6 +203,10 @@ enum YAMLLanguageService {
     }
 
     private static func flowDelimiterDiagnostics(in source: String) -> [YAMLValidationIssue] {
+        guard source.rangeOfCharacter(from: CharacterSet(charactersIn: "[]{}")) != nil else {
+            return []
+        }
+
         struct StackItem {
             let character: unichar
             let offset: Int

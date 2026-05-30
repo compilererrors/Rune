@@ -64,11 +64,13 @@ public struct CloudKubeConfigCommandResult: Sendable, Equatable {
     public let exitCode: Int32
     public let stdout: String
     public let stderr: String
+    public let timedOut: Bool
 
-    public init(exitCode: Int32, stdout: String, stderr: String) {
+    public init(exitCode: Int32, stdout: String, stderr: String, timedOut: Bool = false) {
         self.exitCode = exitCode
         self.stdout = stdout
         self.stderr = stderr
+        self.timedOut = timedOut
     }
 }
 
@@ -82,6 +84,8 @@ public struct CloudKubeConfigImportResult: Sendable, Equatable {
 public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatable {
     case missingRequiredField(String)
     case commandFailed(command: String, exitCode: Int32, message: String)
+    case commandTimedOut(command: String, timeoutSeconds: Int, message: String)
+    case noKubeconfigDiscovered(command: String)
 
     public var errorDescription: String? {
         switch self {
@@ -89,6 +93,11 @@ public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatab
             return "\(name) is required."
         case .commandFailed(let command, let exitCode, let message):
             return "Cloud import command failed with exit code \(exitCode): \(command). \(message)"
+        case .commandTimedOut(let command, let timeoutSeconds, let message):
+            let suffix = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " \(message)"
+            return "Cloud import command timed out after \(timeoutSeconds) seconds: \(command).\(suffix)"
+        case .noKubeconfigDiscovered(let command):
+            return "Cloud import command completed, but Rune could not find a kubeconfig to review: \(command)."
         }
     }
 }
@@ -103,17 +112,20 @@ public protocol CloudKubeConfigImporting: Sendable {
 }
 
 public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
+    private let commandBuilder: CloudKubeConfigCommandBuilder
     private let runner: CloudKubeConfigCommandRunning
     private let discoverer: KubeConfigDiscovering
     private let validator: KubeConfigImportValidator
     private let timeout: TimeInterval
 
     public init(
+        commandBuilder: CloudKubeConfigCommandBuilder = CloudKubeConfigCommandBuilder(),
         runner: CloudKubeConfigCommandRunning = ProcessCloudKubeConfigCommandRunner(),
         discoverer: KubeConfigDiscovering = KubeConfigDiscoverer(),
         validator: KubeConfigImportValidator = KubeConfigImportValidator(),
         timeout: TimeInterval = 120
     ) {
+        self.commandBuilder = commandBuilder
         self.runner = runner
         self.discoverer = discoverer
         self.validator = validator
@@ -121,66 +133,19 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
     }
 
     public func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
-        let clusterName = try required(request.clusterName, "Cluster name")
-        let targetKubeconfigPath = request.targetKubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let executable: String
-        var arguments: [String]
-        var environment: [String: String] = [:]
-
-        switch request.provider {
-        case .aks:
-            executable = "az"
-            let resourceGroup = try required(request.resourceGroup, "Resource group")
-            arguments = [
-                "aks", "get-credentials",
-                "--resource-group", resourceGroup,
-                "--name", clusterName
-            ]
-            if request.overwriteExisting {
-                arguments.append("--overwrite-existing")
-            }
-            appendOptional("--file", targetKubeconfigPath, to: &arguments)
-            appendOptional("--subscription", request.profileOrSubscription, to: &arguments)
-
-        case .eks:
-            executable = "aws"
-            let region = try required(request.regionOrLocation, "Region")
-            arguments = [
-                "eks", "update-kubeconfig",
-                "--region", region,
-                "--name", clusterName
-            ]
-            appendOptional("--kubeconfig", targetKubeconfigPath, to: &arguments)
-            appendOptional("--profile", request.profileOrSubscription, to: &arguments)
-            appendOptional("--role-arn", request.roleARN, to: &arguments)
-
-        case .gke:
-            executable = "gcloud"
-            let location = try required(request.regionOrLocation, "Location")
-            let projectID = try required(request.projectID, "Project ID")
-            arguments = [
-                "container", "clusters", "get-credentials",
-                clusterName,
-                "--location", location,
-                "--project", projectID
-            ]
-            if !targetKubeconfigPath.isEmpty {
-                environment["KUBECONFIG"] = targetKubeconfigPath
-            }
-        }
-
-        let parts = [executable] + arguments
-        return CloudKubeConfigCommandPreview(
-            executable: executable,
-            arguments: arguments,
-            displayCommand: parts.map(Self.shellQuoted).joined(separator: " "),
-            environment: environment
-        )
+        try commandBuilder.preview(for: request)
     }
 
     public func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
         let command = try commandPreview(for: request)
         let commandResult = try await runner.run(command, timeout: timeout)
+        if commandResult.timedOut {
+            throw CloudKubeConfigImportError.commandTimedOut(
+                command: command.displayCommand,
+                timeoutSeconds: Int(timeout.rounded(.up)),
+                message: commandResult.stderr.isEmpty ? commandResult.stdout : commandResult.stderr
+            )
+        }
         guard commandResult.exitCode == 0 else {
             throw CloudKubeConfigImportError.commandFailed(
                 command: command.displayCommand,
@@ -190,6 +155,9 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
         }
 
         let discoveredURLs = discoveredCandidateFiles(for: request)
+        guard !discoveredURLs.isEmpty else {
+            throw CloudKubeConfigImportError.noKubeconfigDiscovered(command: command.displayCommand)
+        }
         let reviews = discoveredURLs.map { url in
             let raw = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
             return validator.validate(raw: raw, sourceName: url.lastPathComponent)
@@ -213,68 +181,36 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
         var seen = Set<String>()
         return urls.filter { url in
             let key = url.standardizedFileURL.path
-            return seen.insert(key).inserted
+            guard seen.insert(key).inserted else { return false }
+            return FileManager.default.fileExists(atPath: key)
         }
     }
 
-    private func required(_ value: String, _ name: String) throws -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw CloudKubeConfigImportError.missingRequiredField(name)
-        }
-        return trimmed
-    }
-
-    private func appendOptional(_ flag: String, _ value: String, to arguments: inout [String]) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        arguments.append(flag)
-        arguments.append(trimmed)
-    }
-
-    private static func shellQuoted(_ value: String) -> String {
-        guard value.rangeOfCharacter(from: .whitespacesAndNewlines) != nil
-            || value.contains("'")
-            || value.contains("\"") else {
-            return value
-        }
-        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 }
 
 public struct ProcessCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
-    public init() {}
+    private let executor: any ProcessCommandExecuting
+
+    public init() {
+        self.executor = ProcessCommandExecutor()
+    }
+
+    init(executor: any ProcessCommandExecuting) {
+        self.executor = executor
+    }
 
     public func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [command.executable] + command.arguments
-            var environment = ProcessInfo.processInfo.environment
-            environment["PATH"] = RuneExecutableSearchPath.pathValue(from: environment)
-            for (key, value) in command.environment {
-                environment[key] = value
-            }
-            process.environment = environment
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            try process.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning, Date() < deadline {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            if process.isRunning {
-                process.terminate()
-            }
-            process.waitUntilExit()
-
-            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return CloudKubeConfigCommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
-        }.value
+        let result = try await executor.run(
+            executable: command.executable,
+            arguments: command.arguments,
+            environment: command.environment,
+            timeout: timeout
+        )
+        return CloudKubeConfigCommandResult(
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            timedOut: result.timedOut
+        )
     }
 }

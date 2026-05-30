@@ -629,6 +629,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests"))
         XCTAssertTrue(source.contains("can_bind_loopback_socket"))
         XCTAssertTrue(source.contains("Skipped because this environment cannot bind local loopback sockets."))
+        XCTAssertTrue(source.contains("return \"$exit_code\""))
+        XCTAssertTrue(source.contains("DOCKER_READY=1"))
+        XCTAssertTrue(source.contains("Skipped because Docker Compose stack did not start."))
+        XCTAssertTrue(source.contains("Skipped because Docker Compose stack or kubeconfig safety gate did not pass."))
+    }
+
+    func testLocalK8sIntegrationReportScriptForcesFakeClusterOnlyMode() throws {
+        let source = try String(contentsOfFile: localK8sIntegrationReportScriptPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("unset RUNE_LIVE_K8S_CONTEXT"))
+        XCTAssertTrue(source.contains("unset RUNE_LIVE_K8S_CONTEXTS"))
+        XCTAssertTrue(source.contains("unset RUNE_LIVE_KUBECONFIG"))
+        XCTAssertTrue(source.contains("unset RUNE_LIVE_CLOUD_PROVIDER"))
+        XCTAssertTrue(source.contains("export RUNE_ALLOW_LIVE_K8S_TESTS=0"))
+        XCTAssertTrue(source.contains("export RUNE_ALLOW_LIVE_CLOUD_TESTS=0"))
     }
 
     func testLocalK8sIntegrationReportWritesSectionedMarkdownWithoutTables() throws {
@@ -810,6 +825,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(builderSource.contains("kubectl"))
         XCTAssertTrue(builderSource.contains("port-forward"))
         XCTAssertTrue(builderSource.contains("exec"))
+        XCTAssertTrue(builderSource.contains("ShellCommandFormatting.shellCommand(parts)"))
 
         XCTAssertEqual(
             TerminalKubectlCommandBuilder.exec(
@@ -841,6 +857,18 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 address: "127.0.0.1"
             ),
             "kubectl --context dev --namespace default port-forward --address 127.0.0.1 pod/api 8080:80"
+        )
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.portForward(
+                contextName: "dev",
+                namespace: "default",
+                targetKind: .pod,
+                targetName: "api;debug",
+                localPort: 8080,
+                remotePort: 80,
+                address: "127.0.0.1"
+            ),
+            "kubectl --context dev --namespace default port-forward --address 127.0.0.1 'pod/api;debug' 8080:80"
         )
     }
 
@@ -1386,6 +1414,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
     func testSidebarExposesAddClusterProviderFlow() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let importReviewPanelSource = try String(contentsOfFile: kubeConfigImportReviewPanelPath, encoding: .utf8)
         let pickerSource = try String(contentsOfFile: kubeConfigPickerPath, encoding: .utf8)
         let kubernetesClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
 
@@ -1393,6 +1422,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("RuneGlassPaneSurface(role: .content)"))
         XCTAssertTrue(rootViewSource.contains("RuneSurfaceBackground(kind: .inset)"))
         XCTAssertTrue(rootViewSource.contains("RuneUILayoutMetrics.paneShellCornerRadius"))
+        XCTAssertTrue(rootViewSource.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertTrue(rootViewSource.contains(".id(addClusterPopoverLayoutID)"))
+        XCTAssertTrue(rootViewSource.contains("private var addClusterPopoverLayoutID: String"))
+        XCTAssertTrue(rootViewSource.contains("isManualAddClusterExpanded = false"))
         XCTAssertTrue(rootViewSource.contains("Standard"))
         XCTAssertTrue(rootViewSource.contains("addClusterDiscoveryStatus"))
         XCTAssertTrue(rootViewSource.contains("Auto-detect Clusters"))
@@ -1418,10 +1451,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("Add Manual Token Cluster"))
         XCTAssertTrue(rootViewSource.contains("viewModel.importManualTokenKubeConfig()"))
         XCTAssertTrue(rootViewSource.contains("KubeConfigImportReviewPanel"))
-        XCTAssertTrue(rootViewSource.contains("Text(\"Import Review\")"))
-        XCTAssertTrue(rootViewSource.contains("Redacted preview"))
-        XCTAssertTrue(rootViewSource.contains("Run Auth Doctor"))
-        XCTAssertTrue(rootViewSource.contains("update existing, import as copy, or skip"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.clearKubeConfigImportReviews"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Import Review\")"))
+        XCTAssertTrue(importReviewPanelSource.contains("Label(\"Clear\", systemImage: \"xmark.circle\")"))
+        XCTAssertTrue(importReviewPanelSource.contains("doc.text.magnifyingglass"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Full review\")"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Contexts"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Issues"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Redacted kubeconfig\")"))
+        XCTAssertTrue(importReviewPanelSource.contains("Run Auth Doctor"))
+        XCTAssertTrue(importReviewPanelSource.contains("update existing, import as copy, or skip"))
         XCTAssertTrue(rootViewSource.contains("Microsoft AKS"))
         XCTAssertTrue(rootViewSource.contains("Amazon EKS"))
         XCTAssertTrue(rootViewSource.contains("Google GKE"))
@@ -1493,6 +1532,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .logs"))
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .exec"))
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .portForward"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.reviewLoadedKubeConfigSources()"))
+        XCTAssertTrue(authDoctorBlock.contains("addClusterPopoverPresented = true"))
         XCTAssertTrue(authDoctorBlock.contains("NSWorkspace.shared.open(url)"))
 
         let authDoctorVisibilityBlock = try functionBlock(
@@ -1500,14 +1541,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "@ViewBuilder\n    private var authDoctorSummaryChip",
             in: rootViewSource
         )
-        XCTAssertTrue(authDoctorVisibilityBlock.contains("case .overview, .workloads"))
+        XCTAssertTrue(authDoctorVisibilityBlock.contains("case .overview"))
+        XCTAssertFalse(authDoctorVisibilityBlock.contains("case .overview, .workloads"))
 
         let workloadsBlock = try functionBlock(
             named: "private var workloadsPane: some View",
             endingBefore: "private var networkingPane",
             in: rootViewSource
         )
-        XCTAssertTrue(workloadsBlock.contains("authDoctorPanel"))
+        XCTAssertFalse(workloadsBlock.contains("authDoctorPanel"))
     }
 
     func testAuthDoctorStaysReadOnlyAndDoesNotRunMutatingActions() throws {
@@ -1953,6 +1995,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
+    private var kubeConfigImportReviewPanelPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift").path
     }
 
     private var appKitPodTableViewPath: String {

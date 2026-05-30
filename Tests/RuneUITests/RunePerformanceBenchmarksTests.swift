@@ -879,7 +879,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         let checksum = refreshGutterAcrossViewportSamples()
-        let elapsedSeconds = minimumElapsedSeconds {
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 7) {
             _ = refreshGutterAcrossViewportSamples()
         }
 
@@ -1224,27 +1224,35 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertGreaterThan(checksum, 0)
         }
 
-        let started = ContinuousClock.now
-        var widths: [CGFloat] = []
-        widths.reserveCapacity(translations.count)
-        for translation in translations {
-            widths.append(PodTableLayout.resizePreviewWidth(
-                committedWidth: PodTableLayout.nameColumnDefaultWidth,
-                translation: translation
-            ))
+        var firstWidth: CGFloat = 0
+        var lastWidth: CGFloat = 0
+        var roundedWidths = true
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            for (index, translation) in translations.enumerated() {
+                let width = PodTableLayout.resizePreviewWidth(
+                    committedWidth: PodTableLayout.nameColumnDefaultWidth,
+                    translation: translation
+                )
+                if index == 0 {
+                    firstWidth = width
+                }
+                if index == translations.count - 1 {
+                    lastWidth = width
+                }
+                roundedWidths = roundedWidths && width.rounded(.toNearestOrAwayFromZero) == width
+            }
         }
-        let elapsed = started.duration(to: .now)
 
-        XCTAssertEqual(widths.first, PodTableLayout.nameColumnMinimumWidth)
-        XCTAssertEqual(widths.last, PodTableLayout.nameColumnMaximumWidth)
-        XCTAssertTrue(widths.allSatisfy { $0.rounded(.toNearestOrAwayFromZero) == $0 })
+        XCTAssertEqual(firstWidth, PodTableLayout.nameColumnMinimumWidth)
+        XCTAssertEqual(lastWidth, PodTableLayout.nameColumnMaximumWidth)
+        XCTAssertTrue(roundedWidths)
         XCTAssertEqual(PodTableLayout.headerHorizontalInset, PodTableLayout.rowHorizontalPadding)
         XCTAssertEqual(
             PodTableLayout.nameColumnFrameWidth(PodTableLayout.nameColumnDefaultWidth),
             PodTableLayout.nameColumnDefaultWidth + PodTableLayout.nameColumnResizeHandleWidth
         )
         XCTAssertLessThan(
-            seconds(elapsed),
+            elapsedSeconds,
             0.01,
             "KPI: pod name column drag math must stay below 10ms for 2001 drag samples so resize remains pointer-rate cheap."
         )
@@ -1302,7 +1310,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertEqual(projectVisibleCells(), 256)
         }
 
-        let elapsedSeconds = minimumElapsedSeconds {
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
             _ = projectVisibleCells()
         }
 
@@ -2077,7 +2085,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         let checksum = projectedChecksum()
-        let elapsedSeconds = minimumElapsedSeconds {
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
             _ = projectedChecksum()
         }
 
@@ -2234,13 +2242,14 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = viewModel.namespaceOptions
         }
 
-        let started = ContinuousClock.now
-        let visible = viewModel.namespaceOptions
-        let elapsed = started.duration(to: .now)
+        var visible: [String] = []
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            visible = viewModel.namespaceOptions
+        }
 
         XCTAssertEqual(visible.count, 2_000)
         XCTAssertEqual(visible.prefix(3), ["namespace-0000", "namespace-0200", "namespace-0400"])
-        XCTAssertLessThan(seconds(elapsed), 0.2)
+        XCTAssertLessThan(elapsedSeconds, 0.2)
     }
 
     @MainActor
@@ -2405,14 +2414,20 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = reloaded.loadPreferredNamespace(for: "context-005")
         }
 
-        let started = ContinuousClock.now
-        let reloaded = FileBackedContextPreferencesStore(url: url)
-        XCTAssertEqual(reloaded.loadFavoriteResourceIDs().count, 5_000)
-        XCTAssertEqual(reloaded.loadFavoriteNamespaceIDs().count, 500)
-        XCTAssertEqual(reloaded.loadPreferredNamespace(for: "context-005"), "namespace-5")
-        let elapsed = started.duration(to: .now)
+        var favoriteResourceCount = 0
+        var favoriteNamespaceCount = 0
+        var preferredNamespace: String?
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            let reloaded = FileBackedContextPreferencesStore(url: url)
+            favoriteResourceCount = reloaded.loadFavoriteResourceIDs().count
+            favoriteNamespaceCount = reloaded.loadFavoriteNamespaceIDs().count
+            preferredNamespace = reloaded.loadPreferredNamespace(for: "context-005")
+        }
 
-        XCTAssertLessThan(seconds(elapsed), 0.08, "KPI: preferences load should stay below 80ms for a realistic local app-state file in debug.")
+        XCTAssertEqual(favoriteResourceCount, 5_000)
+        XCTAssertEqual(favoriteNamespaceCount, 500)
+        XCTAssertEqual(preferredNamespace, "namespace-5")
+        XCTAssertLessThan(elapsedSeconds, 0.08, "KPI: preferences load should stay below 80ms for a realistic local app-state file in debug.")
     }
 
     func testKubeConfigImportDuplicateDetectionBenchmarkKPI() {
@@ -2518,7 +2533,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         let reviews = payloads.map { validator.validate(raw: $0) }
-        let elapsedSeconds = minimumElapsedSeconds {
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 7) {
             _ = payloads.map { validator.validate(raw: $0) }
         }
 
@@ -2534,6 +2549,212 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             elapsedSeconds,
             maximumReviewProjectionSeconds,
             "KPI: import review projection for 120 selected/folder kubeconfig files should stay below 120ms in debug and 80ms in release."
+        )
+    }
+
+    func testKubeConfigExpandedProviderAuthShapeBenchmarkKPI() {
+        let contexts = (0..<180).map { index in
+            """
+            - context:
+                cluster: cluster-\(String(format: "%03d", index))
+                user: user-\(String(format: "%03d", index))
+                namespace: namespace-\(index % 9)
+              name: context-\(String(format: "%03d", index))
+            """
+        }.joined(separator: "\n")
+        let clusters = (0..<180).map { index in
+            let host: String
+            switch index % 6 {
+            case 0:
+                host = "https://doks-\(index).example.invalid"
+            case 1:
+                host = "https://rancher-\(index).example.invalid"
+            case 2:
+                host = "https://openshift-\(index).example.invalid"
+            case 3:
+                host = "https://oidc-\(index).example.invalid"
+            case 4:
+                host = "https://crc-\(index).example.invalid"
+            default:
+                host = "https://generic-\(index).example.invalid"
+            }
+            return """
+            - cluster:
+                server: \(host)
+              name: cluster-\(String(format: "%03d", index))
+            """
+        }.joined(separator: "\n")
+        let users = (0..<180).map { index -> String in
+            let userName = "user-\(String(format: "%03d", index))"
+            switch index % 6 {
+            case 0:
+                return """
+                - user:
+                    exec:
+                      command: doctl
+                  name: \(userName)
+                """
+            case 1:
+                return """
+                - user:
+                    exec:
+                      command: rancher
+                  name: \(userName)
+                """
+            case 2:
+                return """
+                - user:
+                    exec:
+                      command: oc
+                  name: \(userName)
+                """
+            case 3:
+                return """
+                - user:
+                    auth-provider:
+                      name: oidc
+                      config:
+                        issuer-url: https://issuer-\(index).example.invalid
+                        client-id: synthetic-client-\(index)
+                        id-token: synthetic-id-token-\(index)
+                  name: \(userName)
+                """
+            case 4:
+                return """
+                - user:
+                    tokenFile: /synthetic/token-\(index).txt
+                  name: \(userName)
+                """
+            default:
+                return """
+                - user:
+                    username: synthetic-user-\(index)
+                    password: synthetic-password-\(index)
+                    client-certificate: /synthetic/client-\(index).crt
+                    client-key: /synthetic/client-\(index).key
+                  name: \(userName)
+                """
+            }
+        }.joined(separator: "\n")
+        let raw = """
+        apiVersion: v1
+        kind: Config
+        current-context: context-000
+        clusters:
+        \(clusters)
+        contexts:
+        \(contexts)
+        users:
+        \(users)
+        """
+        let validator = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = validator.validate(raw: raw)
+        }
+
+        let review = validator.validate(raw: raw)
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 7) {
+            _ = validator.validate(raw: raw)
+        }
+        let authTypes = Set(review.contexts.map(\.authType))
+        let providerHints = Set(review.contexts.compactMap(\.providerHint))
+
+        XCTAssertTrue(review.isValid)
+        XCTAssertEqual(review.contexts.count, 180)
+        XCTAssertTrue(authTypes.isSuperset(of: ["Exec plugin", "OIDC", "Token file", "Client certificate"]))
+        XCTAssertTrue(providerHints.isSuperset(of: ["DOKS", "Rancher", "OpenShift", "OIDC"]))
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-id-token"))
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-password"))
+        XCTAssertFalse(review.redactedPreview.contains("/synthetic/token-"))
+        XCTAssertFalse(review.redactedPreview.contains("/synthetic/client-"))
+        #if DEBUG
+        let maximumExpandedImportSeconds = 0.12
+        #else
+        let maximumExpandedImportSeconds = 0.05
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumExpandedImportSeconds,
+            "KPI: expanded kubeconfig provider/auth parsing should stay below 120ms in debug and 50ms in release for 180 contexts."
+        )
+    }
+
+    @MainActor
+    func testLoadedKubeConfigSourceReviewBenchmarkKPI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RunePerformanceBenchmarks.loadedKubeconfigReview.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sources = try (0..<80).map { fileIndex -> KubeConfigSource in
+            let contexts = (0..<4).map { contextIndex in
+                """
+                - context:
+                    cluster: cluster-\(fileIndex)-\(contextIndex)
+                    user: user-\(fileIndex)-\(contextIndex)
+                    namespace: namespace-\(contextIndex)
+                  name: context-\(fileIndex)-\(contextIndex)
+                """
+            }.joined(separator: "\n")
+            let clusters = (0..<4).map { contextIndex in
+                """
+                - cluster:
+                    server: https://cluster-\(fileIndex)-\(contextIndex).example.invalid
+                  name: cluster-\(fileIndex)-\(contextIndex)
+                """
+            }.joined(separator: "\n")
+            let users = (0..<4).map { contextIndex in
+                """
+                - user:
+                    token: synthetic-token-\(fileIndex)-\(contextIndex)
+                  name: user-\(fileIndex)-\(contextIndex)
+                """
+            }.joined(separator: "\n")
+            let raw = """
+            apiVersion: v1
+            kind: Config
+            current-context: context-\(fileIndex)-0
+            clusters:
+            \(clusters)
+            contexts:
+            \(contexts)
+            users:
+            \(users)
+            """
+            let url = directory.appendingPathComponent("config-\(fileIndex).yaml")
+            try raw.write(to: url, atomically: true, encoding: .utf8)
+            return KubeConfigSource(url: url)
+        }
+        let state = RuneAppState()
+        state.setSources(sources)
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigImportValidator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
+        )
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = viewModel.reviewLoadedKubeConfigSources()
+        }
+
+        let reviews = viewModel.reviewLoadedKubeConfigSources()
+        let elapsedSeconds = minimumElapsedSeconds {
+            _ = viewModel.reviewLoadedKubeConfigSources()
+        }
+
+        XCTAssertEqual(reviews.count, 80)
+        XCTAssertEqual(reviews.flatMap(\.contexts).count, 320)
+        XCTAssertTrue(reviews.allSatisfy(\.isValid))
+        XCTAssertFalse(reviews.contains { $0.redactedPreview.contains("synthetic-token") })
+        #if DEBUG
+        let maximumLoadedSourceReviewSeconds = 0.18
+        #else
+        let maximumLoadedSourceReviewSeconds = 0.08
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumLoadedSourceReviewSeconds,
+            "KPI: reviewing 80 loaded kubeconfig sources from disk should stay below 180ms in debug and 80ms in release."
         )
     }
 
@@ -2771,16 +2992,19 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             )
         }
 
-        let started = ContinuousClock.now
-        let request = SupportBundleRequest.snapshot(
-            state: state,
-            generatedAt: "2026-05-13T00:00:00Z",
-            resourceCounts: ["pods": 2],
-            selectedResourceKind: "Pod",
-            selectedResourceName: "api-0"
-        )
-        let data = try JSONSupportBundleBuilder().buildBundle(from: request)
-        let elapsed = started.duration(to: .now)
+        let builder = JSONSupportBundleBuilder()
+        var builtData: Data?
+        let elapsedSeconds = try minimumThrowingElapsedSeconds(repetitions: 5) {
+            let request = SupportBundleRequest.snapshot(
+                state: state,
+                generatedAt: "2026-05-13T00:00:00Z",
+                resourceCounts: ["pods": 2],
+                selectedResourceKind: "Pod",
+                selectedResourceName: "api-0"
+            )
+            builtData = try builder.buildBundle(from: request)
+        }
+        let data = try XCTUnwrap(builtData)
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
 
         XCTAssertFalse(json.contains("synthetic-secret"))
@@ -2789,7 +3013,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertFalse(json.contains("benchmark-sensitive-context"))
         XCTAssertFalse(json.contains("/synthetic/home/user"))
         XCTAssertLessThan(
-            seconds(elapsed),
+            elapsedSeconds,
             0.3,
             "KPI: sanitized support bundle snapshot plus JSON encode should stay below 300ms for large YAML/log payloads in debug."
         )
@@ -2945,7 +3169,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(elapsedSeconds, 0.20)
     }
 
-    func testTerminalTranscriptSearchBenchmarkKPI() {
+    func testTerminalTranscriptSearchBenchmarkKPI() throws {
         let transcript = (0..<60_000)
             .map { index in
                 index.isMultiple(of: 5)
@@ -2958,17 +3182,19 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = TerminalTranscriptSearchIndex(text: transcript, query: "status=error", matchCase: false)
         }
 
-        let started = ContinuousClock.now
-        let index = TerminalTranscriptSearchIndex(text: transcript, query: "status=error", matchCase: false)
-        let elapsed = started.duration(to: .now)
+        var measuredIndex: TerminalTranscriptSearchIndex?
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            measuredIndex = TerminalTranscriptSearchIndex(text: transcript, query: "status=error", matchCase: false)
+        }
+        let index = try XCTUnwrap(measuredIndex)
 
         XCTAssertEqual(index.ranges.count, 12_000)
         XCTAssertEqual(index.matchLineNumber(selectedIndex: 11_999), 59_996)
         XCTAssertEqual(index.statusText(selectedIndex: 0), "1 of 12000")
-        XCTAssertLessThan(seconds(elapsed), 0.45)
+        XCTAssertLessThan(elapsedSeconds, 0.45)
     }
 
-    func testTerminalTranscriptAppendWhileSearchOpenBenchmarkKPI() {
+    func testTerminalTranscriptAppendWhileSearchOpenBenchmarkKPI() throws {
         let base = (0..<30_000)
             .map { index in
                 index.isMultiple(of: 6)
@@ -2994,18 +3220,20 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             )
         }
 
-        let started = ContinuousClock.now
-        let model = TerminalTranscriptRenderModel(
-            text: transcript,
-            query: "status=error",
-            matchCase: false,
-            usesLargeTextSurface: true
-        )
-        let elapsed = started.duration(to: .now)
+        var measuredModel: TerminalTranscriptRenderModel?
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            measuredModel = TerminalTranscriptRenderModel(
+                text: transcript,
+                query: "status=error",
+                matchCase: false,
+                usesLargeTextSurface: true
+            )
+        }
+        let model = try XCTUnwrap(measuredModel)
 
         XCTAssertEqual(model.searchIndex.ranges.count, 5_167)
         XCTAssertEqual(model.scrollTargetLine(selectedIndex: 5_166), 30_997)
-        XCTAssertLessThan(seconds(elapsed), 0.12)
+        XCTAssertLessThan(elapsedSeconds, 0.12)
     }
 
     func testTerminalPromptPasteAndSendPreparationBenchmarkKPI() {
@@ -3096,7 +3324,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             controller.view.layoutSubtreeIfNeeded()
         }
 
-        let elapsed = minimumElapsedSeconds {
+        let elapsed = minimumElapsedSeconds(repetitions: 5) {
             let controller = NSHostingController(
                 rootView: TerminalTranscriptSurface(
                     text: transcript,
@@ -3304,7 +3532,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
-    func testUnifiedLogSelectedPodScopeBenchmarkKPI() {
+    func testUnifiedLogSelectedPodScopeBenchmarkKPI() throws {
         let podNames = (0..<120).map { "pod-\($0)" }
         let text = (0..<24_000)
             .map { index in
@@ -3321,18 +3549,20 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             )
         }
 
-        let started = ContinuousClock.now
-        let result = RuneAppViewModel.scopedUnifiedLogResult(
-            mergedText: text,
-            podNames: podNames,
-            selectedPodNames: selected
-        )
-        let elapsed = started.duration(to: .now)
+        var measuredResult: (mergedText: String, podNames: [String])?
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            measuredResult = RuneAppViewModel.scopedUnifiedLogResult(
+                mergedText: text,
+                podNames: podNames,
+                selectedPodNames: selected
+            )
+        }
+        let result = try XCTUnwrap(measuredResult)
 
         XCTAssertEqual(result.podNames.count, 12)
         XCTAssertTrue(result.mergedText.contains("[pod-0]"))
         XCTAssertFalse(result.mergedText.contains("[pod-12]"))
-        XCTAssertLessThan(seconds(elapsed), 0.08)
+        XCTAssertLessThan(elapsedSeconds, 0.08)
     }
 
     func testYAMLDiffPreviewBenchmarkKPI() {

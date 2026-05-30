@@ -39,17 +39,39 @@ public struct HelmCommandResult: Sendable, Equatable {
     public let exitCode: Int32
     public let stdout: String
     public let stderr: String
+    public let timedOut: Bool
 
-    public init(exitCode: Int32, stdout: String, stderr: String) {
+    public init(exitCode: Int32, stdout: String, stderr: String, timedOut: Bool = false) {
         self.exitCode = exitCode
         self.stdout = stdout
         self.stderr = stderr
+        self.timedOut = timedOut
+    }
+}
+
+public struct HelmCommandPreview: Sendable, Equatable {
+    public let executable: String
+    public let arguments: [String]
+    public let displayCommand: String
+    public let environment: [String: String]
+
+    public init(
+        executable: String,
+        arguments: [String],
+        displayCommand: String,
+        environment: [String: String]
+    ) {
+        self.executable = executable
+        self.arguments = arguments
+        self.displayCommand = displayCommand
+        self.environment = environment
     }
 }
 
 public enum HelmCommandError: Error, LocalizedError, Sendable, Equatable {
     case missingKubeConfig
     case failed(exitCode: Int32, message: String)
+    case timedOut(timeoutSeconds: Int, message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -57,6 +79,9 @@ public enum HelmCommandError: Error, LocalizedError, Sendable, Equatable {
             return "No kubeconfig source is loaded."
         case let .failed(exitCode, message):
             return "Helm command failed with exit code \(exitCode). \(message)"
+        case let .timedOut(timeoutSeconds, message):
+            let suffix = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " \(message)"
+            return "Helm command timed out after \(timeoutSeconds) seconds.\(suffix)"
         }
     }
 }
@@ -65,10 +90,10 @@ public protocol HelmCommandRunning: Sendable {
     func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval) async throws -> HelmCommandResult
 }
 
-public struct ProcessHelmCommandRunner: HelmCommandRunning {
+public struct HelmRollbackCommandBuilder: Sendable {
     public init() {}
 
-    public func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval = 120) async throws -> HelmCommandResult {
+    public func preview(for request: HelmRollbackRequest) throws -> HelmCommandPreview {
         guard !request.sources.isEmpty else {
             throw HelmCommandError.missingKubeConfig
         }
@@ -95,49 +120,56 @@ public struct ProcessHelmCommandRunner: HelmCommandRunning {
             arguments.append("--cleanup-on-fail")
         }
 
-        let result = try await runHelm(arguments: arguments, sources: request.sources, timeout: timeout)
+        let executable = "helm"
+        let environment = ["KUBECONFIG": request.sources.map(\.url.path).joined(separator: ":")]
+        return HelmCommandPreview(
+            executable: executable,
+            arguments: arguments,
+            displayCommand: ShellCommandFormatting.displayCommand(executable: executable, arguments: arguments),
+            environment: environment
+        )
+    }
+}
+
+public struct ProcessHelmCommandRunner: HelmCommandRunning {
+    private let commandBuilder: HelmRollbackCommandBuilder
+    private let executor: any ProcessCommandExecuting
+
+    public init(commandBuilder: HelmRollbackCommandBuilder = HelmRollbackCommandBuilder()) {
+        self.commandBuilder = commandBuilder
+        self.executor = ProcessCommandExecutor()
+    }
+
+    init(commandBuilder: HelmRollbackCommandBuilder = HelmRollbackCommandBuilder(), executor: any ProcessCommandExecuting) {
+        self.commandBuilder = commandBuilder
+        self.executor = executor
+    }
+
+    public func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval = 120) async throws -> HelmCommandResult {
+        let command = try commandBuilder.preview(for: request)
+        let result = try await executor.run(
+            executable: command.executable,
+            arguments: command.arguments,
+            environment: command.environment,
+            timeout: timeout
+        )
+        if result.timedOut {
+            let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw HelmCommandError.timedOut(timeoutSeconds: Int(timeout.rounded(.up)), message: message)
+        }
         guard result.exitCode == 0 else {
             let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
                 : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw HelmCommandError.failed(exitCode: result.exitCode, message: message)
         }
-        return result
-    }
-
-    private func runHelm(
-        arguments: [String],
-        sources: [KubeConfigSource],
-        timeout: TimeInterval
-    ) async throws -> HelmCommandResult {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["helm"] + arguments
-
-            var environment = ProcessInfo.processInfo.environment
-            environment["PATH"] = RuneExecutableSearchPath.pathValue(from: environment)
-            environment["KUBECONFIG"] = sources.map(\.url.path).joined(separator: ":")
-            process.environment = environment
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            try process.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning, Date() < deadline {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            if process.isRunning {
-                process.terminate()
-            }
-            process.waitUntilExit()
-
-            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return HelmCommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
-        }.value
+        return HelmCommandResult(
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            timedOut: result.timedOut
+        )
     }
 }

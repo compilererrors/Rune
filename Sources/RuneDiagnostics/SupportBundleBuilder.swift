@@ -117,6 +117,14 @@ public extension SupportBundleRequest {
     private struct SupportBundleSanitizer {
         let redactedIdentifiers: [String]
 
+        private static let sensitiveAssignmentRegex = try! NSRegularExpression(
+            pattern: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s*:\s*[^ \n\r\t,;]+"#
+        )
+        private static let sensitiveArgumentRegex = try! NSRegularExpression(
+            pattern: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s+[^ \n\r\t,;]+"#
+        )
+        private static let pathTrimCharacters = CharacterSet(charactersIn: ".,;:()[]{}\"'")
+
         private let sensitiveKeys: Set<String> = [
             "authorization",
             "token",
@@ -145,15 +153,15 @@ public extension SupportBundleRequest {
                 sanitized = sanitized.replacingOccurrences(of: identifier, with: "<context-name>")
             }
 
-            sanitized = sanitized.replacingOccurrences(
-                of: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s*:\s*[^ \n\r\t,;]+"#,
-                with: "$1: <redacted>",
-                options: .regularExpression
+            sanitized = Self.sensitiveAssignmentRegex.stringByReplacingMatches(
+                in: sanitized,
+                range: NSRange(sanitized.startIndex..., in: sanitized),
+                withTemplate: "$1: <redacted>"
             )
-            sanitized = sanitized.replacingOccurrences(
-                of: #"(?i)\b(client-certificate-data|client-key-data|refresh-token|access-token|id-token|password|token)\s+[^ \n\r\t,;]+"#,
-                with: "$1 <redacted>",
-                options: .regularExpression
+            sanitized = Self.sensitiveArgumentRegex.stringByReplacingMatches(
+                in: sanitized,
+                range: NSRange(sanitized.startIndex..., in: sanitized),
+                withTemplate: "$1 <redacted>"
             )
 
             return sanitized
@@ -243,13 +251,53 @@ public extension SupportBundleRequest {
         }
 
         private func sanitizedLocalPaths(in text: String) -> String {
-            var sanitized = text
-            for token in sanitized.components(separatedBy: .whitespacesAndNewlines) {
-                let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:()[]{}\"'"))
-                guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { continue }
-                sanitized = sanitized.replacingOccurrences(of: trimmed, with: "<local-path>")
+            guard text.contains("/") || text.contains("~") else { return text }
+
+            var result = ""
+            result.reserveCapacity(text.count)
+            var token = ""
+
+            func flushToken() {
+                guard !token.isEmpty else { return }
+                result += sanitizedPathToken(token)
+                token.removeAll(keepingCapacity: true)
             }
-            return sanitized
+
+            for character in text {
+                if character.isWhitespace {
+                    flushToken()
+                    result.append(character)
+                } else {
+                    token.append(character)
+                }
+            }
+            flushToken()
+            return result
         }
+
+        private func sanitizedPathToken(_ token: String) -> String {
+            var leading = ""
+            var trailing = ""
+            var core = token
+
+            while let first = core.first, Self.pathTrimCharacters.contains(first) {
+                leading.append(first)
+                core.removeFirst()
+            }
+
+            while let last = core.last, Self.pathTrimCharacters.contains(last) {
+                trailing.insert(last, at: trailing.startIndex)
+                core.removeLast()
+            }
+
+            guard core.hasPrefix("/") || core.hasPrefix("~") else { return token }
+            return leading + "<local-path>" + trailing
+        }
+    }
+}
+
+private extension CharacterSet {
+    func contains(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { contains($0) }
     }
 }

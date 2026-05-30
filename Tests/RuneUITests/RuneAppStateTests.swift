@@ -93,6 +93,8 @@ final class RuneAppStateTests: XCTestCase {
                 token: secret-token
                 client-certificate-data: secret-cert
                 client-key-data: secret-key
+                extensions:
+                - token: secret-list-token
                 exec:
                   command: aws
             """
@@ -104,9 +106,11 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(review.contexts.first?.authType, "Exec plugin")
         XCTAssertEqual(review.contexts.first?.providerHint, "EKS")
         XCTAssertFalse(review.redactedPreview.contains("secret-token"))
+        XCTAssertFalse(review.redactedPreview.contains("secret-list-token"))
         XCTAssertFalse(review.redactedPreview.contains("secret-cert"))
         XCTAssertFalse(review.redactedPreview.contains("secret-key"))
         XCTAssertTrue(review.redactedPreview.contains("token: <redacted>"))
+        XCTAssertTrue(review.redactedPreview.contains("- token: <redacted>"))
         XCTAssertTrue(review.redactedPreview.contains("client-key-data: <redacted>"))
     }
 
@@ -501,6 +505,10 @@ final class RuneAppStateTests: XCTestCase {
             ("synthetic-eks", "https://eks.example.invalid", "aws", "EKS"),
             ("synthetic-aks", "https://aks.example.invalid", "kubelogin", "AKS"),
             ("synthetic-gke", "https://gke.example.invalid", "gke-gcloud-auth-plugin", "GKE"),
+            ("synthetic-doks", "https://doks.example.invalid", "doctl", "DOKS"),
+            ("synthetic-rancher", "https://rancher.example.invalid", nil, "Rancher"),
+            ("synthetic-openshift", "https://openshift.example.invalid", "oc", "OpenShift"),
+            ("crc", "https://crc.example.invalid", nil, "OpenShift"),
             ("kind-synthetic", "https://kind.example.invalid", nil, "kind"),
             ("minikube", "https://minikube.example.invalid", nil, "Minikube"),
             ("synthetic-k3d", "https://k3d.example.invalid", nil, "k3d"),
@@ -523,6 +531,80 @@ final class RuneAppStateTests: XCTestCase {
             XCTAssertEqual(review.contexts.first?.name, item.context)
             XCTAssertEqual(review.contexts.first?.namespace, "synthetic-namespace")
             XCTAssertEqual(review.contexts.first?.providerHint, item.expectedHint, item.context)
+        }
+    }
+
+    func testKubeConfigImportValidatorRecognizesAdditionalAuthShapesFromMobileReference() {
+        let cases: [(name: String, userBlock: String, expectedAuthType: String, expectedHint: String?)] = [
+            (
+                "oidc-auth-provider",
+                """
+                auth-provider:
+                      name: oidc
+                      config:
+                        issuer-url: https://issuer.example.invalid
+                        client-id: synthetic-client
+                        id-token: synthetic-id-token
+                """,
+                "OIDC",
+                "OIDC"
+            ),
+            (
+                "token-file",
+                "tokenFile: /synthetic/token.txt",
+                "Token file",
+                nil
+            ),
+            (
+                "basic-auth",
+                """
+                username: synthetic-user
+                    password: synthetic-password
+                """,
+                "Basic",
+                nil
+            ),
+            (
+                "client-certificate-files",
+                """
+                client-certificate: /synthetic/client.crt
+                    client-key: /synthetic/client.key
+                """,
+                "Client certificate",
+                nil
+            )
+        ]
+
+        for item in cases {
+            let review = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]).validate(
+                raw:
+                """
+                apiVersion: v1
+                kind: Config
+                current-context: \(item.name)-context
+                clusters:
+                - name: \(item.name)-cluster
+                  cluster:
+                    server: https://example.invalid
+                contexts:
+                - name: \(item.name)-context
+                  context:
+                    cluster: \(item.name)-cluster
+                    user: \(item.name)-user
+                users:
+                - name: \(item.name)-user
+                  user:
+                    \(item.userBlock)
+                """
+            )
+
+            XCTAssertTrue(review.isValid, item.name)
+            XCTAssertEqual(review.contexts.first?.authType, item.expectedAuthType, item.name)
+            XCTAssertEqual(review.contexts.first?.providerHint, item.expectedHint, item.name)
+            XCTAssertFalse(review.redactedPreview.contains("synthetic-id-token"), item.name)
+            XCTAssertFalse(review.redactedPreview.contains("synthetic-password"), item.name)
+            XCTAssertFalse(review.redactedPreview.contains("/synthetic/token.txt"), item.name)
+            XCTAssertFalse(review.redactedPreview.contains("/synthetic/client.key"), item.name)
         }
     }
 
@@ -589,6 +671,56 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
         XCTAssertTrue(review.isValid)
         XCTAssertFalse(review.redactedPreview.contains("secret-token"))
+
+        viewModel.clearKubeConfigImportReviews()
+        XCTAssertTrue(viewModel.kubeConfigImportReviews.isEmpty)
+    }
+
+    @MainActor
+    func testViewModelReviewsLoadedKubeConfigSourcesForAuthDoctorAction() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.loadedReview.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("synthetic-kubeconfig.yaml")
+        try Data(
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: synthetic-context
+            clusters:
+            - name: synthetic-cluster
+              cluster:
+                server: https://example.invalid
+            contexts:
+            - name: synthetic-context
+              context:
+                cluster: synthetic-cluster
+                user: synthetic-user
+                namespace: synthetic-namespace
+            users:
+            - name: synthetic-user
+              user:
+                token: secret-token
+            """.utf8
+        ).write(to: kubeconfig, options: .atomic)
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigImportValidator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
+        )
+
+        let reviews = viewModel.reviewLoadedKubeConfigSources()
+
+        XCTAssertEqual(reviews.count, 1)
+        XCTAssertEqual(viewModel.kubeConfigImportReviews, reviews)
+        XCTAssertEqual(reviews.first?.sourceName, kubeconfig.lastPathComponent)
+        XCTAssertEqual(reviews.first?.contexts.first?.name, "synthetic-context")
+        XCTAssertTrue(reviews.first?.isValid == true)
+        XCTAssertFalse(reviews.first?.redactedPreview.contains("secret-token") == true)
     }
 
     @MainActor
@@ -3642,6 +3774,11 @@ final class RuneAppStateTests: XCTestCase {
         let command = action.kubectlCommand(contextName: "prod west", namespace: "payments")
 
         XCTAssertEqual(command, "kubectl --context 'prod west' --namespace payments scale deployment 'api service' --replicas 3")
+        XCTAssertEqual(
+            PendingWriteAction.scale(deploymentName: "api;service", replicas: 3)
+                .kubectlCommand(contextName: "dev", namespace: "default"),
+            "kubectl --context dev --namespace default scale deployment 'api;service' --replicas 3"
+        )
 
         XCTAssertEqual(
             PendingWriteAction.rolloutUndo(deploymentName: "api", revision: nil)
@@ -4331,6 +4468,68 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(cloudTools.message.contains("synthetic-cluster"))
         XCTAssertFalse(execTools.message.contains(kubeconfig.path))
         XCTAssertFalse(cloudTools.message.contains(kubeconfig.path))
+    }
+
+    @MainActor
+    func testAuthDoctorKubeconfigInspectorDetectsAdditionalProviderTooling() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try """
+        apiVersion: v1
+        clusters:
+        - name: synthetic-doks
+          cluster:
+            server: https://doks.example.invalid
+        - name: synthetic-rancher
+          cluster:
+            server: https://rancher.example.invalid
+        - name: synthetic-openshift
+          cluster:
+            server: https://openshift.example.invalid
+        users:
+        - name: synthetic-doks
+          user:
+            exec:
+              command: doctl
+        - name: synthetic-rancher
+          user:
+            exec:
+              command: rancher
+        - name: synthetic-openshift
+          user:
+            exec:
+              command: oc
+        contexts:
+        - name: synthetic-doks
+          context:
+            cluster: synthetic-doks
+            user: synthetic-doks
+        - name: synthetic-rancher
+          context:
+            cluster: synthetic-rancher
+            user: synthetic-rancher
+        - name: synthetic-openshift
+          context:
+            cluster: synthetic-openshift
+            user: synthetic-openshift
+        """.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let checks = AuthDoctorKubeconfigInspector(
+            fileExists: { _ in false },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).inspect(sources: [KubeConfigSource(url: kubeconfig)])
+        let messages = checks.map(\.message).joined(separator: " ")
+        let cloudTools = try XCTUnwrap(checks.first { $0.id == "cloud-login-tools" })
+
+        XCTAssertEqual(cloudTools.status, .warning)
+        XCTAssertTrue(messages.contains("DOKS auth hints detected."))
+        XCTAssertTrue(messages.contains("Rancher auth hints detected."))
+        XCTAssertTrue(messages.contains("OpenShift auth hints detected."))
+        XCTAssertTrue(cloudTools.message.contains("doctl"))
+        XCTAssertTrue(cloudTools.message.contains("rancher"))
+        XCTAssertTrue(cloudTools.message.contains("oc"))
+        XCTAssertFalse(messages.contains(kubeconfig.path))
     }
 
     @MainActor

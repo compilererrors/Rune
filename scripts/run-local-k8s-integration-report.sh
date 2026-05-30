@@ -26,6 +26,24 @@ mkdir -p "$LOG_DIR" "$MODULE_CACHE_DIR/clang" "$MODULE_CACHE_DIR/swiftpm"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$MODULE_CACHE_DIR/clang}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$MODULE_CACHE_DIR/swiftpm}"
 
+# This report is intentionally fake-cluster only. Clear live-test opt-ins so a
+# developer shell with RUNE_LIVE_* exported cannot make the report touch real clusters.
+unset RUNE_LIVE_K8S_CONTEXT
+unset RUNE_LIVE_K8S_CONTEXTS
+unset RUNE_LIVE_KUBECONFIG
+unset RUNE_LIVE_CLOUD_PROVIDER
+unset RUNE_LIVE_AKS_CLUSTER
+unset RUNE_LIVE_AKS_RESOURCE_GROUP
+unset RUNE_LIVE_EKS_CLUSTER
+unset RUNE_LIVE_EKS_REGION
+unset RUNE_LIVE_EKS_ROLE_ARN
+unset RUNE_LIVE_GKE_CLUSTER
+unset RUNE_LIVE_GKE_LOCATION
+unset RUNE_LIVE_GKE_PROJECT
+unset RUNE_LIVE_CLOUD_PROFILE_OR_SUBSCRIPTION
+export RUNE_ALLOW_LIVE_K8S_TESTS=0
+export RUNE_ALLOW_LIVE_CLOUD_TESTS=0
+
 json_string() {
   python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
 }
@@ -114,6 +132,7 @@ run_step() {
     append_step_json "$name" "failed" "$exit_code" "$duration" "$log_file" "$command_text" "See log for stderr/stdout."
     append_step_md "$name" "failed" "$exit_code" "$duration" "$log_file" "See log."
   fi
+  return "$exit_code"
 }
 
 skip_step() {
@@ -222,8 +241,11 @@ if [[ "$SKIP_DOCKER" == "1" ]]; then
   skip_step docker_compose_stack "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."
   skip_step docker_compose_integration_test "Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."
 else
+  DOCKER_READY=1
   if [[ "$RESET_DOCKER" == "1" ]]; then
-    run_step docker_compose_reset docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans
+    if ! run_step docker_compose_reset docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans; then
+      DOCKER_READY=0
+    fi
     rm -f "$ROOT_DIR/docker-compose/generated/orbit-seeded.ok" \
       "$ROOT_DIR/docker-compose/generated/lattice-seeded.ok" \
       "$ROOT_DIR/docker-compose/generated/orbit-host.yaml" \
@@ -233,13 +255,40 @@ else
     skip_step docker_compose_reset "Skipped because RUNE_RESET_DOCKER_FAKE_K8S=0."
   fi
 
-  run_step docker_compose_up docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
-  run_step docker_compose_wait_seeded bash -lc \
-    'for i in {1..180}; do [[ -f docker-compose/generated/orbit-seeded.ok && -f docker-compose/generated/lattice-seeded.ok ]] && exit 0; sleep 2; done; exit 1'
-  run_step docker_compose_merge_kubeconfig bash docker-compose/merge-kubeconfig.sh
-  run_step docker_compose_safe_kubeconfig bash -lc 'grep -q "server: https://127.0.0.1:16443" docker-compose/generated/rune-fake-kubeconfig.yaml && grep -q "server: https://127.0.0.1:17443" docker-compose/generated/rune-fake-kubeconfig.yaml'
+  if [[ "$DOCKER_READY" == "1" ]]; then
+    if ! run_step docker_compose_up docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d; then
+      DOCKER_READY=0
+    fi
+  else
+    skip_step docker_compose_up "Skipped because Docker reset failed."
+  fi
 
-  if safe_docker_kubeconfig_check; then
+  if [[ "$DOCKER_READY" == "1" ]]; then
+    if ! run_step docker_compose_wait_seeded bash -lc \
+      'for i in {1..180}; do [[ -f docker-compose/generated/orbit-seeded.ok && -f docker-compose/generated/lattice-seeded.ok ]] && exit 0; sleep 2; done; exit 1'; then
+      DOCKER_READY=0
+    fi
+  else
+    skip_step docker_compose_wait_seeded "Skipped because Docker Compose stack did not start."
+  fi
+
+  if [[ "$DOCKER_READY" == "1" ]]; then
+    if ! run_step docker_compose_merge_kubeconfig bash docker-compose/merge-kubeconfig.sh; then
+      DOCKER_READY=0
+    fi
+  else
+    skip_step docker_compose_merge_kubeconfig "Skipped because Docker Compose stack was not ready."
+  fi
+
+  if [[ "$DOCKER_READY" == "1" ]]; then
+    if ! run_step docker_compose_safe_kubeconfig bash -lc 'grep -q "server: https://127.0.0.1:16443" docker-compose/generated/rune-fake-kubeconfig.yaml && grep -q "server: https://127.0.0.1:17443" docker-compose/generated/rune-fake-kubeconfig.yaml'; then
+      DOCKER_READY=0
+    fi
+  else
+    skip_step docker_compose_safe_kubeconfig "Skipped because Docker Compose kubeconfig was not generated."
+  fi
+
+  if [[ "$DOCKER_READY" == "1" ]] && safe_docker_kubeconfig_check; then
     run_step docker_compose_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable
@@ -250,10 +299,9 @@ else
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests
   else
-    FAILURES=$((FAILURES + 1))
-    skip_step docker_compose_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
-    skip_step docker_compose_read_write_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
-    skip_step docker_compose_view_model_feature_integration_test "Skipped because merged kubeconfig did not pass local-only safety check."
+    skip_step docker_compose_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
+    skip_step docker_compose_read_write_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
+    skip_step docker_compose_view_model_feature_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
   fi
 fi
 

@@ -20,6 +20,17 @@ final class AuthDoctorEntryActionResolverTests: XCTestCase {
             AuthDoctorEntryActionResolver.resolve(check: check("rbac-port-forward"), hasPodTarget: true)?.destination,
             .podPortForward
         )
+        XCTAssertEqual(
+            AuthDoctorEntryActionResolver.resolve(check: check("namespace-list"), hasPodTarget: false)?.destination,
+            .pods
+        )
+    }
+
+    func testResolvesKubeconfigEntriesToImportReview() {
+        let action = AuthDoctorEntryActionResolver.resolve(check: check("kubeconfig-files"), hasPodTarget: false)
+
+        XCTAssertEqual(action?.title, "Review Config")
+        XCTAssertEqual(action?.destination, .kubeconfigReview)
     }
 
     func testFallsBackToOfficialDocsWhenNoResourceTargetExists() {

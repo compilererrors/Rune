@@ -203,6 +203,22 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertTrue(handleBlock.contains("Timed out starting local port-forward listener."))
     }
 
+    func testLegacySPDYPortForwardForcesHTTP1OverTLS() throws {
+        let source = try String(contentsOfFile: kubernetesRESTClientPath, encoding: .utf8)
+
+        guard let handleStart = source.range(of: "private final class LegacySPDYPortForwardHandle"),
+              let handleEnd = source.range(of: "private final class LegacySPDYConnectionBridge", range: handleStart.upperBound..<source.endIndex) else {
+            XCTFail("Could not locate LegacySPDYPortForwardHandle implementation")
+            return
+        }
+
+        let handleBlock = String(source[handleStart.lowerBound..<handleEnd.lowerBound])
+        XCTAssertTrue(handleBlock.contains("sec_protocol_options_add_tls_application_protocol"))
+        XCTAssertTrue(handleBlock.contains(#""http/1.1".withCString"#))
+        XCTAssertTrue(handleBlock.contains("sec_protocol_options_set_local_identity"))
+        XCTAssertTrue(handleBlock.contains("SecTrustSetAnchorCertificates"))
+    }
+
     func testPortForwardLocalPortConflictMessageIncludesProcessOwner() async throws {
         let server = try await LocalKubernetesAPIServer.start()
         defer { server.stop() }
@@ -536,6 +552,31 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertEqual(namespaces, ["default"])
     }
 
+    func testNativeRESTClientListsNamespacesOnlyWhenInsecureSkipTLSVerifyIsExplicit() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-https-insecure-k8s-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let material = try makeLocalServerTLSMaterial(in: directory, prefix: "explicit-insecure")
+        let server = try await LocalKubernetesAPIServer.start(tlsIdentity: material.serverIdentity)
+        defer { server.stop() }
+
+        let kubeconfig = try writeKubeconfig(
+            serverURL: "https://127.0.0.1:\(server.port)",
+            clusterYAML: "insecure-skip-tls-verify: true"
+        )
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 3)
+        let namespaces = try await client.listNamespaces(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: "local-fixture")
+        )
+
+        XCTAssertEqual(namespaces, ["default"])
+    }
+
     func testNativeRESTClientRejectsHTTPSWithWrongKubeconfigCA() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-https-wrong-ca-test-\(UUID().uuidString)", isDirectory: true)
@@ -650,6 +691,9 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
     }
 
     func testLiveKubeconfigContextListsNamespacesWhenExplicitlyEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["RUNE_ALLOW_LIVE_K8S_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_ALLOW_LIVE_K8S_TESTS=1 plus RUNE_LIVE_K8S_CONTEXT to run this against a real kubeconfig context")
+        }
         guard let contextName = ProcessInfo.processInfo.environment["RUNE_LIVE_K8S_CONTEXT"],
               !contextName.isEmpty else {
             throw XCTSkip("Set RUNE_LIVE_K8S_CONTEXT to run this against a real kubeconfig context")
@@ -672,6 +716,9 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
     }
 
     func testLiveKubeconfigContextsListNamespacesWhenExplicitlyEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["RUNE_ALLOW_LIVE_K8S_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_ALLOW_LIVE_K8S_TESTS=1 plus RUNE_LIVE_K8S_CONTEXTS to run this against real kubeconfig contexts")
+        }
         let rawContexts = ProcessInfo.processInfo.environment["RUNE_LIVE_K8S_CONTEXTS"] ?? ""
         let contextNames = rawContexts
             .split(separator: ",")
@@ -933,7 +980,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             deploymentName: deploymentName,
             replicas: 2
         )
-        _ = try await waitForRunningPod(
+        let scaledPods = try await waitForRunningPod(
             client: client,
             sources: fixture.sources,
             context: context,
@@ -942,12 +989,114 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             minimumCount: 2
         )
 
+        try await client.deleteResource(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .pod,
+            name: scaledPods[0].name
+        )
+        try await waitForPodDeletion(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            podName: scaledPods[0].name
+        )
+
         try await client.scaleDeployment(
             from: fixture.sources,
             context: context,
             namespace: namespace,
             deploymentName: deploymentName,
             replicas: 1
+        )
+        _ = try await waitForRunningPod(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            namePrefix: deploymentName,
+            minimumCount: 1
+        )
+
+        try await client.restartDeploymentRollout(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName
+        )
+        try await waitForResourceYAML(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .deployment,
+            name: deploymentName,
+            contains: "kubectl.kubernetes.io/restartedAt"
+        )
+
+        let rollout = try await client.verifyDeploymentRollout(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            deploymentName: deploymentName,
+            timeout: 45
+        )
+        XCTAssertEqual(rollout.status, .ready)
+
+        let cronJobName = "orbit-sweep-cycle"
+        try await client.patchCronJobSuspend(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            name: cronJobName,
+            suspend: true
+        )
+        try await waitForCronJob(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            name: cronJobName,
+            secondaryText: "Suspended"
+        )
+
+        try await client.patchCronJobSuspend(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            name: cronJobName,
+            suspend: false
+        )
+        try await waitForCronJob(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            name: cronJobName,
+            secondaryText: "Active"
+        )
+
+        let jobName = "rune-it-job-\(Self.shortTestID())"
+        defer {
+            Task {
+                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .job, name: jobName)
+            }
+        }
+        try await client.createJobFromCronJob(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            cronJobName: cronJobName,
+            jobName: jobName
+        )
+        try await waitForJob(
+            client: client,
+            sources: fixture.sources,
+            context: context,
+            namespace: namespace,
+            name: jobName
         )
     }
 
@@ -1103,6 +1252,110 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         throw RuneError.commandFailed(
             command: "wait for pod event",
             message: "Timed out waiting for a Pod event with prefix \(namePrefix). Last events: \(lastEvents.map { "\($0.involvedKind ?? "?")/\($0.objectName)" }.joined(separator: ", "))"
+        )
+    }
+
+    private func waitForPodDeletion(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastPods: [String] = []
+        while Date() < deadline {
+            let pods = try await client.listPods(from: sources, context: context, namespace: namespace)
+            lastPods = pods.map(\.name)
+            if !lastPods.contains(podName) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for pod deletion",
+            message: "Timed out waiting for pod \(podName) to disappear. Last pods: \(lastPods.joined(separator: ", "))"
+        )
+    }
+
+    private func waitForResourceYAML(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        name: String,
+        contains marker: String,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastYAML = ""
+        while Date() < deadline {
+            lastYAML = try await client.resourceYAML(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: kind,
+                name: name
+            )
+            if lastYAML.contains(marker) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for resource YAML",
+            message: "Timed out waiting for \(kind.singularTypeName) \(name) YAML to contain \(marker). Last YAML: \(lastYAML)"
+        )
+    }
+
+    private func waitForCronJob(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        secondaryText: String,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastCronJobs: [ClusterResourceSummary] = []
+        while Date() < deadline {
+            let cronJobs = try await client.listCronJobs(from: sources, context: context, namespace: namespace)
+            lastCronJobs = cronJobs
+            if cronJobs.contains(where: { $0.name == name && $0.secondaryText == secondaryText }) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for cronjob",
+            message: "Timed out waiting for CronJob \(name) to become \(secondaryText). Last CronJobs: \(lastCronJobs.map { "\($0.name)=\($0.secondaryText)" }.joined(separator: ", "))"
+        )
+    }
+
+    private func waitForJob(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        timeout: TimeInterval = 60
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastJobs: [String] = []
+        while Date() < deadline {
+            let jobs = try await client.listJobs(from: sources, context: context, namespace: namespace)
+            lastJobs = jobs.map(\.name)
+            if lastJobs.contains(name) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for job",
+            message: "Timed out waiting for Job \(name). Last Jobs: \(lastJobs.joined(separator: ", "))"
         )
     }
 

@@ -4,6 +4,101 @@ import XCTest
 @testable import RuneSecurity
 
 final class CloudKubeConfigImporterTests: XCTestCase {
+    func testProcessCommandExecutorCapturesOutputAndInjectedEnvironment() async throws {
+        let result = try await ProcessCommandExecutor().run(
+            executable: "sh",
+            arguments: ["-c", "printf \"$RUNE_SYNTHETIC_VALUE\"; printf synthetic-error >&2"],
+            environment: ["RUNE_SYNTHETIC_VALUE": "synthetic-output"],
+            timeout: 2
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "synthetic-output")
+        XCTAssertEqual(result.stderr, "synthetic-error")
+        XCTAssertFalse(result.timedOut)
+    }
+
+    func testProcessCommandExecutorMarksTimeoutsAndTerminatesProcess() async throws {
+        let start = Date()
+        let result = try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
+            executable: "sh",
+            arguments: ["-c", "printf started; sleep 2"],
+            environment: [:],
+            timeout: 0.1
+        )
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertNotEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "started")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    func testHelmRollbackCommandBuilderBuildsDryRunPreviewWithoutRunningHelm() throws {
+        let source = KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune synthetic/config-one"))
+        let preview = try HelmRollbackCommandBuilder().preview(for: HelmRollbackRequest(
+            sources: [source],
+            contextName: "synthetic context",
+            namespace: "synthetic-namespace",
+            releaseName: "synthetic release",
+            revision: 7,
+            wait: true,
+            timeout: "10m",
+            cleanupOnFail: true,
+            dryRun: true
+        ))
+
+        XCTAssertEqual(preview.executable, "helm")
+        XCTAssertEqual(preview.arguments, [
+            "--kube-context", "synthetic context",
+            "--namespace", "synthetic-namespace",
+            "rollback",
+            "synthetic release",
+            "7",
+            "--dry-run",
+            "--wait",
+            "--timeout",
+            "10m",
+            "--cleanup-on-fail"
+        ])
+        XCTAssertEqual(preview.environment["KUBECONFIG"], "/tmp/rune synthetic/config-one")
+        XCTAssertEqual(
+            preview.displayCommand,
+            "helm --kube-context 'synthetic context' --namespace synthetic-namespace rollback 'synthetic release' 7 --dry-run --wait --timeout 10m --cleanup-on-fail"
+        )
+    }
+
+    func testCommandPreviewsQuoteApostrophesAndSpacesConsistently() throws {
+        let cloudPreview = try CloudKubeConfigCommandBuilder().preview(for: CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: "synthetic's gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic project"
+        ))
+        XCTAssertTrue(cloudPreview.displayCommand.contains("'synthetic'\\''s gke'"))
+        XCTAssertTrue(cloudPreview.displayCommand.contains("'synthetic project'"))
+
+        let helmPreview = try HelmRollbackCommandBuilder().preview(for: HelmRollbackRequest(
+            sources: [KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune synthetic/config-one"))],
+            contextName: "synthetic context",
+            namespace: "synthetic-namespace",
+            releaseName: "api's release",
+            revision: 7,
+            wait: false,
+            timeout: "",
+            cleanupOnFail: false,
+            dryRun: true
+        ))
+        XCTAssertTrue(helmPreview.displayCommand.contains("--kube-context 'synthetic context'"))
+        XCTAssertTrue(helmPreview.displayCommand.contains("rollback 'api'\\''s release' 7 --dry-run"))
+
+        let guardedPreview = try CloudKubeConfigCommandBuilder().preview(for: CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic;cluster",
+            regionOrLocation: "eu-north-1"
+        ))
+        XCTAssertTrue(guardedPreview.displayCommand.contains("--name 'synthetic;cluster'"))
+    }
+
     func testHelmCommandRunnerRejectsMissingKubeconfigBeforeRunningProcess() async throws {
         do {
             _ = try await ProcessHelmCommandRunner().rollback(
@@ -24,6 +119,53 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? HelmCommandError, .missingKubeConfig)
         }
+    }
+
+    func testHelmCommandRunnerReportsTimeoutSeparatelyFromExitFailure() async throws {
+        let runner = ProcessHelmCommandRunner(executor: StaticProcessCommandExecutor(result: .init(
+            exitCode: 15,
+            stdout: "dry-run started\n",
+            stderr: "",
+            timedOut: true
+        )))
+
+        do {
+            _ = try await runner.rollback(
+                HelmRollbackRequest(
+                    sources: [KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-config"))],
+                    contextName: "synthetic-context",
+                    namespace: "synthetic-namespace",
+                    releaseName: "synthetic-release",
+                    revision: 1,
+                    wait: true,
+                    timeout: "5m",
+                    cleanupOnFail: true,
+                    dryRun: true
+                ),
+                timeout: 3
+            )
+            XCTFail("Expected Helm timeout error")
+        } catch {
+            XCTAssertEqual(error as? HelmCommandError, .timedOut(timeoutSeconds: 3, message: "dry-run started"))
+        }
+    }
+
+    func testProcessCloudCommandRunnerPreservesTimeoutSignalFromExecutor() async throws {
+        let runner = ProcessCloudKubeConfigCommandRunner(executor: StaticProcessCommandExecutor(result: .init(
+            exitCode: 15,
+            stdout: "started\n",
+            stderr: "",
+            timedOut: true
+        )))
+
+        let result = try await runner.run(CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig"],
+            displayCommand: "aws eks update-kubeconfig"
+        ), timeout: 1)
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.stdout, "started\n")
     }
 
     func testCloudImporterBuildsProviderCommandsWithoutStoringCredentials() throws {
@@ -134,6 +276,32 @@ final class CloudKubeConfigImporterTests: XCTestCase {
             XCTAssertEqual(preview.arguments, arguments)
             XCTAssertEqual(preview.displayCommand, displayCommand)
         }
+    }
+
+    func testCloudCommandBuilderIsReusableOutsideImporter() throws {
+        let builder = CloudKubeConfigCommandBuilder()
+        let request = CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: "synthetic gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project",
+            targetKubeconfigPath: "/tmp/rune synthetic/config"
+        )
+
+        let preview = try builder.preview(for: request)
+
+        XCTAssertEqual(preview.executable, "gcloud")
+        XCTAssertEqual(preview.arguments, [
+            "container", "clusters", "get-credentials",
+            "synthetic gke",
+            "--location", "europe-north1",
+            "--project", "synthetic-project"
+        ])
+        XCTAssertEqual(preview.environment["KUBECONFIG"], "/tmp/rune synthetic/config")
+        XCTAssertEqual(
+            preview.displayCommand,
+            "gcloud container clusters get-credentials 'synthetic gke' --location europe-north1 --project synthetic-project"
+        )
     }
 
     func testCloudImporterCanTargetIsolatedKubeconfigFilesForLiveProviderRuns() throws {
@@ -266,6 +434,9 @@ final class CloudKubeConfigImporterTests: XCTestCase {
     }
 
     func testLiveCloudLoginGeneratesIsolatedKubeconfigAndReachesKubernetesAPIWhenExplicitlyEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["RUNE_ALLOW_LIVE_CLOUD_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_ALLOW_LIVE_CLOUD_TESTS=1 plus RUNE_LIVE_CLOUD_PROVIDER fields to run against a real test cluster.")
+        }
         guard let request = Self.liveCloudRequestFromEnvironment() else {
             throw XCTSkip("""
             Set RUNE_LIVE_CLOUD_PROVIDER plus provider fields to run against a real test cluster.
@@ -320,6 +491,86 @@ final class CloudKubeConfigImporterTests: XCTestCase {
                 message: "not logged in"
             ))
         }
+    }
+
+    func testCloudImporterReportsProviderCommandTimeoutSeparatelyFromExitFailure() async throws {
+        let runner = RecordingCloudCommandRunner(result: .init(
+            exitCode: 15,
+            stdout: "started\n",
+            stderr: "",
+            timedOut: true
+        ))
+        let importer = CloudKubeConfigCLIImporter(
+            runner: runner,
+            discoverer: StaticKubeConfigDiscoverer(urls: []),
+            timeout: 7
+        )
+
+        do {
+            _ = try await importer.importCluster(CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-eks",
+                regionOrLocation: "eu-north-1"
+            ))
+            XCTFail("Expected cloud command timeout")
+        } catch let error as CloudKubeConfigImportError {
+            XCTAssertEqual(error, .commandTimedOut(
+                command: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-eks",
+                timeoutSeconds: 7,
+                message: "started\n"
+            ))
+        }
+    }
+
+    func testCloudImporterRejectsSuccessfulCommandWithoutDiscoveredKubeconfig() async throws {
+        let runner = RecordingCloudCommandRunner(result: .init(exitCode: 0, stdout: "updated\n", stderr: ""))
+        let importer = CloudKubeConfigCLIImporter(
+            runner: runner,
+            discoverer: StaticKubeConfigDiscoverer(urls: [])
+        )
+
+        do {
+            _ = try await importer.importCluster(CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-eks",
+                regionOrLocation: "eu-north-1"
+            ))
+            XCTFail("Expected missing discovered kubeconfig error")
+        } catch let error as CloudKubeConfigImportError {
+            XCTAssertEqual(error, .noKubeconfigDiscovered(
+                command: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-eks"
+            ))
+        }
+        XCTAssertEqual(runner.commands.map(\.executable), ["aws"])
+    }
+
+    func testCloudImporterDoesNotTreatMissingExplicitTargetAsDiscoveredKubeconfig() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CloudKubeConfigImporterMissingTarget.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let missingTarget = directory.appendingPathComponent("missing-config")
+        let runner = RecordingCloudCommandRunner(result: .init(exitCode: 0, stdout: "updated\n", stderr: ""))
+        let importer = CloudKubeConfigCLIImporter(
+            runner: runner,
+            discoverer: StaticKubeConfigDiscoverer(urls: [])
+        )
+
+        do {
+            _ = try await importer.importCluster(CloudKubeConfigImportRequest(
+                provider: .aks,
+                clusterName: "synthetic-aks",
+                resourceGroup: "synthetic-group",
+                targetKubeconfigPath: missingTarget.path
+            ))
+            XCTFail("Expected missing discovered kubeconfig error")
+        } catch let error as CloudKubeConfigImportError {
+            XCTAssertEqual(error, .noKubeconfigDiscovered(
+                command: "az aks get-credentials --resource-group synthetic-group --name synthetic-aks --overwrite-existing --file \(missingTarget.path)"
+            ))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingTarget.path))
+        XCTAssertEqual(runner.commands.map(\.executable), ["az"])
     }
 
     private static let syntheticKubeconfig = """
@@ -423,6 +674,19 @@ private final class RecordingCloudCommandRunner: CloudKubeConfigCommandRunning, 
     func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult {
         commands.append(command)
         return result
+    }
+}
+
+private struct StaticProcessCommandExecutor: ProcessCommandExecuting {
+    let result: ProcessCommandExecutionResult
+
+    func run(
+        executable: String,
+        arguments: [String],
+        environment additionalEnvironment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> ProcessCommandExecutionResult {
+        result
     }
 }
 

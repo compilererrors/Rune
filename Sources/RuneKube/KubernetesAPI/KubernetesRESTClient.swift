@@ -995,7 +995,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
-        if resolved.insecureSkipTLSVerify || resolved.serverURL.scheme == "http" {
+        if resolved.requiresLegacySPDYPortForward {
             let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
@@ -2654,6 +2654,14 @@ private struct ResolvedRESTContext {
     let certificateAuthorityData: Data?
     let tlsServerName: String?
     let clientTLSIdentity: ClientTLSIdentity?
+
+    var requiresLegacySPDYPortForward: Bool {
+        serverURL.scheme == "http"
+            || insecureSkipTLSVerify
+            || certificateAuthorityData != nil
+            || tlsServerName != nil
+            || clientTLSIdentity != nil
+    }
 }
 
 private enum RESTAuthentication {
@@ -3595,11 +3603,18 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
             let tlsOptions = NWProtocolTLS.Options()
             let tlsServerName = resolved.tlsServerName ?? host
             sec_protocol_options_set_tls_server_name(tlsOptions.securityProtocolOptions, tlsServerName)
-            if resolved.insecureSkipTLSVerify {
+            "http/1.1".withCString {
+                sec_protocol_options_add_tls_application_protocol(tlsOptions.securityProtocolOptions, $0)
+            }
+            if let identity = resolved.clientTLSIdentity?.identity,
+               let protocolIdentity = sec_identity_create(identity) {
+                sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, protocolIdentity)
+            }
+            if resolved.insecureSkipTLSVerify || resolved.certificateAuthorityData != nil || resolved.tlsServerName != nil {
                 sec_protocol_options_set_verify_block(
                     tlsOptions.securityProtocolOptions,
-                    { _, _, complete in
-                        complete(true)
+                    { _, trust, complete in
+                        complete(Self.verifyServerTrust(trust, resolved: resolved, host: host))
                     },
                     queue
                 )
@@ -3608,6 +3623,27 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
         }
 
         return NWConnection(host: NWEndpoint.Host(host), port: port, using: parameters)
+    }
+
+    private static func verifyServerTrust(
+        _ trust: sec_trust_t,
+        resolved: ResolvedRESTContext,
+        host: String
+    ) -> Bool {
+        if resolved.insecureSkipTLSVerify {
+            return true
+        }
+
+        let trustRef = sec_trust_copy_ref(trust).takeRetainedValue()
+        let serverName = resolved.tlsServerName ?? host
+        SecTrustSetPolicies(trustRef, SecPolicyCreateSSL(true, serverName as CFString))
+        if let certificateAuthorityData = resolved.certificateAuthorityData {
+            let anchors = certificates(from: certificateAuthorityData)
+            guard !anchors.isEmpty else { return false }
+            SecTrustSetAnchorCertificates(trustRef, anchors as CFArray)
+            SecTrustSetAnchorCertificatesOnly(trustRef, true)
+        }
+        return SecTrustEvaluateWithError(trustRef, nil)
     }
 
     private static func makeUpgradeRequest(

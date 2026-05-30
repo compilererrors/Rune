@@ -343,7 +343,7 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         case .aks: return "Azure CLI or kubelogin"
         case .eks: return "AWS CLI"
         case .gke: return "gcloud auth plugin"
-        case .local: return "kind, k3s, k3d, minikube"
+        case .local: return "kind, k3s, k3d, minikube, Docker, OpenShift"
         }
     }
 
@@ -395,6 +395,10 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
                 ("K3s config", "sudo cat /etc/rancher/k3s/k3s.yaml"),
                 ("K3d config", "k3d kubeconfig get <cluster-name>"),
                 ("Kind config", "kind get kubeconfig --name <cluster-name>"),
+                ("Docker", "kubectl config use-context docker-desktop && kubectl config view --minify --raw"),
+                ("OrbStack", "kubectl config use-context orbstack && kubectl config view --minify --raw"),
+                ("OpenShift", "oc login <api-server> && oc config view --minify --raw"),
+                ("CRC", "crc start && crc oc-env"),
                 ("Start", "minikube start"),
                 ("Stop", "minikube stop")
             ]
@@ -1802,6 +1806,10 @@ public struct RuneRootView: View {
         .popover(isPresented: $addClusterPopoverPresented, arrowEdge: .trailing) {
             addClusterPopover
         }
+        .onChange(of: addClusterPopoverPresented) { _, isPresented in
+            guard !isPresented else { return }
+            isManualAddClusterExpanded = false
+        }
     }
 
     private var addClusterPopover: some View {
@@ -1944,6 +1952,7 @@ public struct RuneRootView: View {
                 if let review = viewModel.kubeConfigImportReviews.last {
                     KubeConfigImportReviewPanel(
                         review: review,
+                        onClear: viewModel.clearKubeConfigImportReviews,
                         onRunAuthDoctor: {
                             addClusterPopoverPresented = false
                             viewModel.runAuthDoctor()
@@ -1954,6 +1963,9 @@ public struct RuneRootView: View {
             .padding(14)
         }
         .frame(width: 400)
+        .fixedSize(horizontal: false, vertical: true)
+        .id(addClusterPopoverLayoutID)
+        .animation(.snappy(duration: 0.18), value: isManualAddClusterExpanded)
         .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
@@ -1962,6 +1974,15 @@ public struct RuneRootView: View {
         .onAppear {
             viewModel.refreshKubeConfigSourcesFromDiscovery()
         }
+    }
+
+    private var addClusterPopoverLayoutID: String {
+        let review = viewModel.kubeConfigImportReviews.last
+        return [
+            isManualAddClusterExpanded ? "advanced" : "standard",
+            "contexts:\(review?.contexts.count ?? 0)",
+            "issues:\(review?.issues.count ?? 0)"
+        ].joined(separator: ":")
     }
 
     private var addClusterGridColumns: [GridItem] {
@@ -2141,123 +2162,6 @@ public struct RuneRootView: View {
         }
         .buttonStyle(.plain)
         .help(provider.title)
-    }
-
-    private struct KubeConfigImportReviewPanel: View {
-        let review: KubeConfigImportReview
-        let onRunAuthDoctor: () -> Void
-
-        private var statusColor: Color {
-            review.isValid ? .green : .orange
-        }
-
-        private var statusText: String {
-            if review.isValid {
-                return review.contexts.count == 1 ? "1 context ready to import" : "\(review.contexts.count) contexts ready to import"
-            }
-            return review.issues.contains { $0.severity == .error } ? "Import review needs attention" : "Import review has warnings"
-        }
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                    Text("Import Review")
-                        .font(.caption.weight(.semibold))
-                    Spacer(minLength: 0)
-                    Text(statusText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                if review.contexts.isEmpty {
-                    Text("No contexts were found in the selected kubeconfig.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(context.name)
-                                    .font(.caption.weight(.semibold))
-                                    .lineLimit(1)
-                                Text(contextDetailText(context))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                        }
-
-                        if review.contexts.count > 3 {
-                            Text("\(review.contexts.count - 3) more contexts")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if !review.issues.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(Array(review.issues.prefix(3).enumerated()), id: \.offset) { _, issue in
-                            Label(issue.message, systemImage: issue.severity == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(issue.severity == .error ? .red : .orange)
-                                .lineLimit(2)
-                        }
-                    }
-                }
-
-                if review.issues.contains(where: { $0.id.contains("duplicate") }) {
-                    Text("Duplicate handling will require an explicit choice: update existing, import as copy, or skip.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                DisclosureGroup {
-                    Text(redactedPreviewSnippet)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } label: {
-                    Text("Redacted preview")
-                        .font(.caption.weight(.semibold))
-                }
-
-                Button {
-                    onRunAuthDoctor()
-                } label: {
-                    Label("Run Auth Doctor", systemImage: "stethoscope")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            .padding(10)
-            .background(RuneSurfaceBackground(kind: .inset))
-        }
-
-        private var redactedPreviewSnippet: String {
-            review.redactedPreview
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .prefix(8)
-                .joined(separator: "\n")
-        }
-
-        private func contextDetailText(_ context: KubeConfigImportContextPreview) -> String {
-            [
-                context.providerHint,
-                context.authType,
-                context.namespace.map { "namespace \($0)" },
-                context.serverHost
-            ]
-            .compactMap { $0 }
-            .joined(separator: " • ")
-        }
     }
 
     private func contextRow(_ context: KubeContext) -> some View {
@@ -2810,6 +2714,7 @@ public struct RuneRootView: View {
                         if let review = viewModel.kubeConfigImportReviews.last {
                             KubeConfigImportReviewPanel(
                                 review: review,
+                                onClear: viewModel.clearKubeConfigImportReviews,
                                 onRunAuthDoctor: viewModel.runAuthDoctor
                             )
                         }
@@ -2991,10 +2896,7 @@ public struct RuneRootView: View {
     }
 
     private var workloadsPane: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            authDoctorPanel
-            workloadsContent
-        }
+        workloadsContent
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -6215,6 +6117,10 @@ public struct RuneRootView: View {
             viewModel.setSection(.workloads)
             viewModel.selectPod(pod)
             podInspectorTab = .portForward
+        case .kubeconfigReview:
+            viewModel.reviewLoadedKubeConfigSources()
+            isManualAddClusterExpanded = false
+            addClusterPopoverPresented = true
         case let .documentation(url):
             NSWorkspace.shared.open(url)
         }
@@ -6229,10 +6135,10 @@ public struct RuneRootView: View {
 
     private var shouldReserveAuthDoctorPanel: Bool {
         switch viewModel.state.selectedSection {
-        case .overview, .workloads:
+        case .overview:
             return true
         default:
-            return viewModel.state.isRunningAuthDoctor || !viewModel.state.authDoctorChecks.isEmpty
+            return false
         }
     }
 

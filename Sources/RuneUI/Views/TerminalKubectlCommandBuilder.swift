@@ -74,14 +74,6 @@ enum TerminalKubectlCommandBuilder {
     }
 
     private static func shellCommand(_ parts: [String]) -> String {
-        parts.map(shellQuote).joined(separator: " ")
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        guard !value.isEmpty else { return "''" }
-        if value.rangeOfCharacter(from: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:=+-").inverted) == nil {
-            return value
-        }
-        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        ShellCommandFormatting.shellCommand(parts)
     }
 }

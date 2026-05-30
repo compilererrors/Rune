@@ -49,15 +49,18 @@ public struct KubeConfigImportReview: Sendable, Equatable {
     public let contexts: [KubeConfigImportContextPreview]
     public let issues: [KubeConfigImportIssue]
     public let redactedPreview: String
+    public let sourceName: String?
 
     public init(
         contexts: [KubeConfigImportContextPreview],
         issues: [KubeConfigImportIssue],
-        redactedPreview: String
+        redactedPreview: String,
+        sourceName: String? = nil
     ) {
         self.contexts = contexts
         self.issues = issues
         self.redactedPreview = redactedPreview
+        self.sourceName = sourceName
     }
 
     public var isValid: Bool {
@@ -175,7 +178,8 @@ public struct KubeConfigImportValidator: Sendable {
         return KubeConfigImportReview(
             contexts: previews.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             issues: issues,
-            redactedPreview: redacted(raw)
+            redactedPreview: redacted(raw),
+            sourceName: sourceName
         )
     }
 
@@ -191,10 +195,16 @@ public struct KubeConfigImportValidator: Sendable {
     }
 
     private func providerHint(serverHost: String?, user: ParsedKubeConfig.User?) -> String? {
-        let combined = [serverHost ?? "", user?.execCommand ?? ""].joined(separator: " ").lowercased()
+        let combined = ([serverHost ?? "", user?.execCommand ?? "", user?.authProviderName ?? ""] + (user?.authProviderConfigValues ?? []))
+            .joined(separator: " ")
+            .lowercased()
         if combined.contains("eks") || combined.contains("aws") { return "EKS" }
         if combined.contains("gke") || combined.contains("gcloud") || combined.contains("google") { return "GKE" }
         if combined.contains("az") || combined.contains("azure") || combined.contains("kubelogin") { return "AKS" }
+        if combined.contains("digitalocean") || combined.contains("doctl") || combined.contains("doks") { return "DOKS" }
+        if combined.contains("rancher") { return "Rancher" }
+        if combined.contains("openshift") || combined.contains("crc") || combined.contains("oc ") { return "OpenShift" }
+        if combined.contains("oidc") || combined.contains("id-token") || combined.contains("client-id") { return "OIDC" }
         if combined.contains("k3s") { return "K3s" }
         return nil
     }
@@ -207,6 +217,9 @@ public struct KubeConfigImportValidator: Sendable {
         if name.contains("k3d") { return "k3d" }
         if name.contains("docker-desktop") { return "Docker Desktop" }
         if name.contains("orbstack") { return "OrbStack" }
+        if name.contains("doks") || name.contains("digitalocean") { return "DOKS" }
+        if name.contains("rancher") { return "Rancher" }
+        if name.contains("openshift") || name.contains("crc") { return "OpenShift" }
         return providerHint(serverHost: serverHost, user: user)
     }
 
@@ -214,24 +227,36 @@ public struct KubeConfigImportValidator: Sendable {
         let sensitiveKeys: Set<String> = [
             "token",
             "id-token",
+            "access-token",
             "refresh-token",
             "client-certificate-data",
             "client-key-data",
             "client-certificate",
             "client-key",
             "certificate-authority",
+            "certificate-authority-data",
             "password",
-            "username"
+            "username",
+            "tokenfile",
+            "token-file"
         ]
 
         return raw.split(separator: "\n", omittingEmptySubsequences: false).map { line in
             let text = String(line)
             guard let colon = text.firstIndex(of: ":") else { return text }
-            let key = text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let key = normalizedRedactionKey(String(text[..<colon]))
             guard sensitiveKeys.contains(key) else { return text }
             return "\(text[..<text.index(after: colon)]) <redacted>"
         }
         .joined(separator: "\n")
+    }
+
+    private func normalizedRedactionKey(_ rawKey: String) -> String {
+        var key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if key.hasPrefix("-") {
+            key = String(key.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return key
     }
 }
 
@@ -251,13 +276,20 @@ private struct ParsedKubeConfig {
     struct User {
         var name: String
         var hasToken = false
+        var hasTokenFile = false
+        var hasBasicAuth = false
         var hasClientCertificate = false
+        var authProviderName: String?
+        var authProviderConfigValues: [String] = []
         var execCommand: String?
 
         var authType: String {
             if execCommand != nil { return "Exec plugin" }
+            if authProviderName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "oidc" { return "OIDC" }
+            if hasTokenFile { return "Token file" }
             if hasClientCertificate { return "Client certificate" }
             if hasToken { return "Token" }
+            if hasBasicAuth { return "Basic" }
             return "Unknown"
         }
     }
@@ -286,6 +318,7 @@ private struct ParsedKubeConfig {
 
         var section: Section?
         var nestedKey: String?
+        var authProviderConfigKey: String?
         var clusterNameCounts: [String: Int] = [:]
         var contextNameCounts: [String: Int] = [:]
         var userNameCounts: [String: Int] = [:]
@@ -464,12 +497,24 @@ private struct ParsedKubeConfig {
                 continue
             }
 
-            if trimmed.hasSuffix(":") {
-                nestedKey = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+            if section == .users, trimmed == "auth-provider:" {
+                nestedKey = "auth-provider"
+                authProviderConfigKey = nil
                 continue
             }
 
-            if let value = Self.scalarValue(trimmed, key: "name") {
+            if section == .users, nestedKey == "auth-provider", trimmed == "config:" {
+                authProviderConfigKey = "config"
+                continue
+            }
+
+            if trimmed.hasSuffix(":") {
+                nestedKey = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                authProviderConfigKey = nil
+                continue
+            }
+
+            if indent <= 2, let value = Self.scalarValue(trimmed, key: "name") {
                 switch section {
                 case .clusters:
                     if currentCluster == nil {
@@ -515,14 +560,44 @@ private struct ParsedKubeConfig {
             case (.users?, "user"):
                 if Self.scalarValue(trimmed, key: "token") != nil {
                     currentUser?.hasToken = true
+                } else if Self.scalarValue(trimmed, key: "id-token") != nil {
+                    currentUser?.hasToken = true
+                } else if Self.scalarValue(trimmed, key: "access-token") != nil {
+                    currentUser?.hasToken = true
+                } else if Self.scalarValue(trimmed, key: "tokenFile") != nil {
+                    currentUser?.hasTokenFile = true
+                } else if Self.scalarValue(trimmed, key: "token-file") != nil {
+                    currentUser?.hasTokenFile = true
+                } else if Self.scalarValue(trimmed, key: "username") != nil {
+                    currentUser?.hasBasicAuth = true
+                } else if Self.scalarValue(trimmed, key: "password") != nil {
+                    currentUser?.hasBasicAuth = true
                 } else if Self.scalarValue(trimmed, key: "client-certificate-data") != nil {
                     currentUser?.hasClientCertificate = true
+                } else if Self.scalarValue(trimmed, key: "client-certificate") != nil {
+                    currentUser?.hasClientCertificate = true
+                } else if Self.scalarValue(trimmed, key: "client-key-data") != nil {
+                    currentUser?.hasClientCertificate = true
+                } else if Self.scalarValue(trimmed, key: "client-key") != nil {
+                    currentUser?.hasClientCertificate = true
+                } else if trimmed == "auth-provider:" {
+                    nestedKey = "auth-provider"
+                    authProviderConfigKey = nil
                 } else if let value = Self.scalarValue(trimmed, key: "name") {
                     currentUser?.name = value
                 }
             case (.users?, "exec"):
                 if let value = Self.scalarValue(trimmed, key: "command") {
                     currentUser?.execCommand = value
+                }
+            case (.users?, "auth-provider"):
+                if let value = Self.scalarValue(trimmed, key: "name") {
+                    currentUser?.authProviderName = value
+                } else if trimmed == "config:" {
+                    authProviderConfigKey = "config"
+                } else if authProviderConfigKey == "config",
+                          let value = Self.anyScalarValue(trimmed) {
+                    currentUser?.authProviderConfigValues.append(value)
                 }
             default:
                 continue
@@ -552,6 +627,14 @@ private struct ParsedKubeConfig {
         return String(line.dropFirst(prefix.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func anyScalarValue(_ line: String) -> String? {
+        guard let colon = line.firstIndex(of: ":") else { return nil }
+        let value = String(line[line.index(after: colon)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return value.isEmpty ? nil : value
     }
 
     private static func normalized(_ raw: String) -> String {

@@ -300,15 +300,7 @@ public enum PendingWriteAction: Equatable, Sendable {
     }
 
     private static func shellCommand(_ parts: [String]) -> String {
-        parts.map(shellQuote).joined(separator: " ")
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        guard !value.isEmpty else { return "''" }
-        if value.rangeOfCharacter(from: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:=+-").inverted) == nil {
-            return value
-        }
-        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        ShellCommandFormatting.shellCommand(parts)
     }
 }
 
@@ -1088,14 +1080,17 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func favoriteSortedNamespaces(_ namespaces: [String]) -> [String] {
-        namespaces.sorted { lhs, rhs in
-            let lhsFavorite = isFavoriteNamespace(lhs)
-            let rhsFavorite = isFavoriteNamespace(rhs)
-            if lhsFavorite != rhsFavorite {
-                return lhsFavorite && !rhsFavorite
+        namespaces
+            .map { namespace in
+                (namespace: namespace, isFavorite: isFavoriteNamespace(namespace))
             }
-            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
-        }
+            .sorted { lhs, rhs in
+                if lhs.isFavorite != rhs.isFavorite {
+                    return lhs.isFavorite && !rhs.isFavorite
+                }
+                return lhs.namespace.localizedCaseInsensitiveCompare(rhs.namespace) == .orderedAscending
+            }
+            .map(\.namespace)
     }
 
     private func contextsIncludingEnabledDemo(_ contexts: [KubeContext]) -> [KubeContext] {
@@ -2235,6 +2230,51 @@ public final class RuneAppViewModel: ObservableObject {
         let review = kubeConfigImportValidator.validate(raw: raw, sourceName: sourceName)
         kubeConfigImportReviews = [review]
         return review
+    }
+
+    @discardableResult
+    public func reviewLoadedKubeConfigSources() -> [KubeConfigImportReview] {
+        guard !state.kubeConfigSources.isEmpty else {
+            let review = KubeConfigImportReview(
+                contexts: [],
+                issues: [
+                    .init(
+                        id: "kubeconfig-source-missing",
+                        severity: .error,
+                        message: "No kubeconfig sources are loaded."
+                    )
+                ],
+                redactedPreview: ""
+            )
+            kubeConfigImportReviews = [review]
+            return [review]
+        }
+
+        let reviews = state.kubeConfigSources.map { source -> KubeConfigImportReview in
+            do {
+                let raw = try String(contentsOf: source.url, encoding: .utf8)
+                return kubeConfigImportValidator.validate(raw: raw, sourceName: source.displayName)
+            } catch {
+                return KubeConfigImportReview(
+                    contexts: [],
+                    issues: [
+                        .init(
+                            id: "kubeconfig-source-unreadable",
+                            severity: .error,
+                            message: "Could not read kubeconfig source \(source.displayName)."
+                    )
+                ],
+                redactedPreview: "",
+                sourceName: source.displayName
+            )
+            }
+        }
+        kubeConfigImportReviews = reviews
+        return reviews
+    }
+
+    public func clearKubeConfigImportReviews() {
+        kubeConfigImportReviews = []
     }
 
     public func setContextSearchQuery(_ query: String) {

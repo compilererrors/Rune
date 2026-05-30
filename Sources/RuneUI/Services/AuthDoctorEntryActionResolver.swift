@@ -7,6 +7,7 @@ public enum AuthDoctorEntryDestination: Equatable, Sendable {
     case podLogs
     case podExec
     case podPortForward
+    case kubeconfigReview
     case documentation(URL)
 }
 
@@ -55,10 +56,18 @@ public enum AuthDoctorEntryActionResolver {
 
         case "namespace", "namespace-list":
             return .init(
-                title: "Open Overview",
-                systemImage: "rectangle.grid.2x2",
-                help: "Open the overview and namespace controls for the active context.",
-                destination: .overview
+                title: "Open Workloads",
+                systemImage: "cube.box",
+                help: "Open the namespace-scoped workloads view for the active context.",
+                destination: .pods
+            )
+
+        case "kubeconfig", "kubeconfig-files", "contexts", "selected-context", "context-namespace", "auth-provider-profile":
+            return .init(
+                title: "Review Config",
+                systemImage: "doc.text.magnifyingglass",
+                help: "Open the kubeconfig import review in Add Cluster.",
+                destination: .kubeconfigReview
             )
 
         default:

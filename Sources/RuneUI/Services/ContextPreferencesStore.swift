@@ -175,6 +175,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
     private let corruptURL: URL
     private let legacyStore: ContextPreferencesStoring?
     private let fileManager: FileManager
+    private var cachedDocument: ContextPreferencesDocument?
 
     public init(
         url: URL,
@@ -283,8 +284,14 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
     }
 
     private func loadDocument() -> ContextPreferencesDocument {
+        if let cachedDocument {
+            return cachedDocument
+        }
+
         if let document = decodedDocument(at: url) {
-            return document.normalized()
+            let normalized = document.normalized()
+            cachedDocument = normalized
+            return normalized
         }
 
         let primaryExists = fileManager.fileExists(atPath: url.path)
@@ -294,6 +301,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
 
         if let backup = decodedDocument(at: backupURL)?.normalized() {
             try? writeDocument(backup, backsUpCurrentPrimary: false)
+            cachedDocument = backup
             return backup
         }
 
@@ -302,10 +310,13 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             if !migrated.isEmpty {
                 try? writeDocument(migrated, backsUpCurrentPrimary: false)
             }
+            cachedDocument = migrated
             return migrated
         }
 
-        return ContextPreferencesDocument()
+        let empty = ContextPreferencesDocument()
+        cachedDocument = empty
+        return empty
     }
 
     private func updateDocument(_ update: (inout ContextPreferencesDocument) -> Void) {
@@ -313,6 +324,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
         update(&document)
         document = document.normalized()
         try? writeDocument(document, backsUpCurrentPrimary: true)
+        cachedDocument = document
     }
 
     private func decodedDocument(at url: URL) -> ContextPreferencesDocument? {

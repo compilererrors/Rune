@@ -51,7 +51,7 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
             id: "auth-provider-profile",
             title: "Auth provider profile",
             status: .passed,
-            message: providers.isEmpty ? "Generic kubeconfig profile. No EKS, GKE, AKS, OIDC, or kubelogin-specific hint was detected." : providers.joined(separator: " ")
+            message: providers.isEmpty ? "Generic kubeconfig profile. No cloud, OIDC, local, or vendor-specific hint was detected." : providers.joined(separator: " ")
         ))
 
         if lowercased.contains("exec:") {
@@ -135,6 +135,15 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
             tools.insert("az")
             tools.insert("kubelogin")
         }
+        if joined.contains("doks") || joined.contains("digitalocean") {
+            tools.insert("doctl")
+        }
+        if joined.contains("rancher") {
+            tools.insert("rancher")
+        }
+        if joined.contains("openshift") {
+            tools.insert("oc")
+        }
         return tools
     }
 
@@ -163,6 +172,15 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         }
         if text.contains("oidc") || text.contains("id-token") || text.contains("client-id") {
             hints.append("OIDC-style token hints detected.")
+        }
+        if text.contains("digitalocean") || text.contains("doctl") || text.contains("doks") {
+            hints.append("DOKS auth hints detected.")
+        }
+        if text.contains("rancher") {
+            hints.append("Rancher auth hints detected.")
+        }
+        if text.contains("openshift") || text.contains("crc") || text.contains(" oc ") {
+            hints.append("OpenShift auth hints detected.")
         }
         return hints
     }
