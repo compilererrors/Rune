@@ -1,6 +1,6 @@
-Rune Source-Available License 1.1
+Rune Source-Available License 1.2
 
-Effective date: 2026-05-01
+Effective date: 2026-06-02
 
 Copyright (c) 2026 Viktor Nyberg
 
@@ -11,29 +11,34 @@ their own licenses.
 1. Definitions
 
 "Rune" means this software project and its source code, binaries,
-documentation, scripts, and assets.
+documentation, scripts, assets, and related project files.
 
-"Licensor" means the copyright holder identified above.
+"Licensor" means the copyright holder or copyright holders identified above.
 
 "You" means the individual or legal entity exercising rights under this
 license.
 
-"Non-Commercial Use" means use that is not Business Use and is not intended
-for commercial advantage, business operations, revenue generation, paid
-services, or other monetary compensation.
+"Individual Personal Use" means use by a natural person for that person's own
+private, personal, educational, experimental, or hobby purposes, where the use
+is not Business Use and is not intended for commercial advantage, business
+operations, paid services, revenue generation, or other monetary compensation.
+
+"Non-Commercial Use" means Individual Personal Use and other use that is not
+Business Use.
 
 "Business Use" means use by or for a company, partnership, sole
-proprietorship, government agency, nonprofit, or other organization in
-connection with that organization's work, operations, services, products,
-customers, infrastructure, employees, contractors, or revenue-generating
-activities.
+proprietorship, government agency, nonprofit, school, university, foundation,
+or other organization in connection with that organization's work, operations,
+services, products, customers, infrastructure, employees, contractors,
+research, administration, or revenue-generating activities.
 
 "Commercial License" means a separate paid license or written agreement with
 the Licensor that permits Business Use.
 
-"Mac App Store Purchase" means an authorized purchase or download of the
-App Store version of Rune through the Mac App Store using an Apple account
-permitted to make that purchase or download.
+"Authorized Store Purchase" means an authorized purchase or download of an
+official paid version of Rune through the Mac App Store or another
+distribution channel approved by the Licensor, using an account permitted to
+make that purchase or download.
 
 2. Non-Commercial Permission
 
@@ -41,18 +46,25 @@ Subject to this license, You may use, copy, modify, compile, run, and
 distribute Rune for Non-Commercial Use.
 
 Examples of Non-Commercial Use include personal learning, private homelab
-use, personal experimentation, academic experimentation, and hobby projects
-that are not connected to an organization's work, operations, customers,
-services, products, or revenue.
+use, personal experimentation, academic experimentation outside an
+organization's operations, and hobby projects that are not connected to an
+organization's work, operations, customers, services, products,
+administration, or revenue.
 
 3. Business Use Requires Payment
 
 Business Use is not permitted under this license unless You have a Commercial
-License. If You want to use Rune for Business Use, You must obtain and pay for
-a Commercial License from the Licensor before that use begins.
+License.
+
+If You want to use Rune for Business Use, You must obtain and pay for a
+Commercial License from the Licensor before that use begins.
 
 No Business Use rights are granted by downloading, cloning, building,
 installing, modifying, or distributing Rune under this license.
+
+Business Use includes use on a personal computer, personal account, home
+network, or private build when that use is for or on behalf of an
+organization.
 
 Examples of Business Use include using Rune to access, manage, monitor,
 debug, inspect, modify, or operate clusters, systems, services, products,
@@ -60,21 +72,27 @@ customer environments, employee environments, production systems, staging
 systems, development systems, or other infrastructure used by or for an
 organization.
 
-4. Mac App Store Purchases
+4. Authorized Store Purchases
 
-A Mac App Store Purchase grants the purchaser a Commercial License to use the
-App Store version of Rune for Business Use, subject to this license, the Apple
-Media Services Terms and Conditions, and any applicable App Store terms.
+An Authorized Store Purchase grants the purchaser a Commercial License to use
+the official purchased version of Rune for Business Use, subject to this
+license, the applicable store terms, and any additional terms presented with
+that purchase.
 
-A Mac App Store Purchase does not grant any right to redistribute Rune outside
-the Mac App Store, sublicense Rune, sell Rune outside the Mac App Store, or use
-Rune's name, logo, icon, or branding for modified versions.
+An Authorized Store Purchase does not grant any right to redistribute Rune
+outside the authorized store, sublicense Rune, sell Rune outside the
+authorized store, or use Rune's name, logo, icon, or branding for modified
+versions.
 
 5. Redistribution
 
 If You distribute Rune or a modified version of Rune under this license, You
 must include this license, preserve copyright notices, and make clear that
 Business Use requires a Commercial License.
+
+Redistribution under this license does not grant Business Use rights to the
+recipient. Each recipient must comply with this license and must obtain a
+Commercial License before Business Use.
 
 6. Contributions
 
@@ -87,16 +105,16 @@ grant these rights.
 
 7. Third-Party Components
 
-Third-party components, if any, including dependencies, libraries, tools, and
-assets, remain subject to their own license terms. This license does not grant
-rights to third-party components beyond those provided by their respective
-licenses.
+Third-party components, if any, including dependencies, libraries, tools,
+extensions, plugins, themes, and assets, remain subject to their own license
+terms. This license does not grant rights to third-party components beyond
+those provided by their respective licenses.
 
 8. No Trademark Rights
 
 This license does not grant permission to use the names, trademarks, logos,
-or branding of Rune or the Licensor except as reasonably necessary to describe
-an unmodified copy of Rune.
+icons, or branding of Rune or the Licensor except as reasonably necessary to
+describe an unmodified copy of Rune.
 
 You may not distribute modified versions using the Rune name, logo, icon, or
 branding in a way that suggests they are official, endorsed, approved,
@@ -109,22 +127,24 @@ terminate automatically. The Licensor may reinstate rights in writing.
 
 10. User Responsibility and Operational Risk
 
-Rune is a developer and operations tool. It may read from, connect to,
-inspect, display, modify, or otherwise interact with Kubernetes clusters,
-kubeconfig files, credentials, local files, terminals, logs, network
+Rune is a developer and operations tool. It may read from, write to, connect
+to, inspect, display, create, modify, delete, apply, patch, exec into,
+port-forward to, or otherwise interact with Kubernetes clusters, kubeconfig
+files, credentials, manifests, local files, terminals, logs, network
 endpoints, and other systems selected, configured, or controlled by You.
 
 You are solely responsible for how You install, configure, run, modify,
 distribute, and use Rune. You are solely responsible for the clusters,
-credentials, commands, manifests, files, infrastructure, accounts, networks,
-and systems You use with Rune, and for all consequences of that use.
+contexts, namespaces, resources, credentials, commands, manifests, files,
+infrastructure, accounts, networks, and systems You use with Rune, and for
+all consequences of that use.
 
 You are responsible for verifying that any action You take through Rune is
 appropriate, authorized, safe, lawful, and suitable for Your environment
 before You take that action. This includes, without limitation, reviewing
-Kubernetes contexts, namespaces, resource selections, YAML changes,
-terminal commands, exec sessions, port-forwarding, credentials, and any
-read or write operations.
+Kubernetes contexts, namespaces, resource selections, YAML changes, apply
+operations, patch operations, delete operations, terminal commands, exec
+sessions, port-forwarding, credentials, and any read or write operations.
 
 The Licensor does not control Your environment, does not validate Your
 authorization to access any cluster or system, does not assume operational
@@ -144,10 +164,10 @@ ACCURACY, RELIABILITY, SECURITY, AVAILABILITY, COMPATIBILITY, AND THAT
 RUNE WILL BE ERROR-FREE OR UNINTERRUPTED.
 
 Without limiting the foregoing, the Licensor does not warrant that Rune will
-protect against data loss, downtime, security incidents, unauthorized
-access, accidental changes, destructive operations, misconfiguration,
-credential exposure, cluster failure, service interruption, regulatory
-non-compliance, or any other operational or business impact.
+protect against data loss, manifest corruption, downtime, security incidents,
+unauthorized access, accidental changes, destructive operations,
+misconfiguration, credential exposure, cluster failure, service interruption,
+regulatory non-compliance, or any other operational or business impact.
 
 12. Limitation of Liability
 
@@ -179,7 +199,7 @@ resolved by the competent courts of Sweden.
 
 14. Survival
 
-Sections concerning Business Use, Mac App Store Purchases, redistribution
+Sections concerning Business Use, Authorized Store Purchases, redistribution
 obligations, contributions, third-party components, trademark rights, user
 responsibility, warranty disclaimers, limitation of liability, governing law,
 and this survival clause survive termination of this license.

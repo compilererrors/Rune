@@ -125,8 +125,8 @@ swift test
 ## License
 
 Rune is source-available. Personal and other non-commercial use is free.
-Business use requires a paid commercial license or an authorized Mac App Store
-purchase. See [LICENSE](LICENSE).
+Business use requires a paid commercial license or an authorized store
+purchase, including through the Mac App Store. See [LICENSE](LICENSE).
 
 ## Support Rune
 
