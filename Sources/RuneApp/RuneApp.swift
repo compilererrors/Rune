@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import RuneCore
 import RuneUI
 import SwiftUI
@@ -26,11 +27,8 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
                 window.makeKeyAndOrderFront(nil)
             }
 
-            NSLog(
-                "[Rune][App] activated reason=%@ windows=%ld keyWindow=%@",
-                reason,
-                NSApp.windows.count,
-                NSApp.keyWindow?.title ?? "nil"
+            RuneLoggers.app.debug(
+                "activated reason=\(reason, privacy: .public) windows=\(NSApp.windows.count, privacy: .public) keyWindow=\(NSApp.keyWindow?.title ?? "nil", privacy: .private)"
             )
         }
     }

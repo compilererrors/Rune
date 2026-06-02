@@ -37,7 +37,7 @@ public enum DebugTraceWriter {
                 handle.seekToEndOfFile()
                 try handle.write(contentsOf: data)
             } catch {
-                // Avoid NSLog loops
+                // Avoid unified logging loops.
             }
         }
     }

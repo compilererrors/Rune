@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import RuneCore
 
 public final class DiagnosticsRecorder {
@@ -16,7 +17,7 @@ public final class DiagnosticsRecorder {
             }
         }
         guard UserDefaults.standard.runeDiagnosticsLogging else { return }
-        NSLog("[Rune] %@", message)
+        RuneLoggers.diagnostics.notice("\(message, privacy: .private)")
     }
 
     /// Persistent verbose trace (timestamp, category, message). Gated by `runeVerboseDebugTrace` or `RUNE_VERBOSE_DEBUG_TRACE=1` at launch.

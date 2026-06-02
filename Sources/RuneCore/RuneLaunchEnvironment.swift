@@ -5,7 +5,7 @@ import Foundation
 public enum RuneLaunchEnvironment {
     /// `=1` → **Verbose debug trace (file)** (`debug-trace.log` under Application Support).
     public static let verboseDebugTraceVariable = "RUNE_VERBOSE_DEBUG_TRACE"
-    /// `=1` → **Diagnostics logging** (`NSLog` / Console; same as Settings toggle).
+    /// `=1` → **Diagnostics logging** (`Logger` / Console; same as Settings toggle).
     public static let diagnosticsLoggingVariable = "RUNE_DIAGNOSTICS_LOGGING"
     /// `=1` → mirror `[Rune]` log and trace lines to **stderr** (visible in the Terminal that launched the app).
     public static let logToStderrVariable = "RUNE_LOG_TO_STDERR"

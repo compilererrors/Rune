@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import RuneCore
 import RuneDiagnostics
 @preconcurrency import Security
@@ -3263,7 +3264,7 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
         framed.append(data)
         task.send(.data(framed)) { error in
             if let error {
-                NSLog("[Rune][KubernetesExec] stdin send failed: %@", String(describing: error))
+                RuneLoggers.kubernetesExec.error("stdin send failed: \(String(describing: error), privacy: .private)")
             }
         }
     }
@@ -3272,7 +3273,7 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
         let frame = try KubernetesRESTClient.terminalResizeFrame(columns: columns, rows: rows)
         task.send(.data(frame)) { error in
             if let error {
-                NSLog("[Rune][KubernetesExec] resize send failed: %@", String(describing: error))
+                RuneLoggers.kubernetesExec.error("resize send failed: \(String(describing: error), privacy: .private)")
             }
         }
     }

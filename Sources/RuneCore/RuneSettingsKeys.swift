@@ -4,7 +4,7 @@ import Foundation
 public enum RuneSettingsKeys {
     /// When true, Rune restores the last namespace list from disk on launch and saves it again after a successful namespace refresh.
     public static let persistNamespaceListCache = "rune.settings.persistNamespaceListCache"
-    /// When false, `DiagnosticsRecorder` does not emit NSLog lines.
+    /// When false, `DiagnosticsRecorder` does not emit unified logging lines.
     public static let diagnosticsLogging = "rune.settings.diagnosticsLogging"
     /// When true, `DiagnosticsRecorder.trace` appends detailed lines to `Rune/Logs/debug-trace.log` under Application Support.
     public static let verboseDebugTrace = "rune.settings.verboseDebugTrace"

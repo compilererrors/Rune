@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import RuneCore
 import RuneSecurity
 import SwiftUI
@@ -168,26 +169,21 @@ private enum RuneRootLayoutDebug {
     ) {
         guard isEnabled else { return }
 
-        NSLog(
-            "[Rune][Layout] shell=%@ editor=%@ section=%@ kind=%@ measuredTopInset=%@ resolvedTopInset=%.1f content=(%.1f,%.1f) header=(%.1f,%.1f) detail=(%.1f,%.1f)",
-            shellVariant.debugLabel,
-            inlineEditorImplementation.debugLabel,
-            snapshot.section.rawValue,
-            snapshot.workloadKind.kubernetesResourceName,
-            snapshot.measuredWindowTopInset.map { String(format: "%.1f", $0) } ?? "nil",
-            snapshot.resolvedWindowTopInset,
-            snapshot.contentMinX ?? -1,
-            snapshot.contentMinY ?? -1,
-            snapshot.headerMinX ?? -1,
-            snapshot.headerMinY ?? -1,
-            snapshot.detailMinX ?? -1,
-            snapshot.detailMinY ?? -1
+        let measuredTopInset = snapshot.measuredWindowTopInset.map { String(format: "%.1f", $0) } ?? "nil"
+        let resolvedTopInset = String(format: "%.1f", snapshot.resolvedWindowTopInset)
+        let contentFrame = String(format: "(%.1f,%.1f)", snapshot.contentMinX ?? -1, snapshot.contentMinY ?? -1)
+        let headerFrame = String(format: "(%.1f,%.1f)", snapshot.headerMinX ?? -1, snapshot.headerMinY ?? -1)
+        let detailFrame = String(format: "(%.1f,%.1f)", snapshot.detailMinX ?? -1, snapshot.detailMinY ?? -1)
+        RuneLoggers.layout.debug(
+            "shell=\(shellVariant.debugLabel, privacy: .public) editor=\(inlineEditorImplementation.debugLabel, privacy: .public) section=\(snapshot.section.rawValue, privacy: .public) kind=\(snapshot.workloadKind.kubernetesResourceName, privacy: .public) measuredTopInset=\(measuredTopInset, privacy: .public) resolvedTopInset=\(resolvedTopInset, privacy: .public) content=\(contentFrame, privacy: .public) header=\(headerFrame, privacy: .public) detail=\(detailFrame, privacy: .public)"
         )
     }
 
     static func logScenario(_ step: RuneRootLiveDebugScenarioStep, status: String, detail: String = "") {
         guard isEnabled || liveScenarioEnabled else { return }
-        NSLog("[Rune][LayoutScenario] step=%@ status=%@ %@", step.rawValue, status, detail)
+        RuneLoggers.layout.debug(
+            "scenario step=\(step.rawValue, privacy: .public) status=\(status, privacy: .public) detail=\(detail, privacy: .private)"
+        )
     }
 
 }
@@ -781,10 +777,8 @@ public struct RuneRootView: View {
         installLocalKeyboardMonitorIfNeeded()
         scheduleWorkspaceChromeMount()
         if RuneRootLayoutDebug.isEnabled {
-            NSLog(
-                "[Rune][Layout] configured shell=%@ editor=%@",
-                resolvedShellVariant.debugLabel,
-                resolvedManifestInlineEditorImplementation.debugLabel
+            RuneLoggers.layout.debug(
+                "configured shell=\(resolvedShellVariant.debugLabel, privacy: .public) editor=\(resolvedManifestInlineEditorImplementation.debugLabel, privacy: .public)"
             )
         }
         startLiveDebugScenarioIfNeeded()

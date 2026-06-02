@@ -190,11 +190,9 @@ extension AppKitTripleSplitView {
             super.viewDidLoad()
             splitView.isVertical = true
             splitView.delegate = self
-            if #available(macOS 13.0, *) {
-                sidebarController.sizingOptions = []
-                contentController.sizingOptions = []
-                detailController.sizingOptions = []
-            }
+            sidebarController.sizingOptions = []
+            contentController.sizingOptions = []
+            detailController.sizingOptions = []
             configureVerticalSizing(view)
             configureVerticalSizing(splitView)
             configureVerticalSizing(sidebarController.view)

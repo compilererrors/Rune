@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 @MainActor
 public final class RuneAppState: ObservableObject {
@@ -1051,7 +1052,7 @@ public final class RuneAppState: ObservableObject {
 
     private func logNotice(_ message: String) {
         guard UserDefaults.standard.runeDiagnosticsLogging else { return }
-        NSLog("[Rune] %@", message)
+        RuneLoggers.diagnostics.notice("\(message, privacy: .private)")
     }
 
     private func appendSessionLogSegment(

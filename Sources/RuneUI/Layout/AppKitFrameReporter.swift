@@ -1,4 +1,6 @@
 import AppKit
+import OSLog
+import RuneCore
 import SwiftUI
 
 /// Ground-truth `NSView` frames for layout debugging. Enable with `RUNE_DEBUG_APPKIT_FRAMES=1`.
@@ -27,11 +29,16 @@ struct AppKitFrameReporterRepresentable: NSViewRepresentable {
             )
             guard sig != lastLogSignature else { return }
             lastLogSignature = sig
-            NSLog(
-                "[Rune][AppKitFrame] label=%@ bounds=(%.1f,%.1f,%.1fx%.1f) inWindow=(%.1f,%.1f,%.1fx%.1f)",
-                label,
-                bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
+            let boundsDescription = String(
+                format: "(%.1f,%.1f,%.1fx%.1f)",
+                bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
+            )
+            let inWindowDescription = String(
+                format: "(%.1f,%.1f,%.1fx%.1f)",
                 inWindow.origin.x, inWindow.origin.y, inWindow.size.width, inWindow.size.height
+            )
+            RuneLoggers.layout.debug(
+                "AppKitFrame label=\(self.label, privacy: .public) bounds=\(boundsDescription, privacy: .public) inWindow=\(inWindowDescription, privacy: .public)"
             )
         }
     }
