@@ -4295,7 +4295,7 @@ public final class RuneAppViewModel: ObservableObject {
                 verb: String,
                 resource: String,
                 subresource: String? = nil
-            ) async {
+            ) async -> AuthDoctorRBACCapability? {
                 do {
                     let allowed = try await kubeClient.canI(
                         from: state.kubeConfigSources,
@@ -4305,16 +4305,20 @@ public final class RuneAppViewModel: ObservableObject {
                         resource: resource,
                         subresource: subresource
                     )
-                    let target = "\(resource)\(subresource.map { "/" + $0 } ?? "")"
-                    let scope = namespace ?? "cluster scope"
-                    record(
-                        id,
-                        title,
-                        allowed ? .passed : .warning,
-                        allowed ? "RBAC allows \(verb) \(target) in \(scope)." : "RBAC denied \(verb) \(target) in \(scope)."
+                    let capability = AuthDoctorRBACCapability(
+                        id: id,
+                        title: title,
+                        verb: verb,
+                        resource: resource,
+                        subresource: subresource,
+                        allowed: allowed
                     )
+                    let check = AuthDoctorRBACProjector.check(for: capability, namespace: namespace)
+                    record(check.id, check.title, check.status, check.message)
+                    return capability
                 } catch {
                     record(id, title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(error.localizedDescription)")
+                    return nil
                 }
             }
 
@@ -4341,10 +4345,15 @@ public final class RuneAppViewModel: ObservableObject {
             }
             record("namespace", "Active namespace", .passed, namespace)
 
-            await recordCanI("rbac-pods-list", "RBAC pod list", namespace: namespace, verb: "list", resource: "pods")
-            await recordCanI("rbac-pod-logs", "RBAC pod logs", namespace: namespace, verb: "get", resource: "pods", subresource: "log")
-            await recordCanI("rbac-pod-exec", "RBAC pod exec", namespace: namespace, verb: "create", resource: "pods", subresource: "exec")
-            await recordCanI("rbac-port-forward", "RBAC port-forward", namespace: namespace, verb: "create", resource: "pods", subresource: "portforward")
+            let rbacCapabilities = [
+                await recordCanI("rbac-pods-list", "RBAC pod list", namespace: namespace, verb: "list", resource: "pods"),
+                await recordCanI("rbac-pod-logs", "RBAC pod logs", namespace: namespace, verb: "get", resource: "pods", subresource: "log"),
+                await recordCanI("rbac-pod-exec", "RBAC pod exec", namespace: namespace, verb: "create", resource: "pods", subresource: "exec"),
+                await recordCanI("rbac-port-forward", "RBAC port-forward", namespace: namespace, verb: "create", resource: "pods", subresource: "portforward")
+            ].compactMap { $0 }
+            if let rbacSummary = AuthDoctorRBACProjector.accessSummary(namespace: namespace, capabilities: rbacCapabilities) {
+                record(rbacSummary.id, rbacSummary.title, rbacSummary.status, rbacSummary.message)
+            }
 
             do {
                 let pods = try await kubeClient.listPods(from: state.kubeConfigSources, context: context, namespace: namespace)

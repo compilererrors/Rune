@@ -1563,6 +1563,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("listContexts"))
         XCTAssertTrue(authDoctorBlock.contains("listNamespaces"))
         XCTAssertTrue(authDoctorBlock.contains("canI"))
+        XCTAssertTrue(authDoctorBlock.contains("AuthDoctorRBACProjector.accessSummary"))
         XCTAssertTrue(authDoctorBlock.contains("listPods"))
         XCTAssertTrue(authDoctorBlock.contains("podLogs"))
         XCTAssertFalse(authDoctorBlock.contains("applyYAML"))
