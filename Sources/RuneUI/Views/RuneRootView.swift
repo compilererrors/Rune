@@ -564,12 +564,6 @@ private enum RuneRootTextInputFocus: Hashable {
     case resourceFilter
 }
 
-private enum OverviewInsightPanelID: Hashable {
-    case unhealthy
-    case incidents
-    case dependencies
-}
-
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
@@ -586,6 +580,7 @@ public struct RuneRootView: View {
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
     @AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth) private var persistedPodNameColumnWidth = Double(PodTableLayout.nameColumnDefaultWidth)
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
+    @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
@@ -2804,17 +2799,21 @@ public struct RuneRootView: View {
                         symbol: "bolt.badge.clock.fill",
                         tint: .orange,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(7)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(7),
+                        help: overviewEventsCardHelp
                     ) {
                         overviewCardSelectionIndex = 7
                         viewModel.openOverviewModule(.events)
                     }
                 }
 
-                overviewInsightsPanel(
+                OverviewClusterSignalsPanelView(
                     unhealthy: viewModel.overviewUnhealthyItems,
                     incidents: viewModel.overviewIncidentTimelineItems,
-                    dependencies: viewModel.overviewDependencyItems
+                    dependencies: viewModel.overviewDependencyItems,
+                    expandedPanels: $expandedOverviewInsightPanels,
+                    onOpenSignal: viewModel.openOverviewSignal,
+                    onOpenDependency: viewModel.openOverviewDependency
                 )
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -2830,58 +2829,10 @@ public struct RuneRootView: View {
                 }
                 .runePanelCard()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Recent Events")
-                        .font(.headline)
-
-                    if viewModel.state.overviewEvents.isEmpty {
-                        Text("No events loaded")
-                            .foregroundStyle(.secondary)
-                            .font(.subheadline)
-                    } else {
-                        ForEach(Array(viewModel.state.overviewEvents.prefix(8))) { event in
-                            Button {
-                                viewModel.openEventSource(event)
-                            } label: {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: event.type.lowercased() == "warning" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                        .foregroundStyle(event.type.lowercased() == "warning" ? .orange : .green)
-                                        .frame(width: 16)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        if let ts = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !ts.isEmpty {
-                                            Text(ts)
-                                                .font(.caption2.monospaced())
-                                                .foregroundStyle(.tertiary)
-                                        }
-                                        Text(event.reason + " • " + event.objectName)
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .multilineTextAlignment(.leading)
-                                        Text(event.message)
-                                            .font(.footnote)
-                                            .foregroundStyle(.secondary)
-                                            .multilineTextAlignment(.leading)
-                                            .lineLimit(2)
-                                    }
-
-                                    Spacer(minLength: 0)
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.top, 2)
-                                }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 2)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help(eventHint(for: event))
-                        }
-                    }
-                }
-                .runePanelCard()
+                OverviewRecentEventsPanelView(
+                    events: viewModel.state.overviewEvents,
+                    onOpenEventSource: viewModel.openEventSource
+                )
             }
         }
         .id("overview")
@@ -3280,7 +3231,7 @@ public struct RuneRootView: View {
                     onToggleSort: viewModel.toggleEventSort
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .help(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "")
+                .runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "", enabled: showHoverTooltips)
             }
         }
         .padding(.horizontal, 2)
@@ -6090,11 +6041,11 @@ public struct RuneRootView: View {
 
     private func performAuthDoctorEntryAction(_ action: AuthDoctorEntryResolution) {
         switch action.destination {
-        case .overview:
-            viewModel.setSection(.overview)
-        case .pods:
-            viewModel.setSection(.workloads)
-            viewModel.setWorkloadKind(.pod)
+        case let .section(section):
+            viewModel.setSection(section)
+        case let .resource(section, kind):
+            viewModel.setSection(section)
+            viewModel.setWorkloadKind(kind)
         case .podLogs:
             guard let pod = authDoctorTargetPod else { return }
             viewModel.setSection(.workloads)
@@ -6225,6 +6176,7 @@ public struct RuneRootView: View {
         tint: Color,
         isLoading: Bool = false,
         isKeyboardFocused: Bool = false,
+        help: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -6266,302 +6218,7 @@ public struct RuneRootView: View {
             }
         }
         .buttonStyle(.plain)
-    }
-
-    private func overviewInsightsPanel(
-        unhealthy: [OverviewSignalItem],
-        incidents: [OverviewSignalItem],
-        dependencies: [OverviewDependencyItem]
-    ) -> some View {
-        let activeCount = unhealthy.count + incidents.count + dependencies.count
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle")
-                    .foregroundStyle(activeCount == 0 ? Color.secondary : Color.orange)
-                    .frame(width: 18)
-                Text("Cluster Signals")
-                    .font(.headline.weight(.semibold))
-                Spacer(minLength: 8)
-                Text(activeCount == 0 ? "Clear" : "\(activeCount) item\(activeCount == 1 ? "" : "s")")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .frame(height: 22)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
-            }
-
-            VStack(spacing: 0) {
-                overviewSignalInsightSection(
-                    id: .unhealthy,
-                    title: "Unhealthy",
-                    symbol: "exclamationmark.octagon",
-                    emptyText: "No unhealthy pods or deployments in the current snapshot.",
-                    items: unhealthy
-                )
-
-                overviewPanelDivider
-
-                overviewSignalInsightSection(
-                    id: .incidents,
-                    title: "Incident Timeline",
-                    symbol: "waveform.path.ecg",
-                    emptyText: "No warning events in the current snapshot.",
-                    items: incidents
-                )
-
-                overviewPanelDivider
-
-                overviewDependencyInsightSection(
-                    id: .dependencies,
-                    items: dependencies
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .runePanelCard(padding: 12)
-    }
-
-    private var overviewPanelDivider: some View {
-        Divider()
-            .overlay(Color.white.opacity(0.04))
-            .padding(.leading, 28)
-    }
-
-    private func overviewSignalInsightSection(
-        id: OverviewInsightPanelID,
-        title: String,
-        symbol: String,
-        emptyText: String,
-        items: [OverviewSignalItem]
-    ) -> some View {
-        let isExpanded = expandedOverviewInsightPanels.contains(id)
-        let severity = items.first?.severity ?? .info
-        let summary = items.first.map { $0.title + " - " + $0.detail } ?? emptyText
-
-        return VStack(alignment: .leading, spacing: 8) {
-            overviewInsightDisclosureHeader(
-                id: id,
-                title: title,
-                symbol: symbol,
-                badge: items.isEmpty ? "Clean" : "\(items.count)",
-                summary: summary,
-                severity: severity,
-                isExpanded: isExpanded
-            )
-
-            if isExpanded {
-                if items.isEmpty {
-                    overviewInsightEmptyText(emptyText)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(items) { item in
-                            overviewSignalRow(item) {
-                                viewModel.openOverviewSignal(item)
-                            }
-                        }
-                    }
-                    .padding(.leading, 28)
-                }
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    private func overviewDependencyInsightSection(
-        id: OverviewInsightPanelID,
-        items: [OverviewDependencyItem]
-    ) -> some View {
-        let isExpanded = expandedOverviewInsightPanels.contains(id)
-        let summary = items.first.map { $0.source + " to " + $0.target } ?? "No service or workload relationships loaded."
-
-        return VStack(alignment: .leading, spacing: 8) {
-            overviewInsightDisclosureHeader(
-                id: id,
-                title: "Dependency Map",
-                symbol: "point.3.connected.trianglepath.dotted",
-                badge: items.isEmpty ? "None" : "\(items.count)",
-                summary: summary,
-                severity: .info,
-                isExpanded: isExpanded
-            )
-
-            if isExpanded {
-                if items.isEmpty {
-                    overviewInsightEmptyText("No service or workload relationships loaded.")
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(items) { item in
-                            overviewDependencyRow(item) {
-                                viewModel.openOverviewDependency(item)
-                            }
-                        }
-                    }
-                    .padding(.leading, 28)
-                }
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    private func overviewInsightDisclosureHeader(
-        id: OverviewInsightPanelID,
-        title: String,
-        symbol: String,
-        badge: String,
-        summary: String,
-        severity: OverviewSignalSeverity,
-        isExpanded: Bool
-    ) -> some View {
-        Button {
-            if isExpanded {
-                expandedOverviewInsightPanels.remove(id)
-            } else {
-                expandedOverviewInsightPanels.insert(id)
-            }
-        } label: {
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 10)
-                Image(systemName: symbol)
-                    .foregroundStyle(overviewSignalColor(severity))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Text(badge)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .frame(height: 22)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func overviewInsightEmptyText(_ text: String) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.leading, 28)
-    }
-
-    private func overviewSignalPanelHeader(
-        title: String,
-        symbol: String,
-        badge: String,
-        severity: OverviewSignalSeverity
-    ) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .foregroundStyle(overviewSignalColor(severity))
-                .frame(width: 18)
-            Text(title)
-                .font(.headline.weight(.semibold))
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Text(badge)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .frame(height: 22)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
-        }
-    }
-
-    private func overviewSignalRow(_ item: OverviewSignalItem, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 7) {
-                Circle()
-                    .fill(overviewSignalColor(item.severity))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(item.title)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                        Text(item.badge)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Text(item.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 4)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func overviewDependencyRow(_ item: OverviewDependencyItem, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 7) {
-                Circle()
-                    .fill(Color.secondary.opacity(0.75))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(item.source)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.tertiary)
-                        Text(item.target)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    Text(item.relation + " • " + item.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 4)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func overviewSignalColor(_ severity: OverviewSignalSeverity) -> Color {
-        switch severity {
-        case .critical:
-            return .red
-        case .warning:
-            return .orange
-        case .info:
-            return .secondary
-        }
+        .runeHelp(help ?? "Open \(title)", enabled: showHoverTooltips)
     }
 
     private func healthBadge(label: String, value: Int, color: Color) -> some View {
@@ -6973,6 +6630,10 @@ public struct RuneRootView: View {
 
     private func contentListRowChrome(isSelected: Bool) -> some View {
         RuneSurfaceBackground(kind: .listRow(isSelected: isSelected))
+    }
+
+    private var overviewEventsCardHelp: String {
+        "Open the Events view. This is the raw Kubernetes Event list for the namespace, while Cluster Signals only promotes selected warning events into triage."
     }
 
     private func eventHint(for event: EventSummary) -> String {

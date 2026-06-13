@@ -978,6 +978,22 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
     }
 
+    func testPreferencesExposeHoverTooltipSetting() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let clusterSignalsSource = try String(contentsOfFile: overviewClusterSignalsPanelViewPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("showHoverTooltips"))
+        XCTAssertTrue(settingsSource.contains("runeShowHoverTooltips"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
+        XCTAssertTrue(preferencesSource.contains("Show hover tooltips"))
+        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
+        XCTAssertTrue(clusterSignalsSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
+        XCTAssertTrue(rootViewSource.contains(".runeHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains(".runeHelp("))
+    }
+
     func testFontSizePreferenceScalesRootInterfaceAndManifestText() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let textViewSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
@@ -1532,6 +1548,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .logs"))
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .exec"))
         XCTAssertTrue(authDoctorBlock.contains("podInspectorTab = .portForward"))
+        XCTAssertTrue(authDoctorBlock.contains("case let .section(section):"))
+        XCTAssertTrue(authDoctorBlock.contains("case let .resource(section, kind):"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.setSection(section)"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.setWorkloadKind(kind)"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.reviewLoadedKubeConfigSources()"))
         XCTAssertTrue(authDoctorBlock.contains("addClusterPopoverPresented = true"))
         XCTAssertTrue(authDoctorBlock.contains("NSWorkspace.shared.open(url)"))
@@ -1564,6 +1584,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("listNamespaces"))
         XCTAssertTrue(authDoctorBlock.contains("canI"))
         XCTAssertTrue(authDoctorBlock.contains("AuthDoctorRBACProjector.accessSummary"))
+        XCTAssertTrue(authDoctorBlock.contains("AuthDoctorFailureProjector.checks"))
+        XCTAssertTrue(authDoctorBlock.contains("execCredentialCacheDiagnostic"))
+        XCTAssertTrue(authDoctorBlock.contains("AuthDoctorExecAuthCacheProjector.check"))
+        XCTAssertTrue(authDoctorBlock.contains("AuthDoctorRBACPreflightTarget.emptyViewTargets"))
         XCTAssertTrue(authDoctorBlock.contains("listPods"))
         XCTAssertTrue(authDoctorBlock.contains("podLogs"))
         XCTAssertFalse(authDoctorBlock.contains("applyYAML"))
@@ -1793,6 +1817,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("copySelectedGenericResourceComparisonToClipboard"))
     }
 
+    func testOverviewClusterSignalsExposeHoverExplanations() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let clusterSignalsSource = try String(contentsOfFile: overviewClusterSignalsPanelViewPath, encoding: .utf8)
+        let recentEventsSource = try String(contentsOfFile: overviewRecentEventsPanelViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("OverviewClusterSignalsPanelView("))
+        XCTAssertTrue(rootViewSource.contains("OverviewRecentEventsPanelView("))
+        XCTAssertTrue(rootViewSource.contains("overviewEventsCardHelp"))
+        XCTAssertTrue(rootViewSource.contains(".runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? \"\", enabled: showHoverTooltips)"))
+        XCTAssertTrue(clusterSignalsSource.contains("overviewClusterSignalsHelp"))
+        XCTAssertTrue(clusterSignalsSource.contains("overviewInsightHelp(for:"))
+        XCTAssertTrue(clusterSignalsSource.contains("overviewSignalRowHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains("overviewDependencyRowHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains("Warning Kubernetes Events promoted into a short incident timeline"))
+        XCTAssertTrue(clusterSignalsSource.contains(".runeHelp(overviewClusterSignalsHelp, enabled: showHoverTooltips)"))
+        XCTAssertTrue(clusterSignalsSource.contains(".runeHelp(help, enabled: showHoverTooltips)"))
+        XCTAssertTrue(recentEventsSource.contains("Recent Events shows raw Kubernetes Event objects"))
+        XCTAssertTrue(recentEventsSource.contains("overviewEventRowHelp("))
+        XCTAssertTrue(recentEventsSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
+        XCTAssertTrue(recentEventsSource.contains(".runeHelp(overviewRecentEventsHelp, enabled: showHoverTooltips)"))
+        XCTAssertTrue(recentEventsSource.contains(".runeHelp(overviewEventRowHelp(event), enabled: showHoverTooltips)"))
+    }
+
     func testToolbarUsesNavigationPaneTogglesAndIconActions() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
@@ -2014,6 +2061,24 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitPodTableView.swift").path
+    }
+
+    private var overviewClusterSignalsPanelViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/OverviewClusterSignalsPanelView.swift").path
+    }
+
+    private var overviewRecentEventsPanelViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/OverviewRecentEventsPanelView.swift").path
     }
 
     private func functionBlock(named startMarker: String, endingBefore endMarker: String, in source: String) throws -> String {

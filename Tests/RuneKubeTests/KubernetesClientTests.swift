@@ -128,6 +128,99 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertFalse(KubernetesRESTRequestCoalescingKey.isCoalescible(method: "PATCH", body: "{}"))
     }
 
+    func testRESTRequestMetricSanitizesPathAndQueryValues() {
+        let metric = KubernetesRESTRequestMetric(
+            method: "get",
+            apiPath: "/apis/apps/v1/namespaces/synthetic/deployments/api-0/status?limit=200&continue=sensitive-token",
+            statusCode: 200,
+            responseBytes: 128,
+            durationSeconds: 0.01,
+            attempt: 1,
+            outcome: .success
+        )
+
+        XCTAssertEqual(metric.method, "GET")
+        XCTAssertEqual(
+            metric.apiPath,
+            "/apis/apps/v1/namespaces/<namespace>/deployments/<name>/status?limit=<redacted>&continue=<redacted>"
+        )
+        XCTAssertFalse(metric.apiPath.contains("synthetic"))
+        XCTAssertFalse(metric.apiPath.contains("api-0"))
+        XCTAssertFalse(metric.apiPath.contains("sensitive-token"))
+    }
+
+    func testRESTRequestMetricsRecorderSummarizesOutcomes() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic/pods",
+            statusCode: 200,
+            responseBytes: 256,
+            durationSeconds: 0.01,
+            attempt: 1,
+            outcome: .success
+        ))
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic/pods?continue=token",
+            statusCode: 503,
+            responseBytes: 64,
+            durationSeconds: 0.02,
+            attempt: 1,
+            outcome: .httpError
+        ))
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic/pods",
+            statusCode: nil,
+            responseBytes: 0,
+            durationSeconds: 0.03,
+            attempt: 2,
+            outcome: .cancelled,
+            cancellationReason: "task-cancelled"
+        ))
+
+        let summary = await recorder.summary()
+
+        XCTAssertEqual(summary.requestCount, 3)
+        XCTAssertEqual(summary.successCount, 1)
+        XCTAssertEqual(summary.failureCount, 1)
+        XCTAssertEqual(summary.cancelledCount, 1)
+        XCTAssertEqual(summary.responseBytes, 320)
+        XCTAssertEqual(summary.totalDurationSeconds, 0.06, accuracy: 0.001)
+        XCTAssertEqual(summary.retainedMetricCount, 3)
+    }
+
+    func testRESTRequestMetricsRecorderRetainsMostRecentMetricsOnly() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 3)
+
+        for index in 0..<5 {
+            await recorder.record(KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods/pod-\(index)",
+                statusCode: 200,
+                responseBytes: index,
+                durationSeconds: Double(index) / 100,
+                attempt: 1,
+                outcome: .success
+            ))
+        }
+
+        let snapshot = await recorder.snapshot()
+        let summary = await recorder.summary()
+
+        XCTAssertEqual(snapshot.map(\.apiPath), [
+            "/api/v1/namespaces/<namespace>/pods/<name>",
+            "/api/v1/namespaces/<namespace>/pods/<name>",
+            "/api/v1/namespaces/<namespace>/pods/<name>"
+        ])
+        XCTAssertEqual(snapshot.map(\.responseBytes), [2, 3, 4])
+        XCTAssertEqual(summary.requestCount, 5)
+        XCTAssertEqual(summary.responseBytes, 10)
+        XCTAssertEqual(summary.retainedMetricCount, 3)
+    }
+
     func testTerminalResizeFrameUsesKubernetesExecResizeChannel() throws {
         let frame = try KubernetesRESTClient._testTerminalResizeFrame(columns: 120, rows: 32)
 

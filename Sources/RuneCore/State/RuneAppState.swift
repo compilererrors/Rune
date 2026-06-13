@@ -2,6 +2,29 @@ import Combine
 import Foundation
 import OSLog
 
+public struct ResourceDetailScope: Hashable, Codable, Sendable {
+    public let contextName: String
+    public let namespace: String
+    public let kind: String
+    public let name: String
+
+    public init(contextName: String, namespace: String?, kind: KubeResourceKind, name: String) {
+        self.init(
+            contextName: contextName,
+            namespace: kind.isNamespaced ? namespace : nil,
+            kind: kind.rawValue,
+            name: name
+        )
+    }
+
+    public init(contextName: String, namespace: String?, kind: String, name: String) {
+        self.contextName = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.namespace = (namespace ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        self.kind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 @MainActor
 public final class RuneAppState: ObservableObject {
     private let maxSessionLogCacheCharacters = 1_000_000
@@ -102,6 +125,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var lastResourceYAMLError: String?
     @Published public private(set) var lastResourceDescribeError: String?
     @Published public private(set) var lastResourceDetailsUpdatedAt: Date?
+    @Published public private(set) var resourceDetailScope: ResourceDetailScope?
     @Published public private(set) var deploymentRolloutHistory: String = ""
     @Published public private(set) var helmValues: String = ""
     @Published public private(set) var helmManifest: String = ""
@@ -755,7 +779,7 @@ public final class RuneAppState: ObservableObject {
         lastResourceDetailsUpdatedAt = Date()
     }
 
-    public func beginResourceDetailLoad() {
+    public func beginResourceDetailLoad(scope: ResourceDetailScope? = nil) {
         resourceYAML = ""
         resourceYAMLBaseline = ""
         clearResourceYAMLUndoHistory()
@@ -765,6 +789,7 @@ public final class RuneAppState: ObservableObject {
         lastResourceYAMLError = nil
         lastResourceDescribeError = nil
         lastResourceDetailsUpdatedAt = nil
+        resourceDetailScope = scope
         deploymentRolloutHistory = ""
         isLoadingResourceDetails = true
     }
@@ -779,6 +804,9 @@ public final class RuneAppState: ObservableObject {
         clearResourceYAMLUndoHistory()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
+        if message == nil {
+            resourceDetailScope = nil
+        }
         lastResourceYAMLError = message
     }
 
@@ -975,6 +1003,7 @@ public final class RuneAppState: ObservableObject {
         lastLogFetchError = nil
         lastLogUpdatedAt = nil
         lastResourceDetailsUpdatedAt = nil
+        resourceDetailScope = nil
     }
 
     public func setError(_ error: Error) {

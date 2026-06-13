@@ -1546,6 +1546,84 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testOverviewUnhealthyIgnoresSucceededCronJobPodsWithNotReadyContainers() {
+        let projector = OverviewInsightsProjector(
+            pods: [
+                PodSummary(
+                    name: "nightly-report-29600123-x4k9p",
+                    namespace: "namespace-a",
+                    status: "Succeeded",
+                    totalRestarts: 1,
+                    containersReady: "0/1"
+                ),
+                PodSummary(
+                    name: "failed-report-29600124-z8m2q",
+                    namespace: "namespace-a",
+                    status: "Failed",
+                    totalRestarts: 0,
+                    containersReady: "0/1"
+                )
+            ],
+            deployments: [],
+            services: [],
+            events: []
+        )
+
+        let unhealthy = projector.unhealthyItems()
+        XCTAssertFalse(unhealthy.contains { $0.title == "nightly-report-29600123-x4k9p" })
+        XCTAssertTrue(unhealthy.contains { $0.title == "failed-report-29600124-z8m2q" })
+    }
+
+    @MainActor
+    func testOverviewUnhealthyIgnoresSingleRestartOnOtherwiseHealthyPod() {
+        let projector = OverviewInsightsProjector(
+            pods: [
+                PodSummary(
+                    name: "api-0",
+                    namespace: "namespace-a",
+                    status: "Running",
+                    totalRestarts: 1,
+                    containersReady: "1/1"
+                ),
+                PodSummary(
+                    name: "worker-0",
+                    namespace: "namespace-a",
+                    status: "Running",
+                    totalRestarts: 3,
+                    containersReady: "1/1"
+                )
+            ],
+            deployments: [],
+            services: [],
+            events: []
+        )
+
+        let unhealthy = projector.unhealthyItems()
+        XCTAssertFalse(unhealthy.contains { $0.title == "api-0" })
+        XCTAssertTrue(unhealthy.contains { $0.title == "worker-0" && $0.badge == "Restart" })
+    }
+
+    func testAuthDoctorLogProbePrefersRunningReadyPodOverTerminalOrPendingPods() {
+        let pods = [
+            PodSummary(name: "finished-job", namespace: "namespace-a", status: "Succeeded", containersReady: "0/1"),
+            PodSummary(name: "pending-job", namespace: "namespace-a", status: "Pending", containersReady: "0/1"),
+            PodSummary(name: "running-but-not-ready", namespace: "namespace-a", status: "Running", containersReady: "0/1"),
+            PodSummary(name: "running-ready", namespace: "namespace-a", status: "Running", containersReady: "1/1")
+        ]
+
+        XCTAssertEqual(RuneAppViewModel.authDoctorLogProbePod(from: pods)?.name, "running-ready")
+    }
+
+    func testAuthDoctorLogProbeFallsBackToSucceededPodWhenNoRunningPodsExist() {
+        let pods = [
+            PodSummary(name: "pending-job", namespace: "namespace-a", status: "Pending", containersReady: "0/1"),
+            PodSummary(name: "finished-job", namespace: "namespace-a", status: "Succeeded", containersReady: "0/1")
+        ]
+
+        XCTAssertEqual(RuneAppViewModel.authDoctorLogProbePod(from: pods)?.name, "finished-job")
+    }
+
+    @MainActor
     func testOverviewInsightsProjectorLimitsLargeSignalsAndKeepsDependenciesBounded() {
         let pods = (0..<30).map { index in
             PodSummary(
@@ -2023,6 +2101,128 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.requestApplySelectedResourceYAML()
 
         XCTAssertNotNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testCurrentResourceYAMLExportRequiresMatchingDetailScope() {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: "fake",
+            namespace: "default",
+            kind: .pod,
+            name: "api-0"
+        ))
+        state.setResourceYAML("kind: Pod\nmetadata:\n  name: api-0\n")
+        state.finishResourceDetailLoad()
+
+        viewModel.saveCurrentResourceYAML()
+
+        XCTAssertEqual(exporter.saves.count, 1)
+        XCTAssertTrue(exporter.saves[0].suggestedName.hasPrefix("pod-api-0-"))
+    }
+
+    @MainActor
+    func testStaleResourceYAMLExportIsBlockedWhenDetailScopeDoesNotMatchSelection() {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: "fake",
+            namespace: "other",
+            kind: .pod,
+            name: "api-0"
+        ))
+        state.setResourceYAML("kind: Pod\nmetadata:\n  name: api-0\n")
+        state.finishResourceDetailLoad()
+
+        viewModel.saveCurrentResourceYAML()
+
+        XCTAssertTrue(exporter.saves.isEmpty)
+    }
+
+    @MainActor
+    func testStaleResourceYAMLApplyIsBlockedWhenDetailScopeDoesNotMatchSelection() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: "fake",
+            namespace: "other",
+            kind: .pod,
+            name: "api-0"
+        ))
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+            """
+        )
+        state.finishResourceDetailLoad()
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: api-0
+              labels:
+                app: api
+            """
+        )
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testStaleOperatorDetailScopeDoesNotBypassCurrentResourceYAMLExportGuard() {
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setSelectedOperatorResource(OperatorResourceSummary(
+            family: "operators",
+            kind: "Subscription",
+            apiPath: "/apis/operators.coreos.com/v1alpha1/namespaces/default/subscriptions",
+            name: "demo-operator",
+            namespace: "default",
+            status: "Ready",
+            message: "Ready"
+        ))
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: "fake",
+            namespace: "default",
+            kind: "Subscription",
+            name: "demo-operator"
+        ))
+        state.setResourceYAML("kind: Subscription\nmetadata:\n  name: demo-operator\n")
+        state.finishResourceDetailLoad()
+
+        viewModel.saveCurrentResourceYAML()
+
+        XCTAssertTrue(exporter.saves.isEmpty)
     }
 
     @MainActor
@@ -4246,6 +4446,160 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.writeAuditLog.map(\.resource), ["configmap/settings"])
         XCTAssertEqual(decoded.authDoctorChecks.first?.message.contains("<local-path>"), true)
         XCTAssertFalse(String(data: data, encoding: .utf8)?.contains("/Users/") == true)
+    }
+
+    @MainActor
+    func testSupportBundleIncludesPrivacySafeRequestMetrics() throws {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "default"
+
+        let request = SupportBundleRequest.snapshot(
+            state: state,
+            generatedAt: "2026-05-06T00:00:00Z",
+            resourceCounts: ["pods": 2],
+            selectedResourceKind: "Pod",
+            selectedResourceName: "api-0",
+            requestMetrics: [
+                SupportBundleRequestMetric(
+                    sourcePath: "swift-rest",
+                    method: "GET",
+                    apiPath: "/api/v1/namespaces/<namespace>/pods?continue=<redacted>",
+                    statusCode: 200,
+                    responseBytes: 512,
+                    durationSeconds: 0.012,
+                    attempt: 1,
+                    outcome: "success",
+                    cancellationReason: nil
+                )
+            ],
+            requestMetricsSummary: SupportBundleRequestMetricsSummary(
+                requestCount: 4,
+                successCount: 3,
+                failureCount: 1,
+                cancelledCount: 0,
+                responseBytes: 2_048,
+                totalDurationSeconds: 0.10,
+                retainedMetricCount: 1
+            ),
+            requestMetricGroups: [
+                SupportBundleRequestMetricGroup(
+                    sourcePath: "swift-rest",
+                    method: "GET",
+                    apiPath: "/api/v1/namespaces/<namespace>/pods?continue=<redacted>",
+                    requestCount: 4,
+                    successCount: 3,
+                    failureCount: 1,
+                    cancelledCount: 0,
+                    responseBytes: 2_048,
+                    totalDurationSeconds: 0.10,
+                    maxDurationSeconds: 0.04,
+                    latestStatusCode: 503,
+                    latestOutcome: "httpError"
+                )
+            ]
+        )
+        let data = try JSONSupportBundleBuilder().buildBundle(from: request)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertEqual(decoded.requestMetrics.count, 1)
+        XCTAssertEqual(decoded.requestMetrics.first?.sourcePath, "swift-rest")
+        XCTAssertEqual(decoded.requestMetrics.first?.apiPath, "/api/v1/namespaces/<namespace>/pods?continue=<redacted>")
+        XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 4)
+        XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, 1)
+        XCTAssertEqual(decoded.requestMetricGroups.count, 1)
+        XCTAssertEqual(decoded.requestMetricGroups.first?.requestCount, 4)
+        XCTAssertEqual(decoded.requestMetricGroups.first?.latestOutcome, "httpError")
+        XCTAssertFalse(json.contains("synthetic-namespace"))
+        XCTAssertFalse(json.contains("synthetic-context"))
+    }
+
+    func testSupportBundleDecodesOlderSnapshotsWithoutRequestMetrics() throws {
+        let json = """
+        {
+          "generatedAt": "2026-05-06T00:00:00Z",
+          "namespace": "<namespace>",
+          "sectionTitle": "Workloads",
+          "readOnlyMode": false,
+          "resourceCounts": {"pods": 2},
+          "resourceYAML": "",
+          "resourceDescribe": "",
+          "podLogs": "",
+          "unifiedLogs": "",
+          "unifiedLogPods": [],
+          "deploymentRolloutHistory": "",
+          "recentEvents": [],
+          "portForwardSessions": [],
+          "lastExecResult": null,
+          "authDoctorChecks": [],
+          "writeAuditLog": []
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: Data(json.utf8))
+
+        XCTAssertTrue(decoded.requestMetrics.isEmpty)
+        XCTAssertNil(decoded.requestMetricsSummary)
+        XCTAssertTrue(decoded.requestMetricGroups.isEmpty)
+    }
+
+    @MainActor
+    func testSaveSupportBundleIncludesKubernetesRequestMetrics() async throws {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "default"
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=synthetic-token",
+            statusCode: 200,
+            responseBytes: 256,
+            durationSeconds: 0.01,
+            attempt: 1,
+            outcome: .success
+        ))
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=retry-token",
+            statusCode: 503,
+            responseBytes: 64,
+            durationSeconds: 0.02,
+            attempt: 1,
+            outcome: .httpError
+        ))
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
+        let exporter = RecordingFileExporter()
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client, exporter: exporter)
+
+        viewModel.saveSupportBundle()
+        try await waitUntilForRuneAppState {
+            exporter.saves.count == 1
+        }
+
+        let data = try XCTUnwrap(exporter.saves.first?.data)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertEqual(decoded.requestMetrics.count, 2)
+        XCTAssertEqual(decoded.requestMetrics.map(\.apiPath), [
+            "/api/v1/namespaces/<namespace>/pods?continue=<redacted>",
+            "/api/v1/namespaces/<namespace>/pods?continue=<redacted>"
+        ])
+        XCTAssertEqual(decoded.requestMetrics.map(\.outcome), ["success", "httpError"])
+        XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 2)
+        XCTAssertEqual(decoded.requestMetricsSummary?.successCount, 1)
+        XCTAssertEqual(decoded.requestMetricsSummary?.failureCount, 1)
+        XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, 2)
+        XCTAssertEqual(decoded.requestMetricGroups.count, 1)
+        XCTAssertEqual(decoded.requestMetricGroups.first?.apiPath, "/api/v1/namespaces/<namespace>/pods?continue=<redacted>")
+        XCTAssertEqual(decoded.requestMetricGroups.first?.requestCount, 2)
+        XCTAssertEqual(decoded.requestMetricGroups.first?.failureCount, 1)
+        XCTAssertEqual(decoded.requestMetricGroups.first?.latestOutcome, "httpError")
+        XCTAssertFalse(json.contains("synthetic-namespace"))
+        XCTAssertFalse(json.contains("synthetic-token"))
+        XCTAssertFalse(json.contains("retry-token"))
     }
 
     @MainActor

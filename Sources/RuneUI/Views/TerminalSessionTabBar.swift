@@ -1,6 +1,43 @@
 import SwiftUI
 import RuneCore
 
+struct TerminalSessionTabPresentation: Hashable, Sendable {
+    let primaryTitle: String
+    let secondaryTitle: String?
+    let accessibilityLabel: String
+    let helpText: String
+
+    static func make(session: PodTerminalSession, number: Int) -> TerminalSessionTabPresentation {
+        let trimmedContainer = session.containerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let containerTitle = trimmedContainer.isEmpty ? nil : trimmedContainer
+        let statusTitle = TerminalStatusStyling.title(session.status)
+        var helpParts = [
+            "\(session.namespace)/\(session.podName)",
+            "Shell: \(session.shell)",
+            "Status: \(statusTitle)"
+        ]
+        if let containerTitle {
+            helpParts.insert("Container: \(containerTitle)", at: 1)
+        }
+        if let exitCode = session.lastExitCode {
+            helpParts.append("Last exit code: \(exitCode)")
+        }
+
+        let accessibility = [
+            "\(number) \(session.podName)",
+            containerTitle.map { "container \($0)" },
+            statusTitle
+        ].compactMap { $0 }.joined(separator: ", ")
+
+        return TerminalSessionTabPresentation(
+            primaryTitle: "\(number) \(session.podName)",
+            secondaryTitle: containerTitle,
+            accessibilityLabel: accessibility,
+            helpText: helpParts.joined(separator: " - ")
+        )
+    }
+}
+
 struct TerminalSessionTabBar: View {
     let sessions: [PodTerminalSession]
     let activeSessionID: String?
@@ -96,12 +133,19 @@ struct TerminalSessionTabBar: View {
     }
 
     private func tab(_ session: PodTerminalSession, number: Int) -> some View {
-        ZStack(alignment: .trailing) {
+        let presentation = TerminalSessionTabPresentation.make(session: session, number: number)
+        return ZStack(alignment: .trailing) {
             HStack(spacing: 6) {
                 TerminalStatusDot(color: TerminalStatusStyling.color(session.status))
-                Text("\(number) \(session.podName)")
+                Text(presentation.primaryTitle)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
+                if let secondaryTitle = presentation.secondaryTitle {
+                    Text(secondaryTitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 if session.status != .connected {
                     Text(TerminalStatusStyling.title(session.status))
                         .font(.caption2.weight(.semibold))
@@ -139,9 +183,9 @@ struct TerminalSessionTabBar: View {
                     .frame(height: 2)
             }
         }
-        .help(helpText(session))
+        .help(presentation.helpText)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(number) \(session.podName), \(TerminalStatusStyling.title(session.status))")
+        .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(session.id == activeSessionID ? [.isSelected, .isButton] : .isButton)
     }
 
@@ -169,15 +213,4 @@ struct TerminalSessionTabBar: View {
             )
     }
 
-    private func helpText(_ session: PodTerminalSession) -> String {
-        var parts = [
-            "\(session.namespace)/\(session.podName)",
-            "Shell: \(session.shell)",
-            "Status: \(TerminalStatusStyling.title(session.status))"
-        ]
-        if let exitCode = session.lastExitCode {
-            parts.append("Last exit code: \(exitCode)")
-        }
-        return parts.joined(separator: " - ")
-    }
 }

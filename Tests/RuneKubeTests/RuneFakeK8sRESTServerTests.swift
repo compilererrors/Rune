@@ -5,6 +5,38 @@ import XCTest
 @testable import RuneKube
 
 final class RuneFakeK8sRESTServerTests: XCTestCase {
+    func testSelfSubjectAccessReviewRequestBodyIncludesAPIGroupWhenPresent() throws {
+        let body = try KubernetesRESTClient.selfSubjectAccessReviewRequestBody(
+            namespace: "synthetic",
+            verb: "list",
+            resource: "deployments",
+            apiGroup: "apps",
+            subresource: nil
+        )
+        let attributes = try resourceAttributes(from: body)
+
+        XCTAssertEqual(attributes["namespace"] as? String, "synthetic")
+        XCTAssertEqual(attributes["verb"] as? String, "list")
+        XCTAssertEqual(attributes["resource"] as? String, "deployments")
+        XCTAssertEqual(attributes["group"] as? String, "apps")
+        XCTAssertNil(attributes["subresource"])
+    }
+
+    func testSelfSubjectAccessReviewRequestBodyOmitsBlankAPIGroup() throws {
+        let body = try KubernetesRESTClient.selfSubjectAccessReviewRequestBody(
+            namespace: "synthetic",
+            verb: "list",
+            resource: "pods",
+            apiGroup: "   ",
+            subresource: "log"
+        )
+        let attributes = try resourceAttributes(from: body)
+
+        XCTAssertEqual(attributes["resource"] as? String, "pods")
+        XCTAssertEqual(attributes["subresource"] as? String, "log")
+        XCTAssertNil(attributes["group"])
+    }
+
     func testSelfSubjectAccessReviewAllowedParserReadsStatusAllowed() throws {
         let allowed = try KubernetesRESTClient.selfSubjectAccessReviewAllowed(
             from: #"{"apiVersion":"authorization.k8s.io/v1","status":{"allowed":true}}"#
@@ -15,6 +47,12 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
 
         XCTAssertTrue(allowed)
         XCTAssertFalse(denied)
+    }
+
+    private func resourceAttributes(from body: String) throws -> [String: Any] {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+        let spec = try XCTUnwrap(object["spec"] as? [String: Any])
+        return try XCTUnwrap(spec["resourceAttributes"] as? [String: Any])
     }
 
     func testNativeClientReadsScriptlessRESTFakeCluster() async throws {
@@ -116,6 +154,73 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
 
         XCTAssertEqual(pods.map(\.name), ["ember-gate-75c9f746b8-kq2wm", "orbit-lens-6f58d7d89b-hx9q2"])
         XCTAssertEqual(podListRequests.count, 2)
+    }
+
+    func testNativeClientRecordsPrivacySafeRESTRequestMetrics() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
+        let pods = try await client.listPodStatuses(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone"
+        )
+
+        let metrics = await recorder.snapshot()
+        let summary = await recorder.summary()
+        let podListMetric = try XCTUnwrap(metrics.first { $0.apiPath.contains("/pods") })
+
+        XCTAssertEqual(pods.count, 2)
+        XCTAssertEqual(podListMetric.sourcePath, "swift-rest")
+        XCTAssertEqual(podListMetric.method, "GET")
+        XCTAssertEqual(podListMetric.statusCode, 200)
+        XCTAssertEqual(podListMetric.outcome, .success)
+        XCTAssertGreaterThan(podListMetric.responseBytes, 0)
+        XCTAssertGreaterThanOrEqual(podListMetric.durationSeconds, 0)
+        XCTAssertEqual(podListMetric.apiPath, "/api/v1/namespaces/<namespace>/pods")
+        XCTAssertFalse(podListMetric.apiPath.contains("alpha-zone"))
+        XCTAssertEqual(summary.requestCount, metrics.count)
+        XCTAssertGreaterThanOrEqual(summary.successCount, 1)
+    }
+
+    func testNativeClientRecordsRESTRequestMetricsForRetriedReads() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let target = "/api/v1/namespaces/alpha-zone/pods"
+        let fixture = RuneFakeK8sFixture(transientFailureTargets: [target])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
+        let pods = try await client.listPodStatuses(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone"
+        )
+
+        let podMetrics = await recorder.snapshot()
+            .filter { $0.apiPath == "/api/v1/namespaces/<namespace>/pods" }
+
+        XCTAssertEqual(pods.count, 2)
+        XCTAssertEqual(podMetrics.map(\.attempt), [1, 2])
+        XCTAssertEqual(podMetrics.map(\.outcome), [.httpError, .success])
+        XCTAssertEqual(podMetrics.map(\.statusCode), [503, 200])
+        XCTAssertTrue(podMetrics.allSatisfy { !$0.apiPath.contains("alpha-zone") })
     }
 
     func testNativeClientSendsDryRunAllForDeploymentRollbackPreview() async throws {

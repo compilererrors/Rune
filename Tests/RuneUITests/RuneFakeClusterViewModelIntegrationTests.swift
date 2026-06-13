@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 @testable import RuneCore
+@testable import RuneDiagnostics
+@testable import RuneExport
 @testable import RuneFakeK8sSupport
 @testable import RuneKube
 @testable import RuneStore
@@ -553,6 +555,100 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertFalse(harness.server.requestLines().contains { $0.localizedCaseInsensitiveContains("helm") })
     }
 
+    func testAuthDoctorIsReadOnlyAgainstFakeCluster() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        let podsBefore = harness.state.pods.map(\.name)
+        let deploymentsBefore = harness.state.deployments.map(\.name)
+        let servicesBefore = harness.state.services.map(\.name)
+        let configMapsBefore = harness.state.configMaps.map(\.name)
+        let eventsBefore = harness.state.events.map(\.objectName)
+        let yamlBefore = harness.state.resourceYAML
+        let describeBefore = harness.state.resourceDescribe
+        let logsBefore = harness.state.podLogs
+        let writeAuditCountBefore = harness.state.writeAuditLog.count
+        harness.server.resetRequestLines()
+
+        harness.viewModel.runAuthDoctor()
+
+        try await waitUntil {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains { $0.id == "pod-list" }
+                && harness.state.authDoctorChecks.contains { $0.id == "pod-logs" }
+        }
+
+        XCTAssertEqual(harness.state.pods.map(\.name), podsBefore)
+        XCTAssertEqual(harness.state.deployments.map(\.name), deploymentsBefore)
+        XCTAssertEqual(harness.state.services.map(\.name), servicesBefore)
+        XCTAssertEqual(harness.state.configMaps.map(\.name), configMapsBefore)
+        XCTAssertEqual(harness.state.events.map(\.objectName), eventsBefore)
+        XCTAssertEqual(harness.state.resourceYAML, yamlBefore)
+        XCTAssertEqual(harness.state.resourceDescribe, describeBefore)
+        XCTAssertEqual(harness.state.podLogs, logsBefore)
+        XCTAssertEqual(harness.state.writeAuditLog.count, writeAuditCountBefore)
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertFalse(requestLines.isEmpty)
+        XCTAssertTrue(requestLines.allSatisfy { line in
+            line.hasPrefix("GET ")
+                || line.contains("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews")
+        })
+        XCTAssertFalse(requestLines.contains { line in
+            line.hasPrefix("PATCH ")
+                || line.hasPrefix("PUT ")
+                || line.hasPrefix("DELETE ")
+                || (line.hasPrefix("POST ") && !line.contains("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"))
+                || line.contains("/exec")
+                || line.contains("/portforward")
+                || line.contains("/scale")
+        })
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testSupportBundleExportDoesNotTouchClusterOrMutateResourceState() async throws {
+        let exporter = RecordingFileExporter()
+        let harness = try await makeHarness(exporter: exporter)
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        let podsBefore = harness.state.pods.map(\.name)
+        let deploymentsBefore = harness.state.deployments.map(\.name)
+        let servicesBefore = harness.state.services.map(\.name)
+        let configMapsBefore = harness.state.configMaps.map(\.name)
+        let eventsBefore = harness.state.events.map(\.objectName)
+        let yamlBefore = harness.state.resourceYAML
+        let describeBefore = harness.state.resourceDescribe
+        let logsBefore = harness.state.podLogs
+        let writeAuditCountBefore = harness.state.writeAuditLog.count
+        harness.server.resetRequestLines()
+
+        harness.viewModel.saveSupportBundle()
+
+        try await waitUntil {
+            exporter.saves.count == 1
+        }
+
+        XCTAssertTrue(harness.server.requestLines().isEmpty)
+        XCTAssertEqual(harness.state.pods.map(\.name), podsBefore)
+        XCTAssertEqual(harness.state.deployments.map(\.name), deploymentsBefore)
+        XCTAssertEqual(harness.state.services.map(\.name), servicesBefore)
+        XCTAssertEqual(harness.state.configMaps.map(\.name), configMapsBefore)
+        XCTAssertEqual(harness.state.events.map(\.objectName), eventsBefore)
+        XCTAssertEqual(harness.state.resourceYAML, yamlBefore)
+        XCTAssertEqual(harness.state.resourceDescribe, describeBefore)
+        XCTAssertEqual(harness.state.podLogs, logsBefore)
+        XCTAssertEqual(harness.state.writeAuditLog.count, writeAuditCountBefore)
+
+        let save = try XCTUnwrap(exporter.saves.first)
+        XCTAssertTrue(save.suggestedName.hasPrefix("support-bundle-"))
+        XCTAssertEqual(save.allowedFileTypes, ["json"])
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: save.data)
+        XCTAssertEqual(decoded.resourceCounts["pods"], podsBefore.count)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let server: RuneFakeK8sRESTServer
         let kubeconfigURL: URL
@@ -567,7 +663,8 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
 
     private func makeHarness(
         fixture: RuneFakeK8sFixture = RuneFakeK8sFixture(),
-        kubeClient: KubernetesClient = KubernetesClient()
+        kubeClient: KubernetesClient = KubernetesClient(),
+        exporter: FileExporting = NoopFileExporter()
     ) async throws -> Harness {
         let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
@@ -576,6 +673,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: kubeClient,
+            exporter: exporter,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -615,5 +713,28 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
+    }
+}
+
+private final class NoopFileExporter: FileExporting {
+    @MainActor
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+private final class RecordingFileExporter: FileExporting {
+    struct Save {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+    }
+
+    private(set) var saves: [Save] = []
+
+    @MainActor
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        saves.append(Save(data: data, suggestedName: suggestedName, allowedFileTypes: allowedFileTypes))
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
     }
 }

@@ -103,8 +103,9 @@ public struct OverviewInsightsProjector: Sendable {
         for pod in pods {
             let status = pod.status.trimmingCharacters(in: .whitespacesAndNewlines)
             let normalized = status.lowercased()
-            let readyWarning = pod.containersReady.flatMap { Self.readinessWarning($0) }
-            if !["running", "succeeded", "completed"].contains(normalized) {
+            let isSuccessfulTerminalPod = Self.successfulTerminalPodStatuses.contains(normalized)
+            let readyWarning = isSuccessfulTerminalPod ? nil : pod.containersReady.flatMap { Self.readinessWarning($0) }
+            if !["running"].contains(normalized) && !isSuccessfulTerminalPod {
                 append(OverviewSignalItem(
                     id: "pod-status|\(pod.id)|\(status)",
                     title: pod.name,
@@ -124,7 +125,7 @@ public struct OverviewInsightsProjector: Sendable {
                 ))
             }
 
-            if pod.totalRestarts > 0 {
+            if !isSuccessfulTerminalPod, pod.totalRestarts >= Self.restartSignalThreshold {
                 append(OverviewSignalItem(
                     id: "pod-restarts|\(pod.id)|\(pod.totalRestarts)",
                     title: pod.name,
@@ -262,6 +263,13 @@ public struct OverviewInsightsProjector: Sendable {
         "imagepullbackoff",
         "errimagepull"
     ])
+
+    private static let successfulTerminalPodStatuses = Set([
+        "succeeded",
+        "completed"
+    ])
+
+    private static let restartSignalThreshold = 3
 
     private static func readinessWarning(_ readyText: String) -> String? {
         let parts = readyText

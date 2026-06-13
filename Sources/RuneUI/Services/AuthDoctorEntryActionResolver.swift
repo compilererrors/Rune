@@ -2,8 +2,8 @@ import Foundation
 import RuneCore
 
 public enum AuthDoctorEntryDestination: Equatable, Sendable {
-    case overview
-    case pods
+    case section(RuneSection)
+    case resource(section: RuneSection, kind: KubeResourceKind)
     case podLogs
     case podExec
     case podPortForward
@@ -26,7 +26,7 @@ public enum AuthDoctorEntryActionResolver {
                 title: "Open Pods",
                 systemImage: "cube.box",
                 help: "Open the Pods list for the active namespace.",
-                destination: .pods
+                destination: .resource(section: .workloads, kind: .pod)
             )
 
         case "pod-logs" where hasPodTarget,
@@ -59,7 +59,7 @@ public enum AuthDoctorEntryActionResolver {
                 title: "Open Workloads",
                 systemImage: "cube.box",
                 help: "Open the namespace-scoped workloads view for the active context.",
-                destination: .pods
+                destination: .resource(section: .workloads, kind: .pod)
             )
 
         case "kubeconfig", "kubeconfig-files", "contexts", "selected-context", "context-namespace", "auth-provider-profile":
@@ -71,6 +71,14 @@ public enum AuthDoctorEntryActionResolver {
             )
 
         default:
+            if let target = AuthDoctorRBACPreflightTarget.target(forCheckID: check.id) {
+                return .init(
+                    title: target.actionTitle,
+                    systemImage: target.systemImage,
+                    help: target.help,
+                    destination: target.destination
+                )
+            }
             guard let url = documentationURL(for: check) else { return nil }
             return .init(
                 title: "Docs",
@@ -86,15 +94,19 @@ public enum AuthDoctorEntryActionResolver {
         switch check.id {
         case "kubeconfig", "kubeconfig-files", "contexts", "selected-context", "context-namespace", "auth-provider-profile":
             path = "https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/"
-        case "exec-auth", "exec-auth-profile", "exec-auth-tools", "cloud-login-tools":
+        case "exec-auth", "exec-auth-cache", "exec-auth-profile", "exec-auth-tools", "cloud-login-tools", "api-auth", "client-certificate-auth":
             path = "https://kubernetes.io/docs/reference/access-authn-authz/authentication/#client-go-credential-plugins"
         case "transport", "proxy-profile", "custom-ca-profile":
             path = "https://kubernetes.io/docs/tasks/administer-cluster/access-cluster-api/"
+        case "api-authorization":
+            path = "https://kubernetes.io/docs/reference/access-authn-authz/rbac/"
         case "pod-list":
             path = "https://kubernetes.io/docs/concepts/workloads/pods/"
         case "pod-logs":
             path = "https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/"
-        case "rbac-pods-list", "rbac-pod-logs", "rbac-pod-exec", "rbac-port-forward":
+        case let id where id.hasPrefix("rbac-") && AuthDoctorRBACPreflightTarget.target(forCheckID: id) != nil:
+            path = "https://kubernetes.io/docs/reference/access-authn-authz/rbac/"
+        case "rbac-access-summary", "rbac-pods-list", "rbac-pod-logs", "rbac-pod-exec", "rbac-port-forward":
             path = "https://kubernetes.io/docs/reference/access-authn-authz/rbac/"
         case "namespace", "namespace-list":
             path = "https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/"

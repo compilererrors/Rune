@@ -290,6 +290,100 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testRESTRequestMetricsRecordingBenchmarkKPI() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 2_000)
+        let started = ContinuousClock.now
+
+        for index in 0..<2_000 {
+            await recorder.record(KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/apis/apps/v1/namespaces/synthetic/deployments/deploy-\(index)/status?limit=200&continue=token-\(index)",
+                statusCode: 200,
+                responseBytes: 512,
+                durationSeconds: 0.001,
+                attempt: 1,
+                outcome: .success
+            ))
+        }
+        let summary = await recorder.summary()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(summary.requestCount, 2_000)
+        XCTAssertEqual(summary.successCount, 2_000)
+        XCTAssertEqual(summary.responseBytes, 1_024_000)
+        XCTAssertEqual(summary.retainedMetricCount, 2_000)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.25,
+            "KPI: recording 2k privacy-safe REST request metrics should stay below 250ms in debug."
+        )
+    }
+
+    func testRESTRequestMetricsRetentionChurnBenchmarkKPI() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 512)
+        let started = ContinuousClock.now
+
+        for index in 0..<10_000 {
+            await recorder.record(KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods/pod-\(index)?continue=token-\(index)",
+                statusCode: index.isMultiple(of: 17) ? 503 : 200,
+                responseBytes: index,
+                durationSeconds: 0.001,
+                attempt: index % 3 + 1,
+                outcome: index.isMultiple(of: 17) ? .httpError : .success
+            ))
+        }
+        let snapshot = await recorder.snapshot()
+        let summary = await recorder.summary()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(summary.requestCount, 10_000)
+        XCTAssertEqual(summary.retainedMetricCount, 512)
+        XCTAssertEqual(summary.responseBytes, 49_995_000)
+        XCTAssertEqual(snapshot.count, 512)
+        XCTAssertEqual(snapshot.first?.responseBytes, 9_488)
+        XCTAssertEqual(snapshot.last?.responseBytes, 9_999)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.75,
+            "KPI: sustained REST metrics churn should retain the latest window without O(n) eviction cost."
+        )
+    }
+
+    func testRESTRequestMetricsGroupingBenchmarkKPI() {
+        let metrics = (0..<4_000).map { index in
+            KubernetesRESTRequestMetric(
+                sourcePath: "swift-rest",
+                method: "GET",
+                apiPath: "/apis/apps/v1/namespaces/synthetic-\(index % 12)/deployments/deploy-\(index % 80)/status?limit=200&continue=token-\(index)",
+                statusCode: index.isMultiple(of: 17) ? 503 : 200,
+                responseBytes: 256 + index % 512,
+                durationSeconds: Double(index % 50) / 1_000,
+                attempt: index.isMultiple(of: 17) ? 2 : 1,
+                outcome: index.isMultiple(of: 17) ? .httpError : .success
+            )
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = KubernetesRequestMetricsSupportBundleProjector.groups(from: metrics)
+        }
+
+        let started = ContinuousClock.now
+        let groups = KubernetesRequestMetricsSupportBundleProjector.groups(from: metrics)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.apiPath, "/apis/apps/v1/namespaces/<namespace>/deployments/<name>/status?limit=<redacted>&continue=<redacted>")
+        XCTAssertEqual(groups.first?.requestCount, 4_000)
+        XCTAssertGreaterThan(groups.first?.failureCount ?? 0, 0)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.12,
+            "KPI: grouping 4k privacy-safe REST request metrics for support bundles should stay below 120ms in debug."
+        )
+    }
+
     func testLogSearchNavigationBenchmarkKPI() {
         let text = (0..<20_000)
             .map { index in
@@ -2949,6 +3043,85 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testAuthDoctorFailureProjectionBenchmarkKPI() {
+        let samples = [
+            "Command failed: kubeconfig exec auth provider: Timed out after 25 seconds",
+            "Kubeconfig exec auth response is not a valid ExecCredential JSON document: not-json",
+            "Kubeconfig exec auth returned apiVersion client.authentication.k8s.io/v1beta1, expected client.authentication.k8s.io/v1",
+            "Kubeconfig exec auth response is missing status",
+            "Kubeconfig exec auth returned incomplete client certificate credentials",
+            "Command failed: kubeconfig exec auth provider: executable file not found",
+            "HTTP status 401 Unauthorized: invalid bearer token",
+            "Client certificate and key in kubeconfig could not be paired into a TLS identity: OSStatus -25300",
+            "pods is forbidden: User cannot list resource pods in namespace default",
+            "TLS handshake failed: x509 certificate signed by unknown authority",
+            "Proxy CONNECT tunnel failed with HTTP 407",
+            "DNS resolution timed out while connecting to the Kubernetes API",
+            "synthetic unclassified parser failure"
+        ]
+        let messages = (0..<2_600).map { samples[$0 % samples.count] }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for message in messages {
+                _ = AuthDoctorFailureProjector.checks(for: message)
+            }
+        }
+
+        let started = ContinuousClock.now
+        let projected = messages.reduce(into: 0) { count, message in
+            count += AuthDoctorFailureProjector.checks(for: message).count
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(projected, 2_400)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.08,
+            "KPI: Auth Doctor failure projection should classify 2.6k mixed failure messages below 80ms in debug."
+        )
+    }
+
+    func testAuthDoctorRBACPreflightRunnerBenchmarkKPI() async {
+        let targets = AuthDoctorRBACPreflightTarget.emptyViewTargets
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let expectation = expectation(description: "Auth Doctor RBAC preflight benchmark")
+            Task {
+                for _ in 0..<200 {
+                    let results = await AuthDoctorRBACPreflightRunner.run(
+                        targets: targets,
+                        activeNamespace: "synthetic",
+                        maxConcurrentChecks: 4
+                    ) { target, namespace in
+                        target.id.count + (namespace?.count ?? 0) > 0
+                    }
+                    XCTAssertEqual(results.count, targets.count)
+                }
+                expectation.fulfill()
+            }
+            wait(for: [expectation], timeout: 2.0)
+        }
+
+        let started = ContinuousClock.now
+        for _ in 0..<200 {
+            let results = await AuthDoctorRBACPreflightRunner.run(
+                targets: targets,
+                activeNamespace: "synthetic",
+                maxConcurrentChecks: 4
+            ) { target, namespace in
+                target.id.count + (namespace?.count ?? 0) > 0
+            }
+            XCTAssertEqual(results.count, targets.count)
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.50,
+            "KPI: Auth Doctor RBAC preflight scheduling should run 200 synthetic target sweeps below 500ms in debug."
+        )
+    }
+
     @MainActor
     func testSupportBundleSanitizerBenchmarkKPI() throws {
         let state = RuneAppState()
@@ -3429,6 +3602,42 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(sessions.count, 64)
         XCTAssertEqual(pods.count, 500)
         XCTAssertLessThan(seconds(elapsed), 0.10)
+    }
+
+    func testTerminalSessionTabPresentationBenchmarkKPI() {
+        let sessions = (0..<5_000).map { index in
+            PodTerminalSession(
+                id: "shell-\(index)",
+                contextName: "benchmark",
+                namespace: "default",
+                podName: "pod-\(String(format: "%04d", index / 3))",
+                containerName: index.isMultiple(of: 3) ? nil : "container-\(index % 3)",
+                shell: "sh",
+                status: index.isMultiple(of: 11) ? .failed : .connected,
+                lastExitCode: index.isMultiple(of: 11) ? 137 : nil
+            )
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for (index, session) in sessions.enumerated() {
+                _ = TerminalSessionTabPresentation.make(session: session, number: index + 1)
+            }
+        }
+
+        let started = ContinuousClock.now
+        let presentations = sessions.enumerated().map { index, session in
+            TerminalSessionTabPresentation.make(session: session, number: index + 1)
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(presentations.count, 5_000)
+        XCTAssertEqual(presentations[1].secondaryTitle, "container-1")
+        XCTAssertTrue(presentations[11].helpText.contains("Last exit code: 137"))
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.05,
+            "KPI: terminal tab presentation for 5k sessions should stay below 50ms in debug."
+        )
     }
 
     func testTerminalTranscriptExportBenchmarkKPI() throws {

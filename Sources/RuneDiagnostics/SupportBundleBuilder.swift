@@ -21,6 +21,34 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let lastExecResult: PodExecResult?
     public let authDoctorChecks: [RuneHealthCheck]
     public let writeAuditLog: [WriteAuditEntry]
+    public let requestMetrics: [SupportBundleRequestMetric]
+    public let requestMetricsSummary: SupportBundleRequestMetricsSummary?
+    public let requestMetricGroups: [SupportBundleRequestMetricGroup]
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt
+        case contextName
+        case namespace
+        case sectionTitle
+        case readOnlyMode
+        case resourceCounts
+        case selectedResourceKind
+        case selectedResourceName
+        case resourceYAML
+        case resourceDescribe
+        case podLogs
+        case unifiedLogs
+        case unifiedLogPods
+        case deploymentRolloutHistory
+        case recentEvents
+        case portForwardSessions
+        case lastExecResult
+        case authDoctorChecks
+        case writeAuditLog
+        case requestMetrics
+        case requestMetricsSummary
+        case requestMetricGroups
+    }
 
     public init(
         generatedAt: String,
@@ -41,7 +69,10 @@ public struct SupportBundleRequest: Codable, Sendable {
         portForwardSessions: [PortForwardSession],
         lastExecResult: PodExecResult?,
         authDoctorChecks: [RuneHealthCheck],
-        writeAuditLog: [WriteAuditEntry]
+        writeAuditLog: [WriteAuditEntry],
+        requestMetrics: [SupportBundleRequestMetric] = [],
+        requestMetricsSummary: SupportBundleRequestMetricsSummary? = nil,
+        requestMetricGroups: [SupportBundleRequestMetricGroup] = []
     ) {
         self.generatedAt = generatedAt
         self.contextName = contextName
@@ -62,6 +93,140 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.lastExecResult = lastExecResult
         self.authDoctorChecks = authDoctorChecks
         self.writeAuditLog = writeAuditLog
+        self.requestMetrics = requestMetrics
+        self.requestMetricsSummary = requestMetricsSummary
+        self.requestMetricGroups = requestMetricGroups
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try container.decode(String.self, forKey: .generatedAt)
+        contextName = try container.decodeIfPresent(String.self, forKey: .contextName)
+        namespace = try container.decode(String.self, forKey: .namespace)
+        sectionTitle = try container.decode(String.self, forKey: .sectionTitle)
+        readOnlyMode = try container.decode(Bool.self, forKey: .readOnlyMode)
+        resourceCounts = try container.decode([String: Int].self, forKey: .resourceCounts)
+        selectedResourceKind = try container.decodeIfPresent(String.self, forKey: .selectedResourceKind)
+        selectedResourceName = try container.decodeIfPresent(String.self, forKey: .selectedResourceName)
+        resourceYAML = try container.decode(String.self, forKey: .resourceYAML)
+        resourceDescribe = try container.decode(String.self, forKey: .resourceDescribe)
+        podLogs = try container.decode(String.self, forKey: .podLogs)
+        unifiedLogs = try container.decode(String.self, forKey: .unifiedLogs)
+        unifiedLogPods = try container.decode([String].self, forKey: .unifiedLogPods)
+        deploymentRolloutHistory = try container.decode(String.self, forKey: .deploymentRolloutHistory)
+        recentEvents = try container.decode([EventSummary].self, forKey: .recentEvents)
+        portForwardSessions = try container.decode([PortForwardSession].self, forKey: .portForwardSessions)
+        lastExecResult = try container.decodeIfPresent(PodExecResult.self, forKey: .lastExecResult)
+        authDoctorChecks = try container.decode([RuneHealthCheck].self, forKey: .authDoctorChecks)
+        writeAuditLog = try container.decode([WriteAuditEntry].self, forKey: .writeAuditLog)
+        requestMetrics = try container.decodeIfPresent([SupportBundleRequestMetric].self, forKey: .requestMetrics) ?? []
+        requestMetricsSummary = try container.decodeIfPresent(SupportBundleRequestMetricsSummary.self, forKey: .requestMetricsSummary)
+        requestMetricGroups = try container.decodeIfPresent([SupportBundleRequestMetricGroup].self, forKey: .requestMetricGroups) ?? []
+    }
+}
+
+public struct SupportBundleRequestMetricsSummary: Codable, Sendable, Equatable {
+    public let requestCount: Int
+    public let successCount: Int
+    public let failureCount: Int
+    public let cancelledCount: Int
+    public let responseBytes: Int
+    public let totalDurationSeconds: Double
+    public let retainedMetricCount: Int
+
+    public init(
+        requestCount: Int,
+        successCount: Int,
+        failureCount: Int,
+        cancelledCount: Int,
+        responseBytes: Int,
+        totalDurationSeconds: Double,
+        retainedMetricCount: Int
+    ) {
+        self.requestCount = requestCount
+        self.successCount = successCount
+        self.failureCount = failureCount
+        self.cancelledCount = cancelledCount
+        self.responseBytes = responseBytes
+        self.totalDurationSeconds = totalDurationSeconds
+        self.retainedMetricCount = retainedMetricCount
+    }
+}
+
+public struct SupportBundleRequestMetric: Codable, Sendable, Equatable {
+    public let sourcePath: String
+    public let method: String
+    public let apiPath: String
+    public let statusCode: Int?
+    public let responseBytes: Int
+    public let durationSeconds: Double
+    public let attempt: Int
+    public let outcome: String
+    public let cancellationReason: String?
+
+    public init(
+        sourcePath: String,
+        method: String,
+        apiPath: String,
+        statusCode: Int?,
+        responseBytes: Int,
+        durationSeconds: Double,
+        attempt: Int,
+        outcome: String,
+        cancellationReason: String?
+    ) {
+        self.sourcePath = sourcePath
+        self.method = method
+        self.apiPath = apiPath
+        self.statusCode = statusCode
+        self.responseBytes = responseBytes
+        self.durationSeconds = durationSeconds
+        self.attempt = attempt
+        self.outcome = outcome
+        self.cancellationReason = cancellationReason
+    }
+}
+
+public struct SupportBundleRequestMetricGroup: Codable, Sendable, Equatable {
+    public let sourcePath: String
+    public let method: String
+    public let apiPath: String
+    public let requestCount: Int
+    public let successCount: Int
+    public let failureCount: Int
+    public let cancelledCount: Int
+    public let responseBytes: Int
+    public let totalDurationSeconds: Double
+    public let maxDurationSeconds: Double
+    public let latestStatusCode: Int?
+    public let latestOutcome: String
+
+    public init(
+        sourcePath: String,
+        method: String,
+        apiPath: String,
+        requestCount: Int,
+        successCount: Int,
+        failureCount: Int,
+        cancelledCount: Int,
+        responseBytes: Int,
+        totalDurationSeconds: Double,
+        maxDurationSeconds: Double,
+        latestStatusCode: Int?,
+        latestOutcome: String
+    ) {
+        self.sourcePath = sourcePath
+        self.method = method
+        self.apiPath = apiPath
+        self.requestCount = requestCount
+        self.successCount = successCount
+        self.failureCount = failureCount
+        self.cancelledCount = cancelledCount
+        self.responseBytes = responseBytes
+        self.totalDurationSeconds = totalDurationSeconds
+        self.maxDurationSeconds = maxDurationSeconds
+        self.latestStatusCode = latestStatusCode
+        self.latestOutcome = latestOutcome
     }
 }
 
@@ -87,7 +252,10 @@ public extension SupportBundleRequest {
         generatedAt: String,
         resourceCounts: [String: Int],
         selectedResourceKind: String?,
-        selectedResourceName: String?
+        selectedResourceName: String?,
+        requestMetrics: [SupportBundleRequestMetric] = [],
+        requestMetricsSummary: SupportBundleRequestMetricsSummary? = nil,
+        requestMetricGroups: [SupportBundleRequestMetricGroup] = []
     ) -> SupportBundleRequest {
         let sanitizer = SupportBundleSanitizer(redactedIdentifiers: [state.selectedContext?.name].compactMap { $0 })
 
@@ -110,7 +278,10 @@ public extension SupportBundleRequest {
             portForwardSessions: state.portForwardSessions.map(sanitizer.sanitizedPortForwardSession),
             lastExecResult: state.lastExecResult.map(sanitizer.sanitizedPodExecResult),
             authDoctorChecks: state.authDoctorChecks.map(sanitizer.sanitizedAuthDoctorCheck),
-            writeAuditLog: state.writeAuditLog.map(sanitizer.sanitizedWriteAuditEntry)
+            writeAuditLog: state.writeAuditLog.map(sanitizer.sanitizedWriteAuditEntry),
+            requestMetrics: requestMetrics.map(sanitizer.sanitizedRequestMetric),
+            requestMetricsSummary: requestMetricsSummary,
+            requestMetricGroups: requestMetricGroups.map(sanitizer.sanitizedRequestMetricGroup)
         )
     }
 
@@ -228,6 +399,93 @@ public extension SupportBundleRequest {
                 status: sanitizedText(entry.status),
                 message: sanitizedText(entry.message)
             )
+        }
+
+        func sanitizedRequestMetric(_ metric: SupportBundleRequestMetric) -> SupportBundleRequestMetric {
+            SupportBundleRequestMetric(
+                sourcePath: sanitizedText(metric.sourcePath),
+                method: sanitizedText(metric.method),
+                apiPath: sanitizedMetricAPIPath(metric.apiPath),
+                statusCode: metric.statusCode,
+                responseBytes: metric.responseBytes,
+                durationSeconds: metric.durationSeconds,
+                attempt: metric.attempt,
+                outcome: sanitizedText(metric.outcome),
+                cancellationReason: metric.cancellationReason.map(sanitizedText)
+            )
+        }
+
+        func sanitizedRequestMetricGroup(_ group: SupportBundleRequestMetricGroup) -> SupportBundleRequestMetricGroup {
+            SupportBundleRequestMetricGroup(
+                sourcePath: sanitizedText(group.sourcePath),
+                method: sanitizedText(group.method),
+                apiPath: sanitizedMetricAPIPath(group.apiPath),
+                requestCount: group.requestCount,
+                successCount: group.successCount,
+                failureCount: group.failureCount,
+                cancelledCount: group.cancelledCount,
+                responseBytes: group.responseBytes,
+                totalDurationSeconds: group.totalDurationSeconds,
+                maxDurationSeconds: group.maxDurationSeconds,
+                latestStatusCode: group.latestStatusCode,
+                latestOutcome: sanitizedText(group.latestOutcome)
+            )
+        }
+
+        private func sanitizedMetricAPIPath(_ apiPath: String) -> String {
+            var sanitized = apiPath
+            for identifier in redactedIdentifiers where !identifier.isEmpty {
+                sanitized = sanitized.replacingOccurrences(of: identifier, with: "<context-name>")
+            }
+
+            let pieces = sanitized.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+            let redactedPath = redactedMetricPathSegments(String(pieces.first ?? ""))
+            guard pieces.count > 1 else { return redactedPath }
+
+            let query = pieces[1]
+                .split(separator: "&", omittingEmptySubsequences: false)
+                .map { item -> String in
+                    let pair = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard let name = pair.first, !name.isEmpty else { return "<redacted>" }
+                    return "\(name)=<redacted>"
+                }
+                .joined(separator: "&")
+            return query.isEmpty ? redactedPath : "\(redactedPath)?\(query)"
+        }
+
+        private func redactedMetricPathSegments(_ path: String) -> String {
+            let hasLeadingSlash = path.hasPrefix("/")
+            var segments = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+
+            if let namespaceIndex = segments.firstIndex(of: "namespaces"),
+               namespaceIndex + 1 < segments.count {
+                segments[namespaceIndex + 1] = "<namespace>"
+            }
+
+            if let nameIndex = metricObjectNameIndex(in: segments) {
+                segments[nameIndex] = "<name>"
+            }
+
+            let joined = segments.joined(separator: "/")
+            return hasLeadingSlash ? "/" + joined : joined
+        }
+
+        private func metricObjectNameIndex(in segments: [String]) -> Int? {
+            if let namespaceIndex = segments.firstIndex(of: "namespaces") {
+                let resourceIndex = namespaceIndex + 2
+                let nameIndex = resourceIndex + 1
+                return nameIndex < segments.count ? nameIndex : nil
+            }
+
+            if segments.first == "api", segments.count >= 5 {
+                return 4
+            }
+
+            if segments.first == "apis", segments.count >= 6 {
+                return 5
+            }
+
+            return nil
         }
 
         private func sanitizedLine(_ line: String) -> String {

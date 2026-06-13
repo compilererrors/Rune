@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 @testable import RuneCore
+@testable import RuneDiagnostics
+@testable import RuneExport
 @testable import RuneKube
 @testable import RuneSecurity
 @testable import RuneStore
@@ -454,14 +456,88 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposeAuthDoctorAndSupportBundleAreNonDestructive() async throws {
+        let exporter = RecordingFileExporter()
+        let harness = try makeHarness(exporter: exporter)
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 20) {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && !harness.state.pods.isEmpty
+                && !harness.state.isLoading
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let clusterBefore = try await clusterSnapshot(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace
+        )
+        let stateBeforeAuthDoctor = ViewModelResourceStateSnapshot(state: harness.state)
+
+        harness.viewModel.runAuthDoctor()
+
+        try await waitUntil(timeout: 30) {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains { $0.id == "pod-list" }
+                && harness.state.authDoctorChecks.contains { $0.id == "pod-logs" }
+        }
+
+        let clusterAfterAuthDoctor = try await clusterSnapshot(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace
+        )
+        XCTAssertEqual(clusterAfterAuthDoctor, clusterBefore)
+        XCTAssertEqual(ViewModelResourceStateSnapshot(state: harness.state), stateBeforeAuthDoctor)
+        XCTAssertEqual(harness.state.writeAuditLog.count, 0)
+        XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" })
+
+        let stateBeforeSupportBundle = ViewModelResourceStateSnapshot(state: harness.state)
+        let requestCountBeforeSupportBundle = await harness.kubeClient.restRequestMetricsSummary().requestCount
+
+        harness.viewModel.saveSupportBundle()
+
+        try await waitUntil(timeout: 10) {
+            exporter.saves.count == 1
+        }
+
+        let requestCountAfterSupportBundle = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        XCTAssertEqual(requestCountAfterSupportBundle, requestCountBeforeSupportBundle)
+        XCTAssertEqual(ViewModelResourceStateSnapshot(state: harness.state), stateBeforeSupportBundle)
+        XCTAssertEqual(harness.state.writeAuditLog.count, 0)
+
+        let save = try XCTUnwrap(exporter.saves.first)
+        XCTAssertEqual(save.allowedFileTypes, ["json"])
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: save.data)
+        XCTAssertEqual(decoded.contextName, "<context-name>")
+        XCTAssertEqual(decoded.namespace, namespace)
+        XCTAssertEqual(decoded.resourceCounts["pods"], stateBeforeSupportBundle.podNames.count)
+        XCTAssertFalse(decoded.requestMetrics.isEmpty)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let kubeconfigURL: URL
+        let kubeClient: KubernetesClient
         let state: RuneAppState
         let viewModel: RuneAppViewModel
         let helmRunner: DockerComposeRecordingHelmCommandRunner
     }
 
-    private func makeHarness() throws -> Harness {
+    private func makeHarness(exporter: FileExporting = NoopFileExporter()) throws -> Harness {
         guard ProcessInfo.processInfo.environment["RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS"] == "1" else {
             throw XCTSkip("Set RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 to run Docker Compose fake-cluster UI integration tests.")
         }
@@ -481,14 +557,23 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
+        let kubeClient = KubernetesClient(commandTimeout: 10)
         let helmRunner = DockerComposeRecordingHelmCommandRunner()
         let viewModel = RuneAppViewModel(
             state: state,
+            kubeClient: kubeClient,
+            exporter: exporter,
             helmCommandRunner: helmRunner,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
-        return Harness(kubeconfigURL: kubeconfig, state: state, viewModel: viewModel, helmRunner: helmRunner)
+        return Harness(
+            kubeconfigURL: kubeconfig,
+            kubeClient: kubeClient,
+            state: state,
+            viewModel: viewModel,
+            helmRunner: helmRunner
+        )
     }
 
     private func selectOrbitContext(in harness: Harness) async throws {
@@ -665,6 +750,27 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         )
     }
 
+    private func clusterSnapshot(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> DockerComposeClusterSnapshot {
+        async let pods = client.listPods(from: sources, context: context, namespace: namespace)
+        async let deployments = client.listDeployments(from: sources, context: context, namespace: namespace)
+        async let services = client.listServices(from: sources, context: context, namespace: namespace)
+        async let configMaps = client.listConfigMaps(from: sources, context: context, namespace: namespace)
+        async let events = client.listEvents(from: sources, context: context, namespace: namespace)
+
+        return try await DockerComposeClusterSnapshot(
+            podNames: pods.map(\.name).sorted(),
+            deploymentNames: deployments.map(\.name).sorted(),
+            serviceNames: services.map(\.name).sorted(),
+            configMapNames: configMaps.map(\.name).sorted(),
+            eventObjectNames: events.map(\.objectName).sorted()
+        )
+    }
+
     private static func shortTestID() -> String {
         String(UUID().uuidString.prefix(8)).lowercased()
     }
@@ -711,5 +817,61 @@ private final class DockerComposeRecordingHelmCommandRunner: HelmCommandRunning,
     func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval) async throws -> HelmCommandResult {
         requests.append(request)
         return HelmCommandResult(exitCode: 0, stdout: "ok\n", stderr: "")
+    }
+}
+
+private struct DockerComposeClusterSnapshot: Equatable {
+    let podNames: [String]
+    let deploymentNames: [String]
+    let serviceNames: [String]
+    let configMapNames: [String]
+    let eventObjectNames: [String]
+}
+
+private struct ViewModelResourceStateSnapshot: Equatable {
+    let selectedContextName: String?
+    let selectedNamespace: String
+    let selectedSection: RuneSection
+    let selectedWorkloadKind: KubeResourceKind
+    let podNames: [String]
+    let deploymentNames: [String]
+    let serviceNames: [String]
+    let configMapNames: [String]
+    let eventObjectNames: [String]
+
+    @MainActor
+    init(state: RuneAppState) {
+        selectedContextName = state.selectedContext?.name
+        selectedNamespace = state.selectedNamespace
+        selectedSection = state.selectedSection
+        selectedWorkloadKind = state.selectedWorkloadKind
+        podNames = state.pods.map(\.name)
+        deploymentNames = state.deployments.map(\.name)
+        serviceNames = state.services.map(\.name)
+        configMapNames = state.configMaps.map(\.name)
+        eventObjectNames = state.events.map(\.objectName)
+    }
+}
+
+private final class NoopFileExporter: FileExporting {
+    @MainActor
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+private final class RecordingFileExporter: FileExporting {
+    struct Save {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+    }
+
+    private(set) var saves: [Save] = []
+
+    @MainActor
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        saves.append(Save(data: data, suggestedName: suggestedName, allowedFileTypes: allowedFileTypes))
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
     }
 }

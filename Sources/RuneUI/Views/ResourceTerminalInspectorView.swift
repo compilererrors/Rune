@@ -175,6 +175,25 @@ struct ResourceTerminalWorkspaceView: View {
     }
 }
 
+struct TerminalSessionDetailPresentation: Hashable, Sendable {
+    let targetTitle: String
+    let containerTitle: String?
+    let shellTitle: String
+    let statusTitle: String
+    let lastExitCodeTitle: String?
+
+    static func make(session: PodTerminalSession) -> TerminalSessionDetailPresentation {
+        let trimmedContainer = session.containerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return TerminalSessionDetailPresentation(
+            targetTitle: "\(session.namespace)/\(session.podName)",
+            containerTitle: trimmedContainer.isEmpty ? nil : trimmedContainer,
+            shellTitle: session.shell,
+            statusTitle: session.status.rawValue.capitalized,
+            lastExitCodeTitle: session.lastExitCode.map(String.init)
+        )
+    }
+}
+
 struct ResourceTerminalDetailsView: View {
     let session: PodTerminalSession?
     let selectedPod: PodSummary?
@@ -193,16 +212,22 @@ struct ResourceTerminalDetailsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let session {
-                Label("\(session.namespace)/\(session.podName)", systemImage: "terminal")
+                let presentation = TerminalSessionDetailPresentation.make(session: session)
+                Label(presentation.targetTitle, systemImage: "terminal")
                     .font(.subheadline.weight(.medium))
-                Text("Shell: \(session.shell)")
+                if let containerTitle = presentation.containerTitle {
+                    Text("Container: \(containerTitle)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Shell: \(presentation.shellTitle)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("Status: \(session.status.rawValue.capitalized)")
+                Text("Status: \(presentation.statusTitle)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if let exitCode = session.lastExitCode {
-                    Text("Last exit code: \(exitCode)")
+                if let lastExitCodeTitle = presentation.lastExitCodeTitle {
+                    Text("Last exit code: \(lastExitCodeTitle)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

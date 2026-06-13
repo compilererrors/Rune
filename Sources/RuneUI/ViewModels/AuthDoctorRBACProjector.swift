@@ -6,6 +6,7 @@ public struct AuthDoctorRBACCapability: Hashable, Sendable {
     public let title: String
     public let verb: String
     public let resource: String
+    public let apiGroup: String?
     public let subresource: String?
     public let allowed: Bool
 
@@ -14,6 +15,7 @@ public struct AuthDoctorRBACCapability: Hashable, Sendable {
         title: String,
         verb: String,
         resource: String,
+        apiGroup: String? = nil,
         subresource: String? = nil,
         allowed: Bool
     ) {
@@ -21,18 +23,23 @@ public struct AuthDoctorRBACCapability: Hashable, Sendable {
         self.title = title
         self.verb = verb
         self.resource = resource
+        self.apiGroup = apiGroup
         self.subresource = subresource
         self.allowed = allowed
     }
 
     public var target: String {
-        "\(resource)\(subresource.map { "/" + $0 } ?? "")"
+        let group = apiGroup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let groupPrefix = group.isEmpty ? "" : "\(group)/"
+        return "\(groupPrefix)\(resource)\(subresource.map { "/" + $0 } ?? "")"
     }
 
     fileprivate var deniedCapabilityLabel: String {
         switch (resource, subresource) {
         case ("pods", nil):
             return "pod listing"
+        case ("deployments", nil):
+            return "deployment listing"
         case ("pods", "log"):
             return "logs"
         case ("pods", "exec"):

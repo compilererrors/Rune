@@ -20,8 +20,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private let configCache = KubernetesRESTConfigCache()
     private let execCredentialCache = KubernetesExecCredentialCache()
     private let requestCoalescer = KubernetesRESTRequestCoalescer()
+    private let requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder?
 
-    init() {}
+    init(requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder? = nil) {
+        self.requestMetricsRecorder = requestMetricsRecorder
+    }
 
     static func _testCreateClientTLSIdentity(certificateData: Data, keyData: Data) throws -> Bool {
         try ClientTLSIdentity.temporaryIdentity(certificateData: certificateData, keyData: keyData) != nil
@@ -63,6 +66,20 @@ final class KubernetesRESTClient: @unchecked Sendable {
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
         let trimmed = resolved.namespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func execCredentialCacheDiagnostic(
+        environment: [String: String],
+        contextName: String
+    ) async throws -> KubernetesExecCredentialCacheDiagnostic? {
+        let config = try await normalizedConfig(environment: environment)
+        guard let namedContext = config.contexts.first(where: { $0.name == contextName }) else {
+            throw RuneError.invalidInput(message: "Kubernetes context \(contextName) is missing from kubeconfig")
+        }
+        guard let exec = config.users.first(where: { $0.name == namedContext.context.user })?.user.exec else {
+            return nil
+        }
+        return await execCredentialCache.diagnostic(for: exec.cacheKey(environment: environment))
     }
 
     func listNamespaces(environment: [String: String], contextName: String, timeout: TimeInterval) async throws -> [String] {
@@ -396,29 +413,17 @@ final class KubernetesRESTClient: @unchecked Sendable {
         namespace: String?,
         verb: String,
         resource: String,
+        apiGroup: String? = nil,
         subresource: String?,
         timeout: TimeInterval
     ) async throws -> Bool {
-        var attributes: [String: Any] = [
-            "verb": verb,
-            "resource": resource
-        ]
-        if let namespace = namespace?.trimmingCharacters(in: .whitespacesAndNewlines), !namespace.isEmpty {
-            attributes["namespace"] = namespace
-        }
-        if let subresource = subresource?.trimmingCharacters(in: .whitespacesAndNewlines), !subresource.isEmpty {
-            attributes["subresource"] = subresource
-        }
-
-        let request: [String: Any] = [
-            "apiVersion": "authorization.k8s.io/v1",
-            "kind": "SelfSubjectAccessReview",
-            "spec": ["resourceAttributes": attributes]
-        ]
-        let bodyData = try JSONSerialization.data(withJSONObject: request, options: [])
-        guard let body = String(data: bodyData, encoding: .utf8) else {
-            throw RuneError.invalidInput(message: "Could not encode SelfSubjectAccessReview request")
-        }
+        let body = try Self.selfSubjectAccessReviewRequestBody(
+            namespace: namespace,
+            verb: verb,
+            resource: resource,
+            apiGroup: apiGroup,
+            subresource: subresource
+        )
         let response = try await rawRequest(
             environment: environment,
             contextName: contextName,
@@ -432,6 +437,58 @@ final class KubernetesRESTClient: @unchecked Sendable {
             timeout: timeout
         ).body
         return try Self.selfSubjectAccessReviewAllowed(from: response)
+    }
+
+    static func selfSubjectAccessReviewRequestBody(
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String? = nil,
+        subresource: String?
+    ) throws -> String {
+        try selfSubjectAccessReviewRequestBody(resourceAttributes: selfSubjectAccessReviewResourceAttributes(
+            namespace: namespace,
+            verb: verb,
+            resource: resource,
+            apiGroup: apiGroup,
+            subresource: subresource
+        ))
+    }
+
+    static func selfSubjectAccessReviewResourceAttributes(
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String? = nil,
+        subresource: String?
+    ) -> [String: Any] {
+        var attributes: [String: Any] = [
+            "verb": verb,
+            "resource": resource
+        ]
+        if let apiGroup = apiGroup?.trimmingCharacters(in: .whitespacesAndNewlines), !apiGroup.isEmpty {
+            attributes["group"] = apiGroup
+        }
+        if let namespace = namespace?.trimmingCharacters(in: .whitespacesAndNewlines), !namespace.isEmpty {
+            attributes["namespace"] = namespace
+        }
+        if let subresource = subresource?.trimmingCharacters(in: .whitespacesAndNewlines), !subresource.isEmpty {
+            attributes["subresource"] = subresource
+        }
+        return attributes
+    }
+
+    static func selfSubjectAccessReviewRequestBody(resourceAttributes attributes: [String: Any]) throws -> String {
+        let request: [String: Any] = [
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectAccessReview",
+            "spec": ["resourceAttributes": attributes]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+        guard let body = String(data: bodyData, encoding: .utf8) else {
+            throw RuneError.invalidInput(message: "Could not encode SelfSubjectAccessReview request")
+        }
+        return body
     }
 
     static func selfSubjectAccessReviewAllowed(from raw: String) throws -> Bool {
@@ -1192,6 +1249,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
     ) async throws -> RESTResponse {
         var attempt = 1
         while true {
+            let attemptStarted = ContinuousClock.now
             let data: Data
             let response: URLResponse
             do {
@@ -1200,6 +1258,16 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 let retryDecision = KubernetesRequestRetryPolicy.classifyNetworkError(error)
                 let errorMessage = networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure())
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
+                    await recordRequestMetric(
+                        method: method,
+                        apiPath: apiPath,
+                        statusCode: nil,
+                        responseBytes: 0,
+                        attempt: attempt,
+                        outcome: requestCancellationOutcome(error),
+                        cancellationReason: requestCancellationReason(error),
+                        started: attemptStarted
+                    )
                     try await sleepBeforeKubernetesRetry(
                         method: method,
                         contextName: contextName,
@@ -1213,6 +1281,16 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 VerboseKubeTrace.append(
                     "k8s.request",
                     "failed method=\(method) context=\(contextName) path=\(apiPath) \(retryDecision.traceDescription) error=\(errorMessage)"
+                )
+                await recordRequestMetric(
+                    method: method,
+                    apiPath: apiPath,
+                    statusCode: nil,
+                    responseBytes: 0,
+                    attempt: attempt,
+                    outcome: requestCancellationOutcome(error),
+                    cancellationReason: requestCancellationReason(error),
+                    started: attemptStarted
                 )
                 throw RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
@@ -1234,6 +1312,15 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
                 )
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
+                    await recordRequestMetric(
+                        method: method,
+                        apiPath: apiPath,
+                        statusCode: http.statusCode,
+                        responseBytes: data.count,
+                        attempt: attempt,
+                        outcome: .httpError,
+                        started: attemptStarted
+                    )
                     try await sleepBeforeKubernetesRetry(
                         method: method,
                         contextName: contextName,
@@ -1248,6 +1335,15 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     "k8s.request",
                     "http_error method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode) \(retryDecision.traceDescription)"
                 )
+                await recordRequestMetric(
+                    method: method,
+                    apiPath: apiPath,
+                    statusCode: http.statusCode,
+                    responseBytes: data.count,
+                    attempt: attempt,
+                    outcome: .httpError,
+                    started: attemptStarted
+                )
                 let message = responseBody.isEmpty ? "HTTP \(http.statusCode)" : "HTTP \(http.statusCode): \(responseBody)"
                 throw RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
@@ -1255,11 +1351,59 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 )
             }
 
+            await recordRequestMetric(
+                method: method,
+                apiPath: apiPath,
+                statusCode: http.statusCode,
+                responseBytes: data.count,
+                attempt: attempt,
+                outcome: .success,
+                started: attemptStarted
+            )
             return RESTResponse(
                 body: responseBody,
                 contentType: http.value(forHTTPHeaderField: "Content-Type") ?? ""
             )
         }
+    }
+
+    private func recordRequestMetric(
+        method: String,
+        apiPath: String,
+        statusCode: Int?,
+        responseBytes: Int,
+        attempt: Int,
+        outcome: KubernetesRESTRequestMetricOutcome,
+        cancellationReason: String? = nil,
+        started: ContinuousClock.Instant
+    ) async {
+        guard let requestMetricsRecorder else { return }
+        let elapsed = started.duration(to: .now)
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        await requestMetricsRecorder.record(KubernetesRESTRequestMetric(
+            method: method,
+            apiPath: apiPath,
+            statusCode: statusCode,
+            responseBytes: responseBytes,
+            durationSeconds: seconds,
+            attempt: attempt,
+            outcome: outcome,
+            cancellationReason: cancellationReason
+        ))
+    }
+
+    private func requestCancellationOutcome(_ error: Error) -> KubernetesRESTRequestMetricOutcome {
+        requestCancellationReason(error) == nil ? .networkError : .cancelled
+    }
+
+    private func requestCancellationReason(_ error: Error) -> String? {
+        if error is CancellationError || Task.isCancelled {
+            return "task-cancelled"
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return "urlsession-cancelled"
+        }
+        return nil
     }
 
     private func makeWebSocketTask(
@@ -1716,6 +1860,17 @@ private actor KubernetesExecCredentialCache {
             return nil
         }
         return credential
+    }
+
+    func diagnostic(for key: String) -> KubernetesExecCredentialCacheDiagnostic {
+        guard let credential = byKey[key] else {
+            return KubernetesExecCredentialCacheDiagnostic(state: .miss, expiresAt: nil)
+        }
+        if let expiresAt = credential.expiresAt, expiresAt <= Date().addingTimeInterval(30) {
+            byKey.removeValue(forKey: key)
+            return KubernetesExecCredentialCacheDiagnostic(state: .expired, expiresAt: expiresAt)
+        }
+        return KubernetesExecCredentialCacheDiagnostic(state: .hit, expiresAt: credential.expiresAt)
     }
 
     func setCredential(_ credential: KubernetesExecCredential, for key: String) {

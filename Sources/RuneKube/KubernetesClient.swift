@@ -36,9 +36,26 @@ public struct DeploymentRolloutVerificationResult: Sendable, Equatable {
     }
 }
 
+public enum KubernetesExecCredentialCacheState: String, Sendable, Equatable {
+    case hit
+    case miss
+    case expired
+}
+
+public struct KubernetesExecCredentialCacheDiagnostic: Sendable, Equatable {
+    public let state: KubernetesExecCredentialCacheState
+    public let expiresAt: Date?
+
+    public init(state: KubernetesExecCredentialCacheState, expiresAt: Date?) {
+        self.state = state
+        self.expiresAt = expiresAt
+    }
+}
+
 public final class KubernetesClient: ContextListingService, NamespaceListingService, PodListingService, DeploymentListingService, ServiceListingService, EventListingService, GenericResourceListingService, PodLogService, UnifiedServiceLogService, UnifiedDeploymentLogService, ManifestService, ManifestValidationService, ResourceWriteService, HelmReleaseService, @unchecked Sendable {
     private let parser: KubernetesOutputParser
     private let restClient: KubernetesRESTClient
+    private let requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder
     private let commandTimeout: TimeInterval
     private let access: SecurityScopedAccess
     private let portForwardRegistry = PortForwardRegistry()
@@ -69,10 +86,34 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         commandTimeout: TimeInterval = 30,
         access: SecurityScopedAccess = SecurityScopedAccess()
     ) {
+        let requestMetricsRecorder = KubernetesRESTRequestMetricsRecorder()
         self.parser = parser
-        self.restClient = KubernetesRESTClient()
+        self.restClient = KubernetesRESTClient(requestMetricsRecorder: requestMetricsRecorder)
+        self.requestMetricsRecorder = requestMetricsRecorder
         self.commandTimeout = commandTimeout
         self.access = access
+    }
+
+    init(
+        parser: KubernetesOutputParser = KubernetesOutputParser(),
+        commandTimeout: TimeInterval = 30,
+        access: SecurityScopedAccess = SecurityScopedAccess(),
+        restClient: KubernetesRESTClient,
+        requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder
+    ) {
+        self.parser = parser
+        self.restClient = restClient
+        self.requestMetricsRecorder = requestMetricsRecorder
+        self.commandTimeout = commandTimeout
+        self.access = access
+    }
+
+    public func restRequestMetricsSnapshot() async -> [KubernetesRESTRequestMetric] {
+        await requestMetricsRecorder.snapshot()
+    }
+
+    public func restRequestMetricsSummary() async -> KubernetesRESTRequestMetricsSummary {
+        await requestMetricsRecorder.summary()
     }
 
     public func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext] {
@@ -106,6 +147,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         namespace: String?,
         verb: String,
         resource: String,
+        apiGroup: String? = nil,
         subresource: String? = nil
     ) async throws -> Bool {
         let env = try kubeconfigEnvironment(from: sources)
@@ -115,8 +157,20 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             namespace: namespace,
             verb: verb,
             resource: resource,
+            apiGroup: apiGroup,
             subresource: subresource,
             timeout: commandTimeout
+        )
+    }
+
+    public func execCredentialCacheDiagnostic(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async throws -> KubernetesExecCredentialCacheDiagnostic? {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await restClient.execCredentialCacheDiagnostic(
+            environment: env,
+            contextName: context.name
         )
     }
 

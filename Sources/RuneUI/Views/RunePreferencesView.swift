@@ -83,6 +83,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
+    @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
     @AppStorage(RuneSettingsKeys.writeSafetyRequireApplyDryRun) private var requireApplyDryRun = true
@@ -211,6 +212,14 @@ public struct RunePreferencesView: View {
                     "Hide managed fields by default",
                     help: "Hides Kubernetes managedFields in Describe and YAML inspector surfaces unless the toolbar toggle is turned off.",
                     isOn: $hideManagedFieldsByDefault
+                )
+
+                Divider()
+
+                settingsToggleRow(
+                    "Show hover tooltips",
+                    help: "Shows short native hover explanations for less obvious labels, tabs, and controls such as Cluster Signals. Turn this off if tooltips get in the way.",
+                    isOn: $showHoverTooltips
                 )
             }
 

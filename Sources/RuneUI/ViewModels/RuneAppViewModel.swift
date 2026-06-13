@@ -4143,6 +4143,7 @@ public final class RuneAppViewModel: ObservableObject {
     public func saveCurrentResourceYAML() {
         do {
             guard let (kind, name) = currentWritableResource(), !state.resourceYAML.isEmpty else { return }
+            guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
 
             _ = try exporter.save(
@@ -4158,6 +4159,7 @@ public final class RuneAppViewModel: ObservableObject {
     public func saveCurrentResourceDescribe() {
         do {
             guard let (kind, name) = currentWritableResource(), !state.resourceDescribe.isEmpty else { return }
+            guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
 
             _ = try exporter.save(
@@ -4216,26 +4218,35 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func saveSupportBundle() {
-        do {
-            let formatter = ISO8601DateFormatter()
-            let exportStamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
-            let bundle = try supportBundleBuilder.buildBundle(
-                from: SupportBundleRequest.snapshot(
-                    state: state,
-                    generatedAt: formatter.string(from: Date()),
-                    resourceCounts: resourceCounts(),
-                    selectedResourceKind: selectedResourceKindLabel(),
-                    selectedResourceName: selectedResourceName()
+        Task { @MainActor in
+            do {
+                let restRequestMetrics = await kubeClient.restRequestMetricsSnapshot()
+                let requestMetrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: restRequestMetrics)
+                let requestMetricGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
+                let requestMetricsSummary = await kubeClient.restRequestMetricsSummary()
+                let formatter = ISO8601DateFormatter()
+                let exportStamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
+                let bundle = try supportBundleBuilder.buildBundle(
+                    from: SupportBundleRequest.snapshot(
+                        state: state,
+                        generatedAt: formatter.string(from: Date()),
+                        resourceCounts: resourceCounts(),
+                        selectedResourceKind: selectedResourceKindLabel(),
+                        selectedResourceName: selectedResourceName(),
+                        requestMetrics: requestMetrics,
+                        requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: requestMetricsSummary),
+                        requestMetricGroups: requestMetricGroups
+                    )
                 )
-            )
 
-            _ = try exporter.save(
-                data: bundle,
-                suggestedName: "support-bundle-\(exportStamp).json",
-                allowedFileTypes: ["json"]
-            )
-        } catch {
-            setExportErrorUnlessCancelled(error)
+                _ = try exporter.save(
+                    data: bundle,
+                    suggestedName: "support-bundle-\(exportStamp).json",
+                    allowedFileTypes: ["json"]
+                )
+            } catch {
+                setExportErrorUnlessCancelled(error)
+            }
         }
     }
 
@@ -4255,6 +4266,32 @@ public final class RuneAppViewModel: ObservableObject {
                 checks.removeAll { $0.id == id }
                 checks.append(RuneHealthCheck(id: id, title: title, status: status, message: message))
                 state.setAuthDoctorChecks(checks)
+            }
+
+            @MainActor
+            func recordProjectedFailureMessage(_ message: String) {
+                for check in AuthDoctorFailureProjector.checks(for: message) {
+                    record(check.id, check.title, check.status, check.message)
+                }
+            }
+
+            @MainActor
+            func recordProjectedFailure(_ error: Error) {
+                recordProjectedFailureMessage(error.localizedDescription)
+            }
+
+            @MainActor
+            func recordExecAuthCacheDiagnostic(context: KubeContext) async {
+                do {
+                    guard let diagnostic = try await kubeClient.execCredentialCacheDiagnostic(
+                        from: state.kubeConfigSources,
+                        context: context
+                    ) else { return }
+                    let check = AuthDoctorExecAuthCacheProjector.check(for: diagnostic)
+                    record(check.id, check.title, check.status, check.message)
+                } catch {
+                    recordProjectedFailure(error)
+                }
             }
 
             defer { state.setAuthDoctorRunning(false) }
@@ -4277,6 +4314,7 @@ public final class RuneAppViewModel: ObservableObject {
                 contexts = try await kubeClient.listContexts(from: state.kubeConfigSources)
                 record("contexts", "Contexts", contexts.isEmpty ? .failed : .passed, contexts.isEmpty ? "No contexts were found." : "\(contexts.count) context(s) are readable.")
             } catch {
+                recordProjectedFailure(error)
                 record("contexts", "Contexts", .failed, error.localizedDescription)
                 return
             }
@@ -4286,6 +4324,8 @@ public final class RuneAppViewModel: ObservableObject {
                 return
             }
             record("selected-context", "Selected context", .passed, context.name)
+            let kubeConfigSources = state.kubeConfigSources
+            let authDoctorKubeClient = kubeClient
 
             @MainActor
             func recordCanI(
@@ -4294,15 +4334,17 @@ public final class RuneAppViewModel: ObservableObject {
                 namespace: String?,
                 verb: String,
                 resource: String,
+                apiGroup: String? = nil,
                 subresource: String? = nil
             ) async -> AuthDoctorRBACCapability? {
                 do {
                     let allowed = try await kubeClient.canI(
-                        from: state.kubeConfigSources,
+                        from: kubeConfigSources,
                         context: context,
                         namespace: namespace,
                         verb: verb,
                         resource: resource,
+                        apiGroup: apiGroup,
                         subresource: subresource
                     )
                     let capability = AuthDoctorRBACCapability(
@@ -4310,6 +4352,7 @@ public final class RuneAppViewModel: ObservableObject {
                         title: title,
                         verb: verb,
                         resource: resource,
+                        apiGroup: apiGroup,
                         subresource: subresource,
                         allowed: allowed
                     )
@@ -4317,6 +4360,7 @@ public final class RuneAppViewModel: ObservableObject {
                     record(check.id, check.title, check.status, check.message)
                     return capability
                 } catch {
+                    recordProjectedFailure(error)
                     record(id, title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(error.localizedDescription)")
                     return nil
                 }
@@ -4326,6 +4370,7 @@ public final class RuneAppViewModel: ObservableObject {
                 let defaultNamespace = try await kubeClient.contextNamespace(from: state.kubeConfigSources, context: context)
                 record("context-namespace", "Context namespace", .passed, defaultNamespace?.isEmpty == false ? defaultNamespace! : "No default namespace in kubeconfig; Rune will resolve one.")
             } catch {
+                recordProjectedFailure(error)
                 record("context-namespace", "Context namespace", .warning, error.localizedDescription)
             }
 
@@ -4334,7 +4379,9 @@ public final class RuneAppViewModel: ObservableObject {
                 record("namespace-list", "Namespace list", .passed, "\(namespaces.count) namespace(s) listed.")
                 record("transport", "API transport", .passed, "API server, TLS/CA, proxy settings, and auth credentials worked for a live request.")
                 record("exec-auth", "Exec auth", .passed, "Any kubeconfig exec/auth plugin needed for this request completed successfully.")
+                await recordExecAuthCacheDiagnostic(context: context)
             } catch {
+                recordProjectedFailure(error)
                 record("namespace-list", "Namespace list", .warning, "Cannot list namespaces. Manual namespace mode can still work if RBAC allows access to a specific namespace. \(error.localizedDescription)")
             }
 
@@ -4345,14 +4392,47 @@ public final class RuneAppViewModel: ObservableObject {
             }
             record("namespace", "Active namespace", .passed, namespace)
 
-            let rbacCapabilities = [
+            let podRBACCapabilities = [
                 await recordCanI("rbac-pods-list", "RBAC pod list", namespace: namespace, verb: "list", resource: "pods"),
                 await recordCanI("rbac-pod-logs", "RBAC pod logs", namespace: namespace, verb: "get", resource: "pods", subresource: "log"),
                 await recordCanI("rbac-pod-exec", "RBAC pod exec", namespace: namespace, verb: "create", resource: "pods", subresource: "exec"),
                 await recordCanI("rbac-port-forward", "RBAC port-forward", namespace: namespace, verb: "create", resource: "pods", subresource: "portforward")
             ].compactMap { $0 }
-            if let rbacSummary = AuthDoctorRBACProjector.accessSummary(namespace: namespace, capabilities: rbacCapabilities) {
+            if let rbacSummary = AuthDoctorRBACProjector.accessSummary(namespace: namespace, capabilities: podRBACCapabilities) {
                 record(rbacSummary.id, rbacSummary.title, rbacSummary.status, rbacSummary.message)
+            }
+            let preflightResults = await AuthDoctorRBACPreflightRunner.run(
+                targets: AuthDoctorRBACPreflightTarget.emptyViewTargets,
+                activeNamespace: namespace,
+                maxConcurrentChecks: 4
+            ) { target, targetNamespace in
+                try await authDoctorKubeClient.canI(
+                    from: kubeConfigSources,
+                    context: context,
+                    namespace: targetNamespace,
+                    verb: target.verb,
+                    resource: target.resource,
+                    apiGroup: target.apiGroup,
+                    subresource: target.subresource
+                )
+            }
+            for result in preflightResults {
+                if let allowed = result.allowed {
+                    let capability = AuthDoctorRBACCapability(
+                        id: result.target.id,
+                        title: result.target.title,
+                        verb: result.target.verb,
+                        resource: result.target.resource,
+                        apiGroup: result.target.apiGroup,
+                        subresource: result.target.subresource,
+                        allowed: allowed
+                    )
+                    let check = AuthDoctorRBACProjector.check(for: capability, namespace: result.namespace)
+                    record(check.id, check.title, check.status, check.message)
+                } else if let errorMessage = result.errorMessage {
+                    recordProjectedFailureMessage(errorMessage)
+                    record(result.target.id, result.target.title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(errorMessage)")
+                }
             }
 
             do {
@@ -4360,7 +4440,8 @@ public final class RuneAppViewModel: ObservableObject {
                 record("pod-list", "Pod list", .passed, "\(pods.count) pod(s) readable in namespace \(namespace).")
                 record("transport", "API transport", .passed, "API server, TLS/CA, proxy settings, and auth credentials worked for a live request.")
                 record("exec-auth", "Exec auth", .passed, "Any kubeconfig exec/auth plugin needed for this request completed successfully.")
-                if let pod = pods.first {
+                await recordExecAuthCacheDiagnostic(context: context)
+                if let pod = Self.authDoctorLogProbePod(from: pods) {
                     do {
                         _ = try await kubeClient.podLogs(
                             from: state.kubeConfigSources,
@@ -4372,15 +4453,39 @@ public final class RuneAppViewModel: ObservableObject {
                         )
                         record("pod-logs", "Pod logs", .passed, "Logs endpoint is reachable for a pod in \(namespace).")
                     } catch {
+                        recordProjectedFailure(error)
                         record("pod-logs", "Pod logs", .warning, error.localizedDescription)
                     }
                 } else {
                     record("pod-logs", "Pod logs", .warning, "No pods found, so log access could not be verified.")
                 }
             } catch {
+                recordProjectedFailure(error)
                 record("pod-list", "Pod list", .failed, error.localizedDescription)
             }
         }
+    }
+
+    nonisolated static func authDoctorLogProbePod(from pods: [PodSummary]) -> PodSummary? {
+        func normalizedStatus(_ pod: PodSummary) -> String {
+            pod.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+
+        func hasAllContainersReady(_ pod: PodSummary) -> Bool {
+            guard let ready = pod.containersReady?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !ready.isEmpty else {
+                return false
+            }
+            let parts = ready
+                .split(separator: "/", maxSplits: 1)
+                .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return parts.count == 2 && parts[0] == parts[1] && parts[1] > 0
+        }
+
+        return pods.first { normalizedStatus($0) == "running" && hasAllContainersReady($0) }
+            ?? pods.first { normalizedStatus($0) == "running" }
+            ?? pods.first { ["succeeded", "completed"].contains(normalizedStatus($0)) }
+            ?? pods.first
     }
 
     public func clearAuthDoctorOutput() {
@@ -4857,6 +4962,7 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
         guard let (kind, name) = currentWritableResource(), !state.resourceYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
         guard state.resourceYAMLHasUnsavedEdits else { return }
         guard !state.resourceYAMLValidationIssues.contains(where: { $0.severity == .error }) else {
             state.setError(RuneError.invalidInput(message: "Fix YAML errors before applying."))
@@ -4880,6 +4986,7 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
         guard let (kind, name) = currentWritableResource() else { return }
+        guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
         guard kind != .secret else {
             state.setError(RuneError.invalidInput(message: "Apply last fetched YAML is disabled for Secrets. Review the diff and apply YAML explicitly."))
             return
@@ -7018,7 +7125,7 @@ public final class RuneAppViewModel: ObservableObject {
         if shouldLoadResourceDetailsForCurrentSection {
             let requestID = UUID()
             latestResourceDetailsRequestID = requestID
-            state.beginResourceDetailLoad()
+            state.beginResourceDetailLoad(scope: currentResourceDetailScope())
             await loadResourceDetailsForCurrentSelectionAsync(requestID: requestID)
         } else {
             diagnostics.log("loadResourceSnapshot skipped heavy resource details for section=\(state.selectedSection.rawValue)")
@@ -7245,7 +7352,7 @@ public final class RuneAppViewModel: ObservableObject {
         resourceDetailsTask?.cancel()
         let requestID = UUID()
         latestResourceDetailsRequestID = requestID
-        state.beginResourceDetailLoad()
+        state.beginResourceDetailLoad(scope: currentResourceDetailScope())
         diagnostics.log("resourceDetails start request=\(requestID.uuidString) section=\(state.selectedSection.rawValue) kind=\(state.selectedWorkloadKind.rawValue) namespace=\(state.selectedNamespace)")
 
         resourceDetailsTask = Task { [weak self] in
@@ -8036,7 +8143,7 @@ public final class RuneAppViewModel: ObservableObject {
         resourceDetailsTask?.cancel()
         let requestID = UUID()
         latestResourceDetailsRequestID = requestID
-        state.beginResourceDetailLoad()
+        state.beginResourceDetailLoad(scope: currentOperatorResourceDetailScope())
 
         resourceDetailsTask = Task { [weak self] in
             guard let self else { return }
@@ -8275,6 +8382,79 @@ public final class RuneAppViewModel: ObservableObject {
         case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             guard let resource = state.selectedRBACResource else { return nil }
             return (resource.kind, resource.name)
+        case .event:
+            return nil
+        }
+    }
+
+    private func currentResourceDetailScope() -> ResourceDetailScope? {
+        guard let contextName = state.selectedContext?.name else { return nil }
+        guard let reference = currentResourceReference() else { return nil }
+        return ResourceDetailScope(
+            contextName: contextName,
+            namespace: reference.namespace,
+            kind: reference.kind,
+            name: reference.name
+        )
+    }
+
+    private func currentOperatorResourceDetailScope() -> ResourceDetailScope? {
+        guard let contextName = state.selectedContext?.name,
+              let resource = state.selectedOperatorResource else { return nil }
+        return ResourceDetailScope(
+            contextName: contextName,
+            namespace: resource.namespace,
+            kind: resource.kind,
+            name: resource.name
+        )
+    }
+
+    private func loadedResourceDetailScopeMatchesCurrentSelection() -> Bool {
+        guard let loadedScope = state.resourceDetailScope else { return true }
+        return loadedScope == currentResourceDetailScope()
+    }
+
+    private func currentResourceReference() -> (kind: KubeResourceKind, name: String, namespace: String?)? {
+        switch state.selectedWorkloadKind {
+        case .pod:
+            guard let pod = state.selectedPod else { return nil }
+            return (.pod, pod.name, pod.namespace)
+        case .deployment:
+            guard let deployment = state.selectedDeployment else { return nil }
+            return (.deployment, deployment.name, deployment.namespace)
+        case .statefulSet:
+            return state.selectedStatefulSet.map { ($0.kind, $0.name, $0.namespace) }
+        case .daemonSet:
+            return state.selectedDaemonSet.map { ($0.kind, $0.name, $0.namespace) }
+        case .job:
+            return state.selectedJob.map { ($0.kind, $0.name, $0.namespace) }
+        case .cronJob:
+            return state.selectedCronJob.map { ($0.kind, $0.name, $0.namespace) }
+        case .replicaSet:
+            return state.selectedReplicaSet.map { ($0.kind, $0.name, $0.namespace) }
+        case .service:
+            guard let service = state.selectedService else { return nil }
+            return (.service, service.name, service.namespace)
+        case .ingress:
+            return state.selectedIngress.map { ($0.kind, $0.name, $0.namespace) }
+        case .configMap:
+            return state.selectedConfigMap.map { ($0.kind, $0.name, $0.namespace) }
+        case .secret:
+            return state.selectedSecret.map { ($0.kind, $0.name, $0.namespace) }
+        case .node:
+            return state.selectedNode.map { ($0.kind, $0.name, $0.namespace) }
+        case .persistentVolumeClaim:
+            return state.selectedPersistentVolumeClaim.map { ($0.kind, $0.name, $0.namespace) }
+        case .persistentVolume:
+            return state.selectedPersistentVolume.map { ($0.kind, $0.name, $0.namespace) }
+        case .storageClass:
+            return state.selectedStorageClass.map { ($0.kind, $0.name, $0.namespace) }
+        case .horizontalPodAutoscaler:
+            return state.selectedHorizontalPodAutoscaler.map { ($0.kind, $0.name, $0.namespace) }
+        case .networkPolicy:
+            return state.selectedNetworkPolicy.map { ($0.kind, $0.name, $0.namespace) }
+        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return state.selectedRBACResource.map { ($0.kind, $0.name, $0.namespace) }
         case .event:
             return nil
         }

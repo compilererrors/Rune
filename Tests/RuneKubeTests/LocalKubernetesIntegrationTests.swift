@@ -341,6 +341,41 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertEqual(namespaces, ["default"])
     }
 
+    func testNativeRESTClientReportsExecCredentialCacheHitAndExpiration() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+        let expiration = "2030-01-02T03:04:05Z"
+        let execPlugin = try writeExecCredentialPlugin(
+            jsonPayload: #"{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"exec-token","expirationTimestamp":"\#(expiration)"}}"#
+        )
+        defer { try? FileManager.default.removeItem(at: execPlugin) }
+        let kubeconfig = try writeKubeconfig(
+            serverURL: "http://127.0.0.1:\(server.port)",
+            userYAML: """
+            exec:
+              apiVersion: client.authentication.k8s.io/v1
+              command: \(execPlugin.path)
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: "local-fixture")
+        let before = try await client.execCredentialCacheDiagnostic(from: sources, context: context)
+        XCTAssertEqual(before?.state, .miss)
+
+        let namespaces = try await client.listNamespaces(from: sources, context: context)
+        let after = try await client.execCredentialCacheDiagnostic(from: sources, context: context)
+
+        XCTAssertEqual(namespaces, ["default"])
+        XCTAssertEqual(after?.state, .hit)
+        XCTAssertEqual(
+            after?.expiresAt.map { ISO8601DateFormatter().string(from: $0) },
+            expiration
+        )
+    }
+
     private var kubernetesRESTClientPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile

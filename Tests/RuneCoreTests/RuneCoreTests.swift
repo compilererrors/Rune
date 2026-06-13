@@ -96,6 +96,18 @@ final class RuneCoreTests: XCTestCase {
         )
     }
 
+    func testHoverTooltipSettingDefaultsOnAndPersists() {
+        let suiteName = "RuneCoreTests.tooltips.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(defaults.runeShowHoverTooltips)
+
+        defaults.runeShowHoverTooltips = false
+
+        XCTAssertFalse(defaults.runeShowHoverTooltips)
+    }
+
     func testDefaultRuneKeyBindingsResolveExactActions() {
         let resolver = RuneKeyBindingResolver()
 
