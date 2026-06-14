@@ -47,7 +47,7 @@ public struct KubernetesListOptions: Sendable, Hashable {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "kubernetes.default.svc"
-        components.path = path
+        components.percentEncodedPath = path
         components.queryItems = items
         let pathOut = components.percentEncodedPath
         let query = components.percentEncodedQuery.map { "?\($0)" } ?? ""

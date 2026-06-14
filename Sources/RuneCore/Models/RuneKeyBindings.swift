@@ -115,6 +115,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
     case filterResources
     case historyBack
     case historyForward
+    case focusPreviousPane
+    case focusNextPane
     case describe
     case logs
     case saveLogs
@@ -133,6 +135,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .filterResources: return "Filter Resources"
         case .historyBack: return "History Back"
         case .historyForward: return "History Forward"
+        case .focusPreviousPane: return "Focus Previous Pane"
+        case .focusNextPane: return "Focus Next Pane"
         case .describe: return "Describe"
         case .logs: return "Logs"
         case .saveLogs: return "Save / Export"
@@ -155,6 +159,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return "Move back in Rune's navigation history."
         case .historyForward:
             return "Move forward in Rune's navigation history."
+        case .focusPreviousPane:
+            return "Move keyboard focus to the previous main pane."
+        case .focusNextPane:
+            return "Move keyboard focus to the next main pane."
         case .describe:
             return "Open the describe inspector for the selected resource."
         case .logs:
@@ -186,6 +194,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "left", requiresShift: false, requiresCommand: true, requiresOption: true)!
         case .historyForward:
             return RuneKeyboardShortcut(key: "right", requiresShift: false, requiresCommand: true, requiresOption: true)!
+        case .focusPreviousPane:
+            return RuneKeyboardShortcut(key: "left", requiresShift: true, requiresCommand: true)!
+        case .focusNextPane:
+            return RuneKeyboardShortcut(key: "right", requiresShift: true, requiresCommand: true)!
         case .describe:
             return RuneKeyboardShortcut(key: "d", requiresShift: false)!
         case .logs:
@@ -222,6 +234,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .filterResources: return RuneSettingsKeys.keyBindingFilterResources
         case .historyBack: return RuneSettingsKeys.keyBindingHistoryBack
         case .historyForward: return RuneSettingsKeys.keyBindingHistoryForward
+        case .focusPreviousPane: return RuneSettingsKeys.keyBindingFocusPreviousPane
+        case .focusNextPane: return RuneSettingsKeys.keyBindingFocusNextPane
         case .describe: return RuneSettingsKeys.keyBindingDescribe
         case .logs: return RuneSettingsKeys.keyBindingLogs
         case .saveLogs: return RuneSettingsKeys.keyBindingSaveLogs

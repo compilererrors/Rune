@@ -9,6 +9,9 @@ struct ResourceYAMLEditorSurface: View {
     let implementation: ManifestInlineEditorImplementation
     let validationIssues: [YAMLValidationIssue]
     let navigationRequest: YAMLTextNavigationRequest?
+    let searchQuery: String
+    let searchMatchCase: Bool
+    let selectedSearchMatchIndex: Int
 
     var body: some View {
         let activeImplementation = inlineEditing ? implementation : .readOnlyScroll
@@ -23,7 +26,10 @@ struct ResourceYAMLEditorSurface: View {
                         contentStyle: .yaml,
                         externalValidationIssues: validationIssues,
                         navigationRequest: navigationRequest,
-                        showsLineNumbers: true
+                        showsLineNumbers: true,
+                        searchQuery: searchQuery,
+                        searchMatchCase: searchMatchCase,
+                        selectedSearchMatchIndex: selectedSearchMatchIndex
                     )
                 case .swiftUITextEditor:
                     TextEditor(text: $text)
@@ -37,7 +43,10 @@ struct ResourceYAMLEditorSurface: View {
                         contentStyle: .yaml,
                         externalValidationIssues: validationIssues,
                         navigationRequest: navigationRequest,
-                        showsLineNumbers: true
+                        showsLineNumbers: true,
+                        searchQuery: searchQuery,
+                        searchMatchCase: searchMatchCase,
+                        selectedSearchMatchIndex: selectedSearchMatchIndex
                     )
                 }
             }
@@ -69,44 +78,56 @@ struct ResourceYAMLInspectorPane: View {
     let onExport: () -> Void
     let readOnlyResetID: String
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
     @State private var issueNavigationSequence = 0
+    @State private var isFindPresented = false
+    @State private var findQuery = ""
+    @State private var findMatchCase = false
+    @State private var selectedFindMatchIndex = 0
 
     var body: some View {
         let filteredYAML = KubernetesManagedFieldsDisplayFilter.removingManagedFields(from: yamlDisplayText)
         let canHideManagedFields = filteredYAML.removedBlockCount > 0 && !isInlineEditing
-        let displayedYAML = hidesManagedFields && canHideManagedFields ? filteredYAML.text : yamlDisplayText
+        let effectiveHidesManagedFields = simpleMode || hidesManagedFields
+        let displayedYAML = effectiveHidesManagedFields && canHideManagedFields ? filteredYAML.text : yamlDisplayText
         let presentedIssues = YAMLIssuePresentation.presentedIssues(
             text: yamlText,
             externalIssues: validationIssues
         )
-        let surfaceIssues = hidesManagedFields && canHideManagedFields ? [] : presentedIssues
+        let surfaceIssues = effectiveHidesManagedFields && canHideManagedFields ? [] : presentedIssues
         let canApplyYAML = canApplyMutations
             && hasUnsavedEdits
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !presentedIssues.contains(where: { $0.severity == .error })
 
         ResourceManifestInspectorLayout {
-            ManifestInlineNote("YAML edits stay local until Apply YAML.") {
-                ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+            if isInlineEditing {
+                ManifestInlineNote(t(.yamlEditsStayLocal)) {
+                    ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+                }
+            } else if hasUnsavedEdits {
+                ManifestUnsavedEditsChip()
             }
         } toolbar: {
             ManifestToolbarScrollRow {
                 ManifestToolbarGroup {
-                    Button("Apply YAML", action: onApply)
+                    Button(t(.applyYAML), action: onApply)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
                     if inlineEditorImplementation.supportsInlineEditing {
-                        Button(isInlineEditing ? "Done" : "Quick Edit") {
+                        Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
                             isInlineEditing.toggle()
                         }
                         .buttonStyle(.bordered)
                         .disabled(yamlText.isEmpty)
                     }
 
-                    Button("Edit…", action: onOpenEditor)
+                    Button("\(t(.edit))...", action: onOpenEditor)
                         .buttonStyle(.bordered)
                         .disabled(yamlText.isEmpty)
                 }
@@ -132,7 +153,7 @@ struct ResourceYAMLInspectorPane: View {
                         .disabled(!hasUnsavedEdits)
                         .help("Discard local YAML edits and return to the current loaded draft.")
                     } label: {
-                        Label("Draft", systemImage: "clock.arrow.circlepath")
+                        Label(t(.draft), systemImage: "clock.arrow.circlepath")
                     }
 
                     Menu {
@@ -146,11 +167,13 @@ struct ResourceYAMLInspectorPane: View {
                             .disabled(yamlText.isEmpty)
                             .help("Export the current YAML text to a file.")
                     } label: {
-                        Label("File", systemImage: "doc")
+                        Label(t(.file), systemImage: "doc")
                     }
+
+                    ManifestStatusChip(text: statusText, systemImage: "clock")
                 }
 
-                if filteredYAML.removedBlockCount > 0 {
+                if !simpleMode, filteredYAML.removedBlockCount > 0 {
                     ManifestToolbarGroup {
                         ManifestManagedFieldsToggle(
                             hidesManagedFields: $hidesManagedFields,
@@ -160,24 +183,33 @@ struct ResourceYAMLInspectorPane: View {
                 }
             }
         } status: {
-            VStack(alignment: .leading, spacing: 6) {
-                ManifestStatusChip(text: statusText, systemImage: "clock")
-                YAMLValidationSummaryView(
-                    issues: presentedIssues,
-                    isValidating: isValidating,
-                    onSelectIssue: navigateToIssue
+            YAMLValidationSummaryView(
+                issues: presentedIssues,
+                isValidating: isValidating,
+                onSelectIssue: navigateToIssue
+            )
+        } surface: {
+            FindableInspectorSurface(
+                text: isInlineEditing ? yamlText : displayedYAML,
+                placeholder: t(.findInYAML),
+                query: $findQuery,
+                matchCase: $findMatchCase,
+                selectedMatchIndex: $selectedFindMatchIndex,
+                isFindPresented: $isFindPresented
+            ) {
+                ResourceYAMLEditorSurface(
+                    text: $yamlText,
+                    displayText: displayedYAML,
+                    readOnlyResetID: readOnlyResetID,
+                    inlineEditing: isInlineEditing,
+                    implementation: inlineEditorImplementation,
+                    validationIssues: surfaceIssues,
+                    navigationRequest: issueNavigationRequest,
+                    searchQuery: findQuery,
+                    searchMatchCase: findMatchCase,
+                    selectedSearchMatchIndex: selectedFindMatchIndex
                 )
             }
-        } surface: {
-            ResourceYAMLEditorSurface(
-                text: $yamlText,
-                displayText: displayedYAML,
-                readOnlyResetID: readOnlyResetID,
-                inlineEditing: isInlineEditing,
-                implementation: inlineEditorImplementation,
-                validationIssues: surfaceIssues,
-                navigationRequest: issueNavigationRequest
-            )
         } footer: {
             if yamlText.isEmpty {
                 Text(yamlFooterText)
@@ -191,6 +223,14 @@ struct ResourceYAMLInspectorPane: View {
         }
     }
 
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
+    }
+
     private func navigateToIssue(_ issue: YAMLValidationIssue) {
         if inlineEditorImplementation.supportsInlineEditing {
             isInlineEditing = true
@@ -201,6 +241,9 @@ struct ResourceYAMLInspectorPane: View {
 }
 
 struct ManifestUnsavedEditsChip: View {
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
+
     var body: some View {
         RuneChip(
             horizontalPadding: 8,
@@ -208,7 +251,7 @@ struct ManifestUnsavedEditsChip: View {
             fill: Color.orange.opacity(0.14),
             cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius
         ) {
-            Label("Unsaved edits", systemImage: "circle.fill")
+            Label(t(.unsavedEdits), systemImage: "circle.fill")
                 .font(.caption.weight(.semibold))
                 .labelStyle(.titleAndIcon)
                 .imageScale(.small)
@@ -217,6 +260,14 @@ struct ManifestUnsavedEditsChip: View {
         .frame(height: RuneUILayoutMetrics.headerChipHeight)
         .help("The YAML draft has local changes that have not been applied to the cluster.")
         .accessibilityLabel("Unsaved YAML edits")
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
     }
 }
 
@@ -295,10 +346,12 @@ struct ManifestToolbarGroup<Content: View>: View {
 struct ManifestManagedFieldsToggle: View {
     @Binding var hidesManagedFields: Bool
     let isDisabled: Bool
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
 
     var body: some View {
         Toggle(isOn: $hidesManagedFields) {
-            Label("Hide managed", systemImage: "eye.slash")
+            Label(t(.hideManaged), systemImage: "eye.slash")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -318,6 +371,14 @@ struct ManifestManagedFieldsToggle: View {
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
     }
 }
 
@@ -363,8 +424,14 @@ struct ResourceYAMLEditorSheetView: View {
     let onImport: () -> Void
     let onExport: () -> Void
     let onClose: () -> Void
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
     @State private var issueNavigationSequence = 0
+    @State private var isFindPresented = false
+    @State private var findQuery = ""
+    @State private var findMatchCase = false
+    @State private var selectedFindMatchIndex = 0
 
     var body: some View {
         let presentedIssues = YAMLIssuePresentation.presentedIssues(
@@ -379,7 +446,7 @@ struct ResourceYAMLEditorSheetView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("YAML Editor")
+                    Text(t(.yamlManifest))
                         .font(.title2.weight(.bold))
                     Text(resourceReference)
                         .font(.subheadline)
@@ -391,7 +458,7 @@ struct ResourceYAMLEditorSheetView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Button("Apply YAML", action: onApply)
+                    Button(t(.applyYAML), action: onApply)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing this sheet does not." : "No local YAML changes to apply.")
@@ -409,7 +476,7 @@ struct ResourceYAMLEditorSheetView: View {
                         Button("Revert Draft", action: onRevert)
                             .disabled(!hasUnsavedEdits)
                     } label: {
-                        Label("Draft", systemImage: "clock.arrow.circlepath")
+                        Label(t(.draft), systemImage: "clock.arrow.circlepath")
                     }
 
                     Menu {
@@ -418,7 +485,7 @@ struct ResourceYAMLEditorSheetView: View {
                         Button("Export YAML…", action: onExport)
                             .disabled(yamlText.isEmpty)
                     } label: {
-                        Label("File", systemImage: "doc")
+                        Label(t(.file), systemImage: "doc")
                     }
 
                     Spacer(minLength: 0)
@@ -432,15 +499,27 @@ struct ResourceYAMLEditorSheetView: View {
                 onSelectIssue: navigateToIssue
             )
 
-            ResourceYAMLEditorSurface(
-                text: $yamlText,
-                displayText: yamlText,
-                readOnlyResetID: "yaml-sheet:\(resourceReference)",
-                inlineEditing: true,
-                implementation: .appKitTextView,
-                validationIssues: presentedIssues,
-                navigationRequest: issueNavigationRequest
-            )
+            FindableInspectorSurface(
+                text: yamlText,
+                placeholder: t(.findInYAML),
+                query: $findQuery,
+                matchCase: $findMatchCase,
+                selectedMatchIndex: $selectedFindMatchIndex,
+                isFindPresented: $isFindPresented
+            ) {
+                ResourceYAMLEditorSurface(
+                    text: $yamlText,
+                    displayText: yamlText,
+                    readOnlyResetID: "yaml-sheet:\(resourceReference)",
+                    inlineEditing: true,
+                    implementation: .appKitTextView,
+                    validationIssues: presentedIssues,
+                    navigationRequest: issueNavigationRequest,
+                    searchQuery: findQuery,
+                    searchMatchCase: findMatchCase,
+                    selectedSearchMatchIndex: selectedFindMatchIndex
+                )
+            }
 
             if yamlText.isEmpty {
                 Text(yamlFooterText)
@@ -462,6 +541,14 @@ struct ResourceYAMLEditorSheetView: View {
     private func navigateToIssue(_ issue: YAMLValidationIssue) {
         issueNavigationSequence += 1
         issueNavigationRequest = YAMLTextNavigationRequest(issue: issue, sequence: issueNavigationSequence)
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
     }
 }
 

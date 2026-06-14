@@ -9,8 +9,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testDescribeSurfaceUsesSharedInspectorReadOnlyTextSurface() throws {
         let source = try String(contentsOfFile: describeTextViewPath, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("InspectorReadOnlyTextSurface("))
+        XCTAssertTrue(source.contains("InspectorTextSurface(minHeight: minHeight)"))
+        XCTAssertTrue(source.contains("InspectorReadOnlyTextView("))
         XCTAssertTrue(source.contains("contentStyle: .describe"))
+        XCTAssertTrue(source.contains("searchQuery: searchQuery"))
         XCTAssertFalse(source.contains("struct DescribeReadOnlyTextView"))
     }
 
@@ -47,6 +49,48 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertNotEqual(sectionColor, valueColor, "Describe section headers should stand out from plain values.")
     }
 
+    func testManifestTextViewAppliesFindHighlightsAndActiveMatch() async throws {
+        let text = Binding.constant("metadata:\n  name: api\n  labels:\n    app: api\n")
+        let host = NSHostingController(
+            rootView: AppKitManifestTextView(
+                text: text,
+                isEditable: false,
+                contentStyle: .yaml,
+                showsLineNumbers: true,
+                searchQuery: "api",
+                searchMatchCase: false,
+                selectedSearchMatchIndex: 1
+            )
+            .frame(width: 460, height: 260)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let textView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+        let source = textView.string as NSString
+        let firstRange = source.range(of: "api")
+        let secondRange = source.range(of: "api", options: [], range: NSRange(
+            location: NSMaxRange(firstRange),
+            length: source.length - NSMaxRange(firstRange)
+        ))
+
+        let firstBackground = textView.textStorage?.attribute(.backgroundColor, at: firstRange.location, effectiveRange: nil) as? NSColor
+        let secondBackground = textView.textStorage?.attribute(.backgroundColor, at: secondRange.location, effectiveRange: nil) as? NSColor
+
+        XCTAssertNotNil(firstBackground)
+        XCTAssertNotNil(secondBackground)
+        XCTAssertNotEqual(firstBackground, secondBackground, "The active find match should use a stronger highlight than passive matches.")
+    }
+
     func testDescribePaneDoesNotPlaceFooterBelowScrollableTextSurface() throws {
         let source = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
         let sharedLayoutSource = try String(contentsOfFile: resourceManifestInspectorLayoutPath, encoding: .utf8)
@@ -63,11 +107,27 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
         let textSurfaceSource = try String(contentsOfFile: inspectorTextViewsPath, encoding: .utf8)
+        let findSource = try String(contentsOfFile: inspectorFindPath, encoding: .utf8)
+        let appKitManifestSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
 
         XCTAssertTrue(yamlSource.contains("ResourceManifestInspectorLayout"))
         XCTAssertTrue(describeSource.contains("ResourceManifestInspectorLayout"))
         XCTAssertTrue(textSurfaceSource.contains("GeometryReader"))
         XCTAssertTrue(textSurfaceSource.contains("height: max(1, proxy.size.height)"))
+        XCTAssertTrue(yamlSource.contains("FindableInspectorSurface("))
+        XCTAssertTrue(yamlSource.contains("placeholder: t(.findInYAML)"))
+        XCTAssertTrue(describeSource.contains("FindableInspectorSurface("))
+        XCTAssertTrue(describeSource.contains("placeholder: t(.findInDescribe)"))
+        XCTAssertTrue(findSource.contains("struct InspectorFindBar"))
+        XCTAssertTrue(findSource.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
+        XCTAssertTrue(findSource.contains("Text(\"Aa\")"))
+        XCTAssertTrue(findSource.contains("@State private var isJumpPopoverPresented = false"))
+        XCTAssertTrue(findSource.contains("prepareJumpPopover()"))
+        XCTAssertTrue(findSource.contains("private var jumpToMatchPopover: some View"))
+        XCTAssertTrue(findSource.contains("private func commitJump()"))
+        XCTAssertTrue(findSource.contains("Button(\"Go\", action: commitJump)"))
+        XCTAssertTrue(appKitManifestSource.contains("func applySearchHighlights"))
+        XCTAssertTrue(appKitManifestSource.contains("scrollRangeToVisible(index.ranges[activeIndex])"))
     }
 
     func testUnsavedEditsIndicatorUsesReservedSlotToAvoidLayoutJumps() throws {
@@ -99,11 +159,15 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupMinHeight"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestStatusChip(text: statusText"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestInlineNote("))
+        XCTAssertTrue(yamlPaneSource.contains("if isInlineEditing"))
+        XCTAssertTrue(yamlPaneSource.contains("} else if hasUnsavedEdits {"))
+        XCTAssertFalse(yamlPaneSource.contains("VStack(alignment: .leading, spacing: 6)"))
 
         XCTAssertTrue(describePaneSource.contains("ManifestToolbarScrollRow"))
         XCTAssertTrue(describePaneSource.contains("ManifestToolbarGroup"))
         XCTAssertTrue(describePaneSource.contains("ManifestStatusChip(text: statusText"))
         XCTAssertTrue(describePaneSource.contains("ManifestInlineNote("))
+        XCTAssertTrue(describePaneSource.contains("} status: {\n            EmptyView()"))
 
         XCTAssertFalse(yamlPaneSource.contains("Text(statusText)"))
         XCTAssertFalse(describePaneSource.contains("Text(statusText)"))
@@ -113,7 +177,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(yamlSource.contains("ManifestManagedFieldsToggle("))
-        XCTAssertTrue(yamlSource.contains("Label(\"Hide managed\", systemImage: \"eye.slash\")"))
+        XCTAssertTrue(yamlSource.contains("Label(t(.hideManaged), systemImage: \"eye.slash\")"))
         XCTAssertTrue(yamlSource.contains("KubernetesManagedFieldsDisplayFilter.removingManagedFields"))
         XCTAssertTrue(yamlSource.contains("isDisabled: isInlineEditing"))
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
@@ -128,8 +192,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(describeSource.contains("ManifestManagedFieldsToggle("))
         XCTAssertTrue(describeSource.contains("isDisabled: managedFieldsFilter.removedBlockCount == 0"))
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
-        XCTAssertTrue(describeSource.contains("let presentedDescribeText = hidesManagedFields ? managedFieldsFilter.text : describeText"))
-        XCTAssertTrue(describeSource.contains("Button(\"Export Describe…\", action: onExport)"))
+        XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.simpleMode)"))
+        XCTAssertTrue(describeSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
+        XCTAssertTrue(describeSource.contains("let presentedDescribeText = effectiveHidesManagedFields ? managedFieldsFilter.text : describeText"))
+        XCTAssertTrue(describeSource.contains("Button(\"\\(t(.exportDescribe))...\", action: onExport)"))
         XCTAssertTrue(describeSource.contains("text: presentedDescribeText"))
     }
 
@@ -161,11 +227,11 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testYAMLToolbarConsolidatesSecondaryActionsIntoMenus() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
 
-        XCTAssertTrue(yamlSource.contains("Label(\"Draft\", systemImage: \"clock.arrow.circlepath\")"))
+        XCTAssertTrue(yamlSource.contains("Label(t(.draft), systemImage: \"clock.arrow.circlepath\")"))
         XCTAssertTrue(yamlSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
         XCTAssertTrue(yamlSource.contains("Button(\"Undo Draft Edit\""))
         XCTAssertTrue(yamlSource.contains("Button(\"Revert Draft\""))
-        XCTAssertTrue(yamlSource.contains("Label(\"File\", systemImage: \"doc\")"))
+        XCTAssertTrue(yamlSource.contains("Label(t(.file), systemImage: \"doc\")"))
         XCTAssertTrue(yamlSource.contains("Button(\"Import YAML…\""))
         XCTAssertTrue(yamlSource.contains("Button(\"Export YAML…\""))
         XCTAssertFalse(yamlSource.contains("Re-apply Snapshot"))
@@ -488,13 +554,31 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceManifestInspectorLayout.swift").path
     }
 
-private var inspectorTextViewsPath: String {
+    private var inspectorTextViewsPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/InspectorTextViews.swift").path
+    }
+
+    private var inspectorFindPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/InspectorFind.swift").path
+    }
+
+    private var appKitManifestTextViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitManifestTextView.swift").path
     }
 }
 

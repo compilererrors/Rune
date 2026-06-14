@@ -32,10 +32,181 @@ private struct SettingsHelpButton: View {
     }
 }
 
+private enum RuneSettingsMetrics {
+    static let pageMaxWidth: CGFloat = 760
+    static let pageHorizontalPadding: CGFloat = 20
+    static let pageVerticalPadding: CGFloat = 16
+    static let pageSpacing: CGFloat = 14
+    static let sectionSpacing: CGFloat = 12
+    static let sectionCardPadding: CGFloat = 14
+    static let rowMinHeight: CGFloat = 38
+    static let rowControlSpacing: CGFloat = 12
+    static let rowControlColumnWidth: CGFloat = 260
+    static let compactControlHeight: CGFloat = 32
+    static let textFieldWidth: CGFloat = 92
+}
+
+private struct RuneSettingsTokenButtonStyle: ButtonStyle {
+    let theme: RuneResolvedTheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        let palette = RuneThemePresentation(theme: theme).palette
+        configuration.label
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(palette.accent)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .frame(height: RuneSettingsMetrics.compactControlHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill((configuration.isPressed ? palette.accent.opacity(0.18) : palette.inset.opacity(0.94)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(palette.accent.opacity(configuration.isPressed ? 0.62 : 0.42), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+private struct RuneThemeSelectorCard: View {
+    let theme: RuneResolvedTheme
+    let isSelected: Bool
+    let action: () -> Void
+
+    private var presentation: RuneThemePresentation { RuneThemePresentation(theme: theme) }
+    private var palette: RuneThemePalette { presentation.palette }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: presentation.appearanceSymbol)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(palette.accent)
+                        .frame(width: 26, height: 26)
+                        .background(palette.accent.opacity(0.13), in: Circle())
+                        .help(presentation.appearanceTitle)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(presentation.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(palette.foreground)
+                            .lineLimit(1)
+                        Text(presentation.sourceSummary)
+                            .font(.caption)
+                            .foregroundStyle(palette.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(palette.accent)
+                    }
+                }
+
+                swatches
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? palette.selectionFill : palette.inset.opacity(0.82))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? palette.focusRing : palette.stroke.opacity(0.44), lineWidth: isSelected ? 1.5 : 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(theme.title)
+        .accessibilityValue(isSelected ? "Selected" : presentation.appearanceTitle)
+    }
+
+    private var swatches: some View {
+        HStack(spacing: 6) {
+            swatch(palette.window)
+            swatch(palette.panel)
+            swatch(palette.accent)
+            swatch(palette.success)
+            swatch(palette.warning)
+            swatch(palette.danger)
+        }
+        .accessibilityLabel("Theme colors")
+    }
+
+    private func swatch(_ color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(color)
+            .frame(width: 22, height: 14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            )
+    }
+}
+
+private struct RuneSettingsIntegerLimitEditor: View {
+    let title: String
+    let value: Binding<Int>
+    let valueSuffix: String
+    let step: Int
+    let placeholder: String
+    let defaultValue: Int
+    let detail: String
+    let normalize: (Int) -> Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 12)
+                Text("\(normalizedValue) \(valueSuffix)")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Stepper(title, value: normalizedBinding, step: step)
+                    .labelsHidden()
+
+                TextField(placeholder, value: normalizedBinding, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: RuneSettingsMetrics.textFieldWidth)
+
+                Button("Reset") {
+                    value.wrappedValue = defaultValue
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Text(detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var normalizedValue: Int {
+        normalize(value.wrappedValue)
+    }
+
+    private var normalizedBinding: Binding<Int> {
+        Binding(
+            get: { normalizedValue },
+            set: { value.wrappedValue = normalize($0) }
+        )
+    }
+}
+
 /// Settings window content.
 public struct RunePreferencesView: View {
     private enum PreferencesPane: String, CaseIterable, Identifiable {
         case general
+        case themes
         case keyBindings
         case logs
         case safety
@@ -44,20 +215,22 @@ public struct RunePreferencesView: View {
 
         var id: String { rawValue }
 
-        var title: String {
+        func title(_ t: (RuneLocalizedStringKey) -> String) -> String {
             switch self {
-            case .general: return "General"
-            case .keyBindings: return "Key Bindings"
-            case .logs: return "Logs"
-            case .safety: return "Safety"
-            case .diagnostics: return "Diagnostics"
-            case .performance: return "Performance"
+            case .general: return t(.settingsGeneral)
+            case .themes: return t(.settingsThemes)
+            case .keyBindings: return t(.settingsKeyBindings)
+            case .logs: return t(.settingsLogs)
+            case .safety: return t(.settingsSafety)
+            case .diagnostics: return t(.settingsDiagnostics)
+            case .performance: return t(.settingsPerformance)
             }
         }
 
         var symbol: String {
             switch self {
             case .general: return "gearshape"
+            case .themes: return "paintpalette"
             case .keyBindings: return "keyboard"
             case .logs: return "text.alignleft"
             case .safety: return "lock.shield"
@@ -83,9 +256,17 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
+    @AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit) private var sessionLogCacheEntryLimit =
+        RuneSettingsKeys.sessionLogCacheEntryLimitDefault
+    @AppStorage(RuneSettingsKeys.resourceYAMLUndoSnapshotLimit) private var resourceYAMLUndoSnapshotLimit =
+        RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault
     @AppStorage(RuneSettingsKeys.writeSafetyRequireApplyDryRun) private var requireApplyDryRun = true
     @AppStorage(RuneSettingsKeys.writeSafetyRequireRolloutDryRun) private var requireRolloutDryRun = true
     @AppStorage(RuneSettingsKeys.writeSafetyRequireHelmDryRun) private var requireHelmDryRun = true
@@ -94,6 +275,8 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.writeSafetyRequirePostActionVerification) private var requirePostActionVerification = true
     @AppStorage(RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) private var requireProductionSecondConfirmation = true
     @State private var cacheClearStatus: String?
+    @State private var themeReloadNonce = 0
+    @State private var recentAppearanceThemeIDs = UserDefaults.standard.runeAppearanceRecentThemes
     @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
 
     public init() {}
@@ -103,62 +286,76 @@ public struct RunePreferencesView: View {
             generalSettingsForm
                 .tag(PreferencesPane.general)
                 .tabItem {
-                    Label(PreferencesPane.general.title, systemImage: PreferencesPane.general.symbol)
+                    Label(PreferencesPane.general.title(settingsString), systemImage: PreferencesPane.general.symbol)
+                }
+
+            themesSettingsForm
+                .tag(PreferencesPane.themes)
+                .tabItem {
+                    Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)
                 }
 
             keyBindingsSettingsForm
                 .tag(PreferencesPane.keyBindings)
                 .tabItem {
-                    Label(PreferencesPane.keyBindings.title, systemImage: PreferencesPane.keyBindings.symbol)
+                    Label(PreferencesPane.keyBindings.title(settingsString), systemImage: PreferencesPane.keyBindings.symbol)
                 }
 
             logsSettingsForm
                 .tag(PreferencesPane.logs)
                 .tabItem {
-                    Label(PreferencesPane.logs.title, systemImage: PreferencesPane.logs.symbol)
+                    Label(PreferencesPane.logs.title(settingsString), systemImage: PreferencesPane.logs.symbol)
                 }
 
             safetySettingsForm
                 .tag(PreferencesPane.safety)
                 .tabItem {
-                    Label(PreferencesPane.safety.title, systemImage: PreferencesPane.safety.symbol)
+                    Label(PreferencesPane.safety.title(settingsString), systemImage: PreferencesPane.safety.symbol)
                 }
 
             diagnosticsSettingsForm
                 .tag(PreferencesPane.diagnostics)
                 .tabItem {
-                    Label(PreferencesPane.diagnostics.title, systemImage: PreferencesPane.diagnostics.symbol)
+                    Label(PreferencesPane.diagnostics.title(settingsString), systemImage: PreferencesPane.diagnostics.symbol)
                 }
 
             performanceSettingsForm
                 .tag(PreferencesPane.performance)
                 .tabItem {
-                    Label(PreferencesPane.performance.title, systemImage: PreferencesPane.performance.symbol)
+                    Label(PreferencesPane.performance.title(settingsString), systemImage: PreferencesPane.performance.symbol)
                 }
         }
+        .id(interfaceLanguageRaw)
         .controlSize(.small)
-        .frame(minWidth: 700, idealWidth: 780, minHeight: 520)
+        .frame(minWidth: 740, idealWidth: 820, minHeight: 540)
+        .runeAppearanceTheme(selectedAppearanceTheme)
+        .onAppear {
+            refreshRecentAppearanceThemes(recordSelectedTheme: true)
+        }
+        .onChange(of: appearanceThemeRaw) { _, _ in
+            refreshRecentAppearanceThemes(recordSelectedTheme: true)
+        }
     }
 
     private var generalSettingsForm: some View {
         settingsPane(
-            title: "General",
-            subtitle: "Runtime behavior and local data."
+            title: settingsString(.settingsGeneral),
+            subtitle: settingsString(.settingsGeneralSubtitle)
         ) {
-            settingsSection("Cache") {
+            settingsSection(settingsString(.settingsCache)) {
                 settingsToggleRow(
-                    "Persist namespace list cache",
-                    help: "Saves namespace names per context under Application Support/Rune/namespace-lists and restores them at startup while a fresh list loads. Does not persist logs or full resource payloads.",
+                    settingsString(.settingsPersistNamespaceListCache),
+                    help: settingsString(.settingsPersistNamespaceListCacheHelp),
                     isOn: $persistNamespaceListCache
                 )
 
                 Divider()
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Maintenance")
+                    Text(settingsString(.settingsMaintenance))
                         .font(.subheadline.weight(.semibold))
                     HStack(spacing: 10) {
-                        Button("Clear cached cluster data", role: .destructive) {
+                        Button(settingsString(.settingsClearCachedClusterData), role: .destructive) {
                             clearDiskCaches()
                         }
                         .buttonStyle(.bordered)
@@ -173,10 +370,10 @@ public struct RunePreferencesView: View {
                 }
             }
 
-            settingsSection("Appearance") {
+            settingsSection(settingsString(.settingsAppearance)) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text("Font size")
+                        Text(settingsString(.settingsFontSize))
                             .font(.subheadline.weight(.semibold))
                         Spacer(minLength: 12)
                         Text("\(Int(clampedTerminalFontSize.rounded())) pt")
@@ -194,13 +391,13 @@ public struct RunePreferencesView: View {
                             step: 1
                         )
 
-                        Button("Reset") {
+                        Button(settingsString(.settingsReset)) {
                             terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
                         }
                         .buttonStyle(.bordered)
                     }
 
-                    Text("Applies to Rune's interface, YAML editors, pod shell transcripts, and command prompts.")
+                    Text(settingsString(.settingsFontSizeDetail))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -209,26 +406,145 @@ public struct RunePreferencesView: View {
                 Divider()
 
                 settingsToggleRow(
-                    "Hide managed fields by default",
-                    help: "Hides Kubernetes managedFields in Describe and YAML inspector surfaces unless the toolbar toggle is turned off.",
-                    isOn: $hideManagedFieldsByDefault
+                    settingsString(.settingsSimpleMode),
+                    help: settingsString(.settingsSimpleModeHelp),
+                    isOn: $simpleMode
                 )
 
                 Divider()
 
+                if simpleMode {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "bolt")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18, height: 18)
+                        Text(settingsString(.settingsSimpleModeManagedFieldsNote))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    settingsToggleRow(
+                        settingsString(.settingsHideManagedFieldsByDefault),
+                        help: settingsString(.settingsHideManagedFieldsByDefaultHelp),
+                        isOn: $hideManagedFieldsByDefault
+                    )
+                }
+
+                Divider()
+
                 settingsToggleRow(
-                    "Show hover tooltips",
-                    help: "Shows short native hover explanations for less obvious labels, tabs, and controls such as Cluster Signals. Turn this off if tooltips get in the way.",
+                    settingsString(.settingsShowHoverTooltips),
+                    help: settingsString(.settingsShowHoverTooltipsHelp),
                     isOn: $showHoverTooltips
                 )
+
+                Divider()
+
+                settingsControlRow(
+                    title: settingsString(.language),
+                    detail: settingsString(.settingsLanguageDetail)
+                ) {
+                    Picker("Language", selection: $interfaceLanguageRaw) {
+                        ForEach(RuneLanguage.allCases) { language in
+                            Text(language.displayName).tag(language.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: RuneSettingsMetrics.rowControlColumnWidth)
+                }
             }
 
-            settingsSection("Demo cluster") {
+            settingsSection(settingsString(.settingsDemoCluster)) {
                 settingsToggleRow(
-                    "Show demo cluster context",
-                    help: "Adds rune-demo to the context list and keeps the Rune menu demo action available for screenshots and first-run evaluation. It does not start a server or keep background resources alive.",
+                    settingsString(.settingsShowDemoClusterContext),
+                    help: settingsString(.settingsShowDemoClusterContextHelp),
                     isOn: $enableDemoCluster
                 )
+            }
+        }
+    }
+
+    private var themesSettingsForm: some View {
+        settingsPane(
+            title: settingsString(.settingsThemes),
+            subtitle: settingsString(.settingsThemesSubtitle)
+        ) {
+            settingsSection("Choose theme") {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .center, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Recent")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Current: \(selectedAppearanceTheme.title)")
+                                .font(.footnote)
+                                .foregroundStyle(selectedAppearanceTheme.palette?.secondaryText ?? Color.secondary)
+                        }
+
+                        Spacer(minLength: 12)
+
+                        themeOverflowMenu
+                    }
+
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(minimum: 220), spacing: 12),
+                            GridItem(.flexible(minimum: 220), spacing: 12)
+                        ],
+                        alignment: .leading,
+                        spacing: 12
+                    ) {
+                        ForEach(recentAppearanceThemes) { theme in
+                            RuneThemeSelectorCard(
+                                theme: theme,
+                                isSelected: theme.id == selectedAppearanceTheme.id
+                            ) {
+                                selectAppearanceTheme(theme.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            settingsSection("Custom themes") {
+                settingsControlRow(
+                    title: "Theme JSON files",
+                    detail: "Add compatible theme files to Rune's Themes folder, then reload."
+                ) {
+                    HStack(spacing: 8) {
+                        Button {
+                            revealThemeTemplate()
+                        } label: {
+                            Label("Template", systemImage: "doc.badge.plus")
+                        }
+                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
+                        .help("Create a starter theme JSON file in Rune's Themes folder. Existing template files are left untouched.")
+
+                        Button("Open Folder") {
+                            RuneThemeCatalog.ensureUserThemesDirectory()
+                            NSWorkspace.shared.open(RuneThemeCatalog.userThemesDirectoryURL)
+                        }
+                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
+
+                        Button("Reload") {
+                            reloadAppearanceThemes()
+                        }
+                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
+
+                        SettingsHelpButton(
+                            text: "Rune can load JSON theme files using supported editor theme color fields. Start with Template, edit the colors, then press Reload."
+                        )
+                    }
+                }
+
+                Text(RuneThemeCatalog.userThemesDirectoryURL.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(selectedAppearanceTheme.palette?.mutedText ?? Color.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -237,10 +553,136 @@ public struct RunePreferencesView: View {
         RuneSettingsKeys.clampedTerminalFontSize(terminalFontSize)
     }
 
+    private var selectedAppearanceTheme: RuneResolvedTheme {
+        RuneAppearanceTheme.resolved(appearanceThemeRaw)
+    }
+
+    private var availableAppearanceThemes: [RuneResolvedTheme] {
+        _ = themeReloadNonce
+        return RuneThemeCatalog.availableThemes()
+    }
+
+    private var recentAppearanceThemes: [RuneResolvedTheme] {
+        Self.recentThemesForDisplay(
+            selectedThemeID: selectedAppearanceTheme.id,
+            recentThemeIDs: recentAppearanceThemeIDs,
+            availableThemes: availableAppearanceThemes,
+            limit: 4
+        )
+    }
+
+    private var olderAppearanceThemes: [RuneResolvedTheme] {
+        let recentIDs = Set(recentAppearanceThemes.map(\.id))
+        return availableAppearanceThemes.filter { !recentIDs.contains($0.id) }
+    }
+
+    private var themeOverflowMenu: some View {
+        let palette = selectedAppearanceTheme.palette
+        return Menu {
+            if olderAppearanceThemes.isEmpty {
+                Text("No More Themes")
+            } else {
+                ForEach(olderAppearanceThemes) { theme in
+                    Button {
+                        selectAppearanceTheme(theme.id)
+                    } label: {
+                        Label(theme.title, systemImage: RuneThemePresentation(theme: theme).menuSymbol)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "paintpalette")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("More Themes")
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .imageScale(.small)
+                    .foregroundStyle(palette?.secondaryText ?? Color.secondary)
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(palette?.foreground ?? Color.primary)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .frame(width: 170)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(palette?.inset.opacity(0.96) ?? Color(nsColor: .controlBackgroundColor).opacity(0.72))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(palette?.stroke.opacity(0.50) ?? Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("More Themes")
+    }
+
+    private func selectAppearanceTheme(_ themeID: String) {
+        appearanceThemeRaw = themeID
+        UserDefaults.standard.recordRuneAppearanceTheme(themeID)
+        recentAppearanceThemeIDs = UserDefaults.standard.runeAppearanceRecentThemes
+    }
+
+    private func reloadAppearanceThemes() {
+        RuneThemeCatalog.reloadUserThemes()
+        themeReloadNonce += 1
+
+        let availableIDs = Set(availableAppearanceThemes.map(\.id))
+        if !availableIDs.contains(appearanceThemeRaw) {
+            selectAppearanceTheme(RuneSettingsKeys.appearanceThemeDefault)
+        } else {
+            refreshRecentAppearanceThemes(recordSelectedTheme: true)
+        }
+    }
+
+    private func revealThemeTemplate() {
+        let templateURL = RuneThemeCatalog.writeUserThemeTemplate()
+        NSWorkspace.shared.activateFileViewerSelecting([templateURL])
+    }
+
+    private func refreshRecentAppearanceThemes(recordSelectedTheme: Bool) {
+        if recordSelectedTheme {
+            UserDefaults.standard.recordRuneAppearanceTheme(selectedAppearanceTheme.id)
+        }
+        recentAppearanceThemeIDs = UserDefaults.standard.runeAppearanceRecentThemes
+    }
+
+    private var interfaceLanguage: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func settingsString(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: interfaceLanguage)
+    }
+
+    private static func recentThemesForDisplay(
+        selectedThemeID: String,
+        recentThemeIDs: [String],
+        availableThemes: [RuneResolvedTheme],
+        limit: Int
+    ) -> [RuneResolvedTheme] {
+        guard limit > 0 else { return [] }
+
+        var availableByID: [String: RuneResolvedTheme] = [:]
+        for theme in availableThemes where availableByID[theme.id] == nil {
+            availableByID[theme.id] = theme
+        }
+        var orderedIDs = RuneSettingsKeys.normalizedAppearanceRecentThemes([selectedThemeID] + recentThemeIDs, limit: limit)
+        for theme in availableThemes where orderedIDs.count < limit && !orderedIDs.contains(theme.id) {
+            orderedIDs.append(theme.id)
+        }
+
+        return orderedIDs.compactMap { availableByID[$0] }
+    }
+
     private var keyBindingsSettingsForm: some View {
         settingsPane(
-            title: "Key Bindings",
-            subtitle: "k9s-inspired action keys for the selected resource or release."
+            title: settingsString(.settingsKeyBindings),
+            subtitle: settingsString(.settingsKeyBindingsSubtitle)
         ) {
             settingsSection("Defaults") {
                 Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `:`, `/`, `d`, `e`, `l`, `s`, `y`, `Ctrl-D`, and `Shift-F` follow k9s conventions; history actions are Rune mappings built around the same workflow.")
@@ -320,8 +762,8 @@ public struct RunePreferencesView: View {
 
     private var logsSettingsForm: some View {
         settingsPane(
-            title: "Logs",
-            subtitle: "Custom presets for log windows and dropdown defaults."
+            title: settingsString(.settingsLogs),
+            subtitle: settingsString(.settingsLogsSubtitle)
         ) {
             settingsSection("Custom log windows") {
                 Text("Configure two custom presets shown in log dropdowns.")
@@ -350,8 +792,8 @@ public struct RunePreferencesView: View {
 
     private var safetySettingsForm: some View {
         settingsPane(
-            title: "Safety",
-            subtitle: "Write and rollback confirmation behavior."
+            title: settingsString(.settingsSafety),
+            subtitle: settingsString(.settingsSafetySubtitle)
         ) {
             settingsSection("Write safety") {
                 settingsToggleRow(
@@ -403,8 +845,8 @@ public struct RunePreferencesView: View {
 
     private var diagnosticsSettingsForm: some View {
         settingsPane(
-            title: "Diagnostics",
-            subtitle: "Logging and debug trace controls."
+            title: settingsString(.settingsDiagnostics),
+            subtitle: settingsString(.settingsDiagnosticsSubtitle)
         ) {
             settingsSection("Diagnostics logging") {
                 settingsToggleRow(
@@ -449,8 +891,8 @@ public struct RunePreferencesView: View {
 
     private var performanceSettingsForm: some View {
         settingsPane(
-            title: "Performance",
-            subtitle: "Background loading and responsiveness tradeoffs."
+            title: settingsString(.settingsPerformance),
+            subtitle: settingsString(.settingsPerformanceSubtitle)
         ) {
             settingsSection("Background prefetch") {
                 settingsToggleRow(
@@ -497,6 +939,32 @@ public struct RunePreferencesView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            settingsSection("Memory") {
+                RuneSettingsIntegerLimitEditor(
+                    title: "Log cache",
+                    value: $sessionLogCacheEntryLimit,
+                    valueSuffix: "resources",
+                    step: 16,
+                    placeholder: "128",
+                    defaultValue: RuneSettingsKeys.sessionLogCacheEntryLimitDefault,
+                    detail: "Controls how many pod, deployment, and service log reads stay warm for fast switching. Type any larger value for high-memory machines.",
+                    normalize: RuneSettingsKeys.clampedSessionLogCacheEntryLimit
+                )
+
+                Divider()
+
+                RuneSettingsIntegerLimitEditor(
+                    title: "YAML undo",
+                    value: $resourceYAMLUndoSnapshotLimit,
+                    valueSuffix: "snapshots",
+                    step: 8,
+                    placeholder: "64",
+                    defaultValue: RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault,
+                    detail: "Controls how many manifest edit states Rune keeps for local undo in the YAML editor. Type any larger value for high-memory machines.",
+                    normalize: RuneSettingsKeys.clampedResourceYAMLUndoSnapshotLimit
+                )
             }
         }
     }
@@ -573,7 +1041,7 @@ public struct RunePreferencesView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: RuneSettingsMetrics.pageSpacing) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.title3.weight(.semibold))
@@ -584,9 +1052,9 @@ public struct RunePreferencesView: View {
 
                 content()
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .frame(maxWidth: RuneSettingsMetrics.pageMaxWidth, alignment: .leading)
+            .padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)
+            .padding(.vertical, RuneSettingsMetrics.pageVerticalPadding)
         }
     }
 
@@ -600,20 +1068,71 @@ public struct RunePreferencesView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: RuneSettingsMetrics.sectionSpacing) {
                 content()
             }
-            .runeInsetCard(padding: 12)
+            .runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)
         }
     }
 
     @ViewBuilder
     private func settingsToggleRow(_ title: String, help: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) {
-            settingLabel(title, help: help)
+        settingsGridRow {
+            settingRowLabel(title: title, detail: help, showsHelpIcon: true)
+        } control: {
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
         }
-        .toggleStyle(.switch)
-        .frame(minHeight: 24)
+    }
+
+    @ViewBuilder
+    private func settingsControlRow<Control: View>(
+        title: String,
+        detail: String? = nil,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        settingsGridRow {
+            settingRowLabel(title: title, detail: detail)
+        } control: {
+            control()
+        }
+    }
+
+    @ViewBuilder
+    private func settingsGridRow<LabelContent: View, Control: View>(
+        @ViewBuilder label: () -> LabelContent,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .top, spacing: RuneSettingsMetrics.rowControlSpacing) {
+            label()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            control()
+                .frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: RuneSettingsMetrics.rowMinHeight)
+    }
+
+    @ViewBuilder
+    private func settingRowLabel(title: String, detail: String?, showsHelpIcon: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                if showsHelpIcon, let detail {
+                    helpIcon(detail)
+                }
+            }
+
+            if let detail {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -626,14 +1145,6 @@ public struct RunePreferencesView: View {
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private func settingLabel(_ title: String, help: String) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-            helpIcon(help)
         }
     }
 

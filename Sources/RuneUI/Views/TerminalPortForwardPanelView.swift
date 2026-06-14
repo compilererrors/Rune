@@ -12,6 +12,8 @@ struct TerminalPortForwardPanelView: View {
     @Binding var localPort: String
     @Binding var remotePort: String
     @Binding var address: String
+    var isFavoritePod: (PodSummary) -> Bool = { _ in false }
+    var onToggleFavoritePod: (PodSummary) -> Void = { _ in }
     let onStartPortForward: (PodSummary) -> Void
     let onStopPortForward: (PortForwardSession) -> Void
     let onOpenPortForwardInBrowser: (PortForwardSession) -> Void
@@ -144,6 +146,8 @@ struct TerminalPortForwardPanelView: View {
                 title: "Port-forward pod",
                 systemImage: "point.3.connected.trianglepath.dotted",
                 pods: availablePods,
+                isFavoritePod: isFavoritePod,
+                onToggleFavoritePod: onToggleFavoritePod,
                 selection: $selectedPortForwardPodID
             )
 

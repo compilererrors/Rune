@@ -12,6 +12,7 @@ struct CommandPaletteView: View {
     @State private var selectedItemID: String?
     @State private var localKeyMonitor: Any?
     @FocusState private var focusedTarget: FocusTarget?
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         let items = viewModel.commandPaletteItems(query: query)
@@ -22,12 +23,12 @@ struct CommandPaletteView: View {
                     .font(.title3.weight(.semibold))
                 Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ov`, `:rbac`, `:cr`, `:cj` …")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
             }
 
             HStack(spacing: 10) {
                 Image(systemName: query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(":") ? "terminal" : "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 TextField("Search or type e.g. :po api, :service billing, :no node1, :ns kube-system, :cj", text: $query)
                     .textFieldStyle(.plain)
                     .focused($focusedTarget, equals: .input)
@@ -40,7 +41,14 @@ struct CommandPaletteView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 44)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(runeThemePalette?.inset.opacity(0.94) ?? Color(nsColor: .controlBackgroundColor).opacity(0.76))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(runeThemePalette?.stroke.opacity(0.42) ?? Color(nsColor: .separatorColor).opacity(0.20), lineWidth: 1)
+            )
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -70,13 +78,13 @@ struct CommandPaletteView: View {
                                 HStack(spacing: 10) {
                                     Image(systemName: item.symbolName)
                                         .frame(width: 18)
-                                        .foregroundStyle(Color.accentColor)
+                                        .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.title)
                                             .font(.headline)
                                         Text(item.subtitle)
                                             .font(.subheadline)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                                     }
                                     Spacer()
                                 }
@@ -85,11 +93,11 @@ struct CommandPaletteView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(selectedItemID == item.id ? Color.accentColor.opacity(0.22) : Color.clear)
+                                        .fill(selectedItemID == item.id ? selectionFill : Color.clear)
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(selectedItemID == item.id ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1)
+                                        .stroke(selectedItemID == item.id ? selectionStroke : Color.clear, lineWidth: 1)
                                 )
                                 .contentShape(Rectangle())
                             }
@@ -101,7 +109,14 @@ struct CommandPaletteView: View {
                 }
                 .focusable(true)
                 .focused($focusedTarget, equals: .results)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(runeThemePalette?.panel.opacity(0.94) ?? Color(nsColor: .controlBackgroundColor).opacity(0.72))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(runeThemePalette?.stroke.opacity(0.36) ?? Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
+                )
                 .onChange(of: selectedItemID) { _, newID in
                     guard let newID else { return }
                     DispatchQueue.main.async {
@@ -116,7 +131,7 @@ struct CommandPaletteView: View {
         }
         .padding(16)
         .frame(minWidth: 680, minHeight: 440)
-        .background(.thinMaterial)
+        .background(runeThemePalette?.content.opacity(0.98) ?? Color(nsColor: .windowBackgroundColor).opacity(0.82))
         .onAppear {
             focusedTarget = .input
             selectedItemID = items.first?.id
@@ -144,8 +159,8 @@ struct CommandPaletteView: View {
             .font(.footnote.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
-            .foregroundStyle(.secondary)
+            .background(runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12), in: Capsule())
+            .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
     }
 
     private func keyboardHint() -> some View {
@@ -154,12 +169,20 @@ struct CommandPaletteView: View {
                 .font(.caption2.weight(.bold))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             Text("focus results, arrows select, Enter runs")
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
         }
         .padding(.horizontal, 4)
+    }
+
+    private var selectionFill: Color {
+        runeThemePalette?.selectionFill ?? Color.accentColor.opacity(0.22)
+    }
+
+    private var selectionStroke: Color {
+        runeThemePalette?.selectionStroke ?? Color.accentColor.opacity(0.45)
     }
 
     private func executePrimaryAction(items: [CommandPaletteItem]) {

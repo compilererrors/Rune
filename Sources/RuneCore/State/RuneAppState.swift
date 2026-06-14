@@ -28,6 +28,12 @@ public struct ResourceDetailScope: Hashable, Codable, Sendable {
 @MainActor
 public final class RuneAppState: ObservableObject {
     private let maxSessionLogCacheCharacters = 1_000_000
+    private var maxSessionLogCacheEntries: Int {
+        UserDefaults.standard.runeSessionLogCacheEntryLimit
+    }
+    private var maxResourceYAMLUndoSnapshots: Int {
+        UserDefaults.standard.runeResourceYAMLUndoSnapshotLimit
+    }
 
     @Published public private(set) var kubeConfigSources: [KubeConfigSource] = []
     @Published public private(set) var contexts: [KubeContext] = []
@@ -110,6 +116,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var unifiedServiceLogs: String = ""
     @Published public private(set) var unifiedServiceLogPods: [String] = []
     @Published public private(set) var sessionLogCache: [String: String] = [:]
+    private var sessionLogCacheKeysMostRecent: [String] = []
     /// Set when the latest log stream failed (timeout or error). Cleared on successful load or when a new fetch starts.
     @Published public private(set) var lastLogFetchError: String?
     @Published public private(set) var lastLogUpdatedAt: Date?
@@ -625,7 +632,7 @@ public final class RuneAppState: ObservableObject {
             loadedAt: loadedAt
         )
         let bounded = boundedSessionLogCache(segment)
-        sessionLogCache[key] = bounded
+        updateSessionLogCache(key: key, value: bounded)
         podLogs = bounded
         lastLogFetchError = nil
         lastLogUpdatedAt = loadedAt
@@ -687,7 +694,7 @@ public final class RuneAppState: ObservableObject {
             loadedAt: loadedAt
         )
         let bounded = boundedSessionLogCache(segment)
-        sessionLogCache[key] = bounded
+        updateSessionLogCache(key: key, value: bounded)
         unifiedServiceLogs = bounded
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
@@ -705,7 +712,11 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func cachedLogs(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) -> String {
-        sessionLogCache[logCacheKey(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)] ?? ""
+        let key = logCacheKey(contextName: contextName, namespace: namespace, kind: kind, resourceName: resourceName)
+        guard let logs = sessionLogCache[key] else { return "" }
+        touchSessionLogCacheKey(key)
+        pruneSessionLogCacheEntriesIfNeeded()
+        return logs
     }
 
     public func setResourceYAML(_ yaml: String) {
@@ -749,6 +760,9 @@ public final class RuneAppState: ObservableObject {
     private func pushResourceYAMLUndoSnapshotIfNeeded(for nextYAML: String) {
         guard nextYAML != resourceYAML else { return }
         resourceYAMLUndoStack.append(resourceYAML)
+        if resourceYAMLUndoStack.count > maxResourceYAMLUndoSnapshots {
+            resourceYAMLUndoStack.removeFirst(resourceYAMLUndoStack.count - maxResourceYAMLUndoSnapshots)
+        }
         resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
     }
 
@@ -1106,7 +1120,7 @@ public final class RuneAppState: ObservableObject {
         )
         let combined = previous.isEmpty ? segment : "\(previous)\n\n\(segment)"
         let bounded = boundedSessionLogCache(combined)
-        sessionLogCache[key] = bounded
+        updateSessionLogCache(key: key, value: bounded)
         return bounded
     }
 
@@ -1135,6 +1149,26 @@ public final class RuneAppState: ObservableObject {
         guard text.count > maxSessionLogCacheCharacters else { return text }
         let suffix = text.suffix(maxSessionLogCacheCharacters)
         return "[older session log cache truncated]\n\(suffix)"
+    }
+
+    private func updateSessionLogCache(key: String, value: String) {
+        sessionLogCache[key] = value
+        touchSessionLogCacheKey(key)
+        pruneSessionLogCacheEntriesIfNeeded()
+    }
+
+    private func touchSessionLogCacheKey(_ key: String) {
+        sessionLogCacheKeysMostRecent.removeAll { $0 == key }
+        sessionLogCacheKeysMostRecent.insert(key, at: 0)
+    }
+
+    private func pruneSessionLogCacheEntriesIfNeeded() {
+        guard sessionLogCacheKeysMostRecent.count > maxSessionLogCacheEntries else { return }
+        let staleKeys = sessionLogCacheKeysMostRecent.dropFirst(maxSessionLogCacheEntries)
+        for key in staleKeys {
+            sessionLogCache.removeValue(forKey: key)
+        }
+        sessionLogCacheKeysMostRecent = Array(sessionLogCacheKeysMostRecent.prefix(maxSessionLogCacheEntries))
     }
 
     private func logCacheKey(contextName: String, namespace: String, kind: KubeResourceKind, resourceName: String) -> String {

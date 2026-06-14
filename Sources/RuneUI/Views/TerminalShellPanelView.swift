@@ -25,6 +25,8 @@ struct TerminalShellPanelView: View {
     let onClearTranscript: () -> Void
     let onSaveActiveTranscript: () -> Void
     let onSaveAllTranscripts: () -> Void
+    let isFavoritePod: (PodSummary) -> Bool
+    let onToggleFavoritePod: (PodSummary) -> Void
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @State private var isInputFocused = false
     @State private var commandHistory: [String] = []
@@ -163,6 +165,8 @@ struct TerminalShellPanelView: View {
                 primaryActionSystemImage: primaryActionSystemImage,
                 isPrimaryActionDisabled: primaryActionDisabled,
                 isClearDisabled: session?.transcript.isEmpty ?? true,
+                isFavoritePod: isFavoritePod,
+                onToggleFavoritePod: onToggleFavoritePod,
                 onPrimaryAction: performPrimaryAction,
                 onClear: onClearTranscript,
                 selection: $selectedShellPodID

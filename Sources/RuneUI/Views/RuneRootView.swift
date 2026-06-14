@@ -470,6 +470,127 @@ private enum HelmBrowserTab: String, CaseIterable, Identifiable {
     }
 }
 
+private extension RuneSection {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .overview: return string(.overview)
+        case .workloads: return string(.workloads)
+        case .networking: return string(.networking)
+        case .storage: return string(.storage)
+        case .config: return string(.config)
+        case .rbac: return string(.rbac)
+        case .events: return string(.events)
+        case .helm: return string(.helm)
+        case .terminal: return string(.terminal)
+        }
+    }
+}
+
+private extension KubeResourceKind {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .pod: return string(.pods)
+        case .deployment: return string(.deployments)
+        case .statefulSet: return string(.statefulSets)
+        case .daemonSet: return string(.daemonSets)
+        case .job: return string(.jobs)
+        case .cronJob: return string(.cronJobs)
+        case .replicaSet: return string(.replicaSets)
+        case .service: return string(.services)
+        case .ingress: return string(.ingresses)
+        case .configMap: return string(.configMaps)
+        case .secret: return string(.secrets)
+        case .node: return string(.nodes)
+        case .event: return string(.events)
+        case .role: return string(.roles)
+        case .roleBinding: return string(.roleBindings)
+        case .clusterRole: return string(.clusterRoles)
+        case .clusterRoleBinding: return string(.clusterRoleBindings)
+        case .persistentVolumeClaim: return string(.persistentVolumeClaims)
+        case .persistentVolume: return string(.persistentVolumes)
+        case .storageClass: return string(.storageClasses)
+        case .horizontalPodAutoscaler: return string(.horizontalPodAutoscalers)
+        case .networkPolicy: return string(.networkPolicies)
+        }
+    }
+}
+
+private extension PodInspectorTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .overview: return string(.overview)
+        case .logs: return string(.logs)
+        case .exec: return string(.exec)
+        case .portForward: return string(.portForward)
+        case .describe: return string(.describe)
+        case .yaml: return string(.yaml)
+        }
+    }
+}
+
+private extension TerminalInspectorTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .commands: return string(.commands)
+        case .logs: return string(.logs)
+        case .yaml: return string(.yaml)
+        }
+    }
+}
+
+private extension ServiceInspectorTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .overview: return string(.overview)
+        case .unifiedLogs: return string(.unifiedLogs)
+        case .portForward: return string(.portForward)
+        case .describe: return string(.describe)
+        case .yaml: return string(.yaml)
+        }
+    }
+}
+
+private extension DeploymentInspectorTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .overview: return string(.overview)
+        case .unifiedLogs: return string(.unifiedLogs)
+        case .rollout: return string(.rollout)
+        case .describe: return string(.describe)
+        case .yaml: return string(.yaml)
+        }
+    }
+}
+
+private extension GenericResourceManifestTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .describe: return string(.describe)
+        case .yaml: return string(.yaml)
+        }
+    }
+}
+
+private extension HelmInspectorTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .overview: return string(.overview)
+        case .values: return string(.values)
+        case .manifest: return string(.manifest)
+        case .history: return string(.history)
+        }
+    }
+}
+
+private extension HelmBrowserTab {
+    func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
+        switch self {
+        case .releases: return string(.releases)
+        case .operatorResources: return string(.operatorResources)
+        }
+    }
+}
+
 enum PodTableLayout {
     static let metricsSpacing: CGFloat = 10
     static let rowHorizontalPadding: CGFloat = 10
@@ -581,6 +702,10 @@ public struct RuneRootView: View {
     @AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth) private var persistedPodNameColumnWidth = Double(PodTableLayout.nameColumnDefaultWidth)
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
     @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
@@ -595,6 +720,7 @@ public struct RuneRootView: View {
     @State private var isYAMLEditorSheetPresented = false
     @State private var terminalShellPodID = ""
     @State private var terminalPortForwardPodID = ""
+    @State private var terminalLogTabState = TerminalPodLogTabState()
     @State private var terminalInspectorTab: TerminalInspectorTab = .commands
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
@@ -610,6 +736,14 @@ public struct RuneRootView: View {
     @State private var manualNamespaceInput = ""
     @State private var isAuthDoctorPanelExpanded = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
+
+    private var interfaceLanguage: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func appString(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: interfaceLanguage)
+    }
 
     public init(
         viewModel: RuneAppViewModel = RuneAppViewModel(),
@@ -737,6 +871,11 @@ public struct RuneRootView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
         .animation(.easeOut(duration: 0.16), value: shouldShowLaunchExperience)
+        .runeAppearanceTheme(activeAppearanceTheme)
+    }
+
+    private var activeAppearanceTheme: RuneResolvedTheme {
+        RuneAppearanceTheme.resolved(appearanceThemeRaw)
     }
 
     private var appDynamicTypeSize: DynamicTypeSize {
@@ -1766,7 +1905,7 @@ public struct RuneRootView: View {
             HStack(spacing: 8) {
                 Image(systemName: section.symbolName)
                     .frame(width: 16)
-                Text(section.title + "    ⌘" + String(section.commandShortcut))
+                Text(section.localizedTitle(appString) + "    ⌘" + String(section.commandShortcut))
                     .font(.body.weight(.medium))
                 Spacer()
             }
@@ -2413,7 +2552,7 @@ public struct RuneRootView: View {
     private var contentHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(viewModel.state.selectedSection.title)
+                Text(viewModel.state.selectedSection.localizedTitle(appString))
                     .font(.title2.weight(.bold))
                     .lineLimit(1)
 
@@ -2438,15 +2577,15 @@ public struct RuneRootView: View {
 
                 Spacer()
 
-                if let context = viewModel.state.selectedContext {
+                if let context = viewModel.state.selectedContext, viewModel.state.selectedSection != .terminal {
                     Label(context.name, systemImage: "network")
                         .font(.caption.weight(.semibold))
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
                         .lineLimit(1)
                         .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: 36)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
+                        .background(.thinMaterial, in: Capsule())
                         .help(context.name)
                 }
 
@@ -2461,8 +2600,8 @@ public struct RuneRootView: View {
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
                         .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: 36)
-                        .background(Color.orange.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
+                        .background(Color.orange.opacity(0.16), in: Capsule())
                 }
 
                 if viewModel.state.selectedSection == .events {
@@ -2586,7 +2725,7 @@ public struct RuneRootView: View {
 
     private func resourceKindPicker(kinds: [KubeResourceKind]) -> some View {
         RuneSegmentedPickerInScroll(
-            "Kind",
+            appString(.kind),
             selection: Binding(get: {
                 viewModel.state.selectedWorkloadKind
             }, set: { kind in
@@ -2594,7 +2733,7 @@ public struct RuneRootView: View {
             })
         ) {
             ForEach(kinds) { kind in
-                Text(kind.title).tag(kind)
+                Text(kind.localizedTitle(appString)).tag(kind)
             }
         }
         .accessibilityLabel("Resource kind")
@@ -2807,14 +2946,16 @@ public struct RuneRootView: View {
                     }
                 }
 
-                OverviewClusterSignalsPanelView(
-                    unhealthy: viewModel.overviewUnhealthyItems,
-                    incidents: viewModel.overviewIncidentTimelineItems,
-                    dependencies: viewModel.overviewDependencyItems,
-                    expandedPanels: $expandedOverviewInsightPanels,
-                    onOpenSignal: viewModel.openOverviewSignal,
-                    onOpenDependency: viewModel.openOverviewDependency
-                )
+                if !simpleMode {
+                    OverviewClusterSignalsPanelView(
+                        unhealthy: viewModel.overviewUnhealthyItems,
+                        incidents: viewModel.overviewIncidentTimelineItems,
+                        dependencies: viewModel.overviewDependencyItems,
+                        expandedPanels: $expandedOverviewInsightPanels,
+                        onOpenSignal: viewModel.openOverviewSignal,
+                        onOpenDependency: viewModel.openOverviewDependency
+                    )
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Pod Health")
@@ -2829,10 +2970,12 @@ public struct RuneRootView: View {
                 }
                 .runePanelCard()
 
-                OverviewRecentEventsPanelView(
-                    events: viewModel.state.overviewEvents,
-                    onOpenEventSource: viewModel.openEventSource
-                )
+                if !simpleMode {
+                    OverviewRecentEventsPanelView(
+                        events: viewModel.state.overviewEvents,
+                        onOpenEventSource: viewModel.openEventSource
+                    )
+                }
             }
         }
         .id("overview")
@@ -3120,7 +3263,7 @@ public struct RuneRootView: View {
                 labelsHidden: true
             ) {
                 ForEach(HelmBrowserTab.allCases) { tab in
-                    Text(tab.title).tag(tab)
+                    Text(tab.localizedTitle(appString)).tag(tab)
                 }
             }
             .accessibilityLabel("Helm browser")
@@ -3240,7 +3383,7 @@ public struct RuneRootView: View {
 
     private var sectionPlaceholder: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.state.selectedSection.title + " is being implemented")
+            Text(viewModel.state.selectedSection.localizedTitle(appString) + " is being implemented")
                 .font(.title3.weight(.bold))
             Text("Flow and shortcuts are already wired so section switching feels instant.")
                 .foregroundStyle(.secondary)
@@ -3515,7 +3658,7 @@ public struct RuneRootView: View {
                         labelsHidden: true
                     ) {
                         ForEach(HelmInspectorTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                            Text(tab.localizedTitle(appString)).tag(tab)
                         }
                     }
                     .accessibilityLabel("Helm inspector")
@@ -3622,9 +3765,9 @@ public struct RuneRootView: View {
                 inspectorInfoRow("API Path", value: resource.apiPath, symbol: "curlybraces")
             }
 
-            RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
+            RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
                 ForEach(GenericResourceManifestTab.allCases) { tab in
-                    Text(tab.title).tag(tab)
+                    Text(tab.localizedTitle(appString)).tag(tab)
                 }
             }
 
@@ -3646,7 +3789,7 @@ public struct RuneRootView: View {
                         labelsHidden: true
                     ) {
                         ForEach(PodInspectorTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                            Text(tab.localizedTitle(appString)).tag(tab)
                         }
                     }
                     .accessibilityLabel("Inspector")
@@ -3717,7 +3860,7 @@ public struct RuneRootView: View {
                         labelsHidden: true
                     ) {
                         ForEach(DeploymentInspectorTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                            Text(tab.localizedTitle(appString)).tag(tab)
                         }
                     }
                     .accessibilityLabel("Inspector")
@@ -3810,7 +3953,7 @@ public struct RuneRootView: View {
                         labelsHidden: true
                     ) {
                         ForEach(ServiceInspectorTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                            Text(tab.localizedTitle(appString)).tag(tab)
                         }
                     }
                     .accessibilityLabel("Inspector")
@@ -3827,7 +3970,7 @@ public struct RuneRootView: View {
                                 inspectorInfoRow("Cluster IP", value: service.clusterIP, symbol: "network")
                                 Divider().opacity(0.45)
                                 inspectorActionButtonRow {
-                                    Button("Apply YAML") { viewModel.requestApplySelectedResourceYAML() }
+                                    Button(appString(.applyYAML)) { viewModel.requestApplySelectedResourceYAML() }
                                         .buttonStyle(.bordered)
                                         .disabled(!viewModel.canApplyClusterMutations)
                                     Button("Export…") { viewModel.saveCurrentResourceYAML() }
@@ -3960,7 +4103,7 @@ public struct RuneRootView: View {
         Group {
             if let resource {
                 VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(resource.name, label: "\(resource.kind.title) name")
+                    copyableInspectorTitle(resource.name, label: "\(resource.kind.localizedTitle(appString)) name")
 
                     VStack(alignment: .leading, spacing: 8) {
                         if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
@@ -3985,9 +4128,9 @@ public struct RuneRootView: View {
                         }
                     }
 
-                    RuneSegmentedPickerInScroll("Manifest", selection: $genericResourceManifestTab) {
+                    RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
                         ForEach(GenericResourceManifestTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                            Text(tab.localizedTitle(appString)).tag(tab)
                         }
                     }
 
@@ -4443,7 +4586,9 @@ public struct RuneRootView: View {
             onCloseSession: { id in viewModel.closeTerminalSession(id: id) },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() },
             onSaveActiveTerminalTranscript: { viewModel.saveActiveTerminalTranscript() },
-            onSaveAllTerminalTranscripts: { viewModel.saveAllTerminalTranscriptsZip() }
+            onSaveAllTerminalTranscripts: { viewModel.saveAllTerminalTranscriptsZip() },
+            isFavoritePod: isFavoritePod,
+            onToggleFavoritePod: toggleFavoritePod
         )
         .id("terminal")
         .onAppear(perform: reconcileTerminalPodSelections)
@@ -4465,11 +4610,15 @@ public struct RuneRootView: View {
         if terminalPortForwardPodID.isEmpty || !availableIDs.contains(terminalPortForwardPodID) {
             terminalPortForwardPodID = fallbackID
         }
+        if terminalLogTabState.selectedPodID.isEmpty || !availableIDs.contains(terminalLogTabState.selectedPodID) {
+            terminalLogTabState.selectedPodID = fallbackID
+        }
+        reconcileTerminalLogTabs()
     }
 
     private var terminalDetails: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Terminal")
+            Text(appString(.terminal))
                 .font(.title2.weight(.bold))
 
             RuneSegmentedPickerInScroll(
@@ -4478,7 +4627,7 @@ public struct RuneRootView: View {
                 labelsHidden: true
             ) {
                 ForEach(TerminalInspectorTab.allCases) { tab in
-                    Text(tab.title).tag(tab)
+                    Text(tab.localizedTitle(appString)).tag(tab)
                 }
             }
             .accessibilityLabel("Terminal Inspector")
@@ -4512,7 +4661,7 @@ public struct RuneRootView: View {
             refreshTerminalInspectorSelectionIfNeeded()
         }
         .onChange(of: terminalShellPodID) { _, _ in
-            refreshTerminalInspectorSelectionIfNeeded()
+            refreshTerminalInspectorForShellPodChangeIfNeeded()
         }
     }
 
@@ -4522,11 +4671,30 @@ public struct RuneRootView: View {
             ?? viewModel.state.pods.first
     }
 
+    private var terminalLogActivePod: PodSummary? {
+        terminalLogTabState.activePod(in: viewModel.state.pods, fallback: terminalInitialLogPod)
+    }
+
+    private var terminalInitialLogPod: PodSummary? {
+        viewModel.state.pods.first { $0.id == terminalLogTabState.selectedPodID }
+            ?? viewModel.state.selectedPod
+            ?? viewModel.state.pods.first
+    }
+
     @ViewBuilder
     private var terminalPodLogsDetails: some View {
-        if let pod = terminalInspectorPod {
-            let podOptions = terminalLogPodOptions(namespace: pod.namespace)
+        if let pod = terminalLogActivePod {
+            let podOptions = terminalLogPodOptions()
             VStack(alignment: .leading, spacing: 12) {
+                TerminalLogTabBar(
+                    tabs: terminalLogTabPresentations,
+                    activeTabID: terminalLogTabState.activeTabID,
+                    canAddTab: !viewModel.state.pods.isEmpty,
+                    onSelectTab: selectTerminalLogTab,
+                    onCloseTab: closeTerminalLogTab,
+                    onAddTab: addTerminalLogTab
+                )
+
                 PodLogsInspectorPane(
                     selectedLogPreset: $viewModel.selectedLogPreset,
                     includePreviousLogs: $viewModel.includePreviousLogs,
@@ -4539,11 +4707,14 @@ public struct RuneRootView: View {
                     statusText: logStatusText,
                     podOptions: podOptions,
                     selectedPodID: terminalLogPodSelectionBinding(currentPod: pod, podOptions: podOptions),
+                    isFavoritePod: isFavoritePod,
+                    onToggleFavoritePod: toggleFavoritePod,
+                    presentationStyle: .terminalCompact,
                     showsContainerPicker: false,
                     containerOptions: viewModel.podLogContainerOptions,
                     logText: viewModel.state.podLogs,
                     readOnlyResetID: "terminal-podlogs:\(pod.name):\(viewModel.selectedLogPreset.id):\(viewModel.includePreviousLogs):\(viewModel.selectedLogContainer)",
-                    onReload: { viewModel.focusTerminalPodInspector(pod, reloadLogs: true) },
+                    onReload: { reloadActiveTerminalLogPod() },
                     onSave: { viewModel.saveCurrentLogs() },
                     onSaveVisibleZip: { viewModel.saveVisibleLogsZip(visibleText: $0) },
                     onSaveFullZip: { viewModel.saveCurrentLogsZip() },
@@ -4553,31 +4724,111 @@ public struct RuneRootView: View {
                     onToggleStreamPause: { viewModel.toggleLogStreamPause() }
                 )
                 .onAppear {
-                    viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+                    ensureTerminalLogTabs(for: pod)
+                    reloadActiveTerminalLogPod()
                 }
             }
         } else {
-            inspectorEmptyState("Select a pod for logs", symbol: "doc.text.magnifyingglass")
+            VStack(alignment: .leading, spacing: 12) {
+                TerminalLogTabBar(
+                    tabs: terminalLogTabPresentations,
+                    activeTabID: terminalLogTabState.activeTabID,
+                    canAddTab: !viewModel.state.pods.isEmpty,
+                    onSelectTab: selectTerminalLogTab,
+                    onCloseTab: closeTerminalLogTab,
+                    onAddTab: addTerminalLogTab
+                )
+                inspectorEmptyState("Select a pod for logs", symbol: "doc.text.magnifyingglass")
+            }
         }
     }
 
-    private func terminalLogPodOptions(namespace: String) -> [PodSummary] {
+    private func terminalLogPodOptions() -> [PodSummary] {
         viewModel.state.pods
-            .filter { $0.namespace == namespace }
             .sorted { lhs, rhs in
-                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                let lhsFavorite = isFavoritePod(lhs)
+                let rhsFavorite = isFavoritePod(rhs)
+                if lhsFavorite != rhsFavorite {
+                    return lhsFavorite && !rhsFavorite
+                }
+                let namespaceOrder = lhs.namespace.localizedCaseInsensitiveCompare(rhs.namespace)
+                if namespaceOrder != .orderedSame {
+                    return namespaceOrder == .orderedAscending
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
     }
 
     private func terminalLogPodSelectionBinding(currentPod: PodSummary, podOptions: [PodSummary]) -> Binding<String> {
         Binding(
-            get: { currentPod.id },
+            get: {
+                let availableIDs = Set(podOptions.map(\.id))
+                if availableIDs.contains(terminalLogTabState.selectedPodID) {
+                    return terminalLogTabState.selectedPodID
+                }
+                return currentPod.id
+            },
             set: { podID in
                 guard let pod = podOptions.first(where: { $0.id == podID }) else { return }
-                terminalShellPodID = pod.id
+                terminalLogTabState.selectedPodID = pod.id
+                updateActiveTerminalLogTab(to: pod)
                 viewModel.focusTerminalPodInspector(pod, reloadLogs: true)
             }
         )
+    }
+
+    private var terminalLogTabPresentations: [TerminalLogTabPresentation] {
+        terminalLogTabState.presentations(pods: viewModel.state.pods, isFavorite: isFavoritePod)
+    }
+
+    private func ensureTerminalLogTabs(for pod: PodSummary) {
+        terminalLogTabState.ensureTab(for: pod)
+    }
+
+    private func reconcileTerminalLogTabs() {
+        terminalLogTabState.reconcile(availablePods: viewModel.state.pods, fallbackPod: terminalInitialLogPod)
+    }
+
+    private func addTerminalLogTab() {
+        guard let pod = preferredPodForNewTerminalLogTab() else { return }
+        terminalLogTabState.add(preferredPod: pod)
+        viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+    }
+
+    private func selectTerminalLogTab(_ id: String) {
+        guard let pod = terminalLogTabState.select(id: id, availablePods: viewModel.state.pods) else { return }
+        viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+    }
+
+    private func closeTerminalLogTab(_ id: String) {
+        if let pod = terminalLogTabState.close(id: id, availablePods: viewModel.state.pods, fallbackPod: terminalInitialLogPod) {
+            viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+        }
+    }
+
+    private func updateActiveTerminalLogTab(to pod: PodSummary) {
+        terminalLogTabState.updateActive(to: pod)
+    }
+
+    private func reloadActiveTerminalLogPod() {
+        guard let pod = terminalLogActivePod else { return }
+        viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+    }
+
+    private func preferredPodForNewTerminalLogTab() -> PodSummary? {
+        terminalLogTabState.preferredPodForNewTab(
+            pods: viewModel.state.pods,
+            fallbackPod: terminalInitialLogPod,
+            isFavorite: isFavoritePod
+        )
+    }
+
+    private func isFavoritePod(_ pod: PodSummary) -> Bool {
+        viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+    }
+
+    private func toggleFavoritePod(_ pod: PodSummary) {
+        viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
     }
 
     @ViewBuilder
@@ -4593,15 +4844,22 @@ public struct RuneRootView: View {
     }
 
     private func refreshTerminalInspectorSelectionIfNeeded() {
-        guard let pod = terminalInspectorPod else { return }
         switch terminalInspectorTab {
         case .commands:
             break
         case .logs:
+            guard let pod = terminalLogActivePod else { return }
+            ensureTerminalLogTabs(for: pod)
             viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
         case .yaml:
+            guard let pod = terminalInspectorPod else { return }
             viewModel.focusTerminalPodInspector(pod, loadDetails: shouldReloadTerminalPodDetails(for: pod))
         }
+    }
+
+    private func refreshTerminalInspectorForShellPodChangeIfNeeded() {
+        guard terminalInspectorTab == .yaml else { return }
+        refreshTerminalInspectorSelectionIfNeeded()
     }
 
     private func shouldReloadTerminalPodLogs(for pod: PodSummary) -> Bool {
@@ -4843,7 +5101,7 @@ public struct RuneRootView: View {
         if viewModel.state.isCommandPalettePresented || isYAMLEditorSheetPresented || yamlManifestIsEditing {
             return true
         }
-        if let responder = NSApp.keyWindow?.firstResponder, responder is NSTextView {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView, textView.isEditable {
             return true
         }
         return false
@@ -5074,6 +5332,11 @@ public struct RuneRootView: View {
     /// (for sections that expose segmented kinds), and leave up/down for row stepping.
     private func moveContentKindIfNeeded(_ direction: MoveCommandDirection) -> Bool {
         guard direction == .left || direction == .right else { return false }
+        if viewModel.state.selectedSection == .helm {
+            helmBrowserTab = advancedTab(current: helmBrowserTab, direction: direction)
+            return true
+        }
+
         guard let kinds = contentKindsForSelectedSection(), !kinds.isEmpty else { return false }
         guard let currentIndex = kinds.firstIndex(of: viewModel.state.selectedWorkloadKind) else { return false }
 
@@ -5128,6 +5391,15 @@ public struct RuneRootView: View {
             return nil
         }
 
+        if shouldHandlePaneArrowNavigation(event) {
+            if event.keyCode == 123 {
+                moveKeyboardSelection(.left)
+            } else {
+                moveKeyboardSelection(.right)
+            }
+            return nil
+        }
+
         guard shouldHandleConfiguredActionKey(event) else { return event }
         guard let action = configuredAction(for: event) else { return event }
         return performConfiguredAction(action) ? nil : event
@@ -5144,6 +5416,17 @@ public struct RuneRootView: View {
         guard !keyboardNavigationSuspended else { return false }
         guard textInputFocus == nil else { return false }
         let disallowedModifiers: NSEvent.ModifierFlags = [.function]
+        return event.modifierFlags.isDisjoint(with: disallowedModifiers)
+    }
+
+    private func shouldHandlePaneArrowNavigation(_ event: NSEvent) -> Bool {
+        guard event.keyCode == 123 || event.keyCode == 124 else { return false }
+        guard keyboardPaneFocus == .detail || (keyboardPaneFocus == .content && viewModel.state.selectedSection != .terminal) else {
+            return false
+        }
+        guard !keyboardNavigationSuspended else { return false }
+        guard textInputFocus == nil else { return false }
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
         return event.modifierFlags.isDisjoint(with: disallowedModifiers)
     }
 
@@ -5228,6 +5511,12 @@ public struct RuneRootView: View {
         case .historyForward:
             guard viewModel.canNavigateForward else { return false }
             viewModel.navigateForward()
+            return true
+        case .focusPreviousPane:
+            focusPreviousKeyboardPane()
+            return true
+        case .focusNextPane:
+            focusNextKeyboardPane()
             return true
         case .describe:
             return openDescribeInspectorForSelection()
@@ -5665,7 +5954,9 @@ public struct RuneRootView: View {
         case .helm:
             guard viewModel.state.selectedHelmRelease != nil else { return }
             helmInspectorTab = advancedTab(current: helmInspectorTab, direction: direction)
-        case .overview, .events, .terminal:
+        case .terminal:
+            terminalInspectorTab = advancedTab(current: terminalInspectorTab, direction: direction)
+        case .overview, .events:
             break
         }
     }
@@ -6554,7 +6845,7 @@ public struct RuneRootView: View {
                 .buttonStyle(.bordered)
                 .disabled(!viewModel.canApplyClusterMutations)
 
-                Button("Apply YAML") {
+                Button(appString(.applyYAML)) {
                     viewModel.requestApplySelectedResourceYAML()
                 }
                 .buttonStyle(.bordered)
@@ -6621,11 +6912,11 @@ public struct RuneRootView: View {
     }
 
     private var panelFill: some ShapeStyle {
-        RuneSurfaceKind.panel.fill
+        RuneSurfaceKind.panel.fill(theme: activeAppearanceTheme)
     }
 
     private var editorFill: Color {
-        RuneSurfaceKind.editor.fill
+        RuneSurfaceKind.editor.fill(theme: activeAppearanceTheme)
     }
 
     private func contentListRowChrome(isSelected: Bool) -> some View {

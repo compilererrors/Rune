@@ -194,6 +194,32 @@ enum RuneAppKitResourceListLayout {
     }
 }
 
+private extension NSColor {
+    static func runeTableHex(_ hex: String) -> NSColor {
+        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let value = UInt64(cleaned, radix: 16) ?? 0
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+        let alpha: CGFloat
+
+        switch cleaned.count {
+        case 8:
+            red = CGFloat((value >> 24) & 0xff) / 255
+            green = CGFloat((value >> 16) & 0xff) / 255
+            blue = CGFloat((value >> 8) & 0xff) / 255
+            alpha = CGFloat(value & 0xff) / 255
+        default:
+            red = CGFloat((value >> 16) & 0xff) / 255
+            green = CGFloat((value >> 8) & 0xff) / 255
+            blue = CGFloat(value & 0xff) / 255
+            alpha = 1
+        }
+
+        return NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+    }
+}
+
 @MainActor
 private final class RuneAppKitColumnWidthStore {
     static let shared = RuneAppKitColumnWidthStore()
@@ -266,6 +292,69 @@ private enum RuneAppKitResourceTableStyle {
     static func apply(to headerView: RuneAppKitResourceTableHeaderView) {
         headerView.horizontalInset = rowHorizontalInset
     }
+
+    static func invalidateTheme(in scrollView: NSScrollView) {
+        guard let tableView = scrollView.documentView as? NSTableView else { return }
+        tableView.headerView?.needsDisplay = true
+        tableView.needsDisplay = true
+        for row in 0..<tableView.numberOfRows {
+            tableView.rowView(atRow: row, makeIfNecessary: false)?.needsDisplay = true
+        }
+    }
+}
+
+private struct RuneAppKitResourceTableTheme {
+    let headerText: NSColor
+    let headerDivider: NSColor
+    let columnDivider: NSColor
+    let columnDividerResizable: NSColor
+    let rowFill: NSColor
+    let selectedRowFill: NSColor
+    let rowStroke: NSColor
+
+    static var current: RuneAppKitResourceTableTheme {
+        let theme = RuneAppearanceTheme.resolved(UserDefaults.standard.string(forKey: RuneSettingsKeys.appearanceTheme) ?? RuneSettingsKeys.appearanceThemeDefault)
+        if theme.isNative {
+            return RuneAppKitResourceTableTheme(
+                headerText: .headerTextColor,
+                headerDivider: NSColor.separatorColor.withAlphaComponent(0.24),
+                columnDivider: NSColor.gridColor.withAlphaComponent(0.28),
+                columnDividerResizable: NSColor.gridColor.withAlphaComponent(0.48),
+                rowFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42),
+                selectedRowFill: NSColor.controlAccentColor.withAlphaComponent(0.11),
+                rowStroke: NSColor.separatorColor.withAlphaComponent(0.20)
+            )
+        }
+        guard let appKit = theme.appKitPalette else {
+            return themed(text: "#1f2933", stroke: "#d4d2c9", row: "#f1f0ea", selected: "#3d70b2", selectedAlpha: 0.14)
+        }
+        return themed(
+            text: appKit.foreground,
+            stroke: appKit.stroke,
+            row: appKit.row,
+            selected: appKit.accent,
+            selectedAlpha: appKit.selectedAlpha
+        )
+    }
+
+    private static func themed(
+        text: String,
+        stroke: String,
+        row: String,
+        selected: String,
+        selectedAlpha: CGFloat = 0.18
+    ) -> RuneAppKitResourceTableTheme {
+        let strokeColor = NSColor.runeTableHex(stroke)
+        return RuneAppKitResourceTableTheme(
+            headerText: NSColor.runeTableHex(text).withAlphaComponent(0.92),
+            headerDivider: strokeColor.withAlphaComponent(0.40),
+            columnDivider: strokeColor.withAlphaComponent(0.32),
+            columnDividerResizable: strokeColor.withAlphaComponent(0.56),
+            rowFill: NSColor.runeTableHex(row).withAlphaComponent(0.62),
+            selectedRowFill: NSColor.runeTableHex(selected).withAlphaComponent(selectedAlpha),
+            rowStroke: strokeColor.withAlphaComponent(0.30)
+        )
+    }
 }
 
 struct AppKitPodTableView: NSViewRepresentable {
@@ -287,6 +376,7 @@ struct AppKitPodTableView: NSViewRepresentable {
     let onOpenDescribe: (PodSummary) -> Void
     let onOpenYAML: (PodSummary) -> Void
     let onDelete: (PodSummary) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -318,6 +408,7 @@ struct AppKitPodTableView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -326,6 +417,7 @@ struct AppKitPodTableView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? PodNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -721,6 +813,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
     let onOpenDescribe: (DeploymentSummary) -> Void
     let onOpenYAML: (DeploymentSummary) -> Void
     let onDelete: (DeploymentSummary) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -755,6 +848,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -763,6 +857,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? DeploymentNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -1032,6 +1127,7 @@ struct AppKitServiceListView: NSViewRepresentable {
     let onOpenDescribe: (ServiceSummary) -> Void
     let onOpenYAML: (ServiceSummary) -> Void
     let onDelete: (ServiceSummary) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1066,6 +1162,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -1074,6 +1171,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? ServiceNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -1348,6 +1446,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     let onOpenDescribe: (ClusterResourceSummary) -> Void
     let onOpenYAML: (ClusterResourceSummary) -> Void
     let onDelete: (ClusterResourceSummary) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1382,6 +1481,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -1390,6 +1490,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? GenericResourceNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -1678,6 +1779,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
     let sortAscending: Bool
     let onSelectRelease: (HelmReleaseSummary) -> Void
     let onToggleSort: (HelmReleaseListSortColumn) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1712,6 +1814,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -1720,6 +1823,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? HelmReleaseNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -1995,6 +2099,7 @@ struct AppKitEventListView: NSViewRepresentable {
     let sortAscending: Bool
     let onSelectEvent: (EventSummary) -> Void
     let onToggleSort: (EventListSortColumn) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2029,6 +2134,7 @@ struct AppKitEventListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -2037,6 +2143,7 @@ struct AppKitEventListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? EventNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -2317,6 +2424,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     let onToggleFavorite: (OperatorResourceSummary) -> Void
     let onOpenDescribe: (OperatorResourceSummary) -> Void
     let onOpenYAML: (OperatorResourceSummary) -> Void
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2351,6 +2459,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
         return scrollView
     }
 
@@ -2359,6 +2468,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         guard let tableView = scrollView.documentView as? OperatorResourceNSTableView else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
     @MainActor
@@ -2783,7 +2893,7 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
             }
         }
 
-        NSColor.separatorColor.withAlphaComponent(0.24).setFill()
+        RuneAppKitResourceTableTheme.current.headerDivider.setFill()
         NSRect(
             x: bounds.minX + horizontalInset,
             y: bounds.minY,
@@ -2808,9 +2918,8 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
 
     private func drawColumnDivider(at x: CGFloat, isResizable: Bool) {
         guard x > bounds.minX + horizontalInset, x < bounds.maxX - horizontalInset else { return }
-        let color = isResizable
-            ? NSColor.gridColor.withAlphaComponent(0.48)
-            : NSColor.gridColor.withAlphaComponent(0.28)
+        let tableTheme = RuneAppKitResourceTableTheme.current
+        let color = isResizable ? tableTheme.columnDividerResizable : tableTheme.columnDivider
         color.setFill()
         NSRect(x: x.rounded(.down), y: bounds.minY + 4, width: 1, height: max(0, bounds.height - 8)).fill()
     }
@@ -2861,7 +2970,7 @@ private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
         paragraph.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
-            .foregroundColor: NSColor.headerTextColor,
+            .foregroundColor: RuneAppKitResourceTableTheme.current.headerText,
             .paragraphStyle: paragraph
         ]
         let title = NSAttributedString(string: baseTitle.isEmpty ? stringValue : baseTitle, attributes: attributes)
@@ -2902,14 +3011,15 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
     override func drawBackground(in dirtyRect: NSRect) {
         let rowRect = bounds.insetBy(dx: horizontalInset, dy: 1)
         let path = NSBezierPath(roundedRect: rowRect, xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, yRadius: RuneUILayoutMetrics.compactGlyphCornerRadius)
+        let tableTheme = RuneAppKitResourceTableTheme.current
         let fill = isSelected
-            ? NSColor.controlAccentColor.withAlphaComponent(0.11)
-            : NSColor.controlBackgroundColor.withAlphaComponent(0.42)
+            ? tableTheme.selectedRowFill
+            : tableTheme.rowFill
         fill.setFill()
         path.fill()
 
         if !isSelected {
-            NSColor.separatorColor.withAlphaComponent(0.20).setStroke()
+            tableTheme.rowStroke.setStroke()
             path.lineWidth = 1
             path.stroke()
         }

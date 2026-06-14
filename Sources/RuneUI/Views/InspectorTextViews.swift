@@ -44,6 +44,9 @@ struct InspectorReadOnlyTextView: View {
     var largeTextScrollTargetRevision: Int?
     var largeTextShowsLineNumbers = true
     var showsLineNumbers = false
+    var searchQuery = ""
+    var searchMatchCase = false
+    var selectedSearchMatchIndex = 0
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     private var shouldUseLargeTextSurface: Bool {
@@ -80,7 +83,10 @@ struct InspectorReadOnlyTextView: View {
                     contentStyle: contentStyle,
                     externalValidationIssues: externalValidationIssues,
                     navigationRequest: navigationRequest,
-                    showsLineNumbers: showsLineNumbers
+                    showsLineNumbers: showsLineNumbers,
+                    searchQuery: searchQuery,
+                    searchMatchCase: searchMatchCase,
+                    selectedSearchMatchIndex: selectedSearchMatchIndex
                 )
             }
         }

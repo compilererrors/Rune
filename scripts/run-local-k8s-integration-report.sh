@@ -233,8 +233,10 @@ run_step script_fake_integration_test env \
 
 if can_bind_loopback_socket; then
   run_step rest_fake_integration_test swift test --disable-sandbox --filter RuneFakeK8sRESTServerTests
+  run_step fake_cluster_view_model_workflow_test swift test --disable-sandbox --filter RuneFakeClusterViewModelIntegrationTests
 else
   skip_step rest_fake_integration_test "Skipped because this environment cannot bind local loopback sockets."
+  skip_step fake_cluster_view_model_workflow_test "Skipped because this environment cannot bind local loopback sockets."
 fi
 
 if [[ "$SKIP_DOCKER" == "1" ]]; then

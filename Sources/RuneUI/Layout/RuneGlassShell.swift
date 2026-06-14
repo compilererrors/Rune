@@ -1,3 +1,4 @@
+import RuneCore
 import SwiftUI
 
 enum RuneGlassPaneRole {
@@ -47,38 +48,59 @@ enum RuneGlassPaneRole {
 
 struct RuneGlassPaneSurface: View {
     let role: RuneGlassPaneRole
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     var body: some View {
+        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
         ZStack {
             Rectangle()
                 .fill(role.material)
 
             Rectangle()
-                .fill(role.tint)
+                .fill(tint(theme: theme))
 
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(role.highlightOpacity),
-                    Color.white.opacity(role.highlightOpacity * 0.35),
-                    Color.clear
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            if theme.isNative {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(role.highlightOpacity),
+                        Color.white.opacity(role.highlightOpacity * 0.35),
+                        Color.clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+    }
+
+    private func tint(theme: RuneResolvedTheme) -> Color {
+        guard let palette = theme.palette else { return role.tint }
+        switch role {
+        case .window:
+            return palette.window.opacity(0.96)
+        case .sidebar:
+            return palette.sidebar.opacity(0.94)
+        case .content:
+            return palette.content.opacity(0.94)
+        case .inspector:
+            return palette.panel.opacity(0.94)
         }
     }
 }
 
 struct RuneGlassPaneBorder: View {
     let role: RuneGlassPaneRole
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     var body: some View {
+        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
+        let borderColor = theme.palette?.stroke.opacity(0.42) ?? role.borderColor
         Rectangle()
             .fill(
                 LinearGradient(
                     colors: [
-                        role.borderColor,
-                        role.borderColor.opacity(0.35)
+                        borderColor,
+                        borderColor.opacity(0.35)
                     ],
                     startPoint: .top,
                     endPoint: .bottom

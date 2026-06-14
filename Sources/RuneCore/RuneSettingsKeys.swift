@@ -25,6 +25,8 @@ public enum RuneSettingsKeys {
     public static let keyBindingDescribe = "rune.settings.keybindings.describe"
     public static let keyBindingHistoryBack = "rune.settings.keybindings.historyBack"
     public static let keyBindingHistoryForward = "rune.settings.keybindings.historyForward"
+    public static let keyBindingFocusPreviousPane = "rune.settings.keybindings.focusPreviousPane"
+    public static let keyBindingFocusNextPane = "rune.settings.keybindings.focusNextPane"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
     public static let keyBindingSaveLogs = "rune.settings.keybindings.saveLogs"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
@@ -50,12 +52,27 @@ public enum RuneSettingsKeys {
     public static let terminalFontSizeMaximum = 20.0
     /// When true, describe and YAML inspector surfaces hide Kubernetes managedFields by default.
     public static let hideManagedFieldsByDefault = "rune.settings.appearance.hideManagedFieldsByDefault"
+    /// When true, Rune favors a lighter, less dense interface and skips advanced optional panels.
+    public static let simpleMode = "rune.settings.appearance.simpleMode"
     /// When true, Rune shows native hover help for explanatory labels and controls.
     public static let showHoverTooltips = "rune.settings.appearance.showHoverTooltips"
+    /// BCP-47-ish language code for UI strings that have been migrated to Rune's local string catalog.
+    public static let interfaceLanguage = "rune.settings.appearance.interfaceLanguage"
+    public static let interfaceLanguageDefault = "en"
+    public static let appearanceTheme = "rune.settings.appearance.theme"
+    public static let appearanceThemeDefault = "native"
+    public static let appearanceRecentThemes = "rune.settings.appearance.recentThemes"
+    public static let appearanceRecentThemeLimit = 12
     public static let terminalScrollbackLineLimit = "rune.settings.terminal.scrollbackLineLimit"
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
     public static let terminalScrollbackLineLimitMaximum = 200_000
+    public static let sessionLogCacheEntryLimit = "rune.settings.performance.sessionLogCacheEntryLimit"
+    public static let sessionLogCacheEntryLimitDefault = 128
+    public static let sessionLogCacheEntryLimitMinimum = 16
+    public static let resourceYAMLUndoSnapshotLimit = "rune.settings.performance.resourceYAMLUndoSnapshotLimit"
+    public static let resourceYAMLUndoSnapshotLimitDefault = 64
+    public static let resourceYAMLUndoSnapshotLimitMinimum = 8
     public static let writeSafetyRequireApplyDryRun = "rune.settings.writeSafety.requireApplyDryRun"
     public static let writeSafetyRequireRolloutDryRun = "rune.settings.writeSafety.requireRolloutDryRun"
     public static let writeSafetyRequireHelmDryRun = "rune.settings.writeSafety.requireHelmDryRun"
@@ -70,6 +87,28 @@ public enum RuneSettingsKeys {
 
     public static func clampedTerminalScrollbackLineLimit(_ value: Int) -> Int {
         min(terminalScrollbackLineLimitMaximum, max(terminalScrollbackLineLimitMinimum, value))
+    }
+
+    public static func clampedSessionLogCacheEntryLimit(_ value: Int) -> Int {
+        max(sessionLogCacheEntryLimitMinimum, value)
+    }
+
+    public static func clampedResourceYAMLUndoSnapshotLimit(_ value: Int) -> Int {
+        max(resourceYAMLUndoSnapshotLimitMinimum, value)
+    }
+
+    public static func normalizedAppearanceRecentThemes(_ rawValues: [String], limit: Int = appearanceRecentThemeLimit) -> [String] {
+        guard limit > 0 else { return [] }
+
+        var seen = Set<String>()
+        var values: [String] = []
+        for rawValue in rawValues {
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, seen.insert(value).inserted else { continue }
+            values.append(value)
+            if values.count == limit { break }
+        }
+        return values
     }
 
     public static func registerDefaults() {
@@ -92,6 +131,8 @@ public enum RuneSettingsKeys {
             keyBindingDescribe: RuneKeyBindingAction.describe.defaultShortcut.storageValue,
             keyBindingHistoryBack: RuneKeyBindingAction.historyBack.defaultShortcut.storageValue,
             keyBindingHistoryForward: RuneKeyBindingAction.historyForward.defaultShortcut.storageValue,
+            keyBindingFocusPreviousPane: RuneKeyBindingAction.focusPreviousPane.defaultShortcut.storageValue,
+            keyBindingFocusNextPane: RuneKeyBindingAction.focusNextPane.defaultShortcut.storageValue,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
             keyBindingSaveLogs: RuneKeyBindingAction.saveLogs.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
@@ -107,8 +148,14 @@ public enum RuneSettingsKeys {
             layoutPodNameColumnWidth: 280.0,
             terminalFontSize: terminalFontSizeDefault,
             hideManagedFieldsByDefault: true,
+            simpleMode: false,
             showHoverTooltips: true,
+            interfaceLanguage: interfaceLanguageDefault,
+            appearanceTheme: appearanceThemeDefault,
+            appearanceRecentThemes: [appearanceThemeDefault],
             terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault,
+            sessionLogCacheEntryLimit: sessionLogCacheEntryLimitDefault,
+            resourceYAMLUndoSnapshotLimit: resourceYAMLUndoSnapshotLimitDefault,
             writeSafetyRequireApplyDryRun: true,
             writeSafetyRequireRolloutDryRun: true,
             writeSafetyRequireHelmDryRun: true,
@@ -181,14 +228,80 @@ public extension UserDefaults {
         }
     }
 
+    var runeSessionLogCacheEntryLimit: Int {
+        get {
+            let raw = (object(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit) as? Int)
+                ?? RuneSettingsKeys.sessionLogCacheEntryLimitDefault
+            return RuneSettingsKeys.clampedSessionLogCacheEntryLimit(raw)
+        }
+        set {
+            set(
+                RuneSettingsKeys.clampedSessionLogCacheEntryLimit(newValue),
+                forKey: RuneSettingsKeys.sessionLogCacheEntryLimit
+            )
+        }
+    }
+
+    var runeResourceYAMLUndoSnapshotLimit: Int {
+        get {
+            let raw = (object(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit) as? Int)
+                ?? RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault
+            return RuneSettingsKeys.clampedResourceYAMLUndoSnapshotLimit(raw)
+        }
+        set {
+            set(
+                RuneSettingsKeys.clampedResourceYAMLUndoSnapshotLimit(newValue),
+                forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit
+            )
+        }
+    }
+
     var runeHideManagedFieldsByDefault: Bool {
         get { (object(forKey: RuneSettingsKeys.hideManagedFieldsByDefault) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.hideManagedFieldsByDefault) }
     }
 
+    var runeSimpleMode: Bool {
+        get { (object(forKey: RuneSettingsKeys.simpleMode) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.simpleMode) }
+    }
+
     var runeShowHoverTooltips: Bool {
         get { (object(forKey: RuneSettingsKeys.showHoverTooltips) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.showHoverTooltips) }
+    }
+
+    var runeInterfaceLanguage: String {
+        get {
+            (object(forKey: RuneSettingsKeys.interfaceLanguage) as? String)
+                ?? RuneSettingsKeys.interfaceLanguageDefault
+        }
+        set { set(newValue, forKey: RuneSettingsKeys.interfaceLanguage) }
+    }
+
+    var runeAppearanceRecentThemes: [String] {
+        get {
+            RuneSettingsKeys.normalizedAppearanceRecentThemes(
+                stringArray(forKey: RuneSettingsKeys.appearanceRecentThemes) ?? [RuneSettingsKeys.appearanceThemeDefault]
+            )
+        }
+        set {
+            set(
+                RuneSettingsKeys.normalizedAppearanceRecentThemes(newValue),
+                forKey: RuneSettingsKeys.appearanceRecentThemes
+            )
+        }
+    }
+
+    func recordRuneAppearanceTheme(_ themeID: String, limit: Int = RuneSettingsKeys.appearanceRecentThemeLimit) {
+        let value = themeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+
+        let normalized = RuneSettingsKeys.normalizedAppearanceRecentThemes(
+            [value] + runeAppearanceRecentThemes.filter { $0 != value },
+            limit: limit
+        )
+        set(normalized, forKey: RuneSettingsKeys.appearanceRecentThemes)
     }
 
     var runeWriteSafetyRequireApplyDryRun: Bool {

@@ -23,6 +23,226 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertTrue(state.podLogs.contains("b"), "The newest tail read should still be present after truncation.")
     }
 
+    @MainActor
+    func testSessionLogCacheEvictsLeastRecentlyUsedResourceEntries() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+            }
+        }
+        defaults.runeSessionLogCacheEntryLimit = RuneSettingsKeys.sessionLogCacheEntryLimitDefault
+
+        let state = RuneAppState()
+
+        for index in 0..<129 {
+            state.appendPodLogRead(
+                "line \(index)",
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                podName: "pod-\(index)",
+                loadedAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+
+        XCTAssertEqual(state.sessionLogCache.count, 128)
+        XCTAssertEqual(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-0"
+            ),
+            ""
+        )
+        XCTAssertTrue(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-1"
+            ).contains("line 1")
+        )
+
+        state.appendPodLogRead(
+            "line 129",
+            contextName: "context-synthetic",
+            namespace: "namespace-synthetic",
+            podName: "pod-129",
+            loadedAt: Date(timeIntervalSince1970: 129)
+        )
+
+        XCTAssertEqual(state.sessionLogCache.count, 128)
+        XCTAssertTrue(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-1"
+            ).contains("line 1")
+        )
+        XCTAssertEqual(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-2"
+            ),
+            ""
+        )
+    }
+
+    @MainActor
+    func testSessionLogCacheUsesConfiguredLowerEntryLimit() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit)
+            }
+        }
+        defaults.runeSessionLogCacheEntryLimit = RuneSettingsKeys.sessionLogCacheEntryLimitMinimum
+
+        let state = RuneAppState()
+
+        for index in 0..<20 {
+            state.replacePodLogRead(
+                "line \(index)",
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                podName: "pod-\(index)",
+                loadedAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+
+        XCTAssertEqual(state.sessionLogCache.count, RuneSettingsKeys.sessionLogCacheEntryLimitMinimum)
+        XCTAssertEqual(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-0"
+            ),
+            ""
+        )
+        XCTAssertTrue(
+            state.cachedLogs(
+                contextName: "context-synthetic",
+                namespace: "namespace-synthetic",
+                kind: .pod,
+                resourceName: "pod-19"
+            ).contains("line 19")
+        )
+    }
+
+    @MainActor
+    func testResourceYAMLUndoHistoryIsBounded() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+            }
+        }
+        defaults.runeResourceYAMLUndoSnapshotLimit = RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault
+
+        let state = RuneAppState()
+        state.setResourceYAML("manifest-0")
+
+        for index in 1...70 {
+            state.updateResourceYAMLDraft("manifest-\(index)")
+        }
+
+        var undoCount = 0
+        while state.canUndoResourceYAMLEdit {
+            state.undoResourceYAMLEdit()
+            undoCount += 1
+        }
+
+        XCTAssertEqual(undoCount, 64)
+        XCTAssertEqual(state.resourceYAML, "manifest-6")
+    }
+
+    @MainActor
+    func testResourceYAMLUndoHistoryUsesConfiguredLowerLimit() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
+            }
+        }
+        defaults.runeResourceYAMLUndoSnapshotLimit = RuneSettingsKeys.resourceYAMLUndoSnapshotLimitMinimum
+
+        let state = RuneAppState()
+        state.setResourceYAML("manifest-0")
+
+        for index in 1...12 {
+            state.updateResourceYAMLDraft("manifest-\(index)")
+        }
+
+        var undoCount = 0
+        while state.canUndoResourceYAMLEdit {
+            state.undoResourceYAMLEdit()
+            undoCount += 1
+        }
+
+        XCTAssertEqual(undoCount, RuneSettingsKeys.resourceYAMLUndoSnapshotLimitMinimum)
+        XCTAssertEqual(state.resourceYAML, "manifest-4")
+    }
+
+    func testPerformanceMemorySettingsClampAndPersist() {
+        let suiteName = "RuneCoreTests.performanceMemory.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(defaults.runeSessionLogCacheEntryLimit, RuneSettingsKeys.sessionLogCacheEntryLimitDefault)
+        XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault)
+
+        defaults.runeSessionLogCacheEntryLimit = 1
+        defaults.runeResourceYAMLUndoSnapshotLimit = 1
+
+        XCTAssertEqual(defaults.runeSessionLogCacheEntryLimit, RuneSettingsKeys.sessionLogCacheEntryLimitMinimum)
+        XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, RuneSettingsKeys.resourceYAMLUndoSnapshotLimitMinimum)
+
+        let powerUserLogCacheLimit = 10_000
+        let powerUserUndoLimit = 5_000
+        defaults.runeSessionLogCacheEntryLimit = powerUserLogCacheLimit
+        defaults.runeResourceYAMLUndoSnapshotLimit = powerUserUndoLimit
+
+        XCTAssertEqual(defaults.runeSessionLogCacheEntryLimit, powerUserLogCacheLimit)
+        XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, powerUserUndoLimit)
+    }
+
+    func testAppearanceRecentThemesRecordDedupeAndTrim() {
+        let suiteName = "RuneCoreTests.appearanceRecentThemes.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(defaults.runeAppearanceRecentThemes, [RuneSettingsKeys.appearanceThemeDefault])
+
+        defaults.recordRuneAppearanceTheme("theme-a", limit: 3)
+        defaults.recordRuneAppearanceTheme("theme-b", limit: 3)
+        defaults.recordRuneAppearanceTheme("theme-c", limit: 3)
+        defaults.recordRuneAppearanceTheme("theme-b", limit: 3)
+        defaults.recordRuneAppearanceTheme("theme-d", limit: 3)
+
+        XCTAssertEqual(defaults.runeAppearanceRecentThemes, ["theme-d", "theme-b", "theme-c"])
+
+        defaults.runeAppearanceRecentThemes = [" theme-x ", "theme-y", "theme-x", "", "theme-z"]
+
+        XCTAssertEqual(defaults.runeAppearanceRecentThemes, ["theme-x", "theme-y", "theme-z"])
+    }
+
     func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
         let shortcut = RuneKeyboardShortcut(storageValue: "shift-f")
 
@@ -115,6 +335,8 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "/", modifiers: [])), .filterResources)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "left", modifiers: [.command, .option])), .historyBack)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "right", modifiers: [.command, .option])), .historyForward)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "left", modifiers: [.command, .shift])), .focusPreviousPane)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "right", modifiers: [.command, .shift])), .focusNextPane)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [])), .describe)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "l", modifiers: [])), .logs)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command])), .saveLogs)

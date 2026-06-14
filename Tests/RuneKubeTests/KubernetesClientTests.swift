@@ -412,6 +412,107 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(count, 7)
     }
 
+    func testPagedCollectionCountReportsProgressAndStopsAtRemainingItemCount() async {
+        let first = KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250")
+        var progressValues: [Int] = []
+        let count = await KubernetesClient.pagedCollectionCount(
+            firstRequest: first,
+            nextRequest: { _ in nil },
+            maxPages: 4,
+            progress: { progressValues.append($0) },
+            fetch: { request in
+                XCTAssertEqual(request, first)
+                return #"{"metadata":{"remainingItemCount":3},"items":[{},{}]}"#
+            },
+            fallbackTotal: nil
+        )
+
+        XCTAssertEqual(count, 5)
+        XCTAssertEqual(progressValues, [2, 5])
+    }
+
+    func testPagedCollectionCountReturnsNilWhenMaxPagesIsExhaustedBeforeFinalPage() async {
+        let first = KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250")
+        let count = await KubernetesClient.pagedCollectionCount(
+            firstRequest: first,
+            nextRequest: { token in
+                KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250&continue=\(token)")
+            },
+            maxPages: 1,
+            progress: nil,
+            fetch: { _ in
+                #"{"metadata":{"continue":"next"},"items":[{}]}"#
+            },
+            fallbackTotal: {
+                XCTFail("Max page exhaustion should not use expired-token fallback")
+                return 99
+            }
+        )
+
+        XCTAssertNil(count)
+    }
+
+    func testPagedCollectionCountTreatsCancellationAsUnavailableWithoutFallback() async {
+        let first = KubernetesRESTRequest(apiPath: "/api/v1/namespaces/default/pods?limit=250")
+        let count = await KubernetesClient.pagedCollectionCount(
+            firstRequest: first,
+            nextRequest: { _ in nil },
+            maxPages: 4,
+            progress: nil,
+            fetch: { _ in
+                throw CancellationError()
+            },
+            fallbackTotal: {
+                XCTFail("Cancellation should not be treated as an expired continue token")
+                return 99
+            }
+        )
+
+        XCTAssertNil(count)
+    }
+
+    func testResourceCountPathCoverageForEveryKnownResourceKind() {
+        let namespace = "team alpha"
+        let clusterScopedKinds: Set<KubeResourceKind> = [
+            .node,
+            .clusterRole,
+            .clusterRoleBinding,
+            .persistentVolume,
+            .storageClass
+        ]
+
+        for kind in KubeResourceKind.allCases {
+            let resource = KubernetesRESTPath.resourceName(for: kind)
+            if clusterScopedKinds.contains(kind) {
+                let probe = KubernetesRESTPath.clusterCollectionMetadataProbe(resource: resource)
+                let request = KubernetesRESTPath.clusterCollectionRequest(
+                    resource: resource,
+                    options: KubernetesListOptions(limit: 250, continueToken: "next page")
+                )
+
+                XCTAssertNotNil(probe, "Missing cluster metadata probe for \(kind)")
+                XCTAssertNotNil(request, "Missing cluster paged request for \(kind)")
+                XCTAssertTrue(probe?.contains("limit=1") == true, "Expected limit probe for \(kind)")
+                XCTAssertTrue(request?.apiPath.contains("limit=250") == true, "Expected paged limit for \(kind)")
+                XCTAssertTrue(request?.apiPath.contains("continue=next%20page") == true, "Expected encoded continue token for \(kind)")
+            } else {
+                let probe = KubernetesRESTPath.namespacedCollectionMetadataProbe(namespace: namespace, resource: resource)
+                let request = KubernetesRESTPath.namespacedCollectionRequest(
+                    namespace: namespace,
+                    resource: resource,
+                    options: KubernetesListOptions(limit: 250, continueToken: "next page")
+                )
+
+                XCTAssertNotNil(probe, "Missing namespaced metadata probe for \(kind)")
+                XCTAssertNotNil(request, "Missing namespaced paged request for \(kind)")
+                XCTAssertTrue(probe?.contains("/namespaces/team%20alpha/") == true, "Expected encoded namespace for \(kind)")
+                XCTAssertTrue(probe?.contains("limit=1") == true, "Expected limit probe for \(kind)")
+                XCTAssertTrue(request?.apiPath.contains("limit=250") == true, "Expected paged limit for \(kind)")
+                XCTAssertTrue(request?.apiPath.contains("continue=next%20page") == true, "Expected encoded continue token for \(kind)")
+            }
+        }
+    }
+
     func testPreferredPortForwardPodChoosesRunningPodDeterministically() {
         let pods = [
             PodSummary(name: "api-b", namespace: "default", status: "Pending"),

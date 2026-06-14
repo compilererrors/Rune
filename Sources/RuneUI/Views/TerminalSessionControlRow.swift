@@ -10,6 +10,8 @@ struct TerminalSessionControlRow: View {
     let primaryActionSystemImage: String
     let isPrimaryActionDisabled: Bool
     let isClearDisabled: Bool
+    let isFavoritePod: (PodSummary) -> Bool
+    let onToggleFavoritePod: (PodSummary) -> Void
     let onPrimaryAction: () -> Void
     let onClear: () -> Void
     @Binding var selection: String
@@ -18,7 +20,7 @@ struct TerminalSessionControlRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 selectorLabel
-                    .frame(width: 116, alignment: .leading)
+                    .frame(width: 96, alignment: .leading)
                 picker
                 actionButtons
             }
@@ -37,19 +39,16 @@ struct TerminalSessionControlRow: View {
     }
 
     private var picker: some View {
-        Picker(title, selection: $selection) {
-            if pods.isEmpty {
-                Text("No pods in namespace").tag("")
-            } else {
-                ForEach(pods) { pod in
-                    Text(podTitle(pod)).tag(pod.id)
-                }
-            }
-        }
-        .labelsHidden()
-        .disabled(pods.isEmpty)
-        .controlSize(.small)
-        .frame(width: 340, height: 26, alignment: .leading)
+        FavoritePodPicker(
+            title: title,
+            pods: pods,
+            width: 320,
+            rowTitle: podTitle,
+            rowDetail: podDetail,
+            isFavoritePod: isFavoritePod,
+            onToggleFavoritePod: onToggleFavoritePod,
+            selection: $selection
+        )
     }
 
     private var actionButtons: some View {
@@ -57,17 +56,17 @@ struct TerminalSessionControlRow: View {
             Button(action: onPrimaryAction) {
                 Label(primaryActionTitle, systemImage: primaryActionSystemImage)
                     .lineLimit(1)
-                    .frame(width: 104)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .frame(width: 112)
             .disabled(isPrimaryActionDisabled)
             .help(primaryActionTitle)
 
             Button("Clear", action: onClear)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .frame(width: 64)
+                .frame(width: 72)
                 .disabled(isClearDisabled)
                 .help("Clear active terminal output")
                 .keyboardShortcut("k", modifiers: [.command])
@@ -76,10 +75,14 @@ struct TerminalSessionControlRow: View {
     }
 
     private func podTitle(_ pod: PodSummary) -> String {
+        podDetail(pod).map { "\(pod.name)  \($0)" } ?? pod.name
+    }
+
+    private func podDetail(_ pod: PodSummary) -> String? {
         guard let status = terminalSessionStatus(for: pod) else {
-            return "\(pod.name)  \(pod.status)"
+            return pod.status
         }
-        return "\(pod.name)  \(pod.status)  -  \(status)"
+        return "\(pod.status) - \(status)"
     }
 
     private func terminalSessionStatus(for pod: PodSummary) -> String? {

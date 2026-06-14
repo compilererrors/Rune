@@ -20,7 +20,22 @@ enum RuneSurfaceKind {
         }
     }
 
-    var fill: Color {
+    func fill(theme: RuneResolvedTheme) -> Color {
+        if let palette = theme.palette {
+            switch self {
+            case .panel:
+                return palette.panel.opacity(0.92)
+            case .inset:
+                return palette.inset.opacity(0.92)
+            case .editor:
+                return palette.editor.opacity(0.96)
+            case let .listRow(isSelected):
+                return isSelected ? palette.rowSelected.opacity(0.72) : palette.row.opacity(0.62)
+            case let .sidebarSelection(isSelected):
+                return isSelected ? palette.accent.opacity(0.18) : Color.clear
+            }
+        }
+
         switch self {
         case .panel:
             return Color(nsColor: .controlBackgroundColor).opacity(0.72)
@@ -37,7 +52,22 @@ enum RuneSurfaceKind {
         }
     }
 
-    var stroke: Color? {
+    func stroke(theme: RuneResolvedTheme) -> Color? {
+        if let palette = theme.palette {
+            switch self {
+            case .panel:
+                return palette.stroke.opacity(0.36)
+            case .inset:
+                return palette.stroke.opacity(0.50)
+            case .editor:
+                return palette.stroke.opacity(0.36)
+            case let .listRow(isSelected):
+                return isSelected ? nil : palette.stroke.opacity(0.30)
+            case .sidebarSelection:
+                return nil
+            }
+        }
+
         switch self {
         case .panel:
             return Color(nsColor: .separatorColor).opacity(0.24)
@@ -56,12 +86,14 @@ enum RuneSurfaceKind {
 
 struct RuneSurfaceBackground: View {
     let kind: RuneSurfaceKind
+    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
 
     var body: some View {
+        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
         RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
-            .fill(kind.fill)
+            .fill(kind.fill(theme: theme))
             .overlay {
-                if let stroke = kind.stroke {
+                if let stroke = kind.stroke(theme: theme) {
                     RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
                         .strokeBorder(stroke, lineWidth: 1)
                 }
@@ -72,14 +104,15 @@ struct RuneSurfaceBackground: View {
 struct RuneChip<Content: View>: View {
     let horizontalPadding: CGFloat
     let verticalPadding: CGFloat
-    let fill: Color
+    let fill: Color?
     let cornerRadius: CGFloat
     @ViewBuilder var content: Content
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     init(
         horizontalPadding: CGFloat = 8,
         verticalPadding: CGFloat = 3,
-        fill: Color = Color.secondary.opacity(0.12),
+        fill: Color? = nil,
         cornerRadius: CGFloat = RuneUILayoutMetrics.compactGlyphCornerRadius,
         @ViewBuilder content: () -> Content
     ) {
@@ -96,7 +129,7 @@ struct RuneChip<Content: View>: View {
             .padding(.vertical, verticalPadding)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(fill)
+                    .fill(fill ?? runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12))
             )
     }
 }
@@ -148,6 +181,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     let allVisibleSelected: Bool
     let onToggleVisibleSelection: () -> Void
     @ViewBuilder var actions: Actions
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     init(
         selectedCount: Int,
@@ -183,13 +217,19 @@ struct RuneBulkSelectionBar<Actions: View>: View {
         RuneChip(
             horizontalPadding: 8,
             verticalPadding: 3,
-            fill: selectedCount > 0 ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.10)
+            fill: selectedCount > 0
+                ? (runeThemePalette?.selectionFill ?? Color.accentColor.opacity(0.14))
+                : (runeThemePalette?.chipFill ?? Color.secondary.opacity(0.10))
         ) {
             Label(selectedCountText, systemImage: selectedCount > 0 ? "checkmark.square.fill" : "square")
                 .font(.caption.weight(.semibold))
                 .labelStyle(.titleAndIcon)
                 .imageScale(.small)
-                .foregroundStyle(selectedCount > 0 ? Color.accentColor : Color.secondary)
+                .foregroundStyle(
+                    selectedCount > 0
+                        ? (runeThemePalette?.accent ?? Color.accentColor)
+                        : (runeThemePalette?.secondaryText ?? Color.secondary)
+                )
         }
         .frame(height: RuneUILayoutMetrics.headerChipHeight)
         .accessibilityLabel(selectedCountText)
@@ -208,7 +248,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
 
     private var separator: some View {
         Rectangle()
-            .fill(Color(nsColor: .separatorColor).opacity(0.45))
+            .fill(runeThemePalette?.divider ?? Color(nsColor: .separatorColor).opacity(0.45))
             .frame(width: 1, height: RuneUILayoutMetrics.headerChipHeight - 8)
             .accessibilityHidden(true)
     }

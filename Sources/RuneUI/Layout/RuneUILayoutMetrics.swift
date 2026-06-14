@@ -40,7 +40,9 @@ enum RuneUILayoutMetrics {
     static let inspectorToolbarControlSpacing: CGFloat = 8
     static let inspectorToolbarGroupHorizontalPadding: CGFloat = 10
     static let inspectorToolbarGroupVerticalPadding: CGFloat = 8
-    static let inspectorToolbarGroupMinHeight: CGFloat = 48
+    static let inspectorToolbarGroupMinHeight: CGFloat = 58
+    static let inspectorToolbarSourceGroupHeight: CGFloat = 58
+    static let inspectorToolbarActionGroupHeight: CGFloat = 44
     static let inspectorToolbarControlMinHeight: CGFloat = 30
 
     static let minWindowContentTopInset: CGFloat = 0

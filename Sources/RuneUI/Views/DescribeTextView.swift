@@ -4,13 +4,20 @@ struct DescribeTextSurface: View {
     let text: String
     let minHeight: CGFloat
     let resetID: String
+    var searchQuery = ""
+    var searchMatchCase = false
+    var selectedSearchMatchIndex = 0
 
     var body: some View {
-        InspectorReadOnlyTextSurface(
-            text: text,
-            minHeight: minHeight,
-            resetID: resetID,
-            contentStyle: .describe
-        )
+        InspectorTextSurface(minHeight: minHeight) {
+            InspectorReadOnlyTextView(
+                text: text,
+                resetID: resetID,
+                contentStyle: .describe,
+                searchQuery: searchQuery,
+                searchMatchCase: searchMatchCase,
+                selectedSearchMatchIndex: selectedSearchMatchIndex
+            )
+        }
     }
 }

@@ -136,6 +136,47 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
     }
 
+    @MainActor
+    private func benchmarkOverviewViewModel() -> RuneAppViewModel {
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "benchmark")])
+        state.selectedSection = .overview
+        state.selectedNamespace = "default"
+
+        let pods = (0..<800).map { index in
+            PodSummary(
+                name: "pod-\(String(format: "%04d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 29) ? "CrashLoopBackOff" : "Running",
+                totalRestarts: index.isMultiple(of: 41) ? 4 : 0,
+                containersReady: index.isMultiple(of: 53) ? "0/1" : "1/1"
+            )
+        }
+        let deployments = benchmarkDeployments(count: 160)
+        let services = benchmarkServices(count: 160)
+        state.setDeployments(deployments)
+        state.setServices(services)
+        state.setOverviewSnapshot(
+            pods: pods,
+            deploymentsCount: deployments.count,
+            servicesCount: services.count,
+            ingressesCount: 20,
+            configMapsCount: 80,
+            cronJobsCount: 12,
+            nodesCount: 24,
+            clusterCPUPercent: 47,
+            clusterMemoryPercent: 58,
+            events: benchmarkEvents(count: 600)
+        )
+
+        return RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+    }
+
     private func benchmarkOperatorResources(count: Int) -> [OperatorResourceSummary] {
         (0..<count).map { index in
             OperatorResourceSummary(
@@ -804,6 +845,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             searchSummary: searchSummary,
             podOptions: pods,
             selectedPodID: pods[0].id,
+            presentationStyle: .terminalCompact,
             showsContainerPicker: false,
             containerOptions: ["app", "sidecar"]
         )
@@ -821,6 +863,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             searchSummary: searchSummary,
             podOptions: pods,
             selectedPodID: pods[0].id,
+            presentationStyle: .terminalCompact,
             showsContainerPicker: false,
             containerOptions: ["app", "sidecar"]
         )
@@ -843,6 +886,89 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             (heights.max() ?? 0) - (heights.min() ?? 0),
             8,
             "KPI: terminal log pod picker should not wrap or jump vertically across panel widths."
+        )
+    }
+
+    @MainActor
+    func testTerminalLogTabsWorkflowBenchmarkKPI() {
+        let pods = (0..<80).map { index in
+            PodSummary(
+                name: "pod-\(String(format: "%04d", index))",
+                namespace: "default",
+                status: index.isMultiple(of: 9) ? "Succeeded" : "Running",
+                containerNamesLine: "app,sidecar"
+            )
+        }
+        let favoriteNames = Set(["pod-0003", "pod-0013", "pod-0021", "pod-0034"])
+
+        var measuredState = TerminalPodLogTabState()
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            measuredState = TerminalPodLogTabState()
+            for pod in pods.prefix(24) {
+                measuredState.add(preferredPod: pod)
+            }
+            _ = measuredState.presentations(pods: pods) { favoriteNames.contains($0.name) }
+            measuredState.reconcile(availablePods: Array(pods.dropFirst(8)), fallbackPod: pods[8])
+            _ = measuredState.preferredPodForNewTab(
+                pods: pods,
+                fallbackPod: pods[10],
+                isFavorite: { favoriteNames.contains($0.name) }
+            )
+        }
+
+        let started = ContinuousClock.now
+        var state = TerminalPodLogTabState()
+        for _ in 0..<1_000 {
+            state = TerminalPodLogTabState()
+            for pod in pods.prefix(24) {
+                state.add(preferredPod: pod)
+            }
+            _ = state.presentations(pods: pods) { favoriteNames.contains($0.name) }
+            state.reconcile(availablePods: Array(pods.dropFirst(8)), fallbackPod: pods[8])
+            _ = state.preferredPodForNewTab(
+                pods: pods,
+                fallbackPod: pods[10],
+                isFavorite: { favoriteNames.contains($0.name) }
+            )
+        }
+        let elapsed = started.duration(to: .now)
+
+        #if DEBUG
+        let maximumWorkflowSeconds = 0.45
+        #else
+        let maximumWorkflowSeconds = 0.16
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumWorkflowSeconds,
+            "KPI: log tab workflow state should stay below \(maximumWorkflowSeconds)s for 1k add/select/reconcile projection cycles."
+        )
+
+        let presentations = state.presentations(pods: pods) { favoriteNames.contains($0.name) }
+        let controller = NSHostingController(
+            rootView: TerminalLogTabBar(
+                tabs: presentations,
+                activeTabID: state.activeTabID,
+                canAddTab: true,
+                onSelectTab: { _ in },
+                onCloseTab: { _ in },
+                onAddTab: {}
+            )
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 44)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let layoutStarted = ContinuousClock.now
+        for width in stride(from: CGFloat(480), through: CGFloat(1_080), by: CGFloat(120)) {
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 44)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+        let layoutElapsed = layoutStarted.duration(to: .now)
+
+        XCTAssertLessThan(
+            seconds(layoutElapsed),
+            0.05,
+            "KPI: terminal log tab bar layout should stay below 50ms across resize samples."
         )
     }
 
@@ -1173,6 +1299,48 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         XCTAssertLessThan(elapsedSeconds, 0.12)
+    }
+
+    @MainActor
+    func testSimpleModeOverviewInitialMountBenchmarkKPI() {
+        let defaults = UserDefaults.standard
+        let oldValue = defaults.object(forKey: RuneSettingsKeys.simpleMode)
+        defer {
+            if let oldValue {
+                defaults.set(oldValue, forKey: RuneSettingsKeys.simpleMode)
+            } else {
+                defaults.removeObject(forKey: RuneSettingsKeys.simpleMode)
+            }
+        }
+
+        func mountOverview(simpleMode: Bool) -> Double {
+            defaults.set(simpleMode, forKey: RuneSettingsKeys.simpleMode)
+            return minimumElapsedSeconds(repetitions: 5) {
+                let controller = NSHostingController(
+                    rootView: RuneRootView(
+                        viewModel: benchmarkOverviewViewModel(),
+                        onLayoutSnapshotChange: nil,
+                        debugDisableBootstrap: true
+                    )
+                )
+                controller.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+                controller.view.layoutSubtreeIfNeeded()
+            }
+        }
+
+        let fullModeSeconds = mountOverview(simpleMode: false)
+        let simpleModeSeconds = mountOverview(simpleMode: true)
+
+        XCTAssertLessThan(
+            simpleModeSeconds,
+            0.16,
+            "KPI: simple-mode overview initial mount should stay below 160ms in debug with synthetic overview data."
+        )
+        XCTAssertLessThanOrEqual(
+            simpleModeSeconds,
+            fullModeSeconds + 0.01,
+            "KPI: simple mode must not regress overview initial mount time versus full mode."
+        )
     }
 
     @MainActor
@@ -3192,6 +3360,179 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testThemeCatalogImportBenchmarkKPI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneThemeImportBenchmark-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 0..<80 {
+            let darkAccent = index.isMultiple(of: 2) ? "#67b7ffff" : "#b891ffff"
+            let lightAccent = index.isMultiple(of: 2) ? "#1f73caff" : "#006d8fff"
+            let json = """
+            {
+              "name": "Synthetic Theme Family \(index)",
+              "themes": [
+                \(benchmarkThemeJSON(name: "Dark \(index)", appearance: "dark", accent: darkAccent)),
+                \(benchmarkThemeJSON(name: "Light \(index)", appearance: "light", accent: lightAccent))
+              ]
+            }
+            """
+            try json.write(
+                to: directory.appendingPathComponent("theme-\(String(format: "%03d", index)).json"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = RuneThemeCatalog.loadZedThemes(from: directory)
+        }
+
+        let themes = RuneThemeCatalog.loadZedThemes(from: directory)
+        let elapsedSeconds = try minimumThrowingElapsedSeconds {
+            _ = RuneThemeCatalog.loadZedThemes(from: directory)
+        }
+
+        XCTAssertEqual(themes.count, 160)
+        XCTAssertEqual(themes.first?.id, "zed:theme-000:dark-0")
+        XCTAssertEqual(themes.last?.id, "zed:theme-079:light-79")
+        XCTAssertEqual(themes.first?.sourceSummary, "Custom theme")
+        #if DEBUG
+        let maximumSeconds = 1.0
+        #else
+        let maximumSeconds = 0.35
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumSeconds,
+            "KPI: importing 160 synthetic custom themes should stay below \(maximumSeconds)s."
+        )
+    }
+
+    @MainActor
+    func testThemePresentationProjectionBenchmarkKPI() {
+        let themes = RuneAppearanceTheme.allCases.map(\.resolvedTheme)
+        let iterations = 4_000
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for _ in 0..<iterations {
+                for theme in themes {
+                    _ = RuneThemePresentation(theme: theme)
+                }
+            }
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            for _ in 0..<iterations {
+                for theme in themes {
+                    let presentation = RuneThemePresentation(theme: theme)
+                    _ = presentation.title
+                    _ = presentation.menuSymbol
+                    _ = presentation.palette.accent
+                }
+            }
+        }
+
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.20,
+            "KPI: theme presentation projection should stay below 200ms for repeated settings/menu refreshes in debug."
+        )
+    }
+
+    func testThemeCatalogCachedUserThemesLookupBenchmarkKPI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneThemeCachedLookupBenchmark-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            RuneThemeCatalog.reloadUserThemes()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        for index in 0..<40 {
+            let json = """
+            {
+              "name": "Synthetic Theme Family \(index)",
+              "themes": [
+                \(benchmarkThemeJSON(name: "Cached Dark \(index)", appearance: "dark", accent: "#67b7ffff")),
+                \(benchmarkThemeJSON(name: "Cached Light \(index)", appearance: "light", accent: "#1f73caff"))
+              ]
+            }
+            """
+            try json.write(
+                to: directory.appendingPathComponent("cached-theme-\(String(format: "%03d", index)).json"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        RuneThemeCatalog.reloadUserThemes()
+        let referenceDate = Date(timeIntervalSince1970: 10_000)
+        let themes = RuneThemeCatalog.userThemes(from: directory, referenceDate: referenceDate)
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for offset in 0..<1_000 {
+                _ = RuneThemeCatalog.userThemes(
+                    from: directory,
+                    referenceDate: referenceDate.addingTimeInterval(Double(offset) * 0.0001)
+                )
+            }
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            for offset in 0..<1_000 {
+                _ = RuneThemeCatalog.userThemes(
+                    from: directory,
+                    referenceDate: referenceDate.addingTimeInterval(Double(offset) * 0.0001)
+                )
+            }
+        }
+
+        XCTAssertEqual(themes.count, 80)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.05,
+            "KPI: cached custom theme lookup should stay below 50ms for 1k settings refresh reads."
+        )
+    }
+
+    private func benchmarkThemeJSON(name: String, appearance: String, accent: String) -> String {
+        """
+        {
+          "name": "\(name)",
+          "appearance": "\(appearance)",
+          "style": {
+            "background": "\(appearance == "dark" ? "#101820ff" : "#fbfcffff")",
+            "panel.background": "\(appearance == "dark" ? "#182431ff" : "#f1f5faff")",
+            "surface.background": "\(appearance == "dark" ? "#1e2c3aff" : "#eef3f8ff")",
+            "element.background": "\(appearance == "dark" ? "#223244ff" : "#e4ebf5ff")",
+            "element.selected": "\(appearance == "dark" ? "#294866ff" : "#c8e4ffff")",
+            "border": "\(appearance == "dark" ? "#40576eff" : "#91a2b5ff")",
+            "border.variant": "\(appearance == "dark" ? "#34485cff" : "#a5b2c2ff")",
+            "text": "\(appearance == "dark" ? "#f4f8fbff" : "#07111fff")",
+            "text.muted": "\(appearance == "dark" ? "#b6c4d1ff" : "#26394fff")",
+            "text.placeholder": "\(appearance == "dark" ? "#8ea0adff" : "#52677dff")",
+            "text.accent": "\(accent)",
+            "editor.background": "\(appearance == "dark" ? "#0d141cff" : "#ffffffff")",
+            "success": "\(appearance == "dark" ? "#7ee6a8ff" : "#006d3bff")",
+            "warning": "\(appearance == "dark" ? "#ffd166ff" : "#8a5a00ff")",
+            "error": "\(appearance == "dark" ? "#ff7a9aff" : "#b00020ff")",
+            "info": "#8bd3ffff",
+            "syntax": {
+              "property": { "color": "#8bd3ffff" },
+              "string": { "color": "\(appearance == "dark" ? "#7ee6a8ff" : "#006d3bff")" },
+              "number": { "color": "#ffd166ff" },
+              "boolean": { "color": "\(accent)" },
+              "comment": { "color": "\(appearance == "dark" ? "#8ea0adff" : "#52677dff")" },
+              "keyword": { "color": "\(accent)" },
+              "type": { "color": "#80e6d6ff" }
+            }
+          }
+        }
+        """
+    }
+
     @MainActor
     func testPodLogContainerOptionsBenchmarkKPI() {
         let state = RuneAppState()
@@ -3565,7 +3906,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     onComposeNewSession: {},
                     onClearTranscript: {},
                     onSaveActiveTranscript: {},
-                    onSaveAllTranscripts: {}
+                    onSaveAllTranscripts: {},
+                    isFavoritePod: { _ in false },
+                    onToggleFavoritePod: { _ in }
                 )
             }
         }
@@ -3594,7 +3937,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 onComposeNewSession: {},
                 onClearTranscript: {},
                 onSaveActiveTranscript: {},
-                onSaveAllTranscripts: {}
+                onSaveAllTranscripts: {},
+                isFavoritePod: { _ in false },
+                onToggleFavoritePod: { _ in }
             )
         }
         let elapsed = started.duration(to: .now)
@@ -3798,6 +4143,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         searchSummary: ResourceLogSearchResult,
         podOptions: [PodSummary] = [],
         selectedPodID: String = "",
+        presentationStyle: ResourceLogsPresentationStyle = .regular,
         showsContainerPicker: Bool = true,
         containerOptions: [String]
     ) -> NSHostingController<ResourceLogsToolbar> {
@@ -3809,12 +4155,14 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 isTailModeEnabled: .constant(false),
                 isStreamPaused: .constant(false),
                 searchQuery: .constant("error"),
+                searchMatchCase: .constant(false),
                 selectedSearchMatchIndex: .constant(2),
                 searchPulseID: 0,
                 searchSummary: searchSummary,
                 statusText: "Last updated 12:00:00",
                 podOptions: podOptions,
                 selectedPodID: podOptions.isEmpty ? nil : .constant(selectedPodID),
+                presentationStyle: presentationStyle,
                 showsContainerPicker: showsContainerPicker,
                 containerOptions: containerOptions,
                 onReload: {},
@@ -3858,10 +4206,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                             .buttonStyle(.bordered)
                         Button("Export…") {}
                             .buttonStyle(.bordered)
+                        ManifestStatusChip(text: "Last updated 12:00:00", systemImage: "clock")
                     }
                 }
-
-                ManifestStatusChip(text: "Last updated 12:00:00", systemImage: "clock")
             }
             .frame(width: width, alignment: .leading)
         )

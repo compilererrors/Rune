@@ -196,6 +196,73 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testFakeClusterLoadsUnifiedDeploymentAndServiceLogsThroughViewModel() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .deployment
+                && harness.state.deployments.contains { $0.name == "orbit-lens" }
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == "orbit-lens" })
+        harness.server.resetRequestLines()
+        harness.viewModel.selectDeployment(deployment)
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil {
+            let requestLines = harness.server.requestLines()
+            return !harness.state.isLoadingLogs
+                && harness.state.selectedDeployment?.name == "orbit-lens"
+                && harness.state.unifiedServiceLogPods == ["orbit-lens-6f58d7d89b-hx9q2"]
+                && harness.state.unifiedServiceLogs.contains("[orbit-lens-6f58d7d89b-hx9q2]")
+                && harness.state.unifiedServiceLogs.contains("synthetic REST fake log")
+                && requestLines.contains { $0.contains("/pods?labelSelector=") && $0.contains("orbit-lens") }
+                && requestLines.contains { $0.contains("/pods/orbit-lens-6f58d7d89b-hx9q2/log") }
+        }
+
+        var requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods?labelSelector=") && $0.contains("orbit-lens") })
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/orbit-lens-6f58d7d89b-hx9q2/log") })
+        XCTAssertNil(harness.state.lastLogFetchError)
+
+        harness.viewModel.setSection(.networking)
+        try await waitUntil {
+            harness.state.selectedSection == .networking
+                && harness.state.selectedWorkloadKind == .service
+                && harness.state.services.contains { $0.name == "orbit-lens" }
+                && !harness.state.isLoading
+        }
+
+        let service = try XCTUnwrap(harness.state.services.first { $0.name == "orbit-lens" })
+        harness.server.resetRequestLines()
+        harness.viewModel.selectService(service)
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil {
+            let requestLines = harness.server.requestLines()
+            return !harness.state.isLoadingLogs
+                && harness.state.selectedService?.name == "orbit-lens"
+                && harness.state.unifiedServiceLogPods == ["orbit-lens-6f58d7d89b-hx9q2"]
+                && harness.state.unifiedServiceLogs.contains("[orbit-lens-6f58d7d89b-hx9q2]")
+                && harness.state.unifiedServiceLogs.contains("synthetic REST fake log")
+                && requestLines.contains { $0.contains("/pods?labelSelector=") && $0.contains("orbit-lens") }
+                && requestLines.contains { $0.contains("/pods/orbit-lens-6f58d7d89b-hx9q2/log") }
+        }
+
+        requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods?labelSelector=") && $0.contains("orbit-lens") })
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/orbit-lens-6f58d7d89b-hx9q2/log") })
+        XCTAssertNil(harness.state.lastLogFetchError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testTerminalPodInspectorLoadsLogsAndYAMLAgainstFakeClusterWithoutLeavingTerminal() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -230,6 +297,71 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastLogFetchError)
         XCTAssertNil(harness.state.lastResourceYAMLError)
         XCTAssertNil(harness.state.lastResourceDescribeError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallbackAgainstFakeCluster() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .terminal
+
+        try await harness.viewModel.reloadContexts()
+        let logPod = try XCTUnwrap(harness.state.pods.first { $0.name == "ember-gate-75c9f746b8-kq2wm" })
+        let shellPod = try XCTUnwrap(harness.state.pods.first { $0.name == "orbit-lens-6f58d7d89b-hx9q2" })
+        var logTabs = TerminalPodLogTabState()
+        logTabs.ensureTab(for: logPod)
+
+        harness.server.resetRequestLines()
+        harness.viewModel.focusTerminalPodInspector(logPod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedPod?.id == logPod.id
+                && harness.state.podLogs.contains("synthetic REST fake log")
+                && !harness.state.isLoadingLogs
+        }
+
+        XCTAssertTrue(harness.server.requestLines().contains { $0.contains("/pods/\(logPod.name)/log") })
+
+        harness.server.resetRequestLines()
+        logTabs.reconcile(availablePods: harness.state.pods, fallbackPod: shellPod)
+
+        XCTAssertEqual(logTabs.activePod(in: harness.state.pods, fallback: shellPod)?.id, logPod.id)
+        XCTAssertEqual(logTabs.selectedPodID, logPod.id)
+        XCTAssertEqual(harness.state.selectedPod?.id, logPod.id)
+        XCTAssertTrue(harness.server.requestLines().isEmpty)
+
+        logTabs.updateActive(to: shellPod)
+        harness.viewModel.focusTerminalPodInspector(shellPod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedPod?.id == shellPod.id
+                && !harness.state.isLoadingLogs
+                && harness.server.requestLines().contains { $0.contains("/pods/\(shellPod.name)/log") }
+        }
+
+        XCTAssertTrue(harness.server.requestLines().contains { $0.contains("/pods/\(shellPod.name)/log") })
+
+        if harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name) {
+            harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        }
+        if harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name) {
+            harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name)
+        }
+
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
+        XCTAssertFalse(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name)
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        XCTAssertFalse(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+        XCTAssertNil(harness.state.lastLogFetchError)
         XCTAssertNil(harness.state.lastError)
     }
 

@@ -14,6 +14,13 @@ struct ResourceDescribeInspectorPane: View {
     let onExport: () -> Void
     let readOnlyResetID: String
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
+    @State private var isFindPresented = false
+    @State private var findQuery = ""
+    @State private var findMatchCase = false
+    @State private var selectedFindMatchIndex = 0
 
     var body: some View {
         let canApplyYAML = canApplyMutations
@@ -21,49 +28,74 @@ struct ResourceDescribeInspectorPane: View {
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !validationIssues.contains(where: { $0.severity == .error })
         let managedFieldsFilter = DescribeManagedFieldsDisplayFilter.removingManagedFields(from: describeText)
-        let presentedDescribeText = hidesManagedFields ? managedFieldsFilter.text : describeText
+        let effectiveHidesManagedFields = simpleMode || hidesManagedFields
+        let presentedDescribeText = effectiveHidesManagedFields ? managedFieldsFilter.text : describeText
 
         ResourceManifestInspectorLayout {
-            ManifestInlineNote("Describe output is read-only. Edit YAML, then Apply.") {
+            ManifestInlineNote(t(.describeReadOnlyNote)) {
                 ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
             }
         } toolbar: {
             ManifestToolbarScrollRow {
-                ManifestToolbarGroup {
-                    ManifestManagedFieldsToggle(
-                        hidesManagedFields: $hidesManagedFields,
-                        isDisabled: managedFieldsFilter.removedBlockCount == 0
-                    )
+                if !simpleMode {
+                    ManifestToolbarGroup {
+                        ManifestManagedFieldsToggle(
+                            hidesManagedFields: $hidesManagedFields,
+                            isDisabled: managedFieldsFilter.removedBlockCount == 0
+                        )
+                    }
                 }
 
                 ManifestToolbarGroup {
-                    Button("Apply", action: onApply)
+                    ManifestStatusChip(text: statusText, systemImage: "clock")
+
+                    Button(t(.apply), action: onApply)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
-                    Button("YAML manifest…", action: onOpenYAMLEditor)
+                    Button("\(t(.yamlManifest))...", action: onOpenYAMLEditor)
                         .buttonStyle(.bordered)
                         .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
 
-                    Button("Export Describe…", action: onExport)
+                    Button("\(t(.exportDescribe))...", action: onExport)
                         .buttonStyle(.bordered)
                         .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Export the current describe output to a file.")
                 }
             }
         } status: {
-            ManifestStatusChip(text: statusText, systemImage: "clock")
+            EmptyView()
         } surface: {
-            DescribeTextSurface(
+            FindableInspectorSurface(
                 text: presentedDescribeText,
-                minHeight: 280,
-                resetID: readOnlyResetID
-            )
+                placeholder: t(.findInDescribe),
+                query: $findQuery,
+                matchCase: $findMatchCase,
+                selectedMatchIndex: $selectedFindMatchIndex,
+                isFindPresented: $isFindPresented
+            ) {
+                DescribeTextSurface(
+                    text: presentedDescribeText,
+                    minHeight: 280,
+                    resetID: readOnlyResetID,
+                    searchQuery: findQuery,
+                    searchMatchCase: findMatchCase,
+                    selectedSearchMatchIndex: selectedFindMatchIndex
+                )
+            }
         } footer: {
             EmptyView()
         }
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
     }
 }
 

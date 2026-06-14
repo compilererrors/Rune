@@ -24,7 +24,7 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 - Add clusters with zero-config kubeconfig discovery, paste/file/folder import, manual token kubeconfig, or guided EKS, AKS, and GKE cloud import.
 - Run Auth Doctor to check kubeconfig, context, namespace, pod/log/exec/port-forward permissions, and API transport.
 - Load a small in-memory demo cluster from the Rune menu without starting a server.
-- Stay local: Rune does not use analytics, tracking, advertising, or telemetry.
+- Stay local: Rune requires no account, installs no cloud agent, and uses no analytics, tracking, advertising, or telemetry.
 
 ## Screenshots
 
@@ -83,7 +83,7 @@ Run **Rune > Load Demo Cluster** to explore Rune with a small in-memory cluster.
 
 ## Privacy
 
-Rune does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.
+Rune requires no account, installs no cloud agent, and does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.
 
 The only network traffic is the traffic required for Rune to communicate with the Kubernetes clusters and services you choose to connect to. Kubeconfig files, cluster endpoints, credentials, Keychain items, and security-scoped bookmarks are handled locally on your Mac.
 

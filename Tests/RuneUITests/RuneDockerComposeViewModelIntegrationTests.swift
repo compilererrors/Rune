@@ -203,6 +203,78 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposeTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallback() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.terminal)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .terminal
+                && harness.state.pods.contains { $0.name.hasPrefix("orbit-lens-") }
+                && harness.state.pods.contains { $0.name.hasPrefix("ember-gate-") }
+                && !harness.state.isLoading
+        }
+
+        let logPod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("orbit-lens-") })
+        let shellPod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("ember-gate-") })
+        var logTabs = TerminalPodLogTabState()
+        logTabs.ensureTab(for: logPod)
+
+        harness.viewModel.focusTerminalPodInspector(logPod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedPod?.id == logPod.id
+                && !harness.state.isLoadingLogs
+        }
+
+        let requestCountAfterLogLoad = await harness.kubeClient.restRequestMetricsSummary().requestCount
+
+        logTabs.reconcile(availablePods: harness.state.pods, fallbackPod: shellPod)
+
+        XCTAssertEqual(logTabs.activePod(in: harness.state.pods, fallback: shellPod)?.id, logPod.id)
+        XCTAssertEqual(logTabs.selectedPodID, logPod.id)
+        XCTAssertEqual(harness.state.selectedPod?.id, logPod.id)
+        let requestCountAfterShellFallback = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        XCTAssertEqual(requestCountAfterShellFallback, requestCountAfterLogLoad)
+
+        logTabs.updateActive(to: shellPod)
+        harness.viewModel.focusTerminalPodInspector(shellPod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedPod?.id == shellPod.id
+                && !harness.state.isLoadingLogs
+        }
+        try await waitUntilRequestCountExceeds(requestCountAfterLogLoad, in: harness)
+
+        let requestCountAfterExplicitLogSwitch = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        XCTAssertGreaterThan(requestCountAfterExplicitLogSwitch, requestCountAfterLogLoad)
+
+        if harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name) {
+            harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        }
+        if harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name) {
+            harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name)
+        }
+
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name)
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+
+        harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
+        XCTAssertFalse(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
+        XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+        XCTAssertNil(harness.state.lastLogFetchError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testDockerComposeRollbackSafetyFlowAgainstFakeCluster() async throws {
         let harness = try makeHarness()
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
@@ -529,6 +601,129 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposeProductionDeleteRequiresSecondConfirmationBeforeMutatingCluster() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let context = KubeContext(name: "fake-orbit-mesh")
+        var markedProductionInTest = false
+        UserDefaults.standard.runeEnableDemoCluster = false
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            if markedProductionInTest {
+                harness.viewModel.toggleProductionMark(for: context)
+            }
+            restoreDemoSetting(previousDemoSetting)
+            restoreUserDefault(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let namespace = "alpha-zone"
+        let configName = "rune-it-delete-guard-\(Self.shortTestID())"
+        defer {
+            Task {
+                try? await harness.kubeClient.deleteResource(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    kind: .configMap,
+                    name: configName
+                )
+            }
+        }
+
+        try await harness.kubeClient.applyYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            yaml: Self.configMapYAML(name: configName, namespace: namespace, value: "delete-guard")
+        )
+        try await waitForConfigMap(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            name: configName
+        )
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.config)
+        harness.viewModel.setWorkloadKind(.configMap)
+        try await waitUntil(timeout: 30) {
+            harness.state.configMaps.contains { $0.name == configName }
+                && !harness.state.isLoading
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        let configMap = try XCTUnwrap(harness.state.configMaps.first { $0.name == configName })
+        harness.viewModel.selectConfigMap(configMap)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedConfigMap?.name == configName
+                && harness.state.resourceYAML.contains(configName)
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        if !harness.viewModel.isProductionContext(context) {
+            harness.viewModel.toggleProductionMark(for: context)
+            markedProductionInTest = true
+        }
+        XCTAssertTrue(harness.viewModel.isProductionContext(context))
+
+        harness.viewModel.requestDeleteSelectedResource()
+        XCTAssertEqual(
+            harness.viewModel.pendingWriteAction,
+            .delete(kind: .configMap, name: configName)
+        )
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Destructive production actions require a second confirmation"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("delete configmap \(configName)"))
+
+        let requestCountBeforeFirstConfirm = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        harness.viewModel.confirmPendingWriteAction()
+        XCTAssertEqual(
+            harness.viewModel.pendingProductionDestructiveConfirmation,
+            .delete(kind: .configMap, name: configName)
+        )
+        XCTAssertEqual(
+            harness.viewModel.pendingWriteAction,
+            .delete(kind: .configMap, name: configName)
+        )
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Delete")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("Final confirmation required"))
+
+        let requestCountAfterFirstConfirm = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        XCTAssertEqual(requestCountAfterFirstConfirm, requestCountBeforeFirstConfirm)
+        try await assertConfigMapExists(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            name: configName
+        )
+        XCTAssertFalse(harness.state.writeAuditLog.contains { $0.resource.contains(configName) })
+
+        harness.viewModel.confirmPendingWriteAction()
+        try await waitUntil(timeout: 30) {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Delete"
+                    && entry.resource.contains("configmap/\(configName)")
+                    && entry.status == "Succeeded"
+            }
+        }
+        try await waitForConfigMapDeletion(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            name: configName
+        )
+
+        XCTAssertNil(harness.viewModel.pendingWriteAction)
+        XCTAssertNil(harness.viewModel.pendingProductionDestructiveConfirmation)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     private struct Harness {
         let kubeconfigURL: URL
         let kubeClient: KubernetesClient
@@ -646,6 +841,23 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         }
     }
 
+    private func waitUntilRequestCountExceeds(
+        _ requestCount: Int,
+        in harness: Harness,
+        timeout: TimeInterval = 10,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while await harness.kubeClient.restRequestMetricsSummary().requestCount <= requestCount {
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for REST request count to increase", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     private func waitForDeploymentReady(
         client: KubernetesClient,
         sources: [KubeConfigSource],
@@ -750,6 +962,67 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         )
     }
 
+    private func waitForConfigMap(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        timeout: TimeInterval = 30
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastConfigMaps: [String] = []
+        while Date() < deadline {
+            let configMaps = try await client.listConfigMaps(from: sources, context: context, namespace: namespace)
+            lastConfigMaps = configMaps.map(\.name)
+            if lastConfigMaps.contains(name) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for configmap",
+            message: "Timed out waiting for ConfigMap \(name). Last ConfigMaps: \(lastConfigMaps.joined(separator: ", "))"
+        )
+    }
+
+    private func assertConfigMapExists(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let configMaps = try await client.listConfigMaps(from: sources, context: context, namespace: namespace)
+        XCTAssertTrue(configMaps.contains { $0.name == name }, "Expected ConfigMap \(name) to still exist", file: file, line: line)
+    }
+
+    private func waitForConfigMapDeletion(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        name: String,
+        timeout: TimeInterval = 30
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastConfigMaps: [String] = []
+        while Date() < deadline {
+            let configMaps = try await client.listConfigMaps(from: sources, context: context, namespace: namespace)
+            lastConfigMaps = configMaps.map(\.name)
+            if !lastConfigMaps.contains(name) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw RuneError.commandFailed(
+            command: "wait for configmap deletion",
+            message: "Timed out waiting for ConfigMap \(name) deletion. Last ConfigMaps: \(lastConfigMaps.joined(separator: ", "))"
+        )
+    }
+
     private func clusterSnapshot(
         client: KubernetesClient,
         sources: [KubeConfigSource],
@@ -773,6 +1046,20 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     private static func shortTestID() -> String {
         String(UUID().uuidString.prefix(8)).lowercased()
+    }
+
+    private static func configMapYAML(name: String, namespace: String, value: String) -> String {
+        """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: \(name)
+          namespace: \(namespace)
+          labels:
+            app.kubernetes.io/managed-by: rune-integration-test
+        data:
+          delete-guard: \(value)
+        """
     }
 
     private static func rollbackDeploymentYAML(name: String, namespace: String, marker: String) -> String {

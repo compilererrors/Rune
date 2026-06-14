@@ -1,6 +1,31 @@
 import SwiftUI
 import RuneCore
 
+struct TerminalShellPodSelectionPolicy {
+    static func preferredPodIDForNewShell(
+        selectedPod: PodSummary?,
+        availablePods: [PodSummary],
+        sessions: [PodTerminalSession],
+        currentSelectionID: String
+    ) -> String {
+        if let current = availablePods.first(where: { $0.id == currentSelectionID }),
+           !hasShellSession(for: current, in: sessions) {
+            return current.id
+        }
+        if let selectedPod, !hasShellSession(for: selectedPod, in: sessions) {
+            return selectedPod.id
+        }
+        if let available = availablePods.first(where: { !hasShellSession(for: $0, in: sessions) }) {
+            return available.id
+        }
+        return selectedPod?.id ?? availablePods.first?.id ?? ""
+    }
+
+    static func hasShellSession(for pod: PodSummary, in sessions: [PodTerminalSession]) -> Bool {
+        sessions.contains { $0.namespace == pod.namespace && $0.podName == pod.name && $0.containerName == nil }
+    }
+}
+
 struct ResourceTerminalWorkspaceView: View {
     let session: PodTerminalSession?
     let sessions: [PodTerminalSession]
@@ -33,6 +58,8 @@ struct ResourceTerminalWorkspaceView: View {
     let onClearTranscript: () -> Void
     let onSaveActiveTerminalTranscript: () -> Void
     let onSaveAllTerminalTranscripts: () -> Void
+    let isFavoritePod: (PodSummary) -> Bool
+    let onToggleFavoritePod: (PodSummary) -> Void
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
 
@@ -71,6 +98,8 @@ struct ResourceTerminalWorkspaceView: View {
                         localPort: $portForwardLocalPort,
                         remotePort: $portForwardRemotePort,
                         address: $portForwardAddress,
+                        isFavoritePod: isFavoritePod,
+                        onToggleFavoritePod: onToggleFavoritePod,
                         onStartPortForward: onStartPortForward,
                         onStopPortForward: onStopPortForward,
                         onOpenPortForwardInBrowser: onOpenPortForwardInBrowser,
@@ -104,7 +133,9 @@ struct ResourceTerminalWorkspaceView: View {
                         onComposeNewSession: composeNewShellTab,
                         onClearTranscript: onClearTranscript,
                         onSaveActiveTranscript: onSaveActiveTerminalTranscript,
-                        onSaveAllTranscripts: onSaveAllTerminalTranscripts
+                        onSaveAllTranscripts: onSaveAllTerminalTranscripts,
+                        isFavoritePod: isFavoritePod,
+                        onToggleFavoritePod: onToggleFavoritePod
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -161,17 +192,12 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     private func preferredPodIDForNewShell() -> String {
-        if let selectedPod, !hasShellSession(for: selectedPod) {
-            return selectedPod.id
-        }
-        if let available = availablePods.first(where: { !hasShellSession(for: $0) }) {
-            return available.id
-        }
-        return selectedPod?.id ?? availablePods.first?.id ?? ""
-    }
-
-    private func hasShellSession(for pod: PodSummary) -> Bool {
-        sessions.contains { $0.namespace == pod.namespace && $0.podName == pod.name && $0.containerName == nil }
+        TerminalShellPodSelectionPolicy.preferredPodIDForNewShell(
+            selectedPod: selectedPod,
+            availablePods: availablePods,
+            sessions: sessions,
+            currentSelectionID: selectedShellPodID
+        )
     }
 }
 

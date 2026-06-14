@@ -3,6 +3,11 @@ import struct RuneSharedCore.RuneLargeTextIndex
 import RuneCore
 import SwiftUI
 
+enum ResourceLogsPresentationStyle: Hashable {
+    case regular
+    case terminalCompact
+}
+
 struct ResourceLogsToolbar: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
@@ -10,12 +15,16 @@ struct ResourceLogsToolbar: View {
     @Binding var isTailModeEnabled: Bool
     @Binding var isStreamPaused: Bool
     @Binding var searchQuery: String
+    @Binding var searchMatchCase: Bool
     @Binding var selectedSearchMatchIndex: Int
     let searchPulseID: Int
     let searchSummary: ResourceLogSearchResult?
     let statusText: String
     var podOptions: [PodSummary] = []
     var selectedPodID: Binding<String>? = nil
+    var isFavoritePod: (PodSummary) -> Bool = { _ in false }
+    var onToggleFavoritePod: (PodSummary) -> Void = { _ in }
+    var presentationStyle: ResourceLogsPresentationStyle = .regular
     var showsContainerPicker: Bool = true
     let containerOptions: [String]
     let onReload: () -> Void
@@ -26,37 +35,72 @@ struct ResourceLogsToolbar: View {
     let onCopySelection: () -> Void
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
+    var interfaceLanguageRaw: String = RuneSettingsKeys.interfaceLanguageDefault
 
     var body: some View {
+        switch presentationStyle {
+        case .regular:
+            regularBody
+        case .terminalCompact:
+            terminalCompactBody
+        }
+    }
+
+    private var regularBody: some View {
         VStack(alignment: .leading, spacing: 9) {
             LogToolbarScrollRow {
-                sourceControls
+                primaryControls
             }
             .controlSize(.small)
 
             LogToolbarScrollRow {
-                modeControls
                 toolbarActions
             }
             .controlSize(.small)
 
-            ResourceLogsStatusPanel(
-                statusText: statusText,
-                showsPreviousHint: includePreviousLogs
-            )
-
             ResourceLogsSearchBar(
                 query: $searchQuery,
+                matchCase: $searchMatchCase,
                 selectedMatchIndex: $selectedSearchMatchIndex,
                 searchPulseID: searchPulseID,
-                searchSummary: searchSummary
+                searchSummary: searchSummary,
+                placeholder: t(.searchLogs),
+                findHelp: t(.findInLogs),
+                matchCaseHelp: t(.matchCase)
             )
         }
     }
 
+    private var terminalCompactBody: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            LogToolbarScrollRow {
+                primaryControls
+            }
+            .controlSize(.small)
+
+            LogToolbarScrollRow {
+                toolbarActions
+            }
+            .controlSize(.small)
+
+            ResourceLogsSearchBar(
+                query: $searchQuery,
+                matchCase: $searchMatchCase,
+                selectedMatchIndex: $selectedSearchMatchIndex,
+                searchPulseID: searchPulseID,
+                searchSummary: searchSummary,
+                placeholder: t(.searchLogs),
+                findHelp: t(.findInLogs),
+                matchCaseHelp: t(.matchCase)
+            )
+            .frame(minWidth: 240, maxWidth: .infinity)
+            .layoutPriority(1)
+        }
+    }
+
     private var sourceControls: some View {
-        LogToolbarGroup {
-            LogToolbarPickerField(title: "Window") {
+        LogToolbarGroup(role: .source) {
+            LogToolbarPickerField(title: t(.window), role: .window) {
                 Picker("Log window", selection: $selectedLogPreset) {
                     ForEach(PodLogPreset.allCases) { preset in
                         Text(preset.title).tag(preset)
@@ -67,29 +111,32 @@ struct ResourceLogsToolbar: View {
             }
 
             if let selectedPodID, !podOptions.isEmpty {
-                LogToolbarPickerField(title: "Pod") {
-                    Picker("Pod", selection: selectedPodID) {
-                        ForEach(podOptions) { pod in
-                            Text(pod.name).tag(pod.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 240)
-                    .help("Choose a pod in the current namespace for terminal logs.")
+                LogToolbarPickerField(title: t(.pod), role: .pod) {
+                    FavoritePodPicker(
+                        title: t(.pod),
+                        pods: podOptions,
+                        width: 240,
+                        rowTitle: { $0.name },
+                        rowDetail: { "\($0.namespace) - \($0.status)" },
+                        isFavoritePod: isFavoritePod,
+                        onToggleFavoritePod: onToggleFavoritePod,
+                        selection: selectedPodID
+                    )
+                    .accessibilityIdentifier("pod-log-favorite-picker")
                 }
             }
 
             if showsContainerPicker, !containerOptions.isEmpty {
-                LogToolbarPickerField(title: "Container") {
+                LogToolbarPickerField(title: t(.container), role: .container) {
                     Picker("Container", selection: $selectedContainer) {
-                        Text("All containers").tag("")
+                        Text(t(.allContainers)).tag("")
                         ForEach(containerOptions, id: \.self) { container in
                             Text(container).tag(container)
                         }
                     }
                     .labelsHidden()
                     .frame(width: 166)
-                    .help("Choose one container for pod logs, or keep all containers merged.")
+                    .help(t(.chooseContainerHelp))
                 }
             }
         }
@@ -104,48 +151,95 @@ struct ResourceLogsToolbar: View {
     }
 
     private var modeControls: some View {
-        LogToolbarGroup {
-            Toggle("Previous", isOn: $includePreviousLogs)
-                .toggleStyle(.button)
-                .logToolbarButtonFrame()
-                .help("Request logs from the previous container instance when Kubernetes has one.")
+        LogToolbarGroup(role: .source, spacing: 4) {
+            LogToolbarStatusIndicator(
+                statusText: statusText,
+                showsPreviousHint: includePreviousLogs
+            )
 
-            Toggle("Tail", isOn: $isTailModeEnabled)
-                .toggleStyle(.button)
-                .logToolbarButtonFrame()
-                .help("Keep reloading logs and append each read to the session cache.")
-
-            if isTailModeEnabled {
-                Button(isStreamPaused ? "Resume" : "Pause", action: onToggleStreamPause)
-                    .buttonStyle(.bordered)
-                    .logToolbarButtonFrame(width: 74)
-                    .help(isStreamPaused ? "Resume live log refresh." : "Pause live log refresh without leaving tail mode.")
+            Toggle(isOn: $includePreviousLogs) {
+                Label(t(.previous), systemImage: "clock.arrow.circlepath")
             }
+                .toggleStyle(.button)
+                .logToolbarIconButtonFrame()
+                .help(t(.previousLogsHelp))
+                .accessibilityLabel(t(.previous))
+
+            tailControl
+        }
+    }
+
+    @ViewBuilder
+    private var tailControl: some View {
+        if isTailModeEnabled {
+            if isStreamPaused {
+                Button(action: toggleTailPlayback) {
+                    Label(t(.resume), systemImage: "play.fill")
+                }
+                .buttonStyle(.bordered)
+                .logToolbarIconButtonFrame()
+                .contextMenu {
+                    Button(t(.stopTail)) {
+                        isTailModeEnabled = false
+                        isStreamPaused = false
+                    }
+                }
+                .help(t(.resumeTailHelp))
+            } else {
+                Button(action: toggleTailPlayback) {
+                    Label(t(.pause), systemImage: "pause.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .logToolbarIconButtonFrame()
+                .contextMenu {
+                    Button(t(.stopTail)) {
+                        isTailModeEnabled = false
+                        isStreamPaused = false
+                    }
+                }
+                .help(t(.pauseTailHelp))
+            }
+        } else {
+            Button(action: toggleTailPlayback) {
+                Label(t(.tail), systemImage: "play.fill")
+            }
+            .buttonStyle(.bordered)
+            .logToolbarIconButtonFrame()
+            .help(t(.startTailHelp))
+        }
+    }
+
+    private func toggleTailPlayback() {
+        if isTailModeEnabled {
+            onToggleStreamPause()
+        } else {
+            isTailModeEnabled = true
+            isStreamPaused = false
         }
     }
 
     private var toolbarActions: some View {
         LogToolbarGroup {
             Button(action: onReload) {
-                Label("Reload", systemImage: "arrow.clockwise")
+                Label(t(.reload), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
             .logToolbarButtonFrame()
-            .help("Reload logs")
+            .help(t(.reloadLogsHelp))
 
             Button(action: onSave) {
-                Label("Save Logs", systemImage: "square.and.arrow.down")
+                Label(t(.saveLogs), systemImage: "square.and.arrow.down")
             }
             .buttonStyle(.borderedProminent)
             .logToolbarButtonFrame(width: 114)
-            .help("Save current logs")
+            .help(t(.saveCurrentLogsHelp))
 
             Menu {
                 Button(action: onCopySelection) {
-                    Label("Copy Selection", systemImage: "doc.on.doc")
+                    Label(t(.copySelection), systemImage: "doc.on.doc")
                 }
                 Button(action: onCopyAll) {
-                    Label("Copy All", systemImage: "doc.on.clipboard")
+                    Label(t(.copyAll), systemImage: "doc.on.clipboard")
                 }
 
                 Divider()
@@ -153,49 +247,272 @@ struct ResourceLogsToolbar: View {
                 Button {
                     onSaveVisibleZip(searchSummary?.displayedText ?? "")
                 } label: {
-                    Label("Export Visible Results ZIP", systemImage: "doc.zipper")
+                    Label(t(.exportVisibleResultsZip), systemImage: "doc.zipper")
                 }
                 Button(action: onSaveFullZip) {
-                    Label("Export Full Unfiltered ZIP", systemImage: "archivebox")
+                    Label(t(.exportFullUnfilteredZip), systemImage: "archivebox")
                 }
                 Button(action: onSaveAllPodsZip) {
-                    Label("Export All Pods Full ZIP", systemImage: "shippingbox")
+                    Label(t(.exportAllPodsFullZip), systemImage: "shippingbox")
                 }
             } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                Label(t(.more), systemImage: "ellipsis.circle")
             }
             .buttonStyle(.bordered)
             .logToolbarButtonFrame(width: 96)
-            .help("Copy and export log output")
+            .help(t(.copyAndExportLogOutputHelp))
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
+    }
+}
+
+struct TerminalLogTabPresentation: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let isFavorite: Bool
+    let accessibilityLabel: String
+    let helpText: String
+}
+
+struct TerminalLogTabBar: View {
+    let tabs: [TerminalLogTabPresentation]
+    let activeTabID: String?
+    let canAddTab: Bool
+    let onSelectTab: (String) -> Void
+    let onCloseTab: (String) -> Void
+    let onAddTab: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if tabs.isEmpty {
+                        emptyTab
+                    } else {
+                        ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                            tabButton(tab, number: index + 1)
+                        }
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(runeThemePalette?.divider ?? Color.primary.opacity(0.10))
+                    .frame(width: 1, height: 22)
+            }
+
+            Button(action: onAddTab) {
+                Image(systemName: "plus")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 38, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .disabled(!canAddTab)
+            .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
+            .overlay(tabBorder(isActive: false))
+            .padding(.leading, 6)
+            .help("Open another pod log tab")
+            .accessibilityLabel("New Log Tab")
+        }
+        .frame(height: 38)
+        .padding(.horizontal, 6)
+        .background(RuneSurfaceBackground(kind: .inset))
+    }
+
+    private var emptyTab: some View {
+        Button(action: onAddTab) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
+                Text("New Logs")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text("Ready")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+            }
+            .frame(width: 216, height: 28, alignment: .leading)
+            .padding(.horizontal, 8)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canAddTab)
+        .background(tabBackground(isActive: true))
+        .overlay(tabBorder(isActive: true))
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(runeThemePalette?.accent ?? Color.accentColor)
+                .frame(width: 3, height: 16)
+                .padding(.leading, 3)
+        }
+        .help("Open a pod log tab")
+    }
+
+    private func tabButton(_ tab: TerminalLogTabPresentation, number: Int) -> some View {
+        ZStack(alignment: .trailing) {
+            HStack(spacing: 6) {
+                Image(systemName: tab.isFavorite ? "star.fill" : "doc.text")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tab.isFavorite ? Color.yellow : (runeThemePalette?.accent ?? Color.accentColor))
+                    .help(tab.helpText)
+                Text("\(number) \(tab.title)")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .help(tab.helpText)
+                if let subtitle = tab.subtitle {
+                    Text(subtitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                        .lineLimit(1)
+                        .help(tab.helpText)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 8)
+            .padding(.trailing, 28)
+
+            Button {
+                onCloseTab(tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close log tab for \(tab.title)")
+        }
+        .frame(width: 216, height: 28, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onTapGesture {
+            onSelectTab(tab.id)
+        }
+        .background(tabBackground(isActive: tab.id == activeTabID))
+        .overlay(tabBorder(isActive: tab.id == activeTabID))
+        .overlay(alignment: .leading) {
+            if tab.id == activeTabID {
+                Capsule()
+                    .fill(runeThemePalette?.accent ?? Color.accentColor)
+                    .frame(width: 3, height: 16)
+                    .padding(.leading, 3)
+            }
+        }
+        .help(tab.helpText)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tab.accessibilityLabel)
+        .accessibilityAddTraits(tab.id == activeTabID ? [.isSelected, .isButton] : .isButton)
+    }
+
+    private func tabBackground(isActive: Bool) -> some View {
+        RuneSurfaceBackground(kind: .listRow(isSelected: isActive))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private func tabBorder(isActive: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .stroke(
+                isActive
+                    ? (runeThemePalette?.selectionStroke.opacity(0.55) ?? Color.accentColor.opacity(0.42))
+                    : (runeThemePalette?.stroke.opacity(0.26) ?? Color.primary.opacity(0.12)),
+                lineWidth: 1
+            )
     }
 }
 
 private extension View {
     func logToolbarButtonFrame(width: CGFloat? = nil) -> some View {
-        frame(minWidth: width, minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight, alignment: .center)
+        font(.caption.weight(.semibold))
+            .labelStyle(.titleAndIcon)
+            .lineLimit(1)
+            .frame(
+                minWidth: width,
+                idealWidth: width,
+                maxWidth: width,
+                minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                alignment: .center
+            )
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    func logToolbarIconButtonFrame(width: CGFloat = 32) -> some View {
+        font(.caption.weight(.semibold))
+            .labelStyle(.iconOnly)
+            .frame(
+                minWidth: width,
+                idealWidth: width,
+                maxWidth: width,
+                minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
+                alignment: .center
+            )
             .fixedSize(horizontal: true, vertical: false)
     }
 }
 
+private enum LogToolbarGroupRole {
+    case source
+    case action
+
+    var height: CGFloat {
+        switch self {
+        case .source:
+            return RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight
+        case .action:
+            return RuneUILayoutMetrics.inspectorToolbarActionGroupHeight
+        }
+    }
+
+    var verticalPadding: CGFloat {
+        switch self {
+        case .source:
+            return RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding
+        case .action:
+            return 6
+        }
+    }
+}
+
 private struct LogToolbarGroup<Content: View>: View {
+    var role: LogToolbarGroupRole = .action
+    var spacing: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlSpacing
     @ViewBuilder let content: Content
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+        HStack(alignment: .center, spacing: spacing) {
             content
         }
         .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
-        .padding(.vertical, RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding)
-        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarGroupMinHeight)
+        .padding(.vertical, role.verticalPadding)
+        .frame(height: role.height)
         .background {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(0.055))
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .fill(runeThemePalette?.row.opacity(0.42) ?? Color.primary.opacity(0.055))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .strokeBorder(
+                    runeThemePalette?.stroke.opacity(0.28) ?? Color(nsColor: .separatorColor).opacity(0.16),
+                    lineWidth: 1
+                )
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -215,7 +532,14 @@ private struct LogToolbarScrollRow<Content: View>: View {
 }
 
 private struct LogToolbarPickerField<Content: View>: View {
+    enum Role {
+        case window
+        case pod
+        case container
+    }
+
     let title: String
+    let role: Role
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -232,56 +556,43 @@ private struct LogToolbarPickerField<Content: View>: View {
     }
 
     private var fieldWidth: CGFloat {
-        switch title {
-        case "Pod":
+        switch role {
+        case .pod:
             return 240
-        case "Container":
+        case .container:
             return 166
-        default:
+        case .window:
             return 158
         }
     }
 
 }
 
-private struct ResourceLogsStatusPanel: View {
+private struct LogToolbarStatusIndicator: View {
     let statusText: String
     let showsPreviousHint: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            HStack(alignment: .center, spacing: 7) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
+        ZStack {
+            Circle()
+                .fill(statusColor.opacity(0.18))
+                .frame(width: 18, height: 18)
 
-                Text(statusText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .monospacedDigit()
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-            }
-
-            if showsPreviousHint {
-                Text("Previous logs only exist for restarted containers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            Circle()
+                .fill(statusColor)
+                .frame(width: 7, height: 7)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 20, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
+        .help(helpText)
+        .accessibilityLabel("Log status: \(statusText)")
+        .fixedSize(horizontal: true, vertical: true)
+    }
+
+    private var helpText: String {
+        if showsPreviousHint {
+            return "\(statusText). Previous logs only exist for restarted containers."
+        }
+        return statusText
     }
 
     private var statusColor: Color {
@@ -449,6 +760,9 @@ struct PodLogsInspectorPane: View {
     let statusText: String
     var podOptions: [PodSummary] = []
     var selectedPodID: Binding<String>? = nil
+    var isFavoritePod: (PodSummary) -> Bool = { _ in false }
+    var onToggleFavoritePod: (PodSummary) -> Void = { _ in }
+    var presentationStyle: ResourceLogsPresentationStyle = .regular
     var showsContainerPicker: Bool = true
     let containerOptions: [String]
     let logText: String
@@ -461,17 +775,26 @@ struct PodLogsInspectorPane: View {
     let onCopySelection: () -> Void
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
     @State private var searchQuery = ""
+    @State private var searchMatchCase = false
     @State private var selectedSearchMatchIndex = 0
     @State private var searchNavigationSequence = 0
     @State private var searchPulseID = 0
     @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
+        let searchResult = ResourceLogSearchResult.makeForInspector(
+            text: logText,
+            query: searchQuery,
+            matchCase: searchMatchCase
+        )
         let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
+        let paneSpacing: CGFloat = presentationStyle == .terminalCompact ? 8 : 10
 
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: paneSpacing) {
             ResourceLogsToolbar(
                 selectedLogPreset: $selectedLogPreset,
                 includePreviousLogs: $includePreviousLogs,
@@ -479,12 +802,16 @@ struct PodLogsInspectorPane: View {
                 isTailModeEnabled: $isTailModeEnabled,
                 isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
+                searchMatchCase: $searchMatchCase,
                 selectedSearchMatchIndex: $selectedSearchMatchIndex,
                 searchPulseID: searchPulseID,
                 searchSummary: searchResult,
                 statusText: statusText,
                 podOptions: podOptions,
                 selectedPodID: selectedPodID,
+                isFavoritePod: isFavoritePod,
+                onToggleFavoritePod: onToggleFavoritePod,
+                presentationStyle: presentationStyle,
                 showsContainerPicker: showsContainerPicker,
                 containerOptions: containerOptions,
                 onReload: onReload,
@@ -494,18 +821,22 @@ struct PodLogsInspectorPane: View {
                 onSaveAllPodsZip: onSaveAllPodsZip,
                 onCopySelection: onCopySelection,
                 onCopyAll: onCopyAll,
-                onToggleStreamPause: onToggleStreamPause
+                onToggleStreamPause: onToggleStreamPause,
+                interfaceLanguageRaw: interfaceLanguageRaw
             )
+            .id(interfaceLanguageRaw)
 
-            ResourceStructuredLogSummaryPanel(
-                summary: structuredLogSummary,
-                onSearchFieldSample: { field, value in
-                    applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
-                },
-                onSearchDuplicate: { duplicate in
-                    applyLogSearchQuery(duplicate.fingerprint)
-                }
-            )
+            if !simpleMode {
+                ResourceStructuredLogSummaryPanel(
+                    summary: structuredLogSummary,
+                    onSearchFieldSample: { field, value in
+                        applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
+                    },
+                    onSearchDuplicate: { duplicate in
+                        applyLogSearchQuery(duplicate.fingerprint)
+                    }
+                )
+            }
 
             ResourceLogsOutputSurface(
                 isLoadingLogs: isLoadingLogs,
@@ -525,10 +856,18 @@ struct PodLogsInspectorPane: View {
             selectedSearchMatchIndex = 0
             searchNavigationSequence += 1
         }
+        .onChange(of: searchMatchCase) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+        }
         .onChange(of: logText) { _, _ in
             selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
-        .task(id: logText) {
+        .task(id: "\(simpleMode):\(logText)") {
+            guard !simpleMode else {
+                structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
+                return
+            }
             await refreshStructuredSummary(for: logText)
         }
     }
@@ -567,14 +906,22 @@ struct UnifiedResourceLogsInspectorPane: View {
     let onCopySelection: () -> Void
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
     @State private var searchQuery = ""
+    @State private var searchMatchCase = false
     @State private var selectedSearchMatchIndex = 0
     @State private var searchNavigationSequence = 0
     @State private var searchPulseID = 0
     @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.makeForInspector(text: logText, query: searchQuery)
+        let searchResult = ResourceLogSearchResult.makeForInspector(
+            text: logText,
+            query: searchQuery,
+            matchCase: searchMatchCase
+        )
         let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
 
         VStack(alignment: .leading, spacing: 10) {
@@ -585,6 +932,7 @@ struct UnifiedResourceLogsInspectorPane: View {
                 isTailModeEnabled: $isTailModeEnabled,
                 isStreamPaused: $isStreamPaused,
                 searchQuery: $searchQuery,
+                searchMatchCase: $searchMatchCase,
                 selectedSearchMatchIndex: $selectedSearchMatchIndex,
                 searchPulseID: searchPulseID,
                 searchSummary: searchResult,
@@ -600,22 +948,26 @@ struct UnifiedResourceLogsInspectorPane: View {
                 onSaveAllPodsZip: onSaveAllPodsZip,
                 onCopySelection: onCopySelection,
                 onCopyAll: onCopyAll,
-                onToggleStreamPause: onToggleStreamPause
+                onToggleStreamPause: onToggleStreamPause,
+                interfaceLanguageRaw: interfaceLanguageRaw
             )
+            .id(interfaceLanguageRaw)
 
             if !podNames.isEmpty {
                 ResourceLogsSourcePanel(title: "Pods", values: podNames)
             }
 
-            ResourceStructuredLogSummaryPanel(
-                summary: structuredLogSummary,
-                onSearchFieldSample: { field, value in
-                    applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
-                },
-                onSearchDuplicate: { duplicate in
-                    applyLogSearchQuery(duplicate.fingerprint)
-                }
-            )
+            if !simpleMode {
+                ResourceStructuredLogSummaryPanel(
+                    summary: structuredLogSummary,
+                    onSearchFieldSample: { field, value in
+                        applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
+                    },
+                    onSearchDuplicate: { duplicate in
+                        applyLogSearchQuery(duplicate.fingerprint)
+                    }
+                )
+            }
 
             ResourceLogsOutputSurface(
                 isLoadingLogs: isLoadingLogs,
@@ -635,10 +987,18 @@ struct UnifiedResourceLogsInspectorPane: View {
             selectedSearchMatchIndex = 0
             searchNavigationSequence += 1
         }
+        .onChange(of: searchMatchCase) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+        }
         .onChange(of: logText) { _, _ in
             selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
         }
-        .task(id: logText) {
+        .task(id: "\(simpleMode):\(logText)") {
+            guard !simpleMode else {
+                structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
+                return
+            }
             await refreshStructuredSummary(for: logText)
         }
     }
@@ -734,21 +1094,42 @@ private enum LogSearchBarMetrics {
 
 private struct ResourceLogsSearchBar: View {
     @Binding var query: String
+    @Binding var matchCase: Bool
     @Binding var selectedMatchIndex: Int
     let searchPulseID: Int
     let searchSummary: ResourceLogSearchResult?
+    let placeholder: String
+    let findHelp: String
+    let matchCaseHelp: String
     @State private var draftQuery = ""
     @State private var queryCommitTask: Task<Void, Never>?
     @State private var pulseOpacity = 0.0
+    @State private var isJumpPopoverPresented = false
+    @State private var jumpText = ""
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search logs", text: $draftQuery)
+                Button {
+                    isSearchFocused = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("f", modifiers: [.command])
+                .help(findHelp)
+
+                TextField(placeholder, text: $draftQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .focused($isSearchFocused)
+                    .onSubmit {
+                        if let searchSummary {
+                            selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
+                        }
+                    }
                 if !draftQuery.isEmpty {
                     Button {
                         queryCommitTask?.cancel()
@@ -760,6 +1141,20 @@ private struct ResourceLogsSearchBar: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                Button {
+                    matchCase.toggle()
+                } label: {
+                    Text("Aa")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 24, height: 20)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(matchCase ? Color.accentColor.opacity(0.22) : Color.clear)
+                )
+                .help(matchCaseHelp)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -797,15 +1192,14 @@ private struct ResourceLogsSearchBar: View {
             }
 
             if let searchSummary, searchSummary.isFiltering {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Button {
                         selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
                     } label: {
                         Image(systemName: "chevron.up")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 3)
+                            .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -818,8 +1212,7 @@ private struct ResourceLogsSearchBar: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 3)
+                            .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -837,45 +1230,100 @@ private struct ResourceLogsSearchBar: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background {
-                        Capsule(style: .continuous)
-                            .fill(Color.accentColor.opacity(searchSummary.matchingLineCount == 0 ? 0.08 : 0.16))
-                    }
+                    .frame(height: 22)
 
-                    ZStack {
-                        Text(LogSearchBarMetrics.widestPositionPlaceholder)
+                    Button {
+                        prepareJumpPopover(for: searchSummary)
+                    } label: {
+                        ZStack {
+                            Text(LogSearchBarMetrics.widestPositionPlaceholder)
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .hidden()
+                            Text(
+                                searchSummary.hasMatches
+                                    ? searchSummary.matchPositionText(selectedIndex: selectedMatchIndex)
+                                    : "\u{00a0}"
+                            )
                             .font(.caption.weight(.semibold))
+                            .foregroundStyle(searchSummary.hasMatches ? Color.secondary : Color.clear)
                             .monospacedDigit()
                             .lineLimit(1)
-                            .hidden()
-                        Text(
-                            searchSummary.hasMatches
-                                ? searchSummary.matchPositionText(selectedIndex: selectedMatchIndex)
-                                : "\u{00a0}"
-                        )
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(searchSummary.hasMatches ? Color.secondary : Color.clear)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                            .minimumScaleFactor(0.75)
+                        }
+                        .frame(height: 22)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background {
-                        Capsule(style: .continuous)
-                            .fill(Color.primary.opacity(searchSummary.hasMatches ? 0.06 : 0))
+                    .buttonStyle(.plain)
+                    .disabled(!searchSummary.hasMatches)
+                    .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
+                        jumpToMatchPopover(searchSummary)
                     }
+                    .help("Go to match number")
                     .accessibilityLabel(
                         searchSummary.hasMatches
                             ? "Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))"
                             : "Search match position"
                     )
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
+                }
                 .fixedSize(horizontal: true, vertical: false)
             }
         }
+    }
+
+    private func prepareJumpPopover(for searchSummary: ResourceLogSearchResult) {
+        guard searchSummary.hasMatches else { return }
+        jumpText = "\(searchSummary.clampedMatchIndex(selectedMatchIndex) + 1)"
+        isJumpPopoverPresented = true
+    }
+
+    private func jumpToMatchPopover(_ searchSummary: ResourceLogSearchResult) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Go to match")
+                .font(.headline)
+
+            HStack(spacing: 8) {
+                TextField("Match", text: $jumpText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .frame(width: 82)
+                    .onSubmit {
+                        commitJump(to: searchSummary)
+                    }
+
+                Text("of \(searchSummary.matchRanges.count)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            HStack {
+                Spacer()
+                Button("Go") {
+                    commitJump(to: searchSummary)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .frame(width: 180)
+    }
+
+    private func commitJump(to searchSummary: ResourceLogSearchResult) {
+        guard searchSummary.hasMatches else { return }
+        let requestedMatch = Int(jumpText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
+        selectedMatchIndex = min(max(requestedMatch, 1), searchSummary.matchRanges.count) - 1
+        isJumpPopoverPresented = false
     }
 
     private func flashSearchPulse() {
@@ -890,6 +1338,7 @@ private struct ResourceLogsSearchBar: View {
             }
         }
     }
+
 }
 
 private struct LogSearchPulseOverlay: View {
@@ -935,6 +1384,7 @@ struct ResourceLogSearchResult: Equatable {
     let originalText: String
     let displayedText: String
     let query: String
+    let matchCase: Bool
     let totalLineCount: Int
     let matchingLineCount: Int
     let matchRanges: [NSRange]
@@ -970,6 +1420,10 @@ struct ResourceLogSearchResult: Equatable {
     }
 
     static func make(text: String, query: String) -> ResourceLogSearchResult {
+        make(text: text, query: query, matchCase: false)
+    }
+
+    static func make(text: String, query: String, matchCase: Bool) -> ResourceLogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let textIndex = RuneLargeTextIndex(text: text)
 
@@ -978,6 +1432,7 @@ struct ResourceLogSearchResult: Equatable {
                 originalText: text,
                 displayedText: text,
                 query: "",
+                matchCase: matchCase,
                 totalLineCount: textIndex.lineCount,
                 matchingLineCount: textIndex.lineCount,
                 matchRanges: [],
@@ -986,7 +1441,8 @@ struct ResourceLogSearchResult: Equatable {
             )
         }
 
-        let searchResult = textIndex.search(query: trimmedQuery)
+        let options: NSString.CompareOptions = matchCase ? [] : [.caseInsensitive, .diacriticInsensitive]
+        let searchResult = textIndex.search(query: trimmedQuery, options: options)
         let matchRanges = searchResult.matches.map(\.range)
         let matchLineNumbers = searchResult.matches.map(\.lineNumber)
 
@@ -994,6 +1450,7 @@ struct ResourceLogSearchResult: Equatable {
             originalText: text,
             displayedText: text,
             query: trimmedQuery,
+            matchCase: matchCase,
             totalLineCount: searchResult.totalLineCount,
             matchingLineCount: searchResult.matchingLineCount,
             matchRanges: matchRanges,
@@ -1039,9 +1496,9 @@ struct ResourceLogSearchResult: Equatable {
         return sequence &* 1_000_003 &+ clampedMatchIndex(selectedIndex)
     }
 
-    static func makeForInspector(text: String, query: String) -> ResourceLogSearchResult {
+    static func makeForInspector(text: String, query: String, matchCase: Bool = false) -> ResourceLogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return make(text: text, query: trimmedQuery)
+        return make(text: text, query: trimmedQuery, matchCase: matchCase)
     }
 }
 

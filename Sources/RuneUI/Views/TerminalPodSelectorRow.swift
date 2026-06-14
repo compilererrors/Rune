@@ -9,6 +9,8 @@ struct TerminalPodSelectorRow: View {
     let actionTitle: String?
     let actionSystemImage: String?
     let isActionDisabled: Bool
+    let isFavoritePod: (PodSummary) -> Bool
+    let onToggleFavoritePod: (PodSummary) -> Void
     let onAction: (() -> Void)?
     @Binding var selection: String
 
@@ -20,6 +22,8 @@ struct TerminalPodSelectorRow: View {
         actionTitle: String? = nil,
         actionSystemImage: String? = nil,
         isActionDisabled: Bool = false,
+        isFavoritePod: @escaping (PodSummary) -> Bool = { _ in false },
+        onToggleFavoritePod: @escaping (PodSummary) -> Void = { _ in },
         onAction: (() -> Void)? = nil,
         selection: Binding<String>
     ) {
@@ -30,6 +34,8 @@ struct TerminalPodSelectorRow: View {
         self.actionTitle = actionTitle
         self.actionSystemImage = actionSystemImage
         self.isActionDisabled = isActionDisabled
+        self.isFavoritePod = isFavoritePod
+        self.onToggleFavoritePod = onToggleFavoritePod
         self.onAction = onAction
         self._selection = selection
     }
@@ -38,7 +44,7 @@ struct TerminalPodSelectorRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 selectorLabel
-                    .frame(width: 128, alignment: .leading)
+                    .frame(width: 112, alignment: .leading)
                 picker
                 actionButton
             }
@@ -57,19 +63,16 @@ struct TerminalPodSelectorRow: View {
     }
 
     private var picker: some View {
-        Picker(title, selection: $selection) {
-            if pods.isEmpty {
-                Text("No pods in namespace").tag("")
-            } else {
-                ForEach(pods) { pod in
-                    Text(podTitle(pod)).tag(pod.id)
-                }
-            }
-        }
-        .labelsHidden()
-        .disabled(pods.isEmpty)
-        .controlSize(.small)
-        .frame(width: 320, height: 26, alignment: .leading)
+        FavoritePodPicker(
+            title: title,
+            pods: pods,
+            width: 320,
+            rowTitle: podTitle,
+            rowDetail: podDetail,
+            isFavoritePod: isFavoritePod,
+            onToggleFavoritePod: onToggleFavoritePod,
+            selection: $selection
+        )
     }
 
     @ViewBuilder
@@ -78,20 +81,24 @@ struct TerminalPodSelectorRow: View {
             Button(action: onAction) {
                 Label(actionTitle, systemImage: actionSystemImage)
                     .lineLimit(1)
-                    .frame(width: 94)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .frame(width: 104)
             .disabled(isActionDisabled)
             .help(actionTitle)
         }
     }
 
     private func podTitle(_ pod: PodSummary) -> String {
+        podDetail(pod).map { "\(pod.name)  \($0)" } ?? pod.name
+    }
+
+    private func podDetail(_ pod: PodSummary) -> String? {
         guard let status = terminalSessionStatus(for: pod) else {
-            return "\(pod.name)  \(pod.status)"
+            return pod.status
         }
-        return "\(pod.name)  \(pod.status)  -  \(status)"
+        return "\(pod.status) - \(status)"
     }
 
     private func terminalSessionStatus(for pod: PodSummary) -> String? {

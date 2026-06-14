@@ -3,13 +3,13 @@ import SwiftUI
 /// Wraps `Picker` + `.segmented` in a horizontal `ScrollView` so `NSSegmentedControl` intrinsic width
 /// never draws past the navigation column edge.
 struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: View {
-    private let title: LocalizedStringKey
+    private let title: String
     private let selection: Binding<SelectionValue>
     private let labelsHidden: Bool
     private let content: Content
 
     init(
-        _ title: LocalizedStringKey,
+        _ title: String,
         selection: Binding<SelectionValue>,
         labelsHidden: Bool = false,
         @ViewBuilder content: () -> Content
@@ -24,12 +24,16 @@ struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: Vie
         ScrollView(.horizontal, showsIndicators: false) {
             Group {
                 if labelsHidden {
-                    Picker(title, selection: selection) { content }
+                    Picker(selection: selection) { content } label: {
+                        Text(title)
+                    }
                         .pickerStyle(.segmented)
                         .labelsHidden()
                         .fixedSize(horizontal: true, vertical: false)
                 } else {
-                    Picker(title, selection: selection) { content }
+                    Picker(selection: selection) { content } label: {
+                        Text(title)
+                    }
                         .pickerStyle(.segmented)
                         .fixedSize(horizontal: true, vertical: false)
                 }

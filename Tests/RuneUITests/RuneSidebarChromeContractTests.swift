@@ -98,7 +98,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                     onCloseSession: { _ in },
                     onClearTranscript: {},
                     onSaveActiveTerminalTranscript: {},
-                    onSaveAllTerminalTranscripts: {}
+                    onSaveAllTerminalTranscripts: {},
+                    isFavoritePod: { _ in false },
+                    onToggleFavoritePod: { _ in }
                 )
                 .frame(width: size.width, height: size.height)
             )
@@ -165,7 +167,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 onComposeNewSession: {},
                 onClearTranscript: {},
                 onSaveActiveTranscript: {},
-                onSaveAllTranscripts: {}
+                onSaveAllTranscripts: {},
+                isFavoritePod: { _ in false },
+                onToggleFavoritePod: { _ in }
             )
             .frame(width: 720, height: 420)
         )
@@ -213,6 +217,94 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
     }
 
+    func testTerminalPromptHandlesRealAppKitKeyEventsForSendAndControlSequences() async throws {
+        let pod = PodSummary(name: "pod-0", namespace: "default", status: "Running")
+        let session = PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo",
+            namespace: "default",
+            podName: pod.name,
+            shell: "sh",
+            transcript: "[rune] connected\n",
+            status: .connected
+        )
+        var terminalInput = ""
+        var sendCount = 0
+        var controlSequences: [String] = []
+        let host = NSHostingController(
+            rootView: TerminalShellPanelView(
+                session: session,
+                sessions: [session],
+                activeSessionID: session.id,
+                isComposingNewSession: false,
+                selectedPod: pod,
+                availablePods: [pod],
+                canApplyMutations: true,
+                transcriptHeight: 260,
+                selectedShellPodID: .constant(pod.id),
+                terminalInput: Binding(
+                    get: { terminalInput },
+                    set: { terminalInput = $0 }
+                ),
+                onStartSession: { _, _ in },
+                onReconnectSession: { _, _, _ in },
+                onSend: { sendCount += 1 },
+                onSendControlSequence: { controlSequences.append($0) },
+                onResizeSession: { _, _, _ in },
+                onDisconnect: {},
+                onSelectSession: { _ in },
+                onCloseSession: { _ in },
+                onComposeNewSession: {},
+                onClearTranscript: {},
+                onSaveActiveTranscript: {},
+                onSaveAllTranscripts: {},
+                isFavoritePod: { _ in false },
+                onToggleFavoritePod: { _ in }
+            )
+            .frame(width: 720, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window: window)
+        defer { window.orderOut(nil) }
+
+        guard let promptTextView = allTextViews(in: host.view).first(where: \.isEditable) else {
+            XCTFail("Expected editable terminal prompt text view.")
+            return
+        }
+
+        promptTextView.window?.makeFirstResponder(promptTextView)
+        promptTextView.insertText("kubectl get pods", replacementRange: promptTextView.selectedRange())
+        try await settle(window: window)
+
+        promptTextView.keyDown(with: keyDownEvent(
+            window: window,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            keyCode: 36
+        ))
+        promptTextView.insertText("running command", replacementRange: promptTextView.selectedRange())
+        try await settle(window: window)
+        promptTextView.keyDown(with: keyDownEvent(
+            window: window,
+            modifierFlags: .control,
+            characters: "\u{3}",
+            charactersIgnoringModifiers: "c",
+            keyCode: 8
+        ))
+
+        XCTAssertEqual(sendCount, 1)
+        XCTAssertEqual(controlSequences, ["\u{3}"])
+        XCTAssertEqual(terminalInput, "")
+        XCTAssertEqual(promptTextView.string, "")
+    }
+
     func testTerminalWorkspaceComposesIndependentPanelsInStableOrder() throws {
         let workspaceSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
@@ -241,12 +333,34 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("case yaml"))
         XCTAssertTrue(rootViewSource.contains("selection: $terminalInspectorTab"))
         XCTAssertTrue(rootViewSource.contains("PodLogsInspectorPane("))
+        XCTAssertTrue(rootViewSource.contains("TerminalLogTabBar("))
+        XCTAssertTrue(rootViewSource.contains("@State private var terminalLogTabState = TerminalPodLogTabState()"))
         XCTAssertTrue(rootViewSource.contains("manifestInspectorPane(activeTab: .yaml)"))
         XCTAssertTrue(rootViewSource.contains("viewModel.focusTerminalPodInspector"))
         XCTAssertTrue(tabBarSource.contains("ScrollView(.horizontal"))
         XCTAssertTrue(tabBarSource.contains("accessibilityLabel(\"New Shell\")"))
         XCTAssertTrue(sessionControlSource.contains("struct TerminalSessionControlRow"))
         XCTAssertTrue(transcriptSource.contains("struct TerminalTranscriptSurface"))
+    }
+
+    func testTerminalShellAndLogTabBarsShareNativeChrome() throws {
+        let shellTabSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
+        let logsSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let logTabStart = try XCTUnwrap(logsSource.range(of: "struct TerminalLogTabBar: View"))
+        let logTabEnd = try XCTUnwrap(logsSource.range(of: "private extension View", range: logTabStart.upperBound..<logsSource.endIndex))
+        let logTabSource = String(logsSource[logTabStart.lowerBound..<logTabEnd.lowerBound])
+
+        for source in [shellTabSource, logTabSource] {
+            XCTAssertTrue(source.contains("RuneSurfaceBackground(kind: .inset)"))
+            XCTAssertTrue(source.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
+            XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: 7, style: .continuous)"))
+            XCTAssertTrue(source.contains("Capsule()"))
+            XCTAssertTrue(source.contains(".frame(width: 3, height: 16)"))
+            XCTAssertTrue(source.contains(".frame(height: 38)"))
+            XCTAssertFalse(source.contains("RuneSurfaceBackground(kind: .editor)"))
+            XCTAssertFalse(source.contains(".frame(height: 36)"))
+            XCTAssertFalse(source.contains(".frame(height: 2)"))
+        }
     }
 
     func testTerminalLogsPanelIsExplicitlyPodScoped() throws {
@@ -260,17 +374,39 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(terminalLogsBlock.contains("Label(\"Pod logs: \\(pod.namespace)/\\(pod.name)\", systemImage: \"shippingbox\")"))
         XCTAssertFalse(terminalLogsBlock.contains("Terminal logs are scoped to the selected pod, not the deployment."))
         XCTAssertTrue(terminalLogsBlock.contains("PodLogsInspectorPane("))
-        XCTAssertTrue(terminalLogsBlock.contains("let podOptions = terminalLogPodOptions(namespace: pod.namespace)"))
+        XCTAssertTrue(terminalLogsBlock.contains("TerminalLogTabBar("))
+        XCTAssertTrue(terminalLogsBlock.contains("activeTabID: terminalLogTabState.activeTabID"))
+        XCTAssertTrue(terminalLogsBlock.contains("let podOptions = terminalLogPodOptions()"))
         XCTAssertTrue(terminalLogsBlock.contains("podOptions: podOptions"))
         XCTAssertTrue(terminalLogsBlock.contains("selectedPodID: terminalLogPodSelectionBinding(currentPod: pod, podOptions: podOptions)"))
+        XCTAssertTrue(terminalLogsBlock.contains("isFavoritePod: isFavoritePod"))
+        XCTAssertTrue(terminalLogsBlock.contains("onToggleFavoritePod: toggleFavoritePod"))
+        XCTAssertTrue(terminalLogsBlock.contains("presentationStyle: .terminalCompact"))
         XCTAssertTrue(terminalLogsBlock.contains("showsContainerPicker: false"))
-        XCTAssertTrue(terminalLogsBlock.contains("viewModel.focusTerminalPodInspector(pod, reloadLogs: true)"))
+        XCTAssertTrue(terminalLogsBlock.contains("onReload: { reloadActiveTerminalLogPod() }"))
         XCTAssertFalse(terminalLogsBlock.contains("UnifiedResourceLogsInspectorPane"))
 
-        XCTAssertTrue(rootViewSource.contains("private func terminalLogPodOptions(namespace: String) -> [PodSummary]"))
-        XCTAssertTrue(rootViewSource.contains(".filter { $0.namespace == namespace }"))
+        XCTAssertTrue(rootViewSource.contains("private func terminalLogPodOptions() -> [PodSummary]"))
+        XCTAssertFalse(rootViewSource.contains(".filter { $0.namespace == namespace }"))
+        XCTAssertTrue(rootViewSource.contains("let namespaceOrder = lhs.namespace.localizedCaseInsensitiveCompare(rhs.namespace)"))
+        XCTAssertTrue(rootViewSource.contains("private var terminalInitialLogPod: PodSummary?"))
+        XCTAssertTrue(rootViewSource.contains("terminalLogTabState.activePod(in: viewModel.state.pods, fallback: terminalInitialLogPod)"))
+        XCTAssertTrue(rootViewSource.contains("terminalLogTabState.reconcile(availablePods: viewModel.state.pods, fallbackPod: terminalInitialLogPod)"))
+        XCTAssertTrue(rootViewSource.contains("terminalLogTabState.close(id: id, availablePods: viewModel.state.pods, fallbackPod: terminalInitialLogPod)"))
+        XCTAssertTrue(rootViewSource.contains("fallbackPod: terminalInitialLogPod"))
+        XCTAssertFalse(rootViewSource.contains("fallbackPod: terminalInspectorPod"))
         XCTAssertTrue(rootViewSource.contains("private func terminalLogPodSelectionBinding(currentPod: PodSummary, podOptions: [PodSummary]) -> Binding<String>"))
-        XCTAssertTrue(rootViewSource.contains("terminalShellPodID = pod.id"))
+        XCTAssertTrue(rootViewSource.contains("if availableIDs.contains(terminalLogTabState.selectedPodID)"))
+        XCTAssertTrue(rootViewSource.contains("terminalLogTabState.selectedPodID = pod.id"))
+        XCTAssertTrue(rootViewSource.contains(".onChange(of: terminalShellPodID) { _, _ in\n            refreshTerminalInspectorForShellPodChangeIfNeeded()"))
+        XCTAssertTrue(rootViewSource.contains("private func refreshTerminalInspectorForShellPodChangeIfNeeded()"))
+        XCTAssertTrue(rootViewSource.contains("guard terminalInspectorTab == .yaml else { return }"))
+        XCTAssertTrue(rootViewSource.contains("private func reloadActiveTerminalLogPod()"))
+        XCTAssertTrue(rootViewSource.contains("private func addTerminalLogTab()"))
+        XCTAssertTrue(rootViewSource.contains("private func selectTerminalLogTab(_ id: String)"))
+        XCTAssertTrue(rootViewSource.contains("private func closeTerminalLogTab(_ id: String)"))
+        XCTAssertTrue(rootViewSource.contains("private func isFavoritePod(_ pod: PodSummary) -> Bool"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.toggleFavoriteResource(kind: .pod"))
         XCTAssertTrue(rootViewSource.contains("viewModel.focusTerminalPodInspector(pod, reloadLogs: true)"))
 
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
@@ -331,12 +467,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         try await settle(window: window)
         defer { window.orderOut(nil) }
 
-        let podPopup = allPopUpButtons(in: host.view).first { popup in
-            let titles = Set(popup.itemArray.map(\.title))
-            return pods.allSatisfy { titles.contains($0.name) }
-        }
-
-        XCTAssertNotNil(podPopup, "Expected logs toolbar pod picker to list every pod option in the namespace.")
         XCTAssertFalse(
             allPopUpButtons(in: host.view).contains { popup in
                 let titles = Set(popup.itemArray.map(\.title))
@@ -346,15 +476,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
 
         let logsInspectorSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        XCTAssertTrue(logsInspectorSource.contains("case \"Pod\":\n            return 240"))
-        XCTAssertTrue(logsInspectorSource.contains(".frame(minHeight: RuneUILayoutMetrics.inspectorToolbarGroupMinHeight)"))
+        let favoritePodPickerSource = try String(contentsOfFile: favoritePodPickerPath, encoding: .utf8)
+        XCTAssertTrue(logsInspectorSource.contains("LogToolbarPickerField(title: t(.pod), role: .pod)"))
+        XCTAssertTrue(logsInspectorSource.contains("FavoritePodPicker("))
+        XCTAssertTrue(favoritePodPickerSource.contains("ForEach(sortedPods) { pod in"))
+        XCTAssertTrue(favoritePodPickerSource.contains("podRow(pod)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("selection = pod.id"))
+        XCTAssertTrue(favoritePodPickerSource.contains("onToggleFavoritePod(pod)"))
     }
 
     func testTerminalTabsUseFullTabHitAreaForSelection() throws {
         let tabBarSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
 
         XCTAssertTrue(tabBarSource.contains(".frame(width: 216, height: 28"))
-        XCTAssertTrue(tabBarSource.contains(".contentShape(RoundedRectangle(cornerRadius: 6"))
+        XCTAssertTrue(tabBarSource.contains(".contentShape(RoundedRectangle(cornerRadius: 7"))
         XCTAssertTrue(tabBarSource.contains(".onTapGesture"))
         XCTAssertTrue(tabBarSource.contains("select(session)"))
         XCTAssertTrue(tabBarSource.contains(".frame(width: 28, height: 28)"))
@@ -417,6 +552,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let portForwardSource = try String(contentsOfFile: terminalPortForwardPanelViewPath, encoding: .utf8)
         let sessionControlSource = try String(contentsOfFile: terminalSessionControlRowPath, encoding: .utf8)
         let podSelectorSource = try String(contentsOfFile: terminalPodSelectorRowPath, encoding: .utf8)
+        let favoritePodPickerSource = try String(contentsOfFile: favoritePodPickerPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
 
         XCTAssertTrue(shellSource.contains("private var primaryActionTitle"))
@@ -443,16 +579,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(tabBarSource.contains("draftTab(number: sessions.count + 1)"))
         XCTAssertTrue(tabBarSource.contains("Text(\"\\(number) New Shell\")"))
         XCTAssertTrue(tabBarSource.contains("accessibilityLabel(\"New Shell\")"))
-        XCTAssertTrue(tabBarSource.contains(".frame(width: 40, height: 28)"))
+        XCTAssertTrue(tabBarSource.contains(".frame(width: 38, height: 28)"))
         XCTAssertTrue(tabBarSource.contains(".contentShape(Rectangle())"))
-        XCTAssertTrue(tabBarSource.contains(".frame(height: 36)"))
+        XCTAssertTrue(tabBarSource.contains(".frame(height: 38)"))
         XCTAssertTrue(tabBarSource.contains("tabBorder(isActive: true, isDraft: true)"))
-        XCTAssertTrue(tabBarSource.contains("Color.primary.opacity(0.16)"))
+        XCTAssertTrue(tabBarSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
 
         XCTAssertTrue(sessionControlSource.contains("Label(primaryActionTitle, systemImage: primaryActionSystemImage)"))
-        XCTAssertTrue(sessionControlSource.contains(".frame(width: 104)"))
+        XCTAssertTrue(sessionControlSource.contains(".frame(width: 112)"))
         XCTAssertTrue(sessionControlSource.contains("Button(\"Clear\", action: onClear)"))
-        XCTAssertTrue(sessionControlSource.contains(".frame(width: 64)"))
+        XCTAssertTrue(sessionControlSource.contains(".frame(width: 72)"))
+        XCTAssertTrue(sessionControlSource.contains("FavoritePodPicker("))
+        XCTAssertTrue(sessionControlSource.contains("width: 320"))
+        XCTAssertFalse(sessionControlSource.contains("private var favoriteButton"))
+        XCTAssertFalse(sessionControlSource.contains("\"★ \""))
         XCTAssertTrue(sessionControlSource.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertFalse(sessionControlSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(shellSource.contains("onSaveActiveTranscript"))
@@ -463,7 +603,30 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(workspaceSource.contains("onSaveActiveTerminalTranscript"))
         XCTAssertTrue(workspaceSource.contains("onSaveAllTerminalTranscripts"))
         XCTAssertTrue(podSelectorSource.contains("ScrollView(.horizontal, showsIndicators: false)"))
+        XCTAssertTrue(podSelectorSource.contains("FavoritePodPicker("))
+        XCTAssertTrue(podSelectorSource.contains("width: 320"))
+        XCTAssertTrue(podSelectorSource.contains(".frame(width: 104)"))
+        XCTAssertFalse(podSelectorSource.contains("private var favoriteButton"))
+        XCTAssertFalse(podSelectorSource.contains("\"★ \""))
         XCTAssertFalse(podSelectorSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("struct FavoritePodPickerPresentation"))
+        XCTAssertTrue(favoritePodPickerSource.contains("struct FavoritePodPicker"))
+        XCTAssertTrue(favoritePodPickerSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: false))"))
+        XCTAssertTrue(favoritePodPickerSource.contains("@State private var isPopoverPresented = false"))
+        XCTAssertTrue(favoritePodPickerSource.contains(".popover(isPresented: $isPopoverPresented, arrowEdge: .bottom)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("private func podRow(_ pod: PodSummary) -> some View"))
+        XCTAssertTrue(favoritePodPickerSource.contains("selection = pod.id"))
+        XCTAssertTrue(favoritePodPickerSource.contains("isPopoverPresented = false"))
+        XCTAssertTrue(favoritePodPickerSource.contains("onToggleFavoritePod(pod)"))
+        XCTAssertFalse(favoritePodPickerSource.contains("Picker(title, selection: $selection)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("FavoritePodPickerPresentation.selectedPod(in: pods, selection: selection)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("if pod.id == selection { return \"checkmark\" }"))
+        XCTAssertTrue(favoritePodPickerSource.contains("pods.first { $0.id == selection }"))
+        XCTAssertTrue(favoritePodPickerSource.contains("FavoritePodPickerPresentation.selectedFavoriteIcon("))
+        XCTAssertTrue(favoritePodPickerSource.contains("static func selectedFavoriteIcon("))
+        XCTAssertTrue(favoritePodPickerSource.contains("let lhsFavorite = isFavoritePod(lhs)"))
+        XCTAssertTrue(favoritePodPickerSource.contains("return lhsFavorite && !rhsFavorite"))
+        XCTAssertTrue(favoritePodPickerSource.contains("localizedCaseInsensitiveCompare(rhs.name)"))
 
         XCTAssertTrue(workspaceSource.contains("@State private var isComposingNewShellTab"))
         XCTAssertTrue(workspaceSource.contains("private var isShowingNewShellDraft"))
@@ -478,6 +641,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(portForwardSource.contains(".frame(height: compactStatusHeight)"))
         XCTAssertTrue(portForwardSource.contains(".frame(height: activeSessionListHeight)"))
         XCTAssertTrue(portForwardSource.contains("stableHorizontalControls"))
+        XCTAssertTrue(portForwardSource.contains("isFavoritePod: isFavoritePod"))
+        XCTAssertTrue(portForwardSource.contains("onToggleFavoritePod: onToggleFavoritePod"))
         XCTAssertFalse(portForwardSource.contains("ViewThatFits(in: .horizontal)"))
 
         XCTAssertTrue(viewModelSource.contains("replacingSessionID: String? = nil"))
@@ -585,7 +750,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             actionRowPrefix.contains("Button(\"Delete\", role: .destructive)"),
             "Service Delete should stay in the stable horizontal action row, not drop onto its own lower row."
         )
-        XCTAssertTrue(serviceOverview.contains("Button(\"Apply YAML\")"))
+        XCTAssertTrue(serviceOverview.contains("Button(appString(.applyYAML))"))
         XCTAssertTrue(serviceOverview.contains("Button(\"Export…\")"))
     }
 
@@ -615,6 +780,23 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(controls.contains(".opacity(viewModel.state.resourceSearchQuery.isEmpty ? 0 : 1)"))
         XCTAssertTrue(controls.contains(".disabled(viewModel.state.resourceSearchQuery.isEmpty)"))
         XCTAssertFalse(controls.contains(".overlay"))
+    }
+
+    func testContentHeaderChipsUseSharedMetrics() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let header = try functionBlock(
+            named: "private var contentHeader: some View {",
+            endingBefore: "private var showsNamespaceAndFilterControls",
+            in: source
+        )
+
+        XCTAssertTrue(header.contains("if let context = viewModel.state.selectedContext, viewModel.state.selectedSection != .terminal"))
+        XCTAssertTrue(header.contains(".padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)"))
+        XCTAssertTrue(header.contains(".frame(height: RuneUILayoutMetrics.headerChipHeight)"))
+        XCTAssertTrue(header.contains(".background(.thinMaterial, in: Capsule())"))
+        XCTAssertTrue(header.contains(".background(Color.orange.opacity(0.16), in: Capsule())"))
+        XCTAssertFalse(header.contains(".frame(height: 36)"))
+        XCTAssertFalse(header.contains("RoundedRectangle(cornerRadius: 10, style: .continuous)"))
     }
 
     func testLocalK8sIntegrationReportScriptUsesSandboxSafeSwiftHarness() throws {
@@ -900,8 +1082,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
 
         XCTAssertTrue(workspaceSource.contains("preferredPodIDForNewShell"))
-        XCTAssertTrue(workspaceSource.contains("availablePods.first(where: { !hasShellSession(for: $0) })"))
-        XCTAssertTrue(workspaceSource.contains("private func hasShellSession(for pod: PodSummary) -> Bool"))
+        XCTAssertTrue(workspaceSource.contains("TerminalShellPodSelectionPolicy.preferredPodIDForNewShell("))
+        XCTAssertTrue(workspaceSource.contains("!hasShellSession(for: current, in: sessions)"))
+        XCTAssertTrue(workspaceSource.contains("static func hasShellSession(for pod: PodSummary, in sessions: [PodTerminalSession]) -> Bool"))
 
         XCTAssertTrue(shellSource.contains("private var selectedPodExistingSession"))
         XCTAssertTrue(shellSource.contains("return selectedPodExistingSession == nil ? \"Connect\" : \"Open Tab\""))
@@ -926,11 +1109,216 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("clampedTerminalFontSize"))
 
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.terminalFontSize)"))
-        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Appearance\")"))
-        XCTAssertTrue(preferencesSource.contains("Text(\"Font size\")"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(settingsString(.settingsAppearance))"))
+        XCTAssertTrue(preferencesSource.contains("Text(settingsString(.settingsFontSize))"))
         XCTAssertTrue(preferencesSource.contains("Slider("))
-        XCTAssertTrue(preferencesSource.contains("Button(\"Reset\")"))
+        XCTAssertTrue(preferencesSource.contains("Button(settingsString(.settingsReset))"))
         XCTAssertTrue(preferencesSource.contains("terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault"))
+    }
+
+    func testPreferencesExposeMemoryCacheLimits() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("sessionLogCacheEntryLimit"))
+        XCTAssertTrue(settingsSource.contains("sessionLogCacheEntryLimitDefault = 128"))
+        XCTAssertTrue(settingsSource.contains("resourceYAMLUndoSnapshotLimit"))
+        XCTAssertTrue(settingsSource.contains("resourceYAMLUndoSnapshotLimitDefault = 64"))
+        XCTAssertTrue(settingsSource.contains("clampedSessionLogCacheEntryLimit"))
+        XCTAssertTrue(settingsSource.contains("clampedResourceYAMLUndoSnapshotLimit"))
+        XCTAssertFalse(settingsSource.contains("sessionLogCacheEntryLimitMaximum"))
+        XCTAssertFalse(settingsSource.contains("resourceYAMLUndoSnapshotLimitMaximum"))
+
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit)"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Memory\")"))
+        XCTAssertTrue(preferencesSource.contains("private struct RuneSettingsIntegerLimitEditor"))
+        XCTAssertTrue(preferencesSource.contains("title: \"Log cache\""))
+        XCTAssertTrue(preferencesSource.contains("title: \"YAML undo\""))
+        XCTAssertTrue(preferencesSource.contains("TextField("))
+        XCTAssertTrue(preferencesSource.contains("Stepper(title, value: normalizedBinding, step: step)"))
+        XCTAssertTrue(preferencesSource.contains("Type any larger value for high-memory machines."))
+        XCTAssertTrue(preferencesSource.contains("defaultValue: RuneSettingsKeys.sessionLogCacheEntryLimitDefault"))
+        XCTAssertTrue(preferencesSource.contains("defaultValue: RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault"))
+        XCTAssertTrue(preferencesSource.contains("normalize: RuneSettingsKeys.clampedSessionLogCacheEntryLimit"))
+        XCTAssertTrue(preferencesSource.contains("normalize: RuneSettingsKeys.clampedResourceYAMLUndoSnapshotLimit"))
+        XCTAssertTrue(preferencesSource.contains("value.wrappedValue = defaultValue"))
+        XCTAssertFalse(preferencesSource.contains("sessionLogCacheEntryLimitMinimum...RuneSettingsKeys.sessionLogCacheEntryLimitMaximum"))
+        XCTAssertFalse(preferencesSource.contains("resourceYAMLUndoSnapshotLimitMinimum...RuneSettingsKeys.resourceYAMLUndoSnapshotLimitMaximum"))
+
+        XCTAssertTrue(stateSource.contains("UserDefaults.standard.runeSessionLogCacheEntryLimit"))
+        XCTAssertTrue(stateSource.contains("UserDefaults.standard.runeResourceYAMLUndoSnapshotLimit"))
+    }
+
+    func testPreferencesExposeAppearanceThemes() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let designSource = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
+        let glassSource = try String(contentsOfFile: runeGlassShellPath, encoding: .utf8)
+        let themeSource = try String(contentsOfFile: runeThemePalettePath, encoding: .utf8)
+        let themePresentationSource = try String(contentsOfFile: runeThemePresentationPath, encoding: .utf8)
+        let manifestTextSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("appearanceTheme"))
+        XCTAssertTrue(settingsSource.contains("appearanceThemeDefault = \"native\""))
+        XCTAssertTrue(settingsSource.contains("appearanceRecentThemes"))
+        XCTAssertTrue(settingsSource.contains("appearanceRecentThemeLimit = 12"))
+        XCTAssertTrue(settingsSource.contains("recordRuneAppearanceTheme"))
+        XCTAssertTrue(settingsSource.contains("normalizedAppearanceRecentThemes"))
+
+        XCTAssertTrue(themeSource.contains("enum RuneAppearanceTheme"))
+        XCTAssertTrue(themeSource.contains("case aurora"))
+        XCTAssertTrue(themeSource.contains("case graphiteBlue"))
+        XCTAssertTrue(themeSource.contains("case emberGlass"))
+        XCTAssertTrue(themeSource.contains("case mossTerminal"))
+        XCTAssertTrue(themeSource.contains("case fjord"))
+        XCTAssertTrue(themeSource.contains("case paper"))
+        XCTAssertTrue(themeSource.contains("case daylight"))
+        XCTAssertTrue(themeSource.contains("case contrastDark"))
+        XCTAssertTrue(themeSource.contains("case contrastLight"))
+        XCTAssertTrue(themeSource.contains("Contrast Dark"))
+        XCTAssertTrue(themeSource.contains("Contrast Light"))
+        XCTAssertTrue(themeSource.contains("Rune theme"))
+        XCTAssertTrue(themeSource.contains("RuneZedThemeDecoder"))
+        XCTAssertTrue(themeSource.contains("Custom theme"))
+        XCTAssertFalse(themeSource.contains("Zed-format JSON"))
+        XCTAssertFalse(themeSource.contains("VS Code"))
+        XCTAssertTrue(preferencesSource.contains("case themes"))
+        XCTAssertTrue(preferencesSource.contains("Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)"))
+        XCTAssertTrue(preferencesSource.contains("private var themesSettingsForm: some View"))
+        XCTAssertTrue(preferencesSource.contains("RuneThemeSelectorCard"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Choose theme\")"))
+        XCTAssertTrue(preferencesSource.contains("Text(\"Recent\")"))
+        XCTAssertTrue(preferencesSource.contains("Text(\"Current: \\(selectedAppearanceTheme.title)\")"))
+        XCTAssertTrue(preferencesSource.contains("private var recentAppearanceThemes: [RuneResolvedTheme]"))
+        XCTAssertTrue(preferencesSource.contains("private var olderAppearanceThemes: [RuneResolvedTheme]"))
+        XCTAssertTrue(preferencesSource.contains("private var themeOverflowMenu: some View"))
+        XCTAssertTrue(preferencesSource.contains("Text(\"More Themes\")"))
+        XCTAssertTrue(preferencesSource.contains("private var swatches: some View"))
+        XCTAssertTrue(preferencesSource.contains("swatch(palette.accent)"))
+        XCTAssertTrue(preferencesSource.contains("selectAppearanceTheme(theme.id)"))
+        XCTAssertTrue(preferencesSource.contains("private func reloadAppearanceThemes()"))
+        XCTAssertTrue(preferencesSource.contains("if !availableIDs.contains(appearanceThemeRaw)"))
+        XCTAssertTrue(preferencesSource.contains("selectAppearanceTheme(RuneSettingsKeys.appearanceThemeDefault)"))
+        XCTAssertTrue(preferencesSource.contains("RuneThemePresentation(theme: theme)"))
+        XCTAssertTrue(preferencesSource.contains("RuneThemePresentation(theme: theme).menuSymbol"))
+        XCTAssertTrue(themePresentationSource.contains("struct RuneThemePresentation"))
+        XCTAssertTrue(themePresentationSource.contains("appearanceSymbol = \"circle.lefthalf.filled\""))
+        XCTAssertTrue(themePresentationSource.contains("menuSymbol = \"circle.lefthalf.filled\""))
+        XCTAssertTrue(preferencesSource.contains("UserDefaults.standard.recordRuneAppearanceTheme"))
+        XCTAssertTrue(preferencesSource.contains("refreshRecentAppearanceThemes(recordSelectedTheme: true)"))
+        XCTAssertFalse(preferencesSource.contains("RuneThemePreview"))
+        XCTAssertTrue(preferencesSource.contains("Open Folder"))
+        XCTAssertTrue(preferencesSource.contains("Reload"))
+        XCTAssertTrue(preferencesSource.contains("Label(\"Template\", systemImage: \"doc.badge.plus\")"))
+        XCTAssertTrue(preferencesSource.contains("SettingsHelpButton("))
+        XCTAssertTrue(preferencesSource.contains("private func revealThemeTemplate()"))
+        XCTAssertTrue(preferencesSource.contains("RuneThemeCatalog.writeUserThemeTemplate()"))
+        XCTAssertTrue(themeSource.contains("static func writeUserThemeTemplate() -> URL"))
+        XCTAssertTrue(themeSource.contains("rune-theme-template.json"))
+        XCTAssertTrue(preferencesSource.contains("RuneThemeCatalog.availableThemes()"))
+        XCTAssertTrue(preferencesSource.contains("RuneSettingsMetrics.rowMinHeight"))
+        XCTAssertFalse(preferencesSource.contains("Drop compatible theme files"))
+        XCTAssertFalse(preferencesSource.contains("Zed JSON themes"))
+        XCTAssertFalse(preferencesSource.contains("Zed-format custom themes"))
+        XCTAssertFalse(preferencesSource.contains("VS Code"))
+
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
+        XCTAssertTrue(preferencesSource.contains("Menu {"))
+        XCTAssertTrue(preferencesSource.contains("appearanceThemeRaw = themeID"))
+        XCTAssertTrue(preferencesSource.contains("chevron.up.chevron.down"))
+        XCTAssertTrue(themeSource.contains("RuneAppearanceTheme.allCases.map(\\.resolvedTheme) + userThemes()"))
+        XCTAssertTrue(preferencesSource.contains(".runeAppearanceTheme(selectedAppearanceTheme)"))
+
+        XCTAssertTrue(rootSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
+        XCTAssertTrue(rootSource.contains(".runeAppearanceTheme(activeAppearanceTheme)"))
+
+        XCTAssertTrue(themeSource.contains("RuneThemePaletteEnvironmentKey"))
+        XCTAssertTrue(themeSource.contains("runeThemePalette"))
+        XCTAssertTrue(themeSource.contains("RuneAppearanceWindowConfigurator"))
+        XCTAssertTrue(themeSource.contains("RuneAppearanceWindowConfigurator(theme: theme).id(theme.id)"))
+        XCTAssertTrue(themeSource.contains("invalidateWindowChrome(window)"))
+        XCTAssertTrue(themeSource.contains("window.viewsNeedDisplay = true"))
+        XCTAssertTrue(themeSource.contains("markNeedsDisplay(contentView)"))
+        XCTAssertTrue(themeSource.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(themeSource.contains("window.appearance = nil"))
+        XCTAssertTrue(themeSource.contains("window.contentView?.appearance = nil"))
+        XCTAssertTrue(themeSource.contains("window.backgroundColor = .windowBackgroundColor"))
+        XCTAssertTrue(themeSource.contains(".preferredColorScheme(theme.preferredColorScheme)"))
+        XCTAssertFalse(themeSource.contains(".foregroundStyle(palette?.foreground"))
+        XCTAssertTrue(themeSource.contains("selectionFill"))
+        XCTAssertTrue(themeSource.contains("secondaryText"))
+        XCTAssertTrue(designSource.contains("kind.fill(theme: theme)"))
+        XCTAssertTrue(designSource.contains("@Environment(\\.runeThemePalette)"))
+        XCTAssertTrue(glassSource.contains("RuneAppearanceTheme.resolved(appearanceThemeRaw)"))
+        XCTAssertTrue(manifestTextSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
+        XCTAssertTrue(manifestTextSource.contains("ManifestPalette.resolved(RuneAppearanceTheme.resolved(manifestThemeID))"))
+        XCTAssertTrue(manifestTextSource.contains("storage.addAttributes(issue.attributes(palette: manifestPalette), range: range)"))
+    }
+
+    func testZedThemeJSONCanBeLoadedAsRuneTheme() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneThemeCatalogTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let themeJSON = """
+        {
+          "$schema": "https://zed.dev/schema/themes/v0.2.0.json",
+          "name": "Example Family",
+          "author": "Example",
+          "themes": [
+            {
+              "name": "Example Dark",
+              "appearance": "dark",
+              "style": {
+                "background": "#101820ff",
+                "panel.background": "#182431ff",
+                "surface.background": "#182431ff",
+                "element.background": "#1e2c3aff",
+                "element.selected": "#294866ff",
+                "border": "#40576eff",
+                "border.variant": "#34485cff",
+                "text": "#f4f8fbff",
+                "text.muted": "#b6c4d1ff",
+                "text.placeholder": "#8ea0adff",
+                "text.accent": "#6bb7f7ff",
+                "editor.background": "#0d141cff",
+                "editor.foreground": "#e7edf3ff",
+                "success": "#7ee6a8ff",
+                "warning": "#ffd166ff",
+                "error": "#ff7a9aff",
+                "info": "#8bd3ffff",
+                "syntax": {
+                  "property": { "color": "#8bd3ffff" },
+                  "string": { "color": "#7ee6a8ff" },
+                  "number": { "color": "#ffd166ff" },
+                  "boolean": { "color": "#c59cffff" },
+                  "comment": { "color": "#8ea0adff" },
+                  "keyword": { "color": "#ff9ac8ff" },
+                  "type": { "color": "#80e6d6ff" }
+                }
+              }
+            }
+          ]
+        }
+        """
+        try themeJSON.write(to: tempDirectory.appendingPathComponent("example.json"), atomically: true, encoding: .utf8)
+
+        let themes = RuneThemeCatalog.loadZedThemes(from: tempDirectory)
+        XCTAssertEqual(themes.count, 1)
+        let theme = try XCTUnwrap(themes.first)
+        XCTAssertEqual(theme.id, "zed:example:example-dark")
+        XCTAssertEqual(theme.title, "Example Dark")
+        XCTAssertEqual(theme.sourceSummary, "Custom theme")
+        XCTAssertEqual(theme.preferredColorScheme, .dark)
+        XCTAssertNotNil(theme.palette)
+        XCTAssertEqual(theme.appKitPalette?.accent, "#6bb7f7ff")
+        XCTAssertEqual(theme.appKitPalette?.danger, "#ff7a9aff")
+        XCTAssertEqual(theme.syntaxPalette?.key, "#8bd3ffff")
+        XCTAssertNil(theme.builtin)
     }
 
     func testPreferencesExposeWriteAndRollbackSafetySettings() throws {
@@ -973,9 +1361,35 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("hideManagedFieldsByDefault"))
         XCTAssertTrue(settingsSource.contains("runeHideManagedFieldsByDefault"))
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
-        XCTAssertTrue(preferencesSource.contains("Hide managed fields by default"))
+        XCTAssertTrue(preferencesSource.contains("settingsString(.settingsHideManagedFieldsByDefault)"))
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
+    }
+
+    func testPreferencesExposeSimpleModeForLightweightInterface() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("simpleMode"))
+        XCTAssertTrue(settingsSource.contains("runeSimpleMode"))
+        XCTAssertTrue(settingsSource.contains("simpleMode: false"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
+        XCTAssertTrue(preferencesSource.contains("settingsString(.settingsSimpleMode)"))
+        XCTAssertTrue(preferencesSource.contains("settingsString(.settingsSimpleModeManagedFieldsNote)"))
+        XCTAssertTrue(preferencesSource.contains("if simpleMode"))
+        XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
+        XCTAssertTrue(describeSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
+        XCTAssertTrue(describeSource.contains("if !simpleMode"))
+        XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
+        XCTAssertTrue(yamlSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
+        XCTAssertTrue(yamlSource.contains("if !simpleMode, filteredYAML.removedBlockCount > 0"))
+        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    OverviewClusterSignalsPanelView("))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    OverviewRecentEventsPanelView("))
+        XCTAssertTrue(rootViewSource.contains("if let context = viewModel.state.selectedContext, viewModel.state.selectedSection != .terminal"))
     }
 
     func testPreferencesExposeHoverTooltipSetting() throws {
@@ -987,7 +1401,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("showHoverTooltips"))
         XCTAssertTrue(settingsSource.contains("runeShowHoverTooltips"))
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
-        XCTAssertTrue(preferencesSource.contains("Show hover tooltips"))
+        XCTAssertTrue(preferencesSource.contains("settingsString(.settingsShowHoverTooltips)"))
         XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
         XCTAssertTrue(clusterSignalsSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
         XCTAssertTrue(rootViewSource.contains(".runeHelp("))
@@ -1119,14 +1533,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("let trailingInset = RuneAppKitResourceTableStyle.contentTrailingInset"))
         XCTAssertTrue(appKitPodTableSource.contains("+ (reservesSortIndicator ? RuneAppKitResourceListLayout.sortIndicatorSize.width + RuneAppKitResourceTableStyle.sortIndicatorGap : 0)"))
         XCTAssertTrue(appKitPodTableSource.contains("NSImage.Name(parent.sortAscending ? \"NSAscendingSortIndicator\" : \"NSDescendingSortIndicator\")"))
-        XCTAssertTrue(appKitPodTableSource.contains("NSColor.headerTextColor"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableTheme.current.headerText"))
         XCTAssertTrue(appKitPodTableSource.contains("label.centerYAnchor.constraint(equalTo: container.centerYAnchor)"))
         XCTAssertTrue(appKitPodTableSource.contains("drawSortIndicator(indicatorImage"))
         XCTAssertTrue(appKitPodTableSource.contains("resetColumnWidth(_ columnID: String)"))
         XCTAssertTrue(appKitPodTableSource.contains("event.clickCount == 2"))
         XCTAssertTrue(appKitPodTableSource.contains("drawColumnDivider"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneUILayoutMetrics.compactGlyphCornerRadius"))
-        XCTAssertTrue(appKitPodTableSource.contains("NSColor.controlBackgroundColor.withAlphaComponent(0.42)"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableTheme.rowFill"))
         XCTAssertTrue(appKitPodTableSource.contains("NSColor.controlAccentColor.withAlphaComponent(0.11)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableViewColumnDidResize"))
         XCTAssertTrue(appKitPodTableSource.contains("DispatchQueue.main.asyncAfter(deadline: .now() + 0.18"))
@@ -1200,6 +1614,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("static let contentTrailingInset: CGFloat = 10"))
         XCTAssertTrue(appKitPodTableSource.contains("static let sortIndicatorGap: CGFloat = 4"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.horizontalInset = rowHorizontalInset"))
+        XCTAssertTrue(appKitPodTableSource.contains("private struct RuneAppKitResourceTableTheme"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppearanceTheme.resolved(UserDefaults.standard.string(forKey: RuneSettingsKeys.appearanceTheme)"))
+        XCTAssertTrue(appKitPodTableSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
+        XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)").count - 1, 14)
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)"))
         XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.apply(to: tableView").count - 1, 7)
         XCTAssertFalse(appKitPodTableSource.contains("usesAlternatingRowBackgroundColors = false\n        tableView.backgroundColor = .clear\n        tableView.gridStyleMask = []\n        tableView.headerView"))
@@ -1675,14 +2093,18 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
         let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
 
-        XCTAssertTrue(logsViewSource.contains("Toggle(\"Tail\""))
-        XCTAssertTrue(logsViewSource.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
+        XCTAssertTrue(logsViewSource.contains("private var tailControl: some View"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.resume), systemImage: \"play.fill\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.pause), systemImage: \"pause.fill\")"))
+        XCTAssertTrue(logsViewSource.contains("Button(t(.stopTail))"))
+        XCTAssertFalse(logsViewSource.contains("Toggle(\"Tail\""))
+        XCTAssertFalse(logsViewSource.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
         XCTAssertTrue(logsViewSource.contains("contentStyle: .ansiLogs"))
-        XCTAssertTrue(logsViewSource.contains("Label(\"Save Logs\", systemImage: \"square.and.arrow.down\")"))
-        XCTAssertTrue(logsViewSource.contains("Label(\"More\", systemImage: \"ellipsis.circle\")"))
-        XCTAssertTrue(logsViewSource.contains("Label(\"Export Visible Results ZIP\", systemImage: \"doc.zipper\")"))
-        XCTAssertTrue(logsViewSource.contains("Label(\"Export Full Unfiltered ZIP\", systemImage: \"archivebox\")"))
-        XCTAssertTrue(logsViewSource.contains("Label(\"Export All Pods Full ZIP\", systemImage: \"shippingbox\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.saveLogs), systemImage: \"square.and.arrow.down\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.more), systemImage: \"ellipsis.circle\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.exportVisibleResultsZip), systemImage: \"doc.zipper\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.exportFullUnfilteredZip), systemImage: \"archivebox\")"))
+        XCTAssertTrue(logsViewSource.contains("Label(t(.exportAllPodsFullZip), systemImage: \"shippingbox\")"))
         XCTAssertTrue(logsViewSource.contains("allowsAutomaticLargeTextSurface: false"))
         XCTAssertTrue(logsViewSource.contains("deferredOutputThreshold"))
         XCTAssertTrue(logsViewSource.contains("ResourceLogSearchResult.makeForInspector"))
@@ -1870,6 +2292,41 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("case 124:"))
         XCTAssertTrue(rootViewSource.contains("return \"right\""))
         XCTAssertTrue(rootViewSource.contains("let disallowedModifiers: NSEvent.ModifierFlags = [.function]"))
+    }
+
+    func testDetailPaneArrowKeysCycleInspectorTabsAcrossSections() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let suspensionBlock = try functionBlock(
+            named: "private var keyboardNavigationSuspended: Bool",
+            endingBefore: "private func focusNextKeyboardPane",
+            in: rootViewSource
+        )
+        let localKeyBlock = try functionBlock(
+            named: "private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent?",
+            endingBefore: "private func shouldHandleTabNavigation",
+            in: rootViewSource
+        )
+        let arrowGuardBlock = try functionBlock(
+            named: "private func shouldHandlePaneArrowNavigation(_ event: NSEvent) -> Bool",
+            endingBefore: "private func configuredAction(for event: NSEvent) -> RuneKeyBindingAction?",
+            in: rootViewSource
+        )
+        let detailMoveBlock = try functionBlock(
+            named: "private func moveDetailInspectorTab(_ direction: MoveCommandDirection)",
+            endingBefore: "private func advancedTab",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(suspensionBlock.contains("textView.isEditable"))
+        XCTAssertTrue(localKeyBlock.contains("shouldHandlePaneArrowNavigation(event)"))
+        XCTAssertTrue(localKeyBlock.contains("moveKeyboardSelection(.left)"))
+        XCTAssertTrue(localKeyBlock.contains("moveKeyboardSelection(.right)"))
+        XCTAssertTrue(arrowGuardBlock.contains("event.keyCode == 123 || event.keyCode == 124"))
+        XCTAssertTrue(arrowGuardBlock.contains("keyboardPaneFocus == .detail || (keyboardPaneFocus == .content && viewModel.state.selectedSection != .terminal)"))
+        XCTAssertTrue(arrowGuardBlock.contains("[.command, .option, .control, .shift, .function]"))
+        XCTAssertTrue(rootViewSource.contains("helmBrowserTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(detailMoveBlock.contains("case .terminal:"))
+        XCTAssertTrue(detailMoveBlock.contains("terminalInspectorTab = advancedTab(current: terminalInspectorTab, direction: direction)"))
     }
 
     func testPreferencesExposeArrowKeysForHistoryBindings() throws {
@@ -2096,6 +2553,27 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
     }
 
+    private func keyDownEvent(
+        window: NSWindow,
+        modifierFlags: NSEvent.ModifierFlags = [],
+        characters: String,
+        charactersIgnoringModifiers: String,
+        keyCode: UInt16
+    ) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            isARepeat: false,
+            keyCode: keyCode
+        )!
+    }
+
     private func findConstrainedOverflowingScrollView(in view: NSView) -> NSScrollView? {
         allScrollViews(in: view)
             .filter { scrollView in
@@ -2228,6 +2706,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalPodSelectorRow.swift").path
     }
 
+    private var favoritePodPickerPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/FavoritePodPicker.swift").path
+    }
+
     private var terminalTranscriptSurfacePath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -2289,6 +2776,24 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneDesignComponents.swift").path
+    }
+
+    private var runeThemePalettePath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneThemePalette.swift").path
+    }
+
+    private var runeThemePresentationPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneThemePresentation.swift").path
     }
 
     private var appKitManifestTextViewPath: String {

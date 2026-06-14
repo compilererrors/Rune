@@ -49,6 +49,7 @@ struct TerminalSessionTabBar: View {
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
     let onComposeNewSession: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         HStack(spacing: 0) {
@@ -66,34 +67,28 @@ struct TerminalSessionTabBar: View {
             }
             .overlay(alignment: .trailing) {
                 Rectangle()
-                    .fill(Color.primary.opacity(0.10))
+                    .fill(runeThemePalette?.divider ?? Color.primary.opacity(0.10))
                     .frame(width: 1, height: 22)
             }
 
             Button(action: onComposeNewSession) {
                 Image(systemName: "plus")
                     .font(.caption.weight(.semibold))
-                    .frame(width: 40, height: 28)
+                    .frame(width: 38, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .controlSize(.small)
             .disabled(!canApplyMutations || isComposingNewSession)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.34))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.primary.opacity(0.16), lineWidth: 1)
-            )
+            .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
+            .overlay(tabBorder(isActive: false, isDraft: false))
             .padding(.leading, 6)
             .help("Prepare a new shell tab. Pick a pod, then connect.")
             .accessibilityLabel("New Shell")
         }
-        .frame(height: 36)
+        .frame(height: 38)
         .padding(.horizontal, 6)
-        .background(RuneSurfaceBackground(kind: .editor))
+        .background(RuneSurfaceBackground(kind: .inset))
     }
 
     private func draftTab(number: Int) -> some View {
@@ -101,33 +96,34 @@ struct TerminalSessionTabBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "plus.circle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
                 Text("\(number) New Shell")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 if let selectedPod {
                     Text(selectedPod.name)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                         .lineLimit(1)
                 } else {
                     Text("Ready")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 }
             }
             .frame(width: 216, height: 28, alignment: .leading)
             .padding(.horizontal, 8)
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!canApplyMutations)
         .background(tabBackground(isActive: true, isDraft: true))
         .overlay(tabBorder(isActive: true, isDraft: true))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.accentColor)
-                .frame(height: 2)
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(runeThemePalette?.accent ?? Color.accentColor)
+                .frame(width: 3, height: 16)
+                .padding(.leading, 3)
         }
         .help(selectedPod.map { "New shell tab for \($0.namespace)/\($0.name)" } ?? "Select a pod to connect this new shell tab")
     }
@@ -143,7 +139,7 @@ struct TerminalSessionTabBar: View {
                 if let secondaryTitle = presentation.secondaryTitle {
                     Text(secondaryTitle)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                         .lineLimit(1)
                 }
                 if session.status != .connected {
@@ -162,7 +158,7 @@ struct TerminalSessionTabBar: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
@@ -170,17 +166,18 @@ struct TerminalSessionTabBar: View {
             .help("Close terminal tab")
         }
         .frame(width: 216, height: 28, alignment: .leading)
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onTapGesture {
             select(session)
         }
         .background(tabBackground(isActive: session.id == activeSessionID, isDraft: false))
         .overlay(tabBorder(isActive: session.id == activeSessionID, isDraft: false))
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .leading) {
             if session.id == activeSessionID {
-                Rectangle()
-                    .fill(Color.accentColor)
-                    .frame(height: 2)
+                Capsule()
+                    .fill(runeThemePalette?.accent ?? Color.accentColor)
+                    .frame(width: 3, height: 16)
+                    .padding(.leading, 3)
             }
         }
         .help(presentation.helpText)
@@ -195,20 +192,16 @@ struct TerminalSessionTabBar: View {
     }
 
     private func tabBackground(isActive: Bool, isDraft: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(
-                isActive
-                    ? Color.accentColor.opacity(isDraft ? 0.18 : 0.20)
-                    : Color(nsColor: .controlBackgroundColor).opacity(0.34)
-            )
+        RuneSurfaceBackground(kind: .listRow(isSelected: isActive))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func tabBorder(isActive: Bool, isDraft: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
             .stroke(
                 isActive
-                    ? Color.accentColor.opacity(isDraft ? 0.58 : 0.50)
-                    : Color.primary.opacity(0.16),
+                    ? (runeThemePalette?.selectionStroke.opacity(isDraft ? 0.58 : 0.55) ?? Color.accentColor.opacity(isDraft ? 0.48 : 0.42))
+                    : (runeThemePalette?.stroke.opacity(0.26) ?? Color.primary.opacity(0.12)),
                 lineWidth: 1
             )
     }
