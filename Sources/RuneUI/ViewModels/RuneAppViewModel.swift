@@ -313,6 +313,9 @@ public struct CommandPaletteItem: Identifiable {
         case reload
         case readOnly(Bool)
         case saveLogs
+        case savedWorkspace(SavedWorkspaceSnapshot)
+        case saveWorkspace(String)
+        case toggleSavedWorkspaceFavorite(SavedWorkspaceSnapshot)
         case pod(PodSummary)
         case deployment(DeploymentSummary)
         case service(ServiceSummary)
@@ -334,7 +337,7 @@ private extension CommandPaletteItem.Action {
         switch self {
         case .pod, .deployment, .service, .event, .helmRelease, .resourceKind, .clusterResource:
             return true
-        case .section, .context, .namespace, .importKubeConfig, .reload, .readOnly, .saveLogs:
+        case .section, .context, .namespace, .importKubeConfig, .reload, .readOnly, .saveLogs, .savedWorkspace, .saveWorkspace, .toggleSavedWorkspaceFavorite:
             return false
         }
     }
@@ -404,6 +407,26 @@ public enum OperatorResourceListSortColumn: String, Sendable {
     case apiPath
 }
 
+public enum OperatorResourceFocus: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case gitOps
+    case flux
+    case argoCD
+    case unhealthy
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .all: return "All"
+        case .gitOps: return "GitOps"
+        case .flux: return "Flux"
+        case .argoCD: return "ArgoCD"
+        case .unhealthy: return "Unhealthy"
+        }
+    }
+}
+
 private struct NavigationCheckpoint: Equatable, Sendable {
     let contextName: String?
     let namespace: String
@@ -428,6 +451,16 @@ private struct NavigationCheckpoint: Equatable, Sendable {
     let selectedSecretName: String?
     let selectedNodeName: String?
     let selectedRBACResourceID: String?
+}
+
+public struct SavedWorkspaceInspectorRestoreRequest: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let inspectorState: SavedWorkspaceInspectorState
+
+    public init(id: UUID = UUID(), inspectorState: SavedWorkspaceInspectorState) {
+        self.id = id
+        self.inspectorState = inspectorState
+    }
 }
 
 /// Which cluster lists Rune loads for the current section and resource kind. Drives parallel work in `loadResourceSnapshot`.
@@ -479,7 +512,9 @@ private struct SnapshotLoadPlan: Sendable {
             case .pod:
                 plan.pods = true
             case .deployment:
+                plan.podStatuses = true
                 plan.deployments = true
+                plan.replicaSets = true
             case .statefulSet:
                 plan.statefulSets = true
             case .daemonSet:
@@ -554,6 +589,112 @@ private struct OverviewSnapshotCacheEntry: Sendable {
     let events: [EventSummary]
 }
 
+public enum RBACCanIScope: String, CaseIterable, Identifiable, Sendable {
+    case namespace
+    case cluster
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .namespace: return "Namespace"
+        case .cluster: return "Cluster"
+        }
+    }
+}
+
+public struct RBACCanIRequest: Equatable, Sendable {
+    public let namespace: String?
+    public let verb: String
+    public let resource: String
+    public let apiGroup: String?
+    public let subresource: String?
+    public let scope: RBACCanIScope
+
+    public init(
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String?,
+        subresource: String?,
+        scope: RBACCanIScope
+    ) {
+        self.namespace = Self.nilIfEmpty(namespace?.trimmingCharacters(in: .whitespacesAndNewlines))
+        self.verb = verb.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.resource = resource.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.apiGroup = Self.nilIfEmpty(apiGroup?.trimmingCharacters(in: .whitespacesAndNewlines))
+        self.subresource = Self.nilIfEmpty(subresource?.trimmingCharacters(in: .whitespacesAndNewlines))
+        self.scope = scope
+    }
+
+    private static func nilIfEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    public var reviewNamespace: String? {
+        scope == .namespace ? namespace : nil
+    }
+
+    public var summary: String {
+        let group = apiGroup.map { " apiGroup=\($0)" } ?? ""
+        let sub = subresource.map { "/\($0)" } ?? ""
+        let target = scope == .namespace ? "namespace \(namespace ?? "-")" : "cluster scope"
+        return "\(verb) \(resource)\(sub)\(group) in \(target)"
+    }
+}
+
+public struct RBACCanIResult: Equatable, Sendable {
+    public let request: RBACCanIRequest
+    public let allowed: Bool?
+    public let errorMessage: String?
+    public let checkedAt: Date
+
+    public init(request: RBACCanIRequest, allowed: Bool?, errorMessage: String?, checkedAt: Date = Date()) {
+        self.request = request
+        self.allowed = allowed
+        self.errorMessage = errorMessage
+        self.checkedAt = checkedAt
+    }
+
+    public var statusText: String {
+        if let allowed {
+            return allowed ? "Allowed" : "Denied"
+        }
+        return "Could not verify"
+    }
+}
+
+public typealias RBACCanIChecking = @MainActor (
+    _ sources: [KubeConfigSource],
+    _ context: KubeContext,
+    _ namespace: String?,
+    _ verb: String,
+    _ resource: String,
+    _ apiGroup: String?,
+    _ subresource: String?
+) async throws -> Bool
+
+public struct HPAScaleTargetReference: Identifiable, Equatable, Sendable {
+    public let kind: KubeResourceKind
+    public let namespace: String?
+    public let name: String
+    public let subtitle: String
+    public let symbol: String
+
+    public init(kind: KubeResourceKind, namespace: String?, name: String, subtitle: String, symbol: String) {
+        self.kind = kind
+        self.namespace = namespace
+        self.name = name
+        self.subtitle = subtitle
+        self.symbol = symbol
+    }
+
+    public var id: String {
+        "\(kind.rawValue)|\(namespace ?? "_cluster")|\(name)"
+    }
+}
+
 @MainActor
 public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var state: RuneAppState
@@ -599,8 +740,12 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var operatorResourceSortColumn: OperatorResourceListSortColumn = .family
     @Published public private(set) var operatorResourceSortAscending: Bool = true
     @Published public private(set) var operatorResourcePage: Int = 0
+    @Published public private(set) var operatorResourceFocus: OperatorResourceFocus = .all
+    @Published public private(set) var hiddenOperatorPrinterColumnFamilies: Set<String> = []
+    @Published public private(set) var savedWorkspaces: [SavedWorkspaceSnapshot] = []
     @Published public private(set) var kubeConfigImportReviews: [KubeConfigImportReview] = []
     @Published public var favoriteImportedKubeConfigContexts: Bool = false
+    @Published public var kubeConfigDuplicateHandlingChoice: KubeConfigDuplicateHandlingChoice = .skipDuplicate
     private var namespaceResolutionLookupCache: (namespaces: [String], lookup: [String: String])?
     @Published public var manualKubeConfigName: String = ""
     @Published public var manualKubeConfigServer: String = ""
@@ -628,6 +773,15 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
     @Published public private(set) var pendingRollbackPlan: String?
+    @Published public var rbacCanIVerb: String = "list"
+    @Published public var rbacCanIResource: String = "pods"
+    @Published public var rbacCanIApiGroup: String = ""
+    @Published public var rbacCanISubresource: String = ""
+    @Published public var rbacCanIScope: RBACCanIScope = .namespace
+    @Published public private(set) var rbacCanIResult: RBACCanIResult?
+    @Published public private(set) var isRunningRBACCanI = false
+    @Published public private(set) var kubernetesRequestMetricsSummary: KubernetesRequestMetricsDebugPresentation = .empty
+    @Published public private(set) var isRefreshingKubernetesRequestMetricsSummary = false
     @Published public var isSidebarVisible: Bool = UserDefaults.standard.runeLayoutSidebarVisible
     @Published public var isDetailPaneVisible: Bool = UserDefaults.standard.runeLayoutDetailPaneVisible
     @Published public var isLiveStatusUpdatesEnabled: Bool = false {
@@ -642,6 +796,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var canNavigateBack = false
     @Published public private(set) var canNavigateForward = false
     @Published public private(set) var isLaunchExperienceVisible = true
+    @Published public private(set) var commandPalettePrefillQuery = ""
+    @Published public private(set) var savedWorkspaceInspectorRestoreRequest: SavedWorkspaceInspectorRestoreRequest?
 
     private let kubeClient: KubernetesClient
     private let bookmarkManager: BookmarkManager
@@ -649,8 +805,10 @@ public final class RuneAppViewModel: ObservableObject {
     private let kubeConfigDiscoverer: KubeConfigDiscovering
     private let store: ResourceStore
     private let exporter: FileExporting
+    private let configuredExporter: ConfiguredExporting
     private let supportBundleBuilder: any SupportBundleBuilding
     private let contextPreferences: ContextPreferencesStoring
+    private let savedWorkspaceStore: SavedWorkspaceStoring
     private let kubeConfigImportValidator: KubeConfigImportValidator
     private let kubeConfigImportStore: KubeConfigImportStoring
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
@@ -659,6 +817,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let namespaceListPersistence: NamespaceListPersisting
     private let portForwardBrowserOpener: PortForwardBrowserOpening
     private let diagnostics: DiagnosticsRecorder
+    private let rbacCanICheck: RBACCanIChecking
     private let terminalShellCommand = ["sh"]
 
     private var cancellables: Set<AnyCancellable> = []
@@ -690,6 +849,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var liveStatusUpdatesTask: Task<Void, Never>?
     private var pendingTerminalOutputBySessionID: [String: String] = [:]
     private var pendingTerminalEscapeBySessionID: [String: String] = [:]
+    private var currentSavedWorkspaceInspectorState: SavedWorkspaceInspectorState?
     private var pendingForcedNamespaceRefresh = false
     /// Set during context switch with no explicit namespace so first metadata refresh can override stale carry-over namespace.
     private var pendingNamespaceRevalidationContextName: String?
@@ -748,8 +908,10 @@ public final class RuneAppViewModel: ObservableObject {
         kubeConfigDiscoverer: KubeConfigDiscovering = KubeConfigDiscoverer(),
         store: ResourceStore = ResourceStore(),
         exporter: FileExporting = SavePanelExporter(),
+        configuredExporter: ConfiguredExporting = ConfiguredFolderExporter(),
         supportBundleBuilder: any SupportBundleBuilding = JSONSupportBundleBuilder(),
         contextPreferences: ContextPreferencesStoring = UserDefaultsContextPreferencesStore(),
+        savedWorkspaceStore: SavedWorkspaceStoring = JSONSavedWorkspaceStore(),
         kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
         kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
         cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
@@ -757,7 +919,8 @@ public final class RuneAppViewModel: ObservableObject {
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
         namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
         portForwardBrowserOpener: PortForwardBrowserOpening = WorkspacePortForwardBrowserOpener(),
-        diagnostics: DiagnosticsRecorder = DiagnosticsRecorder()
+        diagnostics: DiagnosticsRecorder = DiagnosticsRecorder(),
+        rbacCanICheck: RBACCanIChecking? = nil
     ) {
         self.state = state
         self.kubeClient = kubeClient
@@ -766,8 +929,10 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeConfigDiscoverer = kubeConfigDiscoverer
         self.store = store
         self.exporter = exporter
+        self.configuredExporter = configuredExporter
         self.supportBundleBuilder = supportBundleBuilder
         self.contextPreferences = contextPreferences
+        self.savedWorkspaceStore = savedWorkspaceStore
         self.kubeConfigImportValidator = kubeConfigImportValidator
         self.kubeConfigImportStore = kubeConfigImportStore
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
@@ -776,11 +941,24 @@ public final class RuneAppViewModel: ObservableObject {
         self.namespaceListPersistence = namespaceListPersistence
         self.portForwardBrowserOpener = portForwardBrowserOpener
         self.diagnostics = diagnostics
+        self.rbacCanICheck = rbacCanICheck ?? { sources, context, namespace, verb, resource, apiGroup, subresource in
+            try await kubeClient.canI(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                verb: verb,
+                resource: resource,
+                apiGroup: apiGroup,
+                subresource: subresource
+            )
+        }
 
         self.state.setFavoriteContextNames(contextPreferences.loadFavoriteContextNames())
         self.state.setFavoriteResourceIDs(contextPreferences.loadFavoriteResourceIDs())
         self.state.setFavoriteNamespaceIDs(contextPreferences.loadFavoriteNamespaceIDs())
         self.state.setManualProductionContextIDs(contextPreferences.loadManualProductionContextIDs())
+        self.hiddenOperatorPrinterColumnFamilies = contextPreferences.loadHiddenOperatorPrinterColumnFamilies()
+        self.savedWorkspaces = savedWorkspaceStore.loadSavedWorkspaces()
 
         state.objectWillChange
             .sink { [weak self] _ in
@@ -887,6 +1065,11 @@ public final class RuneAppViewModel: ObservableObject {
         return favoriteSortedNamespaces(sortedNamespaceOptions(manual))
     }
 
+    public var manualNamespaceOptions: [String] {
+        guard state.selectedContext != nil else { return [] }
+        return favoriteSortedNamespaces(sortedNamespaceOptions(currentContextManualNamespaces()))
+    }
+
     public var podLogContainerOptions: [String] {
         state.selectedPod?.containerNames ?? []
     }
@@ -903,12 +1086,22 @@ public final class RuneAppViewModel: ObservableObject {
         overviewInsightsProjector.dependencyItems()
     }
 
+    public var overviewGitOpsRollupItems: [OverviewGitOpsRollupItem] {
+        overviewInsightsProjector.gitOpsRollupItems()
+    }
+
     private var overviewInsightsProjector: OverviewInsightsProjector {
         OverviewInsightsProjector(
             pods: state.overviewPods,
             deployments: state.deployments,
             services: state.services,
-            events: state.overviewEvents
+            ingresses: state.ingresses,
+            persistentVolumeClaims: state.persistentVolumeClaims,
+            persistentVolumes: state.persistentVolumes,
+            events: state.overviewEvents,
+            jobs: state.jobs,
+            nodes: state.nodes,
+            operatorResources: state.operatorResources
         )
     }
 
@@ -1057,6 +1250,140 @@ public final class RuneAppViewModel: ObservableObject {
     public func isFavoriteNamespace(_ namespace: String) -> Bool {
         guard let id = favoriteNamespaceID(namespace) else { return false }
         return state.isFavoriteNamespace(id: id)
+    }
+
+    public func saveCurrentWorkspace(named rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+
+        let snapshot = SavedWorkspaceSnapshot(
+            name: name,
+            contextName: state.selectedContext?.name,
+            namespace: state.selectedNamespace,
+            section: state.selectedSection,
+            workloadKind: state.selectedWorkloadKind,
+            isFavorite: existingSavedWorkspaceFavorite(named: name),
+            resourceKind: selectedResourceKindLabel(),
+            resourceName: selectedResourceName(),
+            resourceNamespace: selectedResourceNamespace(),
+            logPresetID: selectedLogPreset.rawValue,
+            logContainer: selectedLogContainer,
+            includePreviousLogs: includePreviousLogs,
+            isLogTailModeEnabled: isLogTailModeEnabled,
+            isSidebarVisible: isSidebarVisible,
+            isDetailPaneVisible: isDetailPaneVisible,
+            inspectorState: currentSavedWorkspaceInspectorState
+        )
+        savedWorkspaces = ([snapshot] + savedWorkspaces.filter {
+            $0.name.caseInsensitiveCompare(name) != .orderedSame
+        })
+        persistSavedWorkspaces()
+    }
+
+    public func deleteSavedWorkspace(_ workspace: SavedWorkspaceSnapshot) {
+        savedWorkspaces.removeAll { $0.id == workspace.id }
+        persistSavedWorkspaces()
+    }
+
+    public func toggleSavedWorkspaceFavorite(_ workspace: SavedWorkspaceSnapshot) {
+        savedWorkspaces = savedWorkspaces.map { current in
+            guard current.id == workspace.id else { return current }
+            return SavedWorkspaceSnapshot(
+                id: current.id,
+                name: current.name,
+                contextName: current.contextName,
+                namespace: current.namespace,
+                section: current.section,
+                workloadKind: current.workloadKind,
+                isFavorite: !current.isFavorite,
+                resourceKind: current.resourceKind,
+                resourceName: current.resourceName,
+                resourceNamespace: current.resourceNamespace,
+                logPresetID: current.logPresetID,
+                logContainer: current.logContainer,
+                includePreviousLogs: current.includePreviousLogs,
+                isLogTailModeEnabled: current.isLogTailModeEnabled,
+                isSidebarVisible: current.isSidebarVisible,
+                isDetailPaneVisible: current.isDetailPaneVisible,
+                inspectorState: current.inspectorState
+            )
+        }
+        persistSavedWorkspaces()
+    }
+
+    public func openSavedWorkspace(_ workspace: SavedWorkspaceSnapshot) {
+        prepareNavigationMutation(trackHistory: true)
+        if let contextName = workspace.contextName,
+           let context = state.contexts.first(where: { $0.name == contextName }) {
+            setContext(context, preferredNamespace: workspace.namespace, trackHistory: false, triggerReload: false)
+        }
+
+        if !workspace.namespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            setNamespace(workspace.namespace, trackHistory: false, triggerReload: false)
+        }
+
+        setSection(workspace.section, trackHistory: false, triggerReload: false)
+        setWorkloadKind(workspace.workloadKind, trackHistory: false, triggerReload: false)
+
+        if let context = state.selectedContext {
+            applyCachedSnapshot(context: context, namespace: state.selectedNamespace)
+            scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: true, debounced: false)
+        }
+        restoreSavedWorkspaceResourceSelection(workspace)
+        applySavedWorkspacePresentationState(workspace)
+        recordNavigationCheckpoint()
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            self?.restoreSavedWorkspaceResourceSelection(workspace)
+            self?.applySavedWorkspacePresentationState(workspace)
+        }
+    }
+
+    private func applySavedWorkspacePresentationState(_ workspace: SavedWorkspaceSnapshot) {
+        if let logPresetID = workspace.logPresetID,
+           let preset = PodLogPreset(rawValue: logPresetID) {
+            selectedLogPreset = preset
+        }
+        if let includePreviousLogs = workspace.includePreviousLogs {
+            self.includePreviousLogs = includePreviousLogs
+        }
+        if let logContainer = workspace.logContainer {
+            selectedLogContainer = logContainer
+        }
+        if let isSidebarVisible = workspace.isSidebarVisible {
+            self.isSidebarVisible = isSidebarVisible
+            UserDefaults.standard.runeLayoutSidebarVisible = isSidebarVisible
+        }
+        if let isDetailPaneVisible = workspace.isDetailPaneVisible {
+            self.isDetailPaneVisible = isDetailPaneVisible
+            UserDefaults.standard.runeLayoutDetailPaneVisible = isDetailPaneVisible
+        }
+        if let isLogTailModeEnabled = workspace.isLogTailModeEnabled {
+            self.isLogTailModeEnabled = isLogTailModeEnabled
+        }
+        if let inspectorState = workspace.inspectorState {
+            savedWorkspaceInspectorRestoreRequest = SavedWorkspaceInspectorRestoreRequest(inspectorState: inspectorState)
+        }
+    }
+
+    public func updateSavedWorkspaceInspectorState(_ inspectorState: SavedWorkspaceInspectorState) {
+        currentSavedWorkspaceInspectorState = inspectorState
+    }
+
+    private func persistSavedWorkspaces() {
+        let normalized = savedWorkspaces
+        savedWorkspaceStore.saveSavedWorkspaces(normalized)
+        savedWorkspaces = savedWorkspaceStore.loadSavedWorkspaces()
+        if savedWorkspaces.isEmpty, !normalized.isEmpty {
+            savedWorkspaces = normalized
+        }
+    }
+
+    private func existingSavedWorkspaceFavorite(named name: String) -> Bool {
+        savedWorkspaces.first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }?.isFavorite ?? false
     }
 
     private var selectedLogContainerName: String? {
@@ -1225,9 +1552,58 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var visibleOperatorResources: [OperatorResourceSummary] {
-        operatorResourceSorted(filtered(state.operatorResources) { resource in
-            "\(resource.family) \(resource.kind) \(resource.name) \(resource.namespace ?? "") \(resource.status) \(resource.message)"
+        operatorResourceSorted(filtered(focusedOperatorResources) { resource in
+            let printerColumnText = resource.printerColumns
+                .map { "\($0.title) \($0.value)" }
+                .joined(separator: " ")
+            return "\(resource.family) \(resource.kind) \(resource.name) \(resource.namespace ?? "") \(resource.status) \(resource.message) \(printerColumnText)"
         })
+    }
+
+    public var focusedOperatorResources: [OperatorResourceSummary] {
+        switch operatorResourceFocus {
+        case .all:
+            return state.operatorResources
+        case .gitOps:
+            return state.operatorResources.filter(Self.isGitOpsOperatorResource)
+        case .flux:
+            return state.operatorResources.filter(Self.isFluxOperatorResource)
+        case .argoCD:
+            return state.operatorResources.filter(Self.isArgoCDOperatorResource)
+        case .unhealthy:
+            return state.operatorResources.filter(Self.isUnhealthyGitOpsOperatorResource)
+        }
+    }
+
+    public var gitOpsOperatorResourceCount: Int {
+        state.operatorResources.filter(Self.isGitOpsOperatorResource).count
+    }
+
+    public var fluxOperatorResourceCount: Int {
+        state.operatorResources.filter(Self.isFluxOperatorResource).count
+    }
+
+    public var argoCDOperatorResourceCount: Int {
+        state.operatorResources.filter(Self.isArgoCDOperatorResource).count
+    }
+
+    public var unhealthyGitOpsOperatorResourceCount: Int {
+        state.operatorResources.filter(Self.isUnhealthyGitOpsOperatorResource).count
+    }
+
+    public var operatorResourceFocusSummary: String {
+        switch operatorResourceFocus {
+        case .all:
+            return "\(state.operatorResources.count) operator resource\(state.operatorResources.count == 1 ? "" : "s")"
+        case .gitOps:
+            return "\(gitOpsOperatorResourceCount) GitOps resource\(gitOpsOperatorResourceCount == 1 ? "" : "s") • Flux \(fluxOperatorResourceCount) • ArgoCD \(argoCDOperatorResourceCount) • Unhealthy \(unhealthyGitOpsOperatorResourceCount)"
+        case .flux:
+            return "\(fluxOperatorResourceCount) Flux resource\(fluxOperatorResourceCount == 1 ? "" : "s") • Unhealthy \(state.operatorResources.filter { Self.isFluxOperatorResource($0) && Self.isUnhealthyGitOpsOperatorResource($0) }.count)"
+        case .argoCD:
+            return "\(argoCDOperatorResourceCount) ArgoCD resource\(argoCDOperatorResourceCount == 1 ? "" : "s") • Unhealthy \(state.operatorResources.filter { Self.isArgoCDOperatorResource($0) && Self.isUnhealthyGitOpsOperatorResource($0) }.count)"
+        case .unhealthy:
+            return "\(unhealthyGitOpsOperatorResourceCount) unhealthy GitOps resource\(unhealthyGitOpsOperatorResourceCount == 1 ? "" : "s")"
+        }
     }
 
     public var pagedOperatorResources: [OperatorResourceSummary] {
@@ -1562,7 +1938,12 @@ public final class RuneAppViewModel: ObservableObject {
     public func importManualTokenKubeConfig() {
         Task {
             do {
-                let raw = try manualTokenKubeConfigYAML()
+                let raw = try ManualTokenKubeConfigBuilder.buildYAML(for: ManualTokenKubeConfigRequest(
+                    name: manualKubeConfigName,
+                    server: manualKubeConfigServer,
+                    namespace: manualKubeConfigNamespace,
+                    token: manualKubeConfigToken
+                ))
                 manualKubeConfigToken = ""
                 try await importKubeConfigPayloads([(raw: raw, sourceName: "manual-token-kubeconfig.yaml")], logLabel: "importManualTokenKubeConfig")
             } catch {
@@ -1614,74 +1995,6 @@ public final class RuneAppViewModel: ObservableObject {
                 self.state.setError(error)
             }
         }
-    }
-
-    private func manualTokenKubeConfigYAML() throws -> String {
-        let server = manualKubeConfigServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        let token = manualKubeConfigToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        let namespace = manualKubeConfigNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let components = URLComponents(string: server),
-              let scheme = components.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              components.host?.isEmpty == false else {
-            throw RuneError.invalidInput(message: "Manual cluster server must be a valid HTTP or HTTPS URL.")
-        }
-        guard !token.isEmpty else {
-            throw RuneError.invalidInput(message: "Manual cluster token is required.")
-        }
-
-        let fallbackName = components.host ?? "manual-cluster"
-        let contextName = normalizedManualKubeConfigName(from: manualKubeConfigName, fallback: fallbackName)
-        let clusterName = "\(contextName)-cluster"
-        let userName = "\(contextName)-user"
-        let namespaceLine = namespace.isEmpty ? "" : "\n    namespace: \(yamlQuoted(namespace))"
-
-        return """
-        apiVersion: v1
-        kind: Config
-        current-context: \(yamlQuoted(contextName))
-        clusters:
-        - name: \(yamlQuoted(clusterName))
-          cluster:
-            server: \(yamlQuoted(server))
-        contexts:
-        - name: \(yamlQuoted(contextName))
-          context:
-            cluster: \(yamlQuoted(clusterName))
-            user: \(yamlQuoted(userName))\(namespaceLine)
-        users:
-        - name: \(yamlQuoted(userName))
-          user:
-            token: \(yamlQuoted(token))
-        """
-    }
-
-    private func normalizedManualKubeConfigName(from raw: String, fallback: String) -> String {
-        let candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : raw
-        let normalized = candidate
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .map { character -> Character in
-                if character.isLetter || character.isNumber || character == "-" || character == "_" || character == "." {
-                    return character
-                }
-                return "-"
-            }
-            .reduce(into: "") { partial, character in
-                if character == "-", partial.last == "-" { return }
-                partial.append(character)
-            }
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
-        return normalized.isEmpty ? "manual-cluster" : normalized
-    }
-
-    private func yamlQuoted(_ value: String) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
-        guard let data = try? encoder.encode(value),
-              let encoded = String(data: data, encoding: .utf8) else {
-            return "\"\""
-        }
-        return encoded
     }
 
     private func kubeConfigFiles(in folder: URL) throws -> [URL] {
@@ -2217,12 +2530,19 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    public func presentCommandPalette() {
+    public func presentCommandPalette(prefilledQuery: String? = nil) {
+        commandPalettePrefillQuery = prefilledQuery ?? ""
         state.isCommandPalettePresented = true
     }
 
     public func dismissCommandPalette() {
         state.isCommandPalettePresented = false
+    }
+
+    public func consumeCommandPalettePrefillQuery() -> String {
+        let query = commandPalettePrefillQuery
+        commandPalettePrefillQuery = ""
+        return query
     }
 
     @discardableResult
@@ -2370,6 +2690,12 @@ public final class RuneAppViewModel: ObservableObject {
             operatorResourceSortColumn = column
             operatorResourceSortAscending = true
         }
+        operatorResourcePage = 0
+    }
+
+    public func setOperatorResourceFocus(_ focus: OperatorResourceFocus) {
+        guard operatorResourceFocus != focus else { return }
+        operatorResourceFocus = focus
         operatorResourcePage = 0
     }
 
@@ -2565,6 +2891,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func openOverviewSignal(_ item: OverviewSignalItem) {
+        if let operatorResourceID = item.operatorResourceID,
+           let resource = state.operatorResources.first(where: { $0.id == operatorResourceID }) {
+            setSection(.helm, trackHistory: false, triggerReload: false)
+            setOperatorResourceFocus(Self.isGitOpsOperatorResource(resource) ? .gitOps : .all)
+            selectOperatorResource(resource)
+            return
+        }
         guard let target = item.target else { return }
         openOverviewReference(target)
     }
@@ -2572,6 +2905,530 @@ public final class RuneAppViewModel: ObservableObject {
     public func openOverviewDependency(_ item: OverviewDependencyItem) {
         guard let target = item.primaryTarget else { return }
         openOverviewReference(target)
+    }
+
+    public func openOverviewGitOpsRollup(_ item: OverviewGitOpsRollupItem) {
+        setSection(.helm, trackHistory: false, triggerReload: false)
+        switch item.controller {
+        case .all:
+            setOperatorResourceFocus(.gitOps)
+        case .flux:
+            setOperatorResourceFocus(.flux)
+        case .argoCD:
+            setOperatorResourceFocus(.argoCD)
+        case .unhealthy:
+            setOperatorResourceFocus(.unhealthy)
+        }
+    }
+
+    public var selectedDeploymentRelatedPods: [PodSummary] {
+        guard let deployment = state.selectedDeployment else { return [] }
+        return relatedPods(for: deployment)
+    }
+
+    public var selectedDeploymentRelatedReplicaSets: [ClusterResourceSummary] {
+        guard let deployment = state.selectedDeployment else { return [] }
+        return relatedReplicaSets(for: deployment)
+    }
+
+    public var selectedDeploymentRelatedEvents: [EventSummary] {
+        guard let deployment = state.selectedDeployment else { return [] }
+        return relatedEvents(kind: .deployment, name: deployment.name, namespace: deployment.namespace)
+    }
+
+    public var selectedServiceRelatedPods: [PodSummary] {
+        guard let service = state.selectedService else { return [] }
+        return relatedPods(for: service)
+    }
+
+    public var selectedServiceRelatedEvents: [EventSummary] {
+        guard let service = state.selectedService else { return [] }
+        return relatedEvents(kind: .service, name: service.name, namespace: service.namespace)
+    }
+
+    public var selectedPodRelatedNode: ClusterResourceSummary? {
+        guard let pod = state.selectedPod,
+              let nodeName = pod.nodeName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !nodeName.isEmpty else {
+            return nil
+        }
+        return state.nodes.first { $0.name == nodeName }
+    }
+
+    public var selectedPodRelatedEvents: [EventSummary] {
+        guard let pod = state.selectedPod else { return [] }
+        return relatedEvents(kind: .pod, name: pod.name, namespace: pod.namespace)
+    }
+
+    public var selectedServiceRelatedIngresses: [ClusterResourceSummary] {
+        guard let service = state.selectedService else { return [] }
+        return state.ingresses.filter { ingress in
+            ingress.namespace == service.namespace
+                && Self.serviceNames(fromIngressSecondaryText: ingress.secondaryText).contains(service.name)
+        }
+    }
+
+    public var selectedStatefulSetRelatedPods: [PodSummary] {
+        guard let statefulSet = state.selectedStatefulSet else { return [] }
+        return relatedPods(forWorkloadResource: statefulSet)
+    }
+
+    public var selectedDaemonSetRelatedPods: [PodSummary] {
+        guard let daemonSet = state.selectedDaemonSet else { return [] }
+        return relatedPods(forWorkloadResource: daemonSet)
+    }
+
+    public var selectedJobRelatedPods: [PodSummary] {
+        guard let job = state.selectedJob else { return [] }
+        return relatedPods(forWorkloadResource: job)
+    }
+
+    public var selectedCronJobRelatedJobs: [ClusterResourceSummary] {
+        guard let cronJob = state.selectedCronJob else { return [] }
+        return state.jobs.filter { job in
+            job.namespace == cronJob.namespace
+                && (job.name == cronJob.name || job.name.hasPrefix(cronJob.name + "-"))
+        }
+    }
+
+    public var selectedHorizontalPodAutoscalerScaleTarget: HPAScaleTargetReference? {
+        guard let hpa = state.selectedHorizontalPodAutoscaler,
+              let target = Self.hpaScaleTarget(fromSecondaryText: hpa.secondaryText, namespace: hpa.namespace) else {
+            return nil
+        }
+
+        switch target.kind {
+        case .deployment:
+            let namespace = target.namespace ?? state.selectedNamespace
+            guard let deployment = state.deployments.first(where: { $0.name == target.name && $0.namespace == namespace }) else { return nil }
+            return HPAScaleTargetReference(
+                kind: .deployment,
+                namespace: deployment.namespace,
+                name: deployment.name,
+                subtitle: "\(deployment.namespace) · \(deployment.replicaText) replicas",
+                symbol: "square.stack.3d.up"
+            )
+        case .statefulSet:
+            return statefulWorkloadTarget(target, symbol: "externaldrive.connected.to.line.below")
+        case .daemonSet:
+            return statefulWorkloadTarget(target, symbol: "server.rack")
+        case .replicaSet:
+            return statefulWorkloadTarget(target, symbol: "rectangle.stack")
+        default:
+            return nil
+        }
+    }
+
+    public var selectedNodeRelatedPods: [PodSummary] {
+        guard let node = state.selectedNode else { return [] }
+        return state.pods.filter { pod in
+            pod.nodeName == node.name
+        }
+    }
+
+    public var selectedIngressRelatedServices: [ServiceSummary] {
+        guard let ingress = state.selectedIngress else { return [] }
+        let names = Set(Self.serviceNames(fromIngressSecondaryText: ingress.secondaryText))
+        guard !names.isEmpty else { return [] }
+        return state.services.filter { service in
+            service.namespace == ingress.namespace && names.contains(service.name)
+        }
+    }
+
+    public var selectedReplicaSetRelatedPods: [PodSummary] {
+        guard let replicaSet = state.selectedReplicaSet else { return [] }
+        return relatedPods(for: replicaSet)
+    }
+
+    public var selectedPersistentVolumeClaimRelatedPersistentVolume: ClusterResourceSummary? {
+        guard let pvc = state.selectedPersistentVolumeClaim,
+              let volumeName = Self.persistentVolumeName(fromPVCSecondaryText: pvc.secondaryText) else {
+            return nil
+        }
+        return state.persistentVolumes.first { $0.name == volumeName }
+    }
+
+    public var selectedPersistentVolumeRelatedPersistentVolumeClaims: [ClusterResourceSummary] {
+        guard let persistentVolume = state.selectedPersistentVolume else { return [] }
+        return state.persistentVolumeClaims.filter { pvc in
+            Self.persistentVolumeName(fromPVCSecondaryText: pvc.secondaryText) == persistentVolume.name
+        }
+    }
+
+    public var selectedRBACBindingReferencedRole: ClusterResourceSummary? {
+        guard let binding = state.selectedRBACResource,
+              let reference = Self.rbacRoleReference(fromPrimaryText: binding.primaryText, bindingKind: binding.kind) else {
+            return nil
+        }
+
+        switch reference.kind {
+        case .role:
+            return state.rbacRoles.first { role in
+                role.name == reference.name && role.namespace == binding.namespace
+            }
+        case .clusterRole:
+            return state.rbacClusterRoles.first { role in
+                role.name == reference.name
+            }
+        default:
+            return nil
+        }
+    }
+
+    public var selectedRBACRoleRelatedBindings: [ClusterResourceSummary] {
+        guard let role = state.selectedRBACResource,
+              role.kind == .role || role.kind == .clusterRole else {
+            return []
+        }
+        let bindings = state.rbacRoleBindings + state.rbacClusterRoleBindings
+        return bindings.filter { binding in
+            guard let reference = Self.rbacRoleReference(fromPrimaryText: binding.primaryText, bindingKind: binding.kind),
+                  reference.kind == role.kind,
+                  reference.name == role.name else {
+                return false
+            }
+            if role.kind == .role {
+                return binding.namespace == role.namespace
+            }
+            return true
+        }
+    }
+
+    public func relatedEvents(for resource: ClusterResourceSummary) -> [EventSummary] {
+        relatedEvents(kind: resource.kind, name: resource.name, namespace: resource.namespace)
+    }
+
+    public func relatedEvents(kind: KubeResourceKind, name: String, namespace: String?) -> [EventSummary] {
+        uniqueEvents(state.events + state.overviewEvents).filter { event in
+            guard event.objectName == name else { return false }
+            if let eventKind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines), !eventKind.isEmpty {
+                guard eventKind.caseInsensitiveCompare(kind.singularTypeName) == .orderedSame else { return false }
+            }
+            guard kind.isNamespaced, let namespace, !namespace.isEmpty else { return true }
+            guard let eventNamespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines), !eventNamespace.isEmpty else {
+                return true
+            }
+            return eventNamespace == namespace
+        }
+    }
+
+    public func openSelectedDeploymentPods() {
+        guard let pod = selectedDeploymentRelatedPods.first else { return }
+        openDeploymentRelatedPod(pod)
+    }
+
+    public func openDeploymentRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openPodRelatedNode(_ node: ClusterResourceSummary) {
+        setSection(.storage, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.node, trackHistory: false, triggerReload: false)
+        selectNode(node, trackHistory: true)
+    }
+
+    public func openRelatedEvent(_ event: EventSummary) {
+        setSection(.events, trackHistory: false, triggerReload: false)
+        selectEvent(event, trackHistory: true)
+    }
+
+    public func openDeploymentRelatedReplicaSet(_ replicaSet: ClusterResourceSummary) {
+        setSection(.workloads, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
+        selectReplicaSet(replicaSet, trackHistory: true)
+    }
+
+    public func openSelectedServicePods() {
+        guard let pod = selectedServiceRelatedPods.first else { return }
+        openServiceRelatedPod(pod)
+    }
+
+    public func openServiceRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openServiceRelatedIngress(_ ingress: ClusterResourceSummary) {
+        setSection(.networking, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
+        selectIngress(ingress, trackHistory: true)
+    }
+
+    public func openStatefulSetRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openDaemonSetRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openJobRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openCronJobRelatedJob(_ job: ClusterResourceSummary) {
+        setSection(.workloads, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.job, trackHistory: false, triggerReload: false)
+        selectJob(job, trackHistory: true)
+    }
+
+    public func openHorizontalPodAutoscalerScaleTarget(_ target: HPAScaleTargetReference) {
+        setSection(.workloads, trackHistory: false, triggerReload: false)
+        setWorkloadKind(target.kind, trackHistory: false, triggerReload: false)
+        switch target.kind {
+        case .deployment:
+            let namespace = target.namespace ?? state.selectedNamespace
+            selectDeployment(
+                state.deployments.first { $0.name == target.name && $0.namespace == namespace },
+                trackHistory: true
+            )
+        case .statefulSet:
+            selectStatefulSet(matchingTarget: target)
+        case .daemonSet:
+            selectDaemonSet(matchingTarget: target)
+        case .replicaSet:
+            selectReplicaSet(matchingTarget: target)
+        default:
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func openNodeRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openIngressRelatedService(_ service: ServiceSummary) {
+        setSection(.networking, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.service, trackHistory: false, triggerReload: false)
+        selectService(service, trackHistory: true)
+    }
+
+    public func openReplicaSetRelatedPod(_ pod: PodSummary) {
+        openPodRelationship(pod)
+    }
+
+    public func openPersistentVolumeClaimRelatedPersistentVolume(_ persistentVolume: ClusterResourceSummary) {
+        setSection(.storage, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
+        selectPersistentVolume(persistentVolume, trackHistory: true)
+    }
+
+    public func openPersistentVolumeRelatedPersistentVolumeClaim(_ persistentVolumeClaim: ClusterResourceSummary) {
+        setSection(.storage, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
+        selectPersistentVolumeClaim(persistentVolumeClaim, trackHistory: true)
+    }
+
+    public func openRBACBindingReferencedRole(_ role: ClusterResourceSummary) {
+        setSection(.rbac, trackHistory: false, triggerReload: false)
+        setWorkloadKind(role.kind, trackHistory: false, triggerReload: false)
+        selectRBACResource(role, trackHistory: true)
+    }
+
+    public func openRBACRoleRelatedBinding(_ binding: ClusterResourceSummary) {
+        setSection(.rbac, trackHistory: false, triggerReload: false)
+        setWorkloadKind(binding.kind, trackHistory: false, triggerReload: false)
+        selectRBACResource(binding, trackHistory: true)
+    }
+
+    private func openPodRelationship(_ pod: PodSummary) {
+        setSection(.workloads, trackHistory: false, triggerReload: false)
+        setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
+        selectPod(pod, trackHistory: true)
+    }
+
+    private func relatedPods(for deployment: DeploymentSummary) -> [PodSummary] {
+        let replicaSetPods = relatedReplicaSets(for: deployment).flatMap(relatedPods(for:))
+        let prefixPods = state.pods.filter { pod in
+            pod.namespace == deployment.namespace
+                && (pod.name == deployment.name || pod.name.hasPrefix(deployment.name + "-"))
+        }
+        return uniquePods(replicaSetPods + prefixPods)
+    }
+
+    private func relatedReplicaSets(for deployment: DeploymentSummary) -> [ClusterResourceSummary] {
+        state.replicaSets.filter { replicaSet in
+            replicaSet.namespace == deployment.namespace
+                && (
+                    replicaSet.name == deployment.name
+                    || replicaSet.name.hasPrefix(deployment.name + "-")
+                    || replicaSet.secondaryText.localizedCaseInsensitiveContains("Deployment/\(deployment.name)")
+                )
+        }
+    }
+
+    private func relatedPods(for replicaSet: ClusterResourceSummary) -> [PodSummary] {
+        relatedPods(forWorkloadResource: replicaSet)
+    }
+
+    private func relatedPods(forWorkloadResource resource: ClusterResourceSummary) -> [PodSummary] {
+        state.pods.filter { pod in
+            pod.namespace == resource.namespace
+                && (pod.name == resource.name || pod.name.hasPrefix(resource.name + "-"))
+        }
+    }
+
+    private func relatedPods(for service: ServiceSummary) -> [PodSummary] {
+        let deploymentMatches = state.deployments.filter { deployment in
+            deployment.namespace == service.namespace
+                && (deployment.name == service.name || Self.selectorsOverlap(service.selector, deployment.selector))
+        }
+        let deploymentPods = deploymentMatches.flatMap(relatedPods(for:))
+        if !deploymentPods.isEmpty {
+            return uniquePods(deploymentPods)
+        }
+        let prefixPods = state.pods.filter { pod in
+            pod.namespace == service.namespace
+                && (pod.name == service.name || pod.name.hasPrefix(service.name + "-"))
+        }
+        return uniquePods(prefixPods)
+    }
+
+    private func statefulWorkloadTarget(_ target: (kind: KubeResourceKind, namespace: String?, name: String), symbol: String) -> HPAScaleTargetReference? {
+        let resources: [ClusterResourceSummary]
+        switch target.kind {
+        case .statefulSet:
+            resources = state.statefulSets
+        case .daemonSet:
+            resources = state.daemonSets
+        case .replicaSet:
+            resources = state.replicaSets
+        default:
+            return nil
+        }
+        guard let resource = resources.first(where: { $0.name == target.name && $0.namespace == target.namespace }) else { return nil }
+        return HPAScaleTargetReference(
+            kind: resource.kind,
+            namespace: resource.namespace,
+            name: resource.name,
+            subtitle: "\(resource.namespace ?? state.selectedNamespace) · \(resource.primaryText)",
+            symbol: symbol
+        )
+    }
+
+    private func selectStatefulSet(matchingTarget target: HPAScaleTargetReference) {
+        selectStatefulSet(
+            state.statefulSets.first { $0.name == target.name && $0.namespace == target.namespace },
+            trackHistory: true
+        )
+    }
+
+    private func selectDaemonSet(matchingTarget target: HPAScaleTargetReference) {
+        selectDaemonSet(
+            state.daemonSets.first { $0.name == target.name && $0.namespace == target.namespace },
+            trackHistory: true
+        )
+    }
+
+    private func selectReplicaSet(matchingTarget target: HPAScaleTargetReference) {
+        selectReplicaSet(
+            state.replicaSets.first { $0.name == target.name && $0.namespace == target.namespace },
+            trackHistory: true
+        )
+    }
+
+    private func uniquePods(_ pods: [PodSummary]) -> [PodSummary] {
+        var seen = Set<String>()
+        return pods.filter { pod in
+            seen.insert(pod.id).inserted
+        }
+    }
+
+    private func uniqueEvents(_ events: [EventSummary]) -> [EventSummary] {
+        var seen = Set<String>()
+        return events.filter { event in
+            seen.insert(event.id).inserted
+        }
+    }
+
+    private static func selectorsOverlap(_ lhs: [String: String]?, _ rhs: [String: String]?) -> Bool {
+        guard let lhs, let rhs, !lhs.isEmpty, !rhs.isEmpty else { return false }
+        return lhs.contains { key, value in
+            rhs[key]?.caseInsensitiveCompare(value) == .orderedSame
+        }
+    }
+
+    private static func serviceNames(fromIngressSecondaryText text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = trimmed.lowercased()
+        guard lowercased.hasPrefix("service ") || lowercased.hasPrefix("services ") else { return [] }
+
+        let prefixLength = lowercased.hasPrefix("services ") ? "services ".count : "service ".count
+        let start = trimmed.index(trimmed.startIndex, offsetBy: prefixLength)
+        return trimmed[start...]
+            .split(separator: ",")
+            .map { raw in
+                raw
+                    .split(separator: ":")
+                    .first
+                    .map(String.init)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func persistentVolumeName(fromPVCSecondaryText text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("pv ") else { return nil }
+        let start = trimmed.index(trimmed.startIndex, offsetBy: "PV ".count)
+        let name = trimmed[start...]
+            .split(separator: "·")
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let name, !name.isEmpty else { return nil }
+        return name
+    }
+
+    private static func hpaScaleTarget(fromSecondaryText text: String, namespace: String?) -> (kind: KubeResourceKind, namespace: String?, name: String)? {
+        let parts = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/", maxSplits: 1)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard parts.count == 2, !parts[1].isEmpty else { return nil }
+
+        let kind: KubeResourceKind?
+        switch parts[0].lowercased() {
+        case "deployment", "deployments":
+            kind = .deployment
+        case "statefulset", "statefulsets":
+            kind = .statefulSet
+        case "daemonset", "daemonsets":
+            kind = .daemonSet
+        case "replicaset", "replicasets":
+            kind = .replicaSet
+        default:
+            kind = nil
+        }
+        guard let kind else { return nil }
+        return (kind, namespace, parts[1])
+    }
+
+    private static func rbacRoleReference(fromPrimaryText text: String, bindingKind: KubeResourceKind) -> (kind: KubeResourceKind, name: String)? {
+        guard bindingKind == .roleBinding || bindingKind == .clusterRoleBinding else { return nil }
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "→", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let parts = normalized
+            .split(separator: "/", maxSplits: 1)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if parts.count == 2 {
+            switch parts[0].lowercased() {
+            case "role":
+                return (.role, parts[1])
+            case "clusterrole":
+                return (.clusterRole, parts[1])
+            default:
+                return nil
+            }
+        }
+
+        if bindingKind == .clusterRoleBinding {
+            return (.clusterRole, normalized)
+        }
+        return (.role, normalized)
     }
 
     private func openOverviewReference(_ reference: OverviewResourceReference) {
@@ -2613,6 +3470,24 @@ public final class RuneAppViewModel: ObservableObject {
             } else {
                 openOverviewModule(.events)
             }
+        case .persistentVolumeClaim:
+            setSection(.storage, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
+            if let persistentVolumeClaim = state.persistentVolumeClaims.first(where: { $0.name == reference.name && (namespace.isEmpty || $0.namespace == namespace) }) {
+                selectPersistentVolumeClaim(persistentVolumeClaim, trackHistory: true)
+            } else {
+                refreshCurrentView()
+                recordNavigationCheckpoint()
+            }
+        case .persistentVolume:
+            setSection(.storage, trackHistory: false, triggerReload: false)
+            setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
+            if let persistentVolume = state.persistentVolumes.first(where: { $0.name == reference.name }) {
+                selectPersistentVolume(persistentVolume, trackHistory: true)
+            } else {
+                refreshCurrentView()
+                recordNavigationCheckpoint()
+            }
         default:
             openOverviewModule(.pods)
         }
@@ -2644,6 +3519,13 @@ public final class RuneAppViewModel: ObservableObject {
     private func navigateToEventSource(_ event: EventSummary) {
         let kind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let name = event.objectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let namespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        func matchesEventObject(candidateName: String, candidateNamespace: String?, requireNamespace: Bool = true) -> Bool {
+            guard candidateName == name else { return false }
+            guard requireNamespace, !namespace.isEmpty else { return true }
+            return candidateNamespace == namespace
+        }
 
         func showEventDetail() {
             setSection(.events, trackHistory: false, triggerReload: false)
@@ -2652,7 +3534,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         switch kind {
         case "pod":
-            if let pod = state.pods.first(where: { $0.name == name }) {
+            if let pod = state.pods.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2661,7 +3543,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "deployment":
-            if let deployment = state.deployments.first(where: { $0.name == name }) {
+            if let deployment = state.deployments.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.deployment, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2670,7 +3552,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "statefulset":
-            if let resource = state.statefulSets.first(where: { $0.name == name }) {
+            if let resource = state.statefulSets.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.statefulSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2679,7 +3561,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "daemonset":
-            if let resource = state.daemonSets.first(where: { $0.name == name }) {
+            if let resource = state.daemonSets.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.daemonSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2688,7 +3570,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "job":
-            if let resource = state.jobs.first(where: { $0.name == name }) {
+            if let resource = state.jobs.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.job, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2697,7 +3579,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "cronjob":
-            if let resource = state.cronJobs.first(where: { $0.name == name }) {
+            if let resource = state.cronJobs.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.cronJob, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2706,7 +3588,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "replicaset":
-            if let resource = state.replicaSets.first(where: { $0.name == name }) {
+            if let resource = state.replicaSets.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.replicaSet, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2715,7 +3597,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "service":
-            if let service = state.services.first(where: { $0.name == name }) {
+            if let service = state.services.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.service, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2724,7 +3606,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "ingress":
-            if let resource = state.ingresses.first(where: { $0.name == name }) {
+            if let resource = state.ingresses.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2733,7 +3615,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "configmap":
-            if let resource = state.configMaps.first(where: { $0.name == name }) {
+            if let resource = state.configMaps.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.config, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2742,7 +3624,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "secret":
-            if let resource = state.secrets.first(where: { $0.name == name }) {
+            if let resource = state.secrets.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.config, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.secret, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2751,7 +3633,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "node":
-            if let resource = state.nodes.first(where: { $0.name == name }) {
+            if let resource = state.nodes.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace, requireNamespace: false) }) {
                 setSection(.storage, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.node, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2760,7 +3642,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolumeclaim":
-            if let resource = state.persistentVolumeClaims.first(where: { $0.name == name }) {
+            if let resource = state.persistentVolumeClaims.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.storage, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.persistentVolumeClaim, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2769,7 +3651,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "persistentvolume":
-            if let resource = state.persistentVolumes.first(where: { $0.name == name }) {
+            if let resource = state.persistentVolumes.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace, requireNamespace: false) }) {
                 setSection(.storage, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.persistentVolume, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2778,7 +3660,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "storageclass":
-            if let resource = state.storageClasses.first(where: { $0.name == name }) {
+            if let resource = state.storageClasses.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace, requireNamespace: false) }) {
                 setSection(.storage, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.storageClass, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2787,7 +3669,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "horizontalpodautoscaler":
-            if let resource = state.horizontalPodAutoscalers.first(where: { $0.name == name }) {
+            if let resource = state.horizontalPodAutoscalers.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.horizontalPodAutoscaler, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2796,7 +3678,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "networkpolicy":
-            if let resource = state.networkPolicies.first(where: { $0.name == name }) {
+            if let resource = state.networkPolicies.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2805,7 +3687,7 @@ public final class RuneAppViewModel: ObservableObject {
                 deferFetchOrShowEventDetail(event: event, showEventDetail: showEventDetail)
             }
         case "":
-            if let pod = state.pods.first(where: { $0.name == name }) {
+            if let pod = state.pods.first(where: { matchesEventObject(candidateName: $0.name, candidateNamespace: $0.namespace) }) {
                 setSection(.workloads, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.pod, trackHistory: false, triggerReload: false)
                 navigateFromEventFetchAttempts = 0
@@ -2863,6 +3745,28 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func isFavoriteOperatorResource(_ resource: OperatorResourceSummary) -> Bool {
         state.isFavoriteResource(id: favoriteOperatorResourceID(resource))
+    }
+
+    public var operatorPrinterColumnFamilyForCustomization: String? {
+        if let selected = state.selectedOperatorResource {
+            return selected.family
+        }
+        return pagedOperatorResources.first?.family ?? visibleOperatorResources.first?.family
+    }
+
+    public var showsOperatorPrinterColumnsForCurrentFamily: Bool {
+        guard let family = operatorPrinterColumnFamilyForCustomization else { return true }
+        return !hiddenOperatorPrinterColumnFamilies.contains(family)
+    }
+
+    public func toggleOperatorPrinterColumnsForCurrentFamily() {
+        guard let family = operatorPrinterColumnFamilyForCustomization else { return }
+        if hiddenOperatorPrinterColumnFamilies.contains(family) {
+            hiddenOperatorPrinterColumnFamilies.remove(family)
+        } else {
+            hiddenOperatorPrinterColumnFamilies.insert(family)
+        }
+        contextPreferences.saveHiddenOperatorPrinterColumnFamilies(hiddenOperatorPrinterColumnFamilies)
     }
 
     public func pageOperatorResourcesBackward() {
@@ -3224,6 +4128,7 @@ public final class RuneAppViewModel: ObservableObject {
         state.setSelectedRBACResource(resource)
         if let resource {
             state.selectedWorkloadKind = resource.kind
+            useSelectedRBACResourceForCanI()
         }
         loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
@@ -3406,49 +4311,91 @@ public final class RuneAppViewModel: ObservableObject {
     public func saveCurrentLogs() {
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
-            switch state.selectedWorkloadKind {
-            case .pod:
-                guard let pod = state.selectedPod else { return }
-                _ = try exporter.save(
-                    data: Data(state.podLogs.utf8),
-                    suggestedName: "pod-\(pod.name)-logs-\(timestamp).log",
-                    allowedFileTypes: ["log", "txt"]
-                )
-            case .service:
-                guard let service = state.selectedService else { return }
-                _ = try exporter.save(
-                    data: Data(state.unifiedServiceLogs.utf8),
-                    suggestedName: "service-\(service.name)-unified-logs-\(timestamp).log",
-                    allowedFileTypes: ["log", "txt"]
-                )
-            case .deployment:
-                guard let deployment = state.selectedDeployment else { return }
-                _ = try exporter.save(
-                    data: Data(state.unifiedServiceLogs.utf8),
-                    suggestedName: "deployment-\(deployment.name)-unified-logs-\(timestamp).log",
-                    allowedFileTypes: ["log", "txt"]
-                )
-            case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-                return
-            }
+            guard let payload = currentLogsExportPayload(timestamp: timestamp) else { return }
+            _ = try exporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
+            )
         } catch {
             setExportErrorUnlessCancelled(error)
         }
     }
 
-    public func saveActiveTerminalTranscript() {
-        guard let session = state.terminalSession,
-              !session.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-
+    public func saveCurrentLogsToExportFolder(openAfterSave: Bool) {
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-            let data = Self.terminalTranscriptData(session: session, generatedAt: timestamp)
-            _ = try exporter.save(
-                data: data,
-                suggestedName: "terminal-\(Self.filenameComponent(session.namespace))-\(Self.filenameComponent(session.podName))-transcript-\(timestamp).log",
+            guard let payload = currentLogsExportPayload(timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .plainText,
+                openAfterSave: openAfterSave
+            )
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    private struct LogExportPayload {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+    }
+
+    private func currentLogsExportPayload(timestamp: String) -> LogExportPayload? {
+        switch state.selectedWorkloadKind {
+        case .pod:
+            guard let pod = state.selectedPod else { return nil }
+            return LogExportPayload(
+                data: Data(state.podLogs.utf8),
+                suggestedName: "pod-\(pod.name)-logs-\(timestamp).log",
                 allowedFileTypes: ["log", "txt"]
+            )
+        case .service:
+            guard let service = state.selectedService else { return nil }
+            return LogExportPayload(
+                data: Data(state.unifiedServiceLogs.utf8),
+                suggestedName: "service-\(service.name)-unified-logs-\(timestamp).log",
+                allowedFileTypes: ["log", "txt"]
+            )
+        case .deployment:
+            guard let deployment = state.selectedDeployment else { return nil }
+            return LogExportPayload(
+                data: Data(state.unifiedServiceLogs.utf8),
+                suggestedName: "deployment-\(deployment.name)-unified-logs-\(timestamp).log",
+                allowedFileTypes: ["log", "txt"]
+            )
+        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return nil
+        }
+    }
+
+    public func saveActiveTerminalTranscript() {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = activeTerminalTranscriptExportPayload(timestamp: timestamp) else { return }
+            _ = try exporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
+            )
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    public func saveActiveTerminalTranscriptToExportFolder(openAfterSave: Bool) {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = activeTerminalTranscriptExportPayload(timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .plainText,
+                openAfterSave: openAfterSave
             )
         } catch {
             setExportErrorUnlessCancelled(error)
@@ -3456,22 +4403,58 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func saveAllTerminalTranscriptsZip() {
-        let sessions = state.terminalSessions.filter {
-            !$0.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        guard !sessions.isEmpty else { return }
-
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-            let data = try Self.terminalTranscriptArchiveData(sessions: sessions, generatedAt: timestamp)
+            guard let payload = try allTerminalTranscriptsZipExportPayload(timestamp: timestamp) else { return }
             _ = try exporter.save(
-                data: data,
-                suggestedName: "terminal-transcripts-\(timestamp).zip",
-                allowedFileTypes: ["zip"]
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
             )
         } catch {
             setExportErrorUnlessCancelled(error)
         }
+    }
+
+    public func saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: Bool) {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = try allTerminalTranscriptsZipExportPayload(timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .archive,
+                openAfterSave: openAfterSave
+            )
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    private func activeTerminalTranscriptExportPayload(timestamp: String) -> LogExportPayload? {
+        guard let session = state.terminalSession,
+              !session.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+
+        return LogExportPayload(
+            data: Self.terminalTranscriptData(session: session, generatedAt: timestamp),
+            suggestedName: "terminal-\(Self.filenameComponent(session.namespace))-\(Self.filenameComponent(session.podName))-transcript-\(timestamp).log",
+            allowedFileTypes: ["log", "txt"]
+        )
+    }
+
+    private func allTerminalTranscriptsZipExportPayload(timestamp: String) throws -> LogExportPayload? {
+        let sessions = state.terminalSessions.filter {
+            !$0.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !sessions.isEmpty else { return nil }
+
+        return LogExportPayload(
+            data: try Self.terminalTranscriptArchiveData(sessions: sessions, generatedAt: timestamp),
+            suggestedName: "terminal-transcripts-\(timestamp).zip",
+            allowedFileTypes: ["zip"]
+        )
     }
 
     nonisolated public static func terminalTranscriptArchiveData(
@@ -3540,92 +4523,143 @@ public final class RuneAppViewModel: ObservableObject {
         saveCurrentLogsZip(limitToSelectedPods: true)
     }
 
+    public func saveCurrentLogsZipToExportFolder(openAfterSave: Bool) {
+        saveCurrentLogsZip(limitToSelectedPods: true, configuredOpenAfterSave: openAfterSave)
+    }
+
     public func saveAllPodsLogsZip() {
         saveCurrentLogsZip(limitToSelectedPods: false)
+    }
+
+    public func saveAllPodsLogsZipToExportFolder(openAfterSave: Bool) {
+        saveCurrentLogsZip(limitToSelectedPods: false, configuredOpenAfterSave: openAfterSave)
     }
 
     public func saveVisibleLogsZip(visibleText: String) {
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-            switch state.selectedWorkloadKind {
-            case .pod:
-                guard let pod = state.selectedPod else { return }
-                let data = try LogArchiveBuilder.buildZip(
-                    mergedText: visibleText,
-                    podNames: [pod.name],
-                    baseName: "pod-\(pod.name)-visible-logs",
-                    generatedAt: timestamp,
-                    metadata: logArchiveMetadata(
-                        context: state.selectedContext,
-                        namespace: state.selectedNamespace,
-                        workloadKind: "pod",
-                        workloadName: pod.name,
-                        selectedPods: [pod.name],
-                        scope: "visible",
-                        generatedAt: timestamp,
-                        previous: includePreviousLogs
-                    )
-                )
-                _ = try exporter.save(
-                    data: data,
-                    suggestedName: "pod-\(pod.name)-visible-logs-\(timestamp).zip",
-                    allowedFileTypes: ["zip"]
-                )
-            case .service:
-                guard let service = state.selectedService else { return }
-                let data = try LogArchiveBuilder.buildZip(
-                    mergedText: visibleText,
-                    podNames: state.unifiedServiceLogPods,
-                    baseName: "service-\(service.name)-visible-logs",
-                    generatedAt: timestamp,
-                    metadata: logArchiveMetadata(
-                        context: state.selectedContext,
-                        namespace: state.selectedNamespace,
-                        workloadKind: "service",
-                        workloadName: service.name,
-                        selectedPods: state.unifiedServiceLogPods,
-                        scope: "visible",
-                        generatedAt: timestamp,
-                        previous: includePreviousLogs
-                    )
-                )
-                _ = try exporter.save(
-                    data: data,
-                    suggestedName: "service-\(service.name)-visible-logs-\(timestamp).zip",
-                    allowedFileTypes: ["zip"]
-                )
-            case .deployment:
-                guard let deployment = state.selectedDeployment else { return }
-                let data = try LogArchiveBuilder.buildZip(
-                    mergedText: visibleText,
-                    podNames: state.unifiedServiceLogPods,
-                    baseName: "deployment-\(deployment.name)-visible-logs",
-                    generatedAt: timestamp,
-                    metadata: logArchiveMetadata(
-                        context: state.selectedContext,
-                        namespace: state.selectedNamespace,
-                        workloadKind: "deployment",
-                        workloadName: deployment.name,
-                        selectedPods: state.unifiedServiceLogPods,
-                        scope: "visible",
-                        generatedAt: timestamp,
-                        previous: includePreviousLogs
-                    )
-                )
-                _ = try exporter.save(
-                    data: data,
-                    suggestedName: "deployment-\(deployment.name)-visible-logs-\(timestamp).zip",
-                    allowedFileTypes: ["zip"]
-                )
-            case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-                return
-            }
+            guard let payload = try visibleLogsZipExportPayload(visibleText: visibleText, timestamp: timestamp) else { return }
+            _ = try exporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
+            )
         } catch {
             setExportErrorUnlessCancelled(error)
         }
     }
 
-    private func saveCurrentLogsZip(limitToSelectedPods: Bool) {
+    public func saveVisibleLogsZipToExportFolder(visibleText: String, openAfterSave: Bool) {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = try visibleLogsZipExportPayload(visibleText: visibleText, timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .archive,
+                openAfterSave: openAfterSave
+            )
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    private func visibleLogsZipExportPayload(visibleText: String, timestamp: String) throws -> LogExportPayload? {
+        switch state.selectedWorkloadKind {
+        case .pod:
+            guard let pod = state.selectedPod else { return nil }
+            let data = try LogArchiveBuilder.buildZip(
+                mergedText: visibleText,
+                podNames: [pod.name],
+                baseName: "pod-\(pod.name)-visible-logs",
+                generatedAt: timestamp,
+                metadata: logArchiveMetadata(
+                    context: state.selectedContext,
+                    namespace: state.selectedNamespace,
+                    workloadKind: "pod",
+                    workloadName: pod.name,
+                    selectedPods: [pod.name],
+                    scope: "visible",
+                    generatedAt: timestamp,
+                    previous: includePreviousLogs
+                )
+            )
+            return LogExportPayload(
+                data: data,
+                suggestedName: "pod-\(pod.name)-visible-logs-\(timestamp).zip",
+                allowedFileTypes: ["zip"]
+            )
+        case .service:
+            guard let service = state.selectedService else { return nil }
+            let data = try LogArchiveBuilder.buildZip(
+                mergedText: visibleText,
+                podNames: state.unifiedServiceLogPods,
+                baseName: "service-\(service.name)-visible-logs",
+                generatedAt: timestamp,
+                metadata: logArchiveMetadata(
+                    context: state.selectedContext,
+                    namespace: state.selectedNamespace,
+                    workloadKind: "service",
+                    workloadName: service.name,
+                    selectedPods: state.unifiedServiceLogPods,
+                    scope: "visible",
+                    generatedAt: timestamp,
+                    previous: includePreviousLogs
+                )
+            )
+            return LogExportPayload(
+                data: data,
+                suggestedName: "service-\(service.name)-visible-logs-\(timestamp).zip",
+                allowedFileTypes: ["zip"]
+            )
+        case .deployment:
+            guard let deployment = state.selectedDeployment else { return nil }
+            let data = try LogArchiveBuilder.buildZip(
+                mergedText: visibleText,
+                podNames: state.unifiedServiceLogPods,
+                baseName: "deployment-\(deployment.name)-visible-logs",
+                generatedAt: timestamp,
+                metadata: logArchiveMetadata(
+                    context: state.selectedContext,
+                    namespace: state.selectedNamespace,
+                    workloadKind: "deployment",
+                    workloadName: deployment.name,
+                    selectedPods: state.unifiedServiceLogPods,
+                    scope: "visible",
+                    generatedAt: timestamp,
+                    previous: includePreviousLogs
+                )
+            )
+            return LogExportPayload(
+                data: data,
+                suggestedName: "deployment-\(deployment.name)-visible-logs-\(timestamp).zip",
+                allowedFileTypes: ["zip"]
+            )
+        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return nil
+        }
+    }
+
+    private func saveArchivePayload(_ payload: LogExportPayload, configuredOpenAfterSave: Bool?) throws {
+        if let configuredOpenAfterSave {
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .archive,
+                openAfterSave: configuredOpenAfterSave
+            )
+        } else {
+            _ = try exporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
+            )
+        }
+    }
+
+    private func saveCurrentLogsZip(limitToSelectedPods: Bool, configuredOpenAfterSave: Bool? = nil) {
         guard let context = state.selectedContext else { return }
         let sources = state.kubeConfigSources
         let namespace = state.selectedNamespace
@@ -3663,10 +4697,13 @@ public final class RuneAppViewModel: ObservableObject {
                             previous: previous
                         )
                     )
-                    _ = try self.exporter.save(
-                        data: data,
-                        suggestedName: "pod-\(pod.name)-full-logs-\(timestamp).zip",
-                        allowedFileTypes: ["zip"]
+                    try self.saveArchivePayload(
+                        LogExportPayload(
+                            data: data,
+                            suggestedName: "pod-\(pod.name)-full-logs-\(timestamp).zip",
+                            allowedFileTypes: ["zip"]
+                        ),
+                        configuredOpenAfterSave: configuredOpenAfterSave
                     )
                 case .service:
                     guard let service else { return }
@@ -3697,10 +4734,13 @@ public final class RuneAppViewModel: ObservableObject {
                             previous: previous
                         )
                     )
-                    _ = try self.exporter.save(
-                        data: data,
-                        suggestedName: "service-\(service.name)-full-logs-\(timestamp).zip",
-                        allowedFileTypes: ["zip"]
+                    try self.saveArchivePayload(
+                        LogExportPayload(
+                            data: data,
+                            suggestedName: "service-\(service.name)-full-logs-\(timestamp).zip",
+                            allowedFileTypes: ["zip"]
+                        ),
+                        configuredOpenAfterSave: configuredOpenAfterSave
                     )
                 case .deployment:
                     guard let deployment else { return }
@@ -3731,10 +4771,13 @@ public final class RuneAppViewModel: ObservableObject {
                             previous: previous
                         )
                     )
-                    _ = try self.exporter.save(
-                        data: data,
-                        suggestedName: "deployment-\(deployment.name)-full-logs-\(timestamp).zip",
-                        allowedFileTypes: ["zip"]
+                    try self.saveArchivePayload(
+                        LogExportPayload(
+                            data: data,
+                            suggestedName: "deployment-\(deployment.name)-full-logs-\(timestamp).zip",
+                            allowedFileTypes: ["zip"]
+                        ),
+                        configuredOpenAfterSave: configuredOpenAfterSave
                     )
                 case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     return
@@ -3746,6 +4789,14 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func saveSelectedPodLogsZip() {
+        saveSelectedPodLogsZip(configuredOpenAfterSave: nil)
+    }
+
+    public func saveSelectedPodLogsZipToExportFolder(openAfterSave: Bool) {
+        saveSelectedPodLogsZip(configuredOpenAfterSave: openAfterSave)
+    }
+
+    private func saveSelectedPodLogsZip(configuredOpenAfterSave: Bool?) {
         let pods = selectedPodsForBulkActions
         guard !pods.isEmpty, let context = state.selectedContext else { return }
         let sources = state.kubeConfigSources
@@ -3777,10 +4828,13 @@ public final class RuneAppViewModel: ObservableObject {
                         previous: previous
                     )
                 )
-                _ = try self.exporter.save(
-                    data: data,
-                    suggestedName: "selected-pod-full-logs-\(timestamp).zip",
-                    allowedFileTypes: ["zip"]
+                try self.saveArchivePayload(
+                    LogExportPayload(
+                        data: data,
+                        suggestedName: "selected-pod-full-logs-\(timestamp).zip",
+                        allowedFileTypes: ["zip"]
+                    ),
+                    configuredOpenAfterSave: configuredOpenAfterSave
                 )
             } catch {
                 self.setExportErrorUnlessCancelled(error)
@@ -3999,6 +5053,14 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func saveDeploymentPodLogsZip() {
+        saveDeploymentPodLogsZip(configuredOpenAfterSave: nil)
+    }
+
+    public func saveDeploymentPodLogsZipToExportFolder(openAfterSave: Bool) {
+        saveDeploymentPodLogsZip(configuredOpenAfterSave: openAfterSave)
+    }
+
+    private func saveDeploymentPodLogsZip(configuredOpenAfterSave: Bool?) {
         guard let deployment = state.selectedDeployment, let context = state.selectedContext else { return }
         let sources = state.kubeConfigSources
         let namespace = state.selectedNamespace
@@ -4048,10 +5110,13 @@ public final class RuneAppViewModel: ObservableObject {
                     )
                 }
 
-                _ = try self.exporter.save(
-                    data: data,
-                    suggestedName: "\(baseName)-\(timestamp).zip",
-                    allowedFileTypes: ["zip"]
+                try self.saveArchivePayload(
+                    LogExportPayload(
+                        data: data,
+                        suggestedName: "\(baseName)-\(timestamp).zip",
+                        allowedFileTypes: ["zip"]
+                    ),
+                    configuredOpenAfterSave: configuredOpenAfterSave
                 )
             } catch {
                 self.setExportErrorUnlessCancelled(error)
@@ -4142,14 +5207,28 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func saveCurrentResourceYAML() {
         do {
-            guard let (kind, name) = currentWritableResource(), !state.resourceYAML.isEmpty else { return }
-            guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
+            guard let payload = currentResourceYAMLExportPayload(timestamp: timestamp) else { return }
             _ = try exporter.save(
-                data: Data(state.resourceYAML.utf8),
-                suggestedName: "\(kind.kubernetesResourceName)-\(name)-\(timestamp).yaml",
-                allowedFileTypes: ["yaml", "yml"]
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    public func saveCurrentResourceYAMLToExportFolder(openAfterSave: Bool) {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = currentResourceYAMLExportPayload(timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .plainText,
+                openAfterSave: openAfterSave
             )
         } catch {
             state.setError(error)
@@ -4158,18 +5237,52 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func saveCurrentResourceDescribe() {
         do {
-            guard let (kind, name) = currentWritableResource(), !state.resourceDescribe.isEmpty else { return }
-            guard loadedResourceDetailScopeMatchesCurrentSelection() else { return }
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-
+            guard let payload = currentResourceDescribeExportPayload(timestamp: timestamp) else { return }
             _ = try exporter.save(
-                data: Data(state.resourceDescribe.utf8),
-                suggestedName: "\(kind.kubernetesResourceName)-\(name)-describe-\(timestamp).txt",
-                allowedFileTypes: ["txt", "log"]
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
             )
         } catch {
             state.setError(error)
         }
+    }
+
+    public func saveCurrentResourceDescribeToExportFolder(openAfterSave: Bool) {
+        do {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            guard let payload = currentResourceDescribeExportPayload(timestamp: timestamp) else { return }
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .plainText,
+                openAfterSave: openAfterSave
+            )
+        } catch {
+            state.setError(error)
+        }
+    }
+
+    private func currentResourceYAMLExportPayload(timestamp: String) -> LogExportPayload? {
+        guard let (kind, name) = currentWritableResource(), !state.resourceYAML.isEmpty else { return nil }
+        guard loadedResourceDetailScopeMatchesCurrentSelection() else { return nil }
+        return LogExportPayload(
+            data: Data(state.resourceYAML.utf8),
+            suggestedName: "\(kind.kubernetesResourceName)-\(name)-\(timestamp).yaml",
+            allowedFileTypes: ["yaml", "yml"]
+        )
+    }
+
+    private func currentResourceDescribeExportPayload(timestamp: String) -> LogExportPayload? {
+        guard let (kind, name) = currentWritableResource(), !state.resourceDescribe.isEmpty else { return nil }
+        guard loadedResourceDetailScopeMatchesCurrentSelection() else { return nil }
+        return LogExportPayload(
+            data: Data(state.resourceDescribe.utf8),
+            suggestedName: "\(kind.kubernetesResourceName)-\(name)-describe-\(timestamp).txt",
+            allowedFileTypes: ["txt", "log"]
+        )
     }
 
     /// Discards edits in the YAML editor and restores the last manifest loaded from the cluster.
@@ -4220,34 +5333,60 @@ public final class RuneAppViewModel: ObservableObject {
     public func saveSupportBundle() {
         Task { @MainActor in
             do {
-                let restRequestMetrics = await kubeClient.restRequestMetricsSnapshot()
-                let requestMetrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: restRequestMetrics)
-                let requestMetricGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
-                let requestMetricsSummary = await kubeClient.restRequestMetricsSummary()
-                let formatter = ISO8601DateFormatter()
-                let exportStamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
-                let bundle = try supportBundleBuilder.buildBundle(
-                    from: SupportBundleRequest.snapshot(
-                        state: state,
-                        generatedAt: formatter.string(from: Date()),
-                        resourceCounts: resourceCounts(),
-                        selectedResourceKind: selectedResourceKindLabel(),
-                        selectedResourceName: selectedResourceName(),
-                        requestMetrics: requestMetrics,
-                        requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: requestMetricsSummary),
-                        requestMetricGroups: requestMetricGroups
-                    )
-                )
-
+                let payload = try await supportBundleExportPayload()
                 _ = try exporter.save(
-                    data: bundle,
-                    suggestedName: "support-bundle-\(exportStamp).json",
-                    allowedFileTypes: ["json"]
+                    data: payload.data,
+                    suggestedName: payload.suggestedName,
+                    allowedFileTypes: payload.allowedFileTypes
                 )
             } catch {
                 setExportErrorUnlessCancelled(error)
             }
         }
+    }
+
+    public func saveSupportBundleToExportFolder(openAfterSave: Bool) {
+        Task { @MainActor in
+            do {
+                let payload = try await supportBundleExportPayload()
+                _ = try configuredExporter.save(
+                    data: payload.data,
+                    suggestedName: payload.suggestedName,
+                    allowedFileTypes: payload.allowedFileTypes,
+                    kind: .plainText,
+                    openAfterSave: openAfterSave
+                )
+            } catch {
+                setExportErrorUnlessCancelled(error)
+            }
+        }
+    }
+
+    private func supportBundleExportPayload() async throws -> LogExportPayload {
+        let restRequestMetrics = await kubeClient.restRequestMetricsSnapshot()
+        let requestMetrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: restRequestMetrics)
+        let requestMetricGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
+        let requestMetricsSummary = await kubeClient.restRequestMetricsSummary()
+        let formatter = ISO8601DateFormatter()
+        let generatedAt = formatter.string(from: Date())
+        let exportStamp = generatedAt.replacingOccurrences(of: ":", with: "")
+        let bundle = try supportBundleBuilder.buildBundle(
+            from: SupportBundleRequest.snapshot(
+                state: state,
+                generatedAt: generatedAt,
+                resourceCounts: resourceCounts(),
+                selectedResourceKind: selectedResourceKindLabel(),
+                selectedResourceName: selectedResourceName(),
+                requestMetrics: requestMetrics,
+                requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: requestMetricsSummary),
+                requestMetricGroups: requestMetricGroups
+            )
+        )
+        return LogExportPayload(
+            data: bundle,
+            suggestedName: "support-bundle-\(exportStamp).json",
+            allowedFileTypes: ["json"]
+        )
     }
 
     public func runAuthDoctor() {
@@ -4491,6 +5630,108 @@ public final class RuneAppViewModel: ObservableObject {
     public func clearAuthDoctorOutput() {
         guard !state.isRunningAuthDoctor else { return }
         state.clearAuthDoctorChecks()
+    }
+
+    public func refreshKubernetesRequestMetricsSummary() {
+        guard !isRefreshingKubernetesRequestMetricsSummary else { return }
+        isRefreshingKubernetesRequestMetricsSummary = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let summary = await self.kubeClient.restRequestMetricsSummary()
+            self.kubernetesRequestMetricsSummary = KubernetesRequestMetricsDebugPresentation(summary: summary)
+            self.isRefreshingKubernetesRequestMetricsSummary = false
+        }
+    }
+
+    public func useSelectedRBACResourceForCanI() {
+        guard let resource = state.selectedRBACResource else { return }
+        rbacCanIVerb = "list"
+        rbacCanIResource = KubernetesRESTPath.resourceName(for: resource.kind)
+        rbacCanIApiGroup = resource.kind.rbacAPIGroup ?? ""
+        rbacCanISubresource = ""
+        rbacCanIScope = resource.kind.isNamespaced ? .namespace : .cluster
+        rbacCanIResult = nil
+    }
+
+    public func useRBACCanIPreset(
+        verb: String,
+        resource: String,
+        apiGroup: String?,
+        subresource: String?,
+        scope: RBACCanIScope
+    ) {
+        rbacCanIVerb = verb.trimmingCharacters(in: .whitespacesAndNewlines)
+        rbacCanIResource = resource.trimmingCharacters(in: .whitespacesAndNewlines)
+        rbacCanIApiGroup = apiGroup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        rbacCanISubresource = subresource?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        rbacCanIScope = scope
+        rbacCanIResult = nil
+    }
+
+    public func runRBACCanISimulator() {
+        guard !isRunningRBACCanI else { return }
+        guard let context = state.selectedContext else {
+            rbacCanIResult = RBACCanIResult(
+                request: currentRBACCanIRequest(),
+                allowed: nil,
+                errorMessage: "Select a Kubernetes context before checking RBAC."
+            )
+            return
+        }
+
+        let request = currentRBACCanIRequest()
+        guard !request.verb.isEmpty else {
+            rbacCanIResult = RBACCanIResult(request: request, allowed: nil, errorMessage: "Enter a verb to check.")
+            return
+        }
+        guard !request.resource.isEmpty else {
+            rbacCanIResult = RBACCanIResult(request: request, allowed: nil, errorMessage: "Enter a resource to check.")
+            return
+        }
+        if request.scope == .namespace, request.reviewNamespace == nil {
+            rbacCanIResult = RBACCanIResult(request: request, allowed: nil, errorMessage: "Select or enter a namespace, or switch scope to Cluster.")
+            return
+        }
+
+        state.clearError()
+        rbacCanIResult = nil
+        isRunningRBACCanI = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isRunningRBACCanI = false }
+
+            do {
+                let allowed = try await self.rbacCanICheck(
+                    self.state.kubeConfigSources,
+                    context,
+                    request.reviewNamespace,
+                    request.verb,
+                    request.resource,
+                    request.apiGroup,
+                    request.subresource
+                )
+                self.rbacCanIResult = RBACCanIResult(request: request, allowed: allowed, errorMessage: nil)
+            } catch {
+                self.rbacCanIResult = RBACCanIResult(
+                    request: request,
+                    allowed: nil,
+                    errorMessage: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func currentRBACCanIRequest() -> RBACCanIRequest {
+        RBACCanIRequest(
+            namespace: state.selectedNamespace,
+            verb: rbacCanIVerb,
+            resource: rbacCanIResource,
+            apiGroup: rbacCanIApiGroup,
+            subresource: rbacCanISubresource,
+            scope: rbacCanIScope
+        )
     }
 
     public func loadDemoCluster() {
@@ -6031,17 +7272,41 @@ public final class RuneAppViewModel: ObservableObject {
     public func saveVisibleWriteAuditLog() {
         do {
             let exportStamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            let data = try encoder.encode(visibleWriteAuditEntries)
+            let payload = try visibleWriteAuditLogExportPayload(timestamp: exportStamp)
             _ = try exporter.save(
-                data: data,
-                suggestedName: "write-audit-\(exportStamp).json",
-                allowedFileTypes: ["json"]
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes
             )
         } catch {
             setExportErrorUnlessCancelled(error)
         }
+    }
+
+    public func saveVisibleWriteAuditLogToExportFolder(openAfterSave: Bool) {
+        do {
+            let exportStamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            let payload = try visibleWriteAuditLogExportPayload(timestamp: exportStamp)
+            _ = try configuredExporter.save(
+                data: payload.data,
+                suggestedName: payload.suggestedName,
+                allowedFileTypes: payload.allowedFileTypes,
+                kind: .plainText,
+                openAfterSave: openAfterSave
+            )
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    private func visibleWriteAuditLogExportPayload(timestamp: String) throws -> LogExportPayload {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return LogExportPayload(
+            data: try encoder.encode(visibleWriteAuditEntries),
+            suggestedName: "write-audit-\(timestamp).json",
+            allowedFileTypes: ["json"]
+        )
     }
 
     public func commandPaletteItems(query: String) -> [CommandPaletteItem] {
@@ -6082,6 +7347,7 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             }
 
+        let workspaces = savedWorkspaceCommandItems(query: "")
         let pods = visiblePods.prefix(40).map { pod in
             CommandPaletteItem(
                 id: "pod:\(pod.id)",
@@ -6170,7 +7436,7 @@ public final class RuneAppViewModel: ObservableObject {
             )
         ]
 
-        let allItems = commands + sections + contexts + namespaces + pods + deployments + services + helmReleases + events
+        let allItems = commands + workspaces + sections + contexts + namespaces + pods + deployments + services + helmReleases + events
 
         guard !trimmedQuery.isEmpty else {
             return Array(allItems.prefix(160))
@@ -6202,6 +7468,12 @@ public final class RuneAppViewModel: ObservableObject {
             refreshCurrentView()
         case .saveLogs:
             saveCurrentLogs()
+        case let .savedWorkspace(workspace):
+            openSavedWorkspace(workspace)
+        case let .saveWorkspace(name):
+            saveCurrentWorkspace(named: name)
+        case let .toggleSavedWorkspaceFavorite(workspace):
+            toggleSavedWorkspaceFavorite(workspace)
         case let .readOnly(enabled):
             setReadOnlyMode(enabled)
         case let .pod(pod):
@@ -10317,6 +11589,49 @@ public final class RuneAppViewModel: ObservableObject {
         values.sorted(by: operatorResourceComparator)
     }
 
+    public static func isGitOpsOperatorResource(_ resource: OperatorResourceSummary) -> Bool {
+        isFluxOperatorResource(resource) || isArgoCDOperatorResource(resource)
+    }
+
+    public static func isFluxOperatorResource(_ resource: OperatorResourceSummary) -> Bool {
+        let family = resource.family.lowercased()
+        let kind = resource.kind.lowercased()
+        return family.contains("flux")
+            || kind.contains("kustomization")
+            || kind.contains("helmrelease")
+            || kind.contains("gitrepositor")
+    }
+
+    public static func isArgoCDOperatorResource(_ resource: OperatorResourceSummary) -> Bool {
+        let family = resource.family.lowercased()
+        let kind = resource.kind.lowercased()
+        return family.contains("argo")
+            || kind.contains("application")
+            || kind.contains("appproject")
+    }
+
+    public static func isUnhealthyGitOpsOperatorResource(_ resource: OperatorResourceSummary) -> Bool {
+        guard isGitOpsOperatorResource(resource) else { return false }
+        let text = ([resource.status, resource.message] + resource.printerColumns.flatMap { [$0.title, $0.value] })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("ready false")
+            || text.contains("ready:false")
+            || text.contains("not ready")
+            || text.contains("failed")
+            || text.contains("error")
+            || text.contains("synced false")
+            || text.contains("sync false")
+            || text.contains("outofsync")
+            || text.contains("out of sync")
+            || text.contains("degraded")
+            || (text.contains("reconcil") && text.contains("failed"))
+            || text.contains("stalled")
+            || text.contains("suspended")
+    }
+
     private func resourceFavoriteOrder(
         kind: KubeResourceKind,
         lhsNamespace: String?,
@@ -10452,6 +11767,102 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func savedWorkspaceCommandItems(query: String) -> [CommandPaletteItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Array(
+            savedWorkspaces
+                .filter { workspace in
+                    trimmed.isEmpty || matches("\(workspace.name) \(savedWorkspaceSubtitle(workspace))", query: trimmed)
+                }
+                .sorted { lhs, rhs in
+                    if lhs.isFavorite != rhs.isFavorite {
+                        return lhs.isFavorite && !rhs.isFavorite
+                    }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                .prefix(40)
+                .map { workspace in
+                    CommandPaletteItem(
+                        id: "workspace:\(workspace.id)",
+                        title: workspace.name,
+                        subtitle: savedWorkspaceSubtitle(workspace),
+                        symbolName: workspace.isFavorite ? "star.fill" : "rectangle.stack.badge.play",
+                        action: .savedWorkspace(workspace)
+                    )
+                }
+        )
+    }
+
+    private func savedWorkspaceFavoriteCommandItems(query: String) -> [CommandPaletteItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Array(
+            savedWorkspaces
+                .filter { workspace in
+                    trimmed.isEmpty || matches("\(workspace.name) \(savedWorkspaceSubtitle(workspace))", query: trimmed)
+                }
+                .sorted { lhs, rhs in
+                    if lhs.isFavorite != rhs.isFavorite {
+                        return !lhs.isFavorite && rhs.isFavorite
+                    }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                .prefix(40)
+                .map { workspace in
+                    CommandPaletteItem(
+                        id: "workspace-favorite:\(workspace.id)",
+                        title: workspace.isFavorite ? "Unfavorite Workspace: \(workspace.name)" : "Favorite Workspace: \(workspace.name)",
+                        subtitle: savedWorkspaceSubtitle(workspace),
+                        symbolName: workspace.isFavorite ? "star.slash" : "star",
+                        action: .toggleSavedWorkspaceFavorite(workspace)
+                    )
+                }
+        )
+    }
+
+    private func savedWorkspaceSubtitle(_ workspace: SavedWorkspaceSnapshot) -> String {
+        var parts = [workspace.isFavorite ? "Favorite workspace" : "Workspace"]
+        if let contextName = workspace.contextName, !contextName.isEmpty {
+            parts.append(contextName)
+        }
+        parts.append(workspace.namespace)
+        parts.append(workspace.section.title)
+        if let resourceName = workspace.resourceName {
+            parts.append(resourceName)
+        } else {
+            parts.append(workspace.workloadKind.title)
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private func saveWorkspaceCommandItem(name rawName: String, alias: String) -> CommandPaletteItem {
+        let trimmedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmedName.isEmpty ? suggestedSavedWorkspaceName() : trimmedName
+        return CommandPaletteItem(
+            id: "cmd:save-workspace:\(name)",
+            title: "Save Workspace: \(name)",
+            subtitle: "Save current context, namespace, view, selection, logs, and layout • `\(alias)`",
+            symbolName: "rectangle.stack.badge.plus",
+            action: .saveWorkspace(name)
+        )
+    }
+
+    private func suggestedSavedWorkspaceName() -> String {
+        var parts: [String] = []
+        if let contextName = state.selectedContext?.name, !contextName.isEmpty {
+            parts.append(contextName)
+        }
+        if !state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(state.selectedNamespace)
+        }
+        parts.append(state.selectedSection.title)
+        if let resourceName = selectedResourceName() {
+            parts.append(resourceName)
+        } else {
+            parts.append(state.selectedWorkloadKind.title)
+        }
+        return parts.joined(separator: " / ")
+    }
+
     private func commandPaletteSaveLogsItem(alias: String) -> CommandPaletteItem {
         CommandPaletteItem(
             id: "cmd:save-logs:\(alias)",
@@ -10474,6 +11885,12 @@ public final class RuneAppViewModel: ObservableObject {
         let remainder = tokens.dropFirst().joined(separator: " ")
 
         switch command {
+        case "ws", "workspace", "workspaces":
+            return savedWorkspaceCommandItems(query: remainder)
+        case "savews", "save-workspace", "saveworkspace":
+            return [saveWorkspaceCommandItem(name: remainder, alias: ":\(command)")]
+        case "favws", "favoritews", "favorite-workspace", "unfavws", "unfavoritews", "unfavorite-workspace":
+            return savedWorkspaceFavoriteCommandItems(query: remainder)
         case "sl", "save-log", "save-logs", "savelog", "savelogs":
             return [commandPaletteSaveLogsItem(alias: ":\(command)")]
         case "po", "pod", "pods":
@@ -11185,6 +12602,9 @@ public final class RuneAppViewModel: ObservableObject {
             CommandPaletteItem(id: "help:ns", title: ":ns <namespace>", subtitle: "Switch namespace", symbolName: "square.3.layers.3d", action: .section(.overview)),
             CommandPaletteItem(id: "help:ov", title: ":ov / :overview", subtitle: "Open Overview", symbolName: RuneSection.overview.symbolName, action: .section(.overview)),
             CommandPaletteItem(id: "help:ctx", title: ":ctx <context>", subtitle: "Switch context", symbolName: "network", action: .section(.overview)),
+            CommandPaletteItem(id: "help:ws", title: ":ws <workspace>", subtitle: "Open saved workspace", symbolName: "rectangle.stack.badge.play", action: .section(.overview)),
+            CommandPaletteItem(id: "help:savews", title: ":savews <name>", subtitle: "Save current workspace", symbolName: "rectangle.stack.badge.plus", action: .section(.overview)),
+            CommandPaletteItem(id: "help:favws", title: ":favws <workspace>", subtitle: "Toggle workspace favorite", symbolName: "star", action: .section(.overview)),
             CommandPaletteItem(id: "help:rbac", title: ":rbac", subtitle: "RBAC kinds", symbolName: "person.2.badge.gearshape", action: .resourceKind(section: .rbac, kind: .role)),
             CommandPaletteItem(id: "help:helm", title: ":helm <release>", subtitle: "Helm releases", symbolName: "ferry", action: .section(.helm)),
             CommandPaletteItem(id: "help:cj", title: ":cj <name>", subtitle: "CronJobs", symbolName: "calendar.badge.clock", action: .resourceKind(section: .workloads, kind: .cronJob)),
@@ -11227,6 +12647,11 @@ public final class RuneAppViewModel: ObservableObject {
             return currentWritableResource()?.0.kubernetesResourceName
         case .events:
             return state.selectedEvent == nil ? nil : "event"
+        case .helm:
+            if let release = state.selectedHelmRelease {
+                return release.savedWorkspaceKindLabel
+            }
+            return state.selectedOperatorResource?.apiPath
         default:
             return nil
         }
@@ -11238,9 +12663,150 @@ public final class RuneAppViewModel: ObservableObject {
             return currentWritableResource()?.1
         case .events:
             return state.selectedEvent?.objectName
+        case .helm:
+            return state.selectedHelmRelease?.name ?? state.selectedOperatorResource?.name
         default:
             return nil
         }
+    }
+
+    private func selectedResourceNamespace() -> String? {
+        switch state.selectedSection {
+        case .workloads:
+            switch state.selectedWorkloadKind {
+            case .pod: return state.selectedPod?.namespace
+            case .deployment: return state.selectedDeployment?.namespace
+            case .statefulSet: return state.selectedStatefulSet?.namespace
+            case .daemonSet: return state.selectedDaemonSet?.namespace
+            case .job: return state.selectedJob?.namespace
+            case .cronJob: return state.selectedCronJob?.namespace
+            case .replicaSet: return state.selectedReplicaSet?.namespace
+            case .horizontalPodAutoscaler: return state.selectedHorizontalPodAutoscaler?.namespace
+            default: return nil
+            }
+        case .networking:
+            switch state.selectedWorkloadKind {
+            case .service: return state.selectedService?.namespace
+            case .ingress: return state.selectedIngress?.namespace
+            case .networkPolicy: return state.selectedNetworkPolicy?.namespace
+            default: return nil
+            }
+        case .config:
+            switch state.selectedWorkloadKind {
+            case .configMap: return state.selectedConfigMap?.namespace
+            case .secret: return state.selectedSecret?.namespace
+            default: return nil
+            }
+        case .storage:
+            switch state.selectedWorkloadKind {
+            case .persistentVolumeClaim: return state.selectedPersistentVolumeClaim?.namespace
+            case .persistentVolume: return state.selectedPersistentVolume?.namespace
+            case .storageClass: return state.selectedStorageClass?.namespace
+            case .node: return state.selectedNode?.namespace
+            default: return nil
+            }
+        case .rbac:
+            return state.selectedRBACResource?.namespace
+        case .events:
+            return state.selectedEvent?.involvedNamespace
+        case .helm:
+            return state.selectedHelmRelease?.namespace ?? state.selectedOperatorResource?.namespace
+        default:
+            return nil
+        }
+    }
+
+    private func restoreSavedWorkspaceResourceSelection(_ workspace: SavedWorkspaceSnapshot) {
+        guard workspace.resourceName != nil else { return }
+
+        switch workspace.section {
+        case .workloads, .networking, .config, .storage:
+            restoreSavedWorkspaceWorkloadResource(workspace)
+        case .rbac:
+            restoreSavedWorkspaceRBACResource(workspace)
+        case .events:
+            let event = state.events.first { event in
+                event.objectName == workspace.resourceName
+                    && namespaceMatches(event.involvedNamespace, workspace: workspace)
+            }
+            selectEvent(event, trackHistory: false)
+        case .helm:
+            if workspace.resourceKind == HelmReleaseSummary.savedWorkspaceKindLabel {
+                let release = state.helmReleases.first { release in
+                    release.name == workspace.resourceName
+                        && namespaceMatches(release.namespace, workspace: workspace)
+                }
+                selectHelmRelease(release, trackHistory: false)
+            } else {
+                let resource = state.operatorResources.first { resource in
+                    resource.name == workspace.resourceName
+                        && resource.apiPath == workspace.resourceKind
+                        && namespaceMatches(resource.namespace, workspace: workspace)
+                }
+                selectOperatorResource(resource, trackHistory: false)
+            }
+        default:
+            break
+        }
+    }
+
+    private func restoreSavedWorkspaceWorkloadResource(_ workspace: SavedWorkspaceSnapshot) {
+        switch workspace.workloadKind {
+        case .pod:
+            selectPod(state.pods.first { matchesSavedWorkspaceResource(name: $0.name, namespace: $0.namespace, workspace: workspace) }, trackHistory: false)
+        case .deployment:
+            selectDeployment(state.deployments.first { matchesSavedWorkspaceResource(name: $0.name, namespace: $0.namespace, workspace: workspace) }, trackHistory: false)
+        case .service:
+            selectService(state.services.first { matchesSavedWorkspaceResource(name: $0.name, namespace: $0.namespace, workspace: workspace) }, trackHistory: false)
+        case .statefulSet:
+            selectStatefulSet(state.statefulSets.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .daemonSet:
+            selectDaemonSet(state.daemonSets.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .job:
+            selectJob(state.jobs.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .cronJob:
+            selectCronJob(state.cronJobs.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .replicaSet:
+            selectReplicaSet(state.replicaSets.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .persistentVolumeClaim:
+            selectPersistentVolumeClaim(state.persistentVolumeClaims.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .persistentVolume:
+            selectPersistentVolume(state.persistentVolumes.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .storageClass:
+            selectStorageClass(state.storageClasses.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .horizontalPodAutoscaler:
+            selectHorizontalPodAutoscaler(state.horizontalPodAutoscalers.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .networkPolicy:
+            selectNetworkPolicy(state.networkPolicies.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .ingress:
+            selectIngress(state.ingresses.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .configMap:
+            selectConfigMap(state.configMaps.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .secret:
+            selectSecret(state.secrets.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .node:
+            selectNode(state.nodes.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            break
+        }
+    }
+
+    private func restoreSavedWorkspaceRBACResource(_ workspace: SavedWorkspaceSnapshot) {
+        let lists = state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
+        selectRBACResource(lists.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+    }
+
+    private func matchesSavedWorkspaceResource(_ resource: ClusterResourceSummary, workspace: SavedWorkspaceSnapshot) -> Bool {
+        matchesSavedWorkspaceResource(name: resource.name, namespace: resource.namespace, workspace: workspace)
+    }
+
+    private func matchesSavedWorkspaceResource(name: String, namespace: String?, workspace: SavedWorkspaceSnapshot) -> Bool {
+        name == workspace.resourceName && namespaceMatches(namespace, workspace: workspace)
+    }
+
+    private func namespaceMatches(_ namespace: String?, workspace: SavedWorkspaceSnapshot) -> Bool {
+        guard let resourceNamespace = workspace.resourceNamespace else { return true }
+        return (namespace ?? "").caseInsensitiveCompare(resourceNamespace) == .orderedSame
     }
 
     private func parsePort(_ value: String, fieldName: String) throws -> Int {
@@ -11315,4 +12881,12 @@ public final class RuneAppViewModel: ObservableObject {
         return tokens
     }
 
+}
+
+private extension HelmReleaseSummary {
+    static let savedWorkspaceKindLabel = "helmrelease"
+
+    var savedWorkspaceKindLabel: String {
+        Self.savedWorkspaceKindLabel
+    }
 }

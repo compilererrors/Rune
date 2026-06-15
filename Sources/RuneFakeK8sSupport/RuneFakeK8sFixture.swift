@@ -185,6 +185,8 @@ public struct RuneFakeK8sOperatorResource: Sendable {
     public let conditionStatus: String
     public let reason: String
     public let message: String
+    public let printerColumns: [String: String]
+    public let printerColumnDefinitions: [String: String]
 
     public init(
         apiGroup: String,
@@ -196,7 +198,9 @@ public struct RuneFakeK8sOperatorResource: Sendable {
         conditionType: String,
         conditionStatus: String,
         reason: String,
-        message: String
+        message: String,
+        printerColumns: [String: String] = [:],
+        printerColumnDefinitions: [String: String] = [:]
     ) {
         self.apiGroup = apiGroup
         self.apiVersion = apiVersion
@@ -208,5 +212,7 @@ public struct RuneFakeK8sOperatorResource: Sendable {
         self.conditionStatus = conditionStatus
         self.reason = reason
         self.message = message
+        self.printerColumns = printerColumns
+        self.printerColumnDefinitions = printerColumnDefinitions
     }
 }

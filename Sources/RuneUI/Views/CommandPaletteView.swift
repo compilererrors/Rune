@@ -21,7 +21,7 @@ struct CommandPaletteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Command Palette")
                     .font(.title3.weight(.semibold))
-                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ov`, `:rbac`, `:cr`, `:cj` …")
+                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ws`, `:savews`, `:favws`, `:ov`, `:rbac`, `:cr`, `:cj` …")
                     .font(.subheadline)
                     .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
             }
@@ -60,6 +60,9 @@ struct CommandPaletteView: View {
                     paletteHint(":cm")
                     paletteHint(":ctx")
                     paletteHint(":ns")
+                    paletteHint(":ws")
+                    paletteHint(":savews")
+                    paletteHint(":favws")
                     paletteHint(":ov")
                     paletteHint(":rbac")
                     paletteHint(":reload")
@@ -133,8 +136,12 @@ struct CommandPaletteView: View {
         .frame(minWidth: 680, minHeight: 440)
         .background(runeThemePalette?.content.opacity(0.98) ?? Color(nsColor: .windowBackgroundColor).opacity(0.82))
         .onAppear {
+            let prefill = viewModel.consumeCommandPalettePrefillQuery()
+            if !prefill.isEmpty {
+                query = prefill
+            }
             focusedTarget = .input
-            selectedItemID = items.first?.id
+            selectedItemID = viewModel.commandPaletteItems(query: query).first?.id
             installLocalKeyMonitor()
         }
         .onDisappear {

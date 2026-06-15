@@ -99,6 +99,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                     onClearTranscript: {},
                     onSaveActiveTerminalTranscript: {},
                     onSaveAllTerminalTranscripts: {},
+                    onSaveActiveTerminalTranscriptToExportFolder: {},
+                    onSaveActiveTerminalTranscriptAndOpen: {},
+                    onSaveAllTerminalTranscriptsToExportFolder: {},
+                    onSaveAllTerminalTranscriptsAndOpen: {},
                     isFavoritePod: { _ in false },
                     onToggleFavoritePod: { _ in }
                 )
@@ -168,6 +172,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 onClearTranscript: {},
                 onSaveActiveTranscript: {},
                 onSaveAllTranscripts: {},
+                onSaveActiveTranscriptToExportFolder: {},
+                onSaveActiveTranscriptAndOpen: {},
+                onSaveAllTranscriptsToExportFolder: {},
+                onSaveAllTranscriptsAndOpen: {},
                 isFavoritePod: { _ in false },
                 onToggleFavoritePod: { _ in }
             )
@@ -258,6 +266,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 onClearTranscript: {},
                 onSaveActiveTranscript: {},
                 onSaveAllTranscripts: {},
+                onSaveActiveTranscriptToExportFolder: {},
+                onSaveActiveTranscriptAndOpen: {},
+                onSaveAllTranscriptsToExportFolder: {},
+                onSaveAllTranscriptsAndOpen: {},
                 isFavoritePod: { _ in false },
                 onToggleFavoritePod: { _ in }
             )
@@ -345,10 +357,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testTerminalShellAndLogTabBarsShareNativeChrome() throws {
         let shellTabSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
-        let logsSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        let logTabStart = try XCTUnwrap(logsSource.range(of: "struct TerminalLogTabBar: View"))
-        let logTabEnd = try XCTUnwrap(logsSource.range(of: "private extension View", range: logTabStart.upperBound..<logsSource.endIndex))
-        let logTabSource = String(logsSource[logTabStart.lowerBound..<logTabEnd.lowerBound])
+        let logTabSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
 
         for source in [shellTabSource, logTabSource] {
             XCTAssertTrue(source.contains("RuneSurfaceBackground(kind: .inset)"))
@@ -361,6 +370,18 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             XCTAssertFalse(source.contains(".frame(height: 36)"))
             XCTAssertFalse(source.contains(".frame(height: 2)"))
         }
+    }
+
+    func testTerminalTranscriptShowsPersistentTrimmedScrollbackIndicator() throws {
+        let source = try String(contentsOfFile: terminalTranscriptSurfacePath, encoding: .utf8)
+
+        XCTAssertTrue(TerminalTranscriptSurface.hasTrimmedScrollback(
+            TerminalScrollbackRetention.truncationMarker + "\nrecent output"
+        ))
+        XCTAssertFalse(TerminalTranscriptSurface.hasTrimmedScrollback("recent output"))
+        XCTAssertTrue(source.contains("Label(\"Scrollback trimmed\", systemImage: \"scissors\")"))
+        XCTAssertTrue(source.contains("Older terminal output was discarded by the scrollback limit"))
+        XCTAssertTrue(source.contains("Self.hasTrimmedScrollback(text)"))
     }
 
     func testTerminalLogsPanelIsExplicitlyPodScoped() throws {
@@ -599,9 +620,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(shellSource.contains("onSaveAllTranscripts"))
         XCTAssertTrue(shellSource.contains("Label(\"Export\", systemImage: \"square.and.arrow.down\")"))
         XCTAssertTrue(shellSource.contains("Button(\"Save Active Transcript\""))
+        XCTAssertTrue(shellSource.contains("Button(\"Save Active to Export Folder\""))
+        XCTAssertTrue(shellSource.contains("Button(\"Save Active and Open\""))
         XCTAssertTrue(shellSource.contains("Button(\"Save All Transcripts ZIP\""))
+        XCTAssertTrue(shellSource.contains("Button(\"Save All ZIP to Export Folder\""))
+        XCTAssertTrue(shellSource.contains("Button(\"Save All ZIP and Open\""))
         XCTAssertTrue(workspaceSource.contains("onSaveActiveTerminalTranscript"))
         XCTAssertTrue(workspaceSource.contains("onSaveAllTerminalTranscripts"))
+        XCTAssertTrue(workspaceSource.contains("onSaveActiveTerminalTranscriptToExportFolder"))
+        XCTAssertTrue(workspaceSource.contains("onSaveAllTerminalTranscriptsToExportFolder"))
         XCTAssertTrue(podSelectorSource.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertTrue(podSelectorSource.contains("FavoritePodPicker("))
         XCTAssertTrue(podSelectorSource.contains("width: 320"))
@@ -754,6 +781,147 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(serviceOverview.contains("Button(\"Export…\")"))
     }
 
+    func testResourceRelationshipNavigationExposesClickableRows() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let deploymentOverview = try functionBlock(
+            named: "private func deploymentOverviewSection",
+            endingBefore: "private func inspectorEmptyState",
+            in: source
+        )
+        let genericResourceDetails = try functionBlock(
+            named: "private func genericResourceDetails",
+            endingBefore: "private var yamlDisplayText",
+            in: source
+        )
+        let podOverview = try functionBlock(
+            named: "private func podOverviewSection",
+            endingBefore: "private func podOverviewRow",
+            in: source
+        )
+        let serviceOverview = try functionBlock(
+            named: "private var serviceDetails: some View {",
+            endingBefore: "private var eventDetails: some View {",
+            in: source
+        )
+        let replicaSetDetails = try functionBlock(
+            named: "private var replicaSetDetails: some View {",
+            endingBefore: "private var cronJobInspectorContent: some View {",
+            in: source
+        )
+        let statefulSetDetails = try functionBlock(
+            named: "private var statefulSetDetails: some View {",
+            endingBefore: "private var daemonSetDetails: some View {",
+            in: source
+        )
+        let daemonSetDetails = try functionBlock(
+            named: "private var daemonSetDetails: some View {",
+            endingBefore: "private var cronJobInspectorContent: some View {",
+            in: source
+        )
+        let cronJobDetails = try functionBlock(
+            named: "private var cronJobInspectorContent: some View {",
+            endingBefore: "private var jobDetails: some View {",
+            in: source
+        )
+        let jobDetails = try functionBlock(
+            named: "private var jobDetails: some View {",
+            endingBefore: "private var horizontalPodAutoscalerDetails: some View {",
+            in: source
+        )
+        let horizontalPodAutoscalerDetails = try functionBlock(
+            named: "private var horizontalPodAutoscalerDetails: some View {",
+            endingBefore: "private var networkingDetails: some View {",
+            in: source
+        )
+        let ingressDetails = try functionBlock(
+            named: "private var ingressDetails: some View {",
+            endingBefore: "private var configDetails: some View {",
+            in: source
+        )
+        let pvcDetails = try functionBlock(
+            named: "private var persistentVolumeClaimDetails: some View {",
+            endingBefore: "private var persistentVolumeDetails: some View {",
+            in: source
+        )
+        let pvDetails = try functionBlock(
+            named: "private var persistentVolumeDetails: some View {",
+            endingBefore: "private var nodeDetails: some View {",
+            in: source
+        )
+        let nodeDetails = try functionBlock(
+            named: "private var nodeDetails: some View {",
+            endingBefore: "private var rbacDetails: some View {",
+            in: source
+        )
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let relationshipSource = try String(contentsOfFile: resourceRelationshipViewsPath, encoding: .utf8)
+        let rolloutHistorySource = try String(contentsOfFile: deploymentRolloutHistoryViewPath, encoding: .utf8)
+
+        XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipSection(title: \"Related ReplicaSets\")"))
+        XCTAssertTrue(deploymentOverview.contains("viewModel.openDeploymentRelatedReplicaSet(replicaSet)"))
+        XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipSection(title: \"Related Pods\")"))
+        XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipEmptyRow("))
+        XCTAssertTrue(deploymentOverview.contains("viewModel.openDeploymentRelatedPod(pod)"))
+        XCTAssertTrue(deploymentOverview.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
+        XCTAssertTrue(genericResourceDetails.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
+        XCTAssertTrue(podOverview.contains("ResourceRelationshipSection(title: \"Scheduled Node\")"))
+        XCTAssertTrue(podOverview.contains("viewModel.openPodRelatedNode(node)"))
+        XCTAssertTrue(podOverview.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
+        XCTAssertTrue(serviceOverview.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(serviceOverview.contains("viewModel.openServiceRelatedPod"))
+        XCTAssertTrue(serviceOverview.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
+        XCTAssertTrue(replicaSetDetails.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(replicaSetDetails.contains("viewModel.openReplicaSetRelatedPod"))
+        XCTAssertTrue(statefulSetDetails.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(statefulSetDetails.contains("viewModel.openStatefulSetRelatedPod"))
+        XCTAssertTrue(daemonSetDetails.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(daemonSetDetails.contains("viewModel.openDaemonSetRelatedPod"))
+        XCTAssertTrue(cronJobDetails.contains("ResourceRelationshipSection(title: \"Related Jobs\")"))
+        XCTAssertTrue(cronJobDetails.contains("viewModel.openCronJobRelatedJob(job)"))
+        XCTAssertTrue(jobDetails.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(jobDetails.contains("viewModel.openJobRelatedPod"))
+        XCTAssertTrue(horizontalPodAutoscalerDetails.contains("ResourceRelationshipSection(title: \"Scale Target\")"))
+        XCTAssertTrue(horizontalPodAutoscalerDetails.contains("viewModel.openHorizontalPodAutoscalerScaleTarget(target)"))
+        XCTAssertTrue(ingressDetails.contains("ResourceRelationshipSection(title: \"Related Services\")"))
+        XCTAssertTrue(ingressDetails.contains("viewModel.openIngressRelatedService(service)"))
+        XCTAssertTrue(serviceOverview.contains("ResourceRelationshipSection(title: \"Related Ingresses\")"))
+        XCTAssertTrue(serviceOverview.contains("viewModel.openServiceRelatedIngress(ingress)"))
+        XCTAssertTrue(pvcDetails.contains("ResourceRelationshipSection(title: \"Related PersistentVolume\")"))
+        XCTAssertTrue(pvcDetails.contains("viewModel.openPersistentVolumeClaimRelatedPersistentVolume(persistentVolume)"))
+        XCTAssertTrue(pvDetails.contains("ResourceRelationshipSection(title: \"Related PVCs\")"))
+        XCTAssertTrue(pvDetails.contains("viewModel.openPersistentVolumeRelatedPersistentVolumeClaim(pvc)"))
+        XCTAssertTrue(nodeDetails.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
+        XCTAssertTrue(nodeDetails.contains("viewModel.openNodeRelatedPod"))
+        XCTAssertTrue(relationshipSource.contains("struct ResourceRelationshipSection"))
+        XCTAssertTrue(relationshipSource.contains("struct RelatedPodsRelationshipSection"))
+        XCTAssertTrue(relationshipSource.contains("struct RelatedEventsRelationshipSection"))
+        XCTAssertTrue(relationshipSource.contains("private func subtitle(for event: EventSummary) -> String"))
+        XCTAssertTrue(relationshipSource.contains("struct ResourceRelationshipLinkButton"))
+        XCTAssertTrue(relationshipSource.contains("struct ResourceRelationshipEmptyRow"))
+        XCTAssertTrue(source.contains("DeploymentRolloutHistoryView(history: viewModel.state.deploymentRolloutHistory)"))
+        XCTAssertTrue(rolloutHistorySource.contains("struct DeploymentRolloutHistoryView"))
+        XCTAssertTrue(rolloutHistorySource.contains("DeploymentRolloutHistoryPresentation.rows(from: history)"))
+        XCTAssertTrue(rolloutHistorySource.contains("private var header: some View"))
+        XCTAssertTrue(viewModelSource.contains("public func openDeploymentRelatedReplicaSet"))
+        XCTAssertTrue(viewModelSource.contains("public func openPodRelatedNode"))
+        XCTAssertTrue(viewModelSource.contains("public var selectedDeploymentRelatedEvents"))
+        XCTAssertTrue(viewModelSource.contains("public var selectedServiceRelatedEvents"))
+        XCTAssertTrue(viewModelSource.contains("public func relatedEvents(for resource: ClusterResourceSummary)"))
+        XCTAssertTrue(viewModelSource.contains("public func openRelatedEvent"))
+        XCTAssertTrue(viewModelSource.contains("public func openServiceRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openServiceRelatedIngress"))
+        XCTAssertTrue(viewModelSource.contains("public func openReplicaSetRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openStatefulSetRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openDaemonSetRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openJobRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openCronJobRelatedJob"))
+        XCTAssertTrue(viewModelSource.contains("public func openHorizontalPodAutoscalerScaleTarget"))
+        XCTAssertTrue(viewModelSource.contains("public func openNodeRelatedPod"))
+        XCTAssertTrue(viewModelSource.contains("public func openIngressRelatedService"))
+        XCTAssertTrue(viewModelSource.contains("public func openPersistentVolumeClaimRelatedPersistentVolume"))
+        XCTAssertTrue(viewModelSource.contains("public func openPersistentVolumeRelatedPersistentVolumeClaim"))
+    }
+
     func testResourceFilterEmptyStatesExplainNamespaceAndClearAction() throws {
         let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
@@ -808,6 +976,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("swift build --disable-sandbox --product RuneFakeK8s"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testRuneFakeK8sEventsPointAtExistingPods"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneFakeK8sRESTServerTests"))
+        XCTAssertTrue(source.contains("docker_compose_terminal_smoke_test"))
+        XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallback"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests"))
         XCTAssertTrue(source.contains("can_bind_loopback_socket"))
         XCTAssertTrue(source.contains("Skipped because this environment cannot bind local loopback sockets."))
@@ -1408,6 +1578,85 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(clusterSignalsSource.contains(".runeHelp("))
     }
 
+    func testPreferencesExposeConfiguredExportDestinationSettings() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let logsSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.exportFolderDisplayName) private var exportFolderDisplayName"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.exportTextOpenerBundleIdentifier) private var exportTextOpenerBundleIdentifier"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) private var exportArchiveOpenerBundleIdentifier"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.exportUsesPrivacySafeFilenames) private var exportUsesPrivacySafeFilenames"))
+        XCTAssertTrue(preferencesSource.contains("settingsSection(\"Export destination\")"))
+        XCTAssertTrue(preferencesSource.contains("Privacy-safe export filenames"))
+        XCTAssertTrue(preferencesSource.contains("private func chooseExportFolder()"))
+        XCTAssertTrue(preferencesSource.contains("url.bookmarkData("))
+        XCTAssertTrue(preferencesSource.contains("options: [.withSecurityScope]"))
+        XCTAssertTrue(preferencesSource.contains("private func chooseExportOpener(for kind: ConfiguredExportFileKind)"))
+        XCTAssertTrue(preferencesSource.contains("Bundle(url: url)?.bundleIdentifier"))
+        XCTAssertTrue(preferencesSource.contains("ExportOpenerRecommendation(appName: \"Inkline\", kind: .plainText)"))
+        XCTAssertTrue(preferencesSource.contains("ExportOpenerRecommendation(appName: \"QuikZip\", kind: .archive)"))
+        XCTAssertTrue(preferencesSource.contains("private func detectedRecommendedExportOpener(_ recommendation: ExportOpenerRecommendation)"))
+        XCTAssertTrue(preferencesSource.contains("private func applicationURL(named appName: String) -> URL?"))
+        XCTAssertTrue(preferencesSource.contains("FileManager.default.urls("))
+        XCTAssertTrue(preferencesSource.contains("Button(\"Use \\(detected.appName)\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save to Export Folder\", systemImage: \"folder\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save and Open\", systemImage: \"arrow.up.right.square\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save Visible ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save Visible ZIP and Open\", systemImage: \"archivebox\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save Full ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(logsSource.contains("Label(\"Save All Pods ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(rootViewSource.contains("Button(\"Export JSON…\")"))
+        XCTAssertTrue(rootViewSource.contains("Button(\"Save JSON to Export Folder\")"))
+        XCTAssertTrue(rootViewSource.contains("Button(\"Save JSON and Open\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Full Logs ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Full Logs ZIP and Open\", systemImage: \"archivebox\")"))
+        XCTAssertTrue(rootViewSource.contains("Button(\"Save Pod Logs ZIP to Export Folder\")"))
+        XCTAssertTrue(rootViewSource.contains("Button(\"Save Pod Logs ZIP and Open\")"))
+        XCTAssertTrue(viewModelSource.contains("public func saveCurrentLogsToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveVisibleLogsZipToExportFolder(visibleText: String, openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveCurrentLogsZipToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveAllPodsLogsZipToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveSelectedPodLogsZipToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveDeploymentPodLogsZipToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveActiveTerminalTranscriptToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveCurrentResourceYAMLToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveCurrentResourceDescribeToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveVisibleWriteAuditLogToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("public func saveSupportBundleToExportFolder(openAfterSave: Bool)"))
+        XCTAssertTrue(viewModelSource.contains("configuredExporter.save("))
+    }
+
+    func testPreferencesExposeTerminalWorkspacePersistenceSetting() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("persistTerminalWorkspaceState"))
+        XCTAssertTrue(settingsSource.contains("runePersistTerminalWorkspaceState"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState)"))
+        XCTAssertTrue(preferencesSource.contains("Save terminal view state"))
+        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState)"))
+        XCTAssertTrue(rootViewSource.contains("restoreTerminalWorkspaceStateIfNeeded()"))
+        XCTAssertTrue(rootViewSource.contains("persistTerminalWorkspaceStateIfNeeded()"))
+    }
+
+    func testTerminalLogTabsExposeFavoriteToggle() throws {
+        let logsSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
+        let logsInspectorSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(logsSource.contains("let onToggleFavoriteTab: (String) -> Void"))
+        XCTAssertTrue(logsSource.contains("onToggleFavoriteTab(tab.id)"))
+        XCTAssertTrue(logsSource.contains("Favorite Log Target"))
+        XCTAssertFalse(logsInspectorSource.contains("struct TerminalLogTabBar: View"))
+        XCTAssertTrue(rootViewSource.contains("onToggleFavoriteTab: toggleFavoriteTerminalLogTab"))
+        XCTAssertTrue(rootViewSource.contains("private func toggleFavoriteTerminalLogTab"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.toggleFavoriteResource(kind: .pod, namespace: tab.namespace, name: tab.podName)"))
+    }
+
     func testFontSizePreferenceScalesRootInterfaceAndManifestText() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let textViewSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
@@ -1691,6 +1940,38 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(appKitPodTableSource.contains("drawInterior(withFrame: cellFrame.insetBy(dx: 4, dy: 0)"))
     }
 
+    func testResourceContextMenusExposeOperationalCopyActions() throws {
+        let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
+
+        XCTAssertTrue(appKitPodTableSource.contains("Copy pod name"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy namespace"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy container names"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy node name"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy pod IP"))
+
+        XCTAssertTrue(appKitPodTableSource.contains("Copy deployment name"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy selector"))
+
+        XCTAssertTrue(appKitPodTableSource.contains("Copy service name"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy cluster IP"))
+        XCTAssertTrue(appKitPodTableSource.contains("copyLabelSelector"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy primary detail"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy secondary detail"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy object kind"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy family"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy kind"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy status"))
+    }
+
+    func testConfigMapInspectorExposesFocusedEditAction() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootViewSource.contains("Edit ConfigMap YAML"))
+        XCTAssertTrue(rootViewSource.contains("resource.kind == .configMap"))
+        XCTAssertTrue(rootViewSource.contains("genericResourceManifestTab = .yaml"))
+        XCTAssertTrue(rootViewSource.contains("yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing"))
+    }
+
     func testSidebarContextListIsAConstrainedScrollableRegion() async throws {
         let state = RuneAppState()
         state.setContexts((1...80).map { KubeContext(name: String(format: "cluster-%03d", $0)) })
@@ -1894,7 +2175,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Issues"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Redacted kubeconfig\")"))
         XCTAssertTrue(importReviewPanelSource.contains("Run Auth Doctor"))
-        XCTAssertTrue(importReviewPanelSource.contains("update existing, import as copy, or skip"))
+        XCTAssertTrue(importReviewPanelSource.contains("duplicateHandlingChoices"))
+        XCTAssertTrue(importReviewPanelSource.contains("@Binding var duplicateHandlingChoice"))
+        XCTAssertTrue(importReviewPanelSource.contains("Picker(\"Duplicate handling\", selection: $duplicateHandlingChoice)"))
+        XCTAssertTrue(importReviewPanelSource.contains(".pickerStyle(.segmented)"))
+        XCTAssertTrue(rootViewSource.contains("duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice"))
+        XCTAssertTrue(importReviewPanelSource.contains("Duplicate handling requires an explicit choice"))
+        XCTAssertTrue(importReviewPanelSource.contains("choice.title"))
+        XCTAssertTrue(importReviewPanelSource.contains("duplicateHandlingChoiceIcon"))
         XCTAssertTrue(rootViewSource.contains("Microsoft AKS"))
         XCTAssertTrue(rootViewSource.contains("Amazon EKS"))
         XCTAssertTrue(rootViewSource.contains("Google GKE"))
@@ -1949,11 +2237,17 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("Label(\"Auth Doctor\", systemImage: \"stethoscope\")"))
         XCTAssertTrue(authDoctorBlock.contains("isAuthDoctorPanelExpanded.toggle()"))
         XCTAssertTrue(authDoctorBlock.contains("authDoctorSummaryChip"))
+        XCTAssertTrue(authDoctorBlock.contains("requestMetricsSummaryRow"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.refreshKubernetesRequestMetricsSummary()"))
         XCTAssertTrue(authDoctorBlock.contains("shouldReserveAuthDoctorPanel"))
         XCTAssertTrue(authDoctorBlock.contains("\"Run Auth Doctor\""))
         XCTAssertTrue(authDoctorBlock.contains("\"Ready\""))
         XCTAssertTrue(authDoctorBlock.contains("Button(\"Save Bundle\")"))
+        XCTAssertTrue(authDoctorBlock.contains("Button(\"Save Bundle to Export Folder\")"))
+        XCTAssertTrue(authDoctorBlock.contains("Button(\"Save Bundle and Open\")"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.saveSupportBundle()"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.saveSupportBundleToExportFolder(openAfterSave: false)"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.saveSupportBundleToExportFolder(openAfterSave: true)"))
         XCTAssertTrue(authDoctorBlock.contains("Label(\"Clear\", systemImage: \"xmark.circle\")"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.clearAuthDoctorOutput()"))
         XCTAssertTrue(authDoctorBlock.contains("if isAuthDoctorPanelExpanded"))
@@ -1970,6 +2264,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("case let .resource(section, kind):"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.setSection(section)"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.setWorkloadKind(kind)"))
+        XCTAssertTrue(authDoctorBlock.contains("case let .rbacCanIPreset(verb, resource, apiGroup, subresource, scope):"))
+        XCTAssertTrue(authDoctorBlock.contains("viewModel.useRBACCanIPreset"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.reviewLoadedKubeConfigSources()"))
         XCTAssertTrue(authDoctorBlock.contains("addClusterPopoverPresented = true"))
         XCTAssertTrue(authDoctorBlock.contains("NSWorkspace.shared.open(url)"))
@@ -1988,6 +2284,28 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: rootViewSource
         )
         XCTAssertFalse(workloadsBlock.contains("authDoctorPanel"))
+    }
+
+    func testAuthDoctorPanelExposesRequestMetricsDebugSummary() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let requestMetricsBlock = try functionBlock(
+            named: "private var requestMetricsSummaryRow: some View",
+            endingBefore: "private func authDoctorCheckRow",
+            in: rootViewSource
+        )
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(requestMetricsBlock.contains("Text(\"API Requests\")"))
+        XCTAssertTrue(requestMetricsBlock.contains("summary.requestCountText"))
+        XCTAssertTrue(requestMetricsBlock.contains("summary.outcomeText"))
+        XCTAssertTrue(requestMetricsBlock.contains("summary.transferText"))
+        XCTAssertTrue(requestMetricsBlock.contains("summary.retainedText"))
+        XCTAssertTrue(requestMetricsBlock.contains("Label(\"Refresh\", systemImage: \"arrow.clockwise\")"))
+        XCTAssertTrue(requestMetricsBlock.contains("viewModel.refreshKubernetesRequestMetricsSummary()"))
+        XCTAssertTrue(requestMetricsBlock.contains("viewModel.isRefreshingKubernetesRequestMetricsSummary"))
+        XCTAssertTrue(viewModelSource.contains("KubernetesRequestMetricsDebugPresentation"))
+        XCTAssertTrue(viewModelSource.contains("public func refreshKubernetesRequestMetricsSummary()"))
+        XCTAssertTrue(viewModelSource.contains("kubeClient.restRequestMetricsSummary()"))
     }
 
     func testAuthDoctorStaysReadOnlyAndDoesNotRunMutatingActions() throws {
@@ -2013,6 +2331,48 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(authDoctorBlock.contains("rollback"))
         XCTAssertFalse(authDoctorBlock.contains("execInPod"))
         XCTAssertFalse(authDoctorBlock.contains("helmCommandRunner"))
+        XCTAssertFalse(authDoctorBlock.contains("confirmPendingWriteAction("))
+        XCTAssertFalse(authDoctorBlock.contains("patchCronJobSuspend"))
+        XCTAssertFalse(authDoctorBlock.contains("startTerminalSession"))
+        XCTAssertFalse(authDoctorBlock.contains("startPortForward"))
+        XCTAssertFalse(authDoctorBlock.contains("stopPortForward"))
+        XCTAssertFalse(authDoctorBlock.contains("dryRunRollbackDeploymentRollout"))
+        XCTAssertFalse(authDoctorBlock.contains("runDeploymentRollback"))
+    }
+
+    func testRBACInspectorExposesReadOnlyCanISimulator() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rbacDetailsBlock = try functionBlock(
+            named: "private var rbacDetails: some View",
+            endingBefore: "private var helmDetails: some View",
+            in: rootViewSource
+        )
+        let simulatorSource = try String(contentsOfFile: rbacCanISimulatorPanelPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+        let simulatorActionBlock = try functionBlock(
+            named: "public func runRBACCanISimulator()",
+            endingBefore: "private func currentRBACCanIRequest()",
+            in: viewModelSource
+        )
+
+        XCTAssertTrue(rbacDetailsBlock.contains("RBACCanISimulatorPanel(viewModel: viewModel)"))
+        XCTAssertTrue(rbacDetailsBlock.contains("ResourceRelationshipSection(title: \"Referenced Role\")"))
+        XCTAssertTrue(rbacDetailsBlock.contains("viewModel.openRBACBindingReferencedRole(role)"))
+        XCTAssertTrue(rbacDetailsBlock.contains("ResourceRelationshipSection(title: \"Related Bindings\")"))
+        XCTAssertTrue(rbacDetailsBlock.contains("viewModel.openRBACRoleRelatedBinding(binding)"))
+        XCTAssertTrue(simulatorSource.contains("Can I?"))
+        XCTAssertTrue(simulatorSource.contains("viewModel.runRBACCanISimulator()"))
+        XCTAssertTrue(simulatorSource.contains("viewModel.useSelectedRBACResourceForCanI()"))
+        XCTAssertTrue(simulatorSource.contains("RBACCanIScope.allCases"))
+        XCTAssertTrue(simulatorSource.contains("RuneSurfaceBackground(kind: .panel)"))
+        XCTAssertTrue(simulatorActionBlock.contains("rbacCanICheck"))
+        XCTAssertTrue(viewModelSource.contains("public var selectedRBACBindingReferencedRole"))
+        XCTAssertTrue(viewModelSource.contains("public var selectedRBACRoleRelatedBindings"))
+        XCTAssertTrue(viewModelSource.contains("public func openRBACBindingReferencedRole"))
+        XCTAssertTrue(viewModelSource.contains("public func openRBACRoleRelatedBinding"))
+        XCTAssertFalse(simulatorActionBlock.contains("applyYAML"))
+        XCTAssertFalse(simulatorActionBlock.contains("delete"))
+        XCTAssertFalse(simulatorActionBlock.contains("rollback"))
     }
 
     func testLogInspectorTabsReloadWhenSelectedDirectly() throws {
@@ -2071,6 +2431,17 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(viewModelSource.contains("private nonisolated static func isBenignCancellationError"))
         XCTAssertTrue(viewModelSource.contains("normalized.contains(\"cancelled\") || normalized.contains(\"canceled\")"))
+    }
+
+    func testNamespaceMenuExposesManualNamespaceAffordance() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
+
+        XCTAssertTrue(viewModelSource.contains("public var manualNamespaceOptions"))
+        XCTAssertTrue(viewModelSource.contains("currentContextManualNamespaces()"))
+        XCTAssertTrue(rootViewSource.contains("private var manualNamespaceMenuOptions"))
+        XCTAssertTrue(rootViewSource.contains("Section(\"Manual namespaces\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(namespace, systemImage: \"square.and.pencil\")"))
     }
 
     func testHelmDetailsDiscardStaleLoadsBeforeWritingGlobalErrors() throws {
@@ -2155,11 +2526,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("case replicas"))
         XCTAssertTrue(appKitPodTableSource.contains("case favorite"))
         XCTAssertTrue(appKitPodTableSource.contains("deploymentTrailingBreathingRoom: CGFloat = 14"))
-        XCTAssertTrue(appKitPodTableSource.contains("resourceMaximumContentWidth: CGFloat = 1_200"))
-        XCTAssertTrue(appKitPodTableSource.contains("deploymentMaximumContentWidth = resourceMaximumContentWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("resourceMaximumContentWidth: CGFloat = 860"))
+        XCTAssertTrue(appKitPodTableSource.contains("deploymentMaximumContentWidth: CGFloat = 620"))
+        XCTAssertTrue(appKitPodTableSource.contains("serviceMaximumContentWidth: CGFloat = 740"))
+        XCTAssertTrue(appKitPodTableSource.contains("genericMaximumContentWidth: CGFloat = 820"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.enclosingScrollView?.contentView.bounds.width"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))"))
+        XCTAssertTrue(appKitPodTableSource.contains("static func renderedTableWidth(in tableView: NSTableView) -> CGFloat"))
+        XCTAssertTrue(appKitPodTableSource.contains("actionColumnTrailingPadding: CGFloat = 18"))
+        XCTAssertTrue(appKitPodTableSource.contains("columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding"))
+        XCTAssertTrue(appKitPodTableSource.contains("static func updateRenderedTableWidth(on tableView: NSTableView?)"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerView.setFrameSize(NSSize(width: tableWidth, height: headerView.frame.height))"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.headerView?.needsDisplay = true"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.needsLayout = true"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.layoutSubtreeIfNeeded()"))
+        XCTAssertTrue(appKitPodTableSource.contains("scrollView.reflectScrolledClipView(scrollView.contentView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("let visibleRows = tableView.rows(in: tableView.visibleRect)"))
+        XCTAssertTrue(appKitPodTableSource.contains("rowView.layoutSubtreeIfNeeded()"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.view(atColumn: column, row: row, makeIfNecessary: false)"))
+        XCTAssertTrue(appKitPodTableSource.contains("cellView.layoutSubtreeIfNeeded()"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableView.displayIfNeeded()"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)"))
+        XCTAssertFalse(appKitPodTableSource.contains("let tableWidth = RuneAppKitResourceTableStyle.renderedTableWidth(in: tableView)\n            if abs(tableView.frame.width - tableWidth) >= 1"))
         XCTAssertTrue(appKitPodTableSource.contains("applyImmediateResourceContextMenuSelection"))
         XCTAssertTrue(appKitPodTableSource.contains("coordinator?.selectRowForContextMenu(row, in: self)"))
         XCTAssertTrue(appKitPodTableSource.contains("DispatchQueue.main.async { [weak self]"))
@@ -2167,6 +2556,11 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("onVisibleWidthChanged"))
         XCTAssertTrue(appKitPodTableSource.contains("override func layout()"))
         XCTAssertTrue(appKitPodTableSource.contains("coordinator?.updateColumnWidths()"))
+        XCTAssertTrue(appKitPodTableSource.contains("let renderedWidth = tableView.map(RuneAppKitResourceTableStyle.renderedTableWidth(in:))"))
+        XCTAssertTrue(appKitPodTableSource.contains("let contentWidth = (superview as? NSTableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains(".map(RuneAppKitResourceTableStyle.renderedTableWidth(in:))"))
+        XCTAssertTrue(appKitPodTableSource.contains(".tableColumns"))
+        XCTAssertTrue(appKitPodTableSource.contains("min(bounds.width, contentWidth)"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitFavoriteButtonCell"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)"))
         XCTAssertFalse(rootViewSource.contains("List(viewModel.visibleDeployments)"))
@@ -2251,10 +2645,17 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(clusterSignalsSource.contains("overviewClusterSignalsHelp"))
         XCTAssertTrue(clusterSignalsSource.contains("overviewInsightHelp(for:"))
         XCTAssertTrue(clusterSignalsSource.contains("overviewSignalRowHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains("gitOpsSection(id: .gitOps, items: gitOpsRollups)"))
+        XCTAssertTrue(clusterSignalsSource.contains("overviewGitOpsRowHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains("onOpenGitOpsRollup(item)"))
+        XCTAssertTrue(clusterSignalsSource.contains("title: \"GitOps\""))
         XCTAssertTrue(clusterSignalsSource.contains("overviewDependencyRowHelp("))
+        XCTAssertTrue(clusterSignalsSource.contains("Flux and ArgoCD rollups from loaded custom resources"))
         XCTAssertTrue(clusterSignalsSource.contains("Warning Kubernetes Events promoted into a short incident timeline"))
         XCTAssertTrue(clusterSignalsSource.contains(".runeHelp(overviewClusterSignalsHelp, enabled: showHoverTooltips)"))
         XCTAssertTrue(clusterSignalsSource.contains(".runeHelp(help, enabled: showHoverTooltips)"))
+        XCTAssertTrue(rootViewSource.contains("gitOpsRollups: viewModel.overviewGitOpsRollupItems"))
+        XCTAssertTrue(rootViewSource.contains("onOpenGitOpsRollup: viewModel.openOverviewGitOpsRollup"))
         XCTAssertTrue(recentEventsSource.contains("Recent Events shows raw Kubernetes Event objects"))
         XCTAssertTrue(recentEventsSource.contains("overviewEventRowHelp("))
         XCTAssertTrue(recentEventsSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
@@ -2412,6 +2813,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appSource.contains(".keyboardShortcut(.rightArrow, modifiers: [.command, .option])"))
     }
 
+    func testAppShortcutsExposeParameterizedContextAndWorkspaceLaunches() throws {
+        let shortcutsSource = try String(contentsOfFile: runeAppShortcutsPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(shortcutsSource.contains("struct OpenRuneContextIntent: AppIntent"))
+        XCTAssertTrue(shortcutsSource.contains("@Parameter(title: \"Context Name\")"))
+        XCTAssertTrue(shortcutsSource.contains("RunePendingLaunchRequest(action: .recentContexts, query: contextName)"))
+        XCTAssertTrue(shortcutsSource.contains("struct OpenRuneWorkspaceIntent: AppIntent"))
+        XCTAssertTrue(shortcutsSource.contains("@Parameter(title: \"Workspace Name\")"))
+        XCTAssertTrue(shortcutsSource.contains("RunePendingLaunchRequest(action: .savedWorkspaces, query: workspaceName)"))
+        XCTAssertTrue(rootSource.contains("consumeRunePendingLaunchRequest()"))
+        XCTAssertTrue(rootSource.contains("launchCommandPaletteQuery(prefix: \":ctx\", query: request.query)"))
+        XCTAssertTrue(rootSource.contains("launchCommandPaletteQuery(prefix: \":ws\", query: request.query)"))
+    }
+
     func testContextMenuDeleteOnlyArmsConfirmationWithoutSelectingOrReloading() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
@@ -2481,16 +2897,36 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
 
         XCTAssertTrue(viewModelSource.contains("private static let operatorResourcePageSize = 40"))
+        XCTAssertTrue(viewModelSource.contains("OperatorResourceFocus"))
+        XCTAssertTrue(viewModelSource.contains("public func setOperatorResourceFocus(_ focus: OperatorResourceFocus)"))
+        XCTAssertTrue(viewModelSource.contains("public static func isGitOpsOperatorResource"))
         XCTAssertTrue(viewModelSource.contains("public var pagedOperatorResources"))
         XCTAssertTrue(viewModelSource.contains("OperatorResourceListSortColumn"))
         XCTAssertTrue(viewModelSource.contains("toggleOperatorResourceSort"))
+        XCTAssertTrue(rootViewSource.contains("Operator resource focus"))
+        XCTAssertTrue(rootViewSource.contains("ForEach(OperatorResourceFocus.allCases)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setOperatorResourceFocus($0)"))
+        XCTAssertTrue(rootViewSource.contains("No GitOps resources found"))
         XCTAssertTrue(rootViewSource.contains("AppKitOperatorResourceListView("))
         XCTAssertTrue(rootViewSource.contains("resources: viewModel.pagedOperatorResources"))
         XCTAssertTrue(rootViewSource.contains("sortColumn: viewModel.operatorResourceSortColumn"))
         XCTAssertTrue(rootViewSource.contains("onToggleSort: viewModel.toggleOperatorResourceSort"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.toggleOperatorPrinterColumnsForCurrentFamily()"))
+        XCTAssertTrue(rootViewSource.contains("showsPrinterColumns: viewModel.showsOperatorPrinterColumnsForCurrentFamily"))
+        XCTAssertTrue(viewModelSource.contains("resource.printerColumns"))
+        XCTAssertTrue(viewModelSource.contains("hiddenOperatorPrinterColumnFamilies"))
+        XCTAssertTrue(viewModelSource.contains("contextPreferences.saveHiddenOperatorPrinterColumnFamilies"))
         XCTAssertTrue(kubeClientSource.contains(".prefix(48)"))
         XCTAssertTrue(kubeClientSource.contains(".prefix(16)"))
         XCTAssertTrue(kubeClientSource.contains("if output.count >= 500 { return output }"))
+        XCTAssertTrue(kubeClientSource.contains("/apis/apiextensions.k8s.io/v1/customresourcedefinitions"))
+        XCTAssertTrue(kubeClientSource.contains("parseCRDPrinterColumnDefinitions"))
+        XCTAssertTrue(kubeClientSource.contains("value(atJSONPath: definition.jsonPath"))
+        let appKitSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
+        XCTAssertTrue(appKitSource.contains("case printerColumns"))
+        XCTAssertTrue(appKitSource.contains("return \"Columns\""))
+        XCTAssertTrue(appKitSource.contains("operatorPrinterColumnsColumnWidth"))
+        XCTAssertTrue(appKitSource.contains("tableColumn.isHidden = !parent.showsPrinterColumns"))
     }
 
     private var runeRootViewPath: String {
@@ -2500,6 +2936,42 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
+    private var runeAppShortcutsPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneApp/RuneAppShortcuts.swift").path
+    }
+
+    private var rbacCanISimulatorPanelPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RBACCanISimulatorPanel.swift").path
+    }
+
+    private var resourceRelationshipViewsPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceRelationshipViews.swift").path
+    }
+
+    private var deploymentRolloutHistoryViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/DeploymentRolloutHistoryView.swift").path
     }
 
     private var kubeConfigImportReviewPanelPath: String {
@@ -2686,6 +3158,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalSessionTabBar.swift").path
+    }
+
+    private var terminalLogTabBarPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalLogTabBar.swift").path
     }
 
     private var terminalSessionControlRowPath: String {

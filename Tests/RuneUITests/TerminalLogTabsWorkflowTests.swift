@@ -93,6 +93,7 @@ final class TerminalLogTabsWorkflowTests: XCTestCase {
         let presentations = state.presentations(pods: pods, isFavorite: { $0.name == "worker-0" })
 
         XCTAssertEqual(presentations.map(\.title), ["api-0", "worker-0"])
+        XCTAssertEqual(presentations.map(\.podID), ["default/api-0", "default/worker-0"])
         XCTAssertEqual(presentations.map(\.subtitle), ["default", "default"])
         XCTAssertEqual(presentations.map(\.isFavorite), [false, true])
         XCTAssertEqual(presentations[1].accessibilityLabel, "worker-0, namespace default")

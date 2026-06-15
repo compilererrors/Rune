@@ -606,12 +606,13 @@ public struct KubernetesOutputParser {
             .map { item in
                 let phase = item.status?.phase ?? "Unknown"
                 let size = item.spec?.resources?.requests?.storage ?? item.status?.capacity?.storage ?? "—"
+                let secondaryText = item.spec?.volumeName.map { "PV \($0) · \(size)" } ?? size
                 return ClusterResourceSummary(
                     kind: .persistentVolumeClaim,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: phase,
-                    secondaryText: size
+                    secondaryText: secondaryText
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -710,13 +711,17 @@ public struct KubernetesOutputParser {
                 let address = item.status.loadBalancer?.ingress?.first?.hostname
                     ?? item.status.loadBalancer?.ingress?.first?.ip
                     ?? "No address"
+                let serviceNames = Self.ingressServiceNames(from: item)
+                let secondaryText = serviceNames.isEmpty
+                    ? address
+                    : "Service \(serviceNames.joined(separator: ", "))"
 
                 return ClusterResourceSummary(
                     kind: .ingress,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: host,
-                    secondaryText: address
+                    secondaryText: secondaryText
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -846,12 +851,13 @@ public struct KubernetesOutputParser {
         return decoded.items
             .map { item in
                 let subjectCount = item.subjects?.count ?? 0
+                let refKind = item.roleRef.kind ?? "Role"
                 let refName = item.roleRef.name ?? "-"
                 return ClusterResourceSummary(
                     kind: .roleBinding,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
-                    primaryText: "→ \(refName)",
+                    primaryText: "→ \(refKind)/\(refName)",
                     secondaryText: "\(subjectCount) subject(s)"
                 )
             }
@@ -879,12 +885,13 @@ public struct KubernetesOutputParser {
         return decoded.items
             .map { item in
                 let subjectCount = item.subjects?.count ?? 0
+                let refKind = item.roleRef.kind ?? "ClusterRole"
                 let refName = item.roleRef.name ?? "-"
                 return ClusterResourceSummary(
                     kind: .clusterRoleBinding,
                     name: item.metadata.name,
                     namespace: nil,
-                    primaryText: "→ \(refName)",
+                    primaryText: "→ \(refKind)/\(refName)",
                     secondaryText: "\(subjectCount) subject(s)"
                 )
             }
@@ -1119,11 +1126,48 @@ public struct KubernetesOutputParser {
         let spec: KubeServiceSpec
     }
 
+    private static func ingressServiceNames(from item: KubeIngressItem) -> [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+
+        func append(_ name: String?) {
+            guard let name, !name.isEmpty, seen.insert(name).inserted else { return }
+            names.append(name)
+        }
+
+        append(item.spec.defaultBackend?.service?.name)
+        for rule in item.spec.rules ?? [] {
+            for path in rule.http?.paths ?? [] {
+                append(path.backend.service?.name)
+            }
+        }
+
+        return names
+    }
+
+    private struct KubeIngressBackendService: Decodable {
+        let name: String?
+    }
+
+    private struct KubeIngressBackend: Decodable {
+        let service: KubeIngressBackendService?
+    }
+
+    private struct KubeIngressPath: Decodable {
+        let backend: KubeIngressBackend
+    }
+
+    private struct KubeIngressHTTPRule: Decodable {
+        let paths: [KubeIngressPath]?
+    }
+
     private struct KubeIngressRule: Decodable {
         let host: String?
+        let http: KubeIngressHTTPRule?
     }
 
     private struct KubeIngressSpec: Decodable {
+        let defaultBackend: KubeIngressBackend?
         let rules: [KubeIngressRule]?
     }
 

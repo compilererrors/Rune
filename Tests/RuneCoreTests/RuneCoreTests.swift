@@ -223,6 +223,20 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, powerUserUndoLimit)
     }
 
+    func testTerminalWorkspacePersistenceSettingDefaultsOffAndPersists() {
+        let suiteName = "RuneCoreTests.terminalWorkspacePersistence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(defaults.runePersistTerminalWorkspaceState)
+
+        defaults.runePersistTerminalWorkspaceState = true
+        XCTAssertTrue(defaults.runePersistTerminalWorkspaceState)
+
+        defaults.runePersistTerminalWorkspaceState = false
+        XCTAssertFalse(defaults.runePersistTerminalWorkspaceState)
+    }
+
     func testAppearanceRecentThemesRecordDedupeAndTrim() {
         let suiteName = "RuneCoreTests.appearanceRecentThemes.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -241,6 +255,34 @@ final class RuneCoreTests: XCTestCase {
         defaults.runeAppearanceRecentThemes = [" theme-x ", "theme-y", "theme-x", "", "theme-z"]
 
         XCTAssertEqual(defaults.runeAppearanceRecentThemes, ["theme-x", "theme-y", "theme-z"])
+    }
+
+    func testExportDestinationSettingsPersistWithoutDefaultLocalPaths() {
+        let suiteName = "RuneCoreTests.exportDestination.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertNil(defaults.runeExportFolderBookmarkData)
+        XCTAssertEqual(defaults.runeExportFolderDisplayName, "")
+        XCTAssertNil(defaults.runeExportTextOpenerBundleIdentifier)
+        XCTAssertNil(defaults.runeExportArchiveOpenerBundleIdentifier)
+        XCTAssertFalse(defaults.runeExportUsesPrivacySafeFilenames)
+
+        let bookmark = Data([0x52, 0x75, 0x6e, 0x65])
+        defaults.runeExportFolderBookmarkData = bookmark
+        defaults.runeExportFolderDisplayName = " Synthetic Exports "
+        defaults.runeExportTextOpenerBundleIdentifier = " com.example.TextViewer "
+        defaults.runeExportArchiveOpenerBundleIdentifier = ""
+        defaults.runeExportUsesPrivacySafeFilenames = true
+
+        XCTAssertEqual(defaults.runeExportFolderBookmarkData, bookmark)
+        XCTAssertEqual(defaults.runeExportFolderDisplayName, "Synthetic Exports")
+        XCTAssertEqual(defaults.runeExportTextOpenerBundleIdentifier, "com.example.TextViewer")
+        XCTAssertNil(defaults.runeExportArchiveOpenerBundleIdentifier)
+        XCTAssertTrue(defaults.runeExportUsesPrivacySafeFilenames)
+
+        defaults.runeExportFolderBookmarkData = nil
+        XCTAssertNil(defaults.runeExportFolderBookmarkData)
     }
 
     func testRuneKeyboardShortcutParsesAndMatchesShiftBinding() {
@@ -490,6 +532,19 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertTrue(diagnostic.recoveryHint.contains("Refresh"))
     }
 
+    func testTerminalFailureDiagnosticClassifiesPodRestart() {
+        let diagnostic = PodTerminalSessionDiagnostic.classify(
+            errorMessage: #"container "app" restarted while the exec session was attached"#,
+            podName: "pod-0",
+            containerName: "app",
+            shell: "sh"
+        )
+
+        XCTAssertEqual(diagnostic.category, .podRestarted)
+        XCTAssertTrue(diagnostic.summary.contains("Pod restarted"))
+        XCTAssertTrue(diagnostic.recoveryHint.contains("Ready"))
+    }
+
     func testTerminalFailureDiagnosticClassifiesTransportDisconnect() {
         let diagnostic = PodTerminalSessionDiagnostic.classify(
             errorMessage: "The network connection was lost while opening the exec stream.",
@@ -570,6 +625,36 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 1), 500_000_000)
         XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 2), 1_000_000_000)
         XCTAssertEqual(KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: transient, attempt: 3), 2_000_000_000)
+    }
+
+    func testPendingLaunchActionRoundTripsAndConsumesFromUserDefaults() {
+        let suiteName = "RuneCoreTests.pendingLaunchAction.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertNil(defaults.runePendingLaunchAction)
+
+        defaults.runePendingLaunchAction = .savedWorkspaces
+
+        XCTAssertEqual(defaults.runePendingLaunchAction, .savedWorkspaces)
+        XCTAssertEqual(defaults.consumeRunePendingLaunchAction(), .savedWorkspaces)
+        XCTAssertNil(defaults.runePendingLaunchAction)
+        XCTAssertNil(defaults.consumeRunePendingLaunchAction())
+
+        defaults.runePendingLaunchAction = .recentContexts
+
+        XCTAssertEqual(defaults.consumeRunePendingLaunchAction(), .recentContexts)
+        XCTAssertNil(defaults.runePendingLaunchAction)
+
+        defaults.setRunePendingLaunchRequest(
+            RunePendingLaunchRequest(action: .savedWorkspaces, query: "  Workspace Alpha\nshared  ")
+        )
+
+        let request = defaults.consumeRunePendingLaunchRequest()
+        XCTAssertEqual(request?.action, .savedWorkspaces)
+        XCTAssertEqual(request?.query, "Workspace Alpha shared")
+        XCTAssertNil(defaults.runePendingLaunchAction)
+        XCTAssertNil(defaults.runePendingLaunchQuery)
     }
 
     @MainActor

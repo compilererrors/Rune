@@ -11,7 +11,6 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertFalse(source.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(source.contains("LogToolbarScrollRow"))
         XCTAssertTrue(source.contains("private var sourceControls: some View"))
-        XCTAssertTrue(source.contains("private var modeControls: some View"))
         XCTAssertTrue(source.contains("private var primaryControls: some View"))
         XCTAssertTrue(source.contains("private var toolbarActions: some View"))
         XCTAssertTrue(source.contains("enum ResourceLogsPresentationStyle"))
@@ -20,7 +19,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("presentationStyle == .terminalCompact ? 8 : 10"))
         XCTAssertTrue(source.contains("LogToolbarGroup"))
         XCTAssertTrue(source.contains("LogToolbarGroup(role: .source)"))
-        XCTAssertTrue(source.contains("LogToolbarGroup(role: .source, spacing: 4)"))
+        XCTAssertTrue(source.contains("LogToolbarGroup(spacing: 6)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.window), role: .window)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.container), role: .container)"))
         XCTAssertTrue(source.contains("LogToolbarStatusIndicator("))
@@ -34,6 +33,14 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarGroupSpacing"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
         XCTAssertTrue(source.contains("Label(t(.saveLogs), systemImage: \"square.and.arrow.down\")"))
+        XCTAssertTrue(source.contains("Label(\"Save to Export Folder\", systemImage: \"folder\")"))
+        XCTAssertTrue(source.contains("Label(\"Save and Open\", systemImage: \"arrow.up.right.square\")"))
+        XCTAssertTrue(source.contains("Label(\"Save Visible ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(source.contains("Label(\"Save Visible ZIP and Open\", systemImage: \"archivebox\")"))
+        XCTAssertTrue(source.contains("Label(\"Save Full ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(source.contains("Label(\"Save Full ZIP and Open\", systemImage: \"archivebox\")"))
+        XCTAssertTrue(source.contains("Label(\"Save All Pods ZIP to Export Folder\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(source.contains("Label(\"Save All Pods ZIP and Open\", systemImage: \"archivebox\")"))
         XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(source.contains("Label(t(.more), systemImage: \"ellipsis.circle\")"))
         XCTAssertTrue(source.contains("t(.exportVisibleResultsZip)"))
@@ -186,28 +193,28 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
     func testTailControlDoesNotAddPauseButtonBesideTail() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        let modeControls = try XCTUnwrap(source.slice(
-            from: "private var modeControls: some View",
-            to: "private var toolbarActions: some View"
+        let toolbarActions = try XCTUnwrap(source.slice(
+            from: "private var toolbarActions: some View",
+            to: "private var language: RuneLanguage"
         ))
 
-        XCTAssertTrue(modeControls.contains("tailControl"))
-        XCTAssertTrue(modeControls.contains("LogToolbarStatusIndicator("))
-        XCTAssertTrue(modeControls.contains("statusText: statusText"))
-        XCTAssertTrue(modeControls.contains("showsPreviousHint: includePreviousLogs"))
-        XCTAssertTrue(modeControls.contains("if isStreamPaused"))
-        XCTAssertTrue(modeControls.contains("Label(t(.previous), systemImage: \"clock.arrow.circlepath\")"))
-        XCTAssertTrue(modeControls.contains("Label(t(.resume), systemImage: \"play.fill\")"))
-        XCTAssertTrue(modeControls.contains("Label(t(.pause), systemImage: \"pause.fill\")"))
-        XCTAssertTrue(modeControls.contains(".buttonStyle(.bordered)"))
-        XCTAssertTrue(modeControls.contains(".buttonStyle(.borderedProminent)"))
-        XCTAssertTrue(modeControls.contains(".logToolbarIconButtonFrame()"))
-        XCTAssertTrue(modeControls.contains("Button(t(.stopTail))"))
-        XCTAssertFalse(modeControls.contains("Toggle(\"Tail\""))
-        XCTAssertFalse(modeControls.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
+        XCTAssertTrue(toolbarActions.contains("tailControl"))
+        XCTAssertTrue(toolbarActions.contains("LogToolbarStatusIndicator("))
+        XCTAssertTrue(toolbarActions.contains("statusText: statusText"))
+        XCTAssertTrue(toolbarActions.contains("showsPreviousHint: includePreviousLogs"))
+        XCTAssertTrue(toolbarActions.contains("Label(t(.previous), systemImage: \"clock.arrow.circlepath\")"))
+        XCTAssertTrue(source.contains("if isStreamPaused"))
+        XCTAssertTrue(source.contains("Label(t(.resume), systemImage: \"play.fill\")"))
+        XCTAssertTrue(source.contains("Label(t(.pause), systemImage: \"pause.fill\")"))
+        XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
+        XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
+        XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
+        XCTAssertTrue(source.contains("Button(t(.stopTail))"))
+        XCTAssertFalse(source.contains("Toggle(\"Tail\""))
+        XCTAssertFalse(source.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
     }
 
-    func testTerminalCompactLogsToolbarKeepsModeControlsOnFirstRowAndActionsOnSecondRow() throws {
+    func testTerminalCompactLogsToolbarKeepsSourcesOnFirstRowAndConsolidatedActionsOnSecondRow() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let compactBody = try XCTUnwrap(source.slice(
             from: "private var terminalCompactBody: some View",
@@ -217,11 +224,12 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(compactBody.contains("LogToolbarScrollRow {\n                primaryControls"))
         XCTAssertTrue(compactBody.contains("LogToolbarScrollRow {\n                toolbarActions"))
         XCTAssertFalse(compactBody.contains("LogToolbarScrollRow {\n                modeControls"))
+        XCTAssertFalse(source.contains("private var modeControls: some View"))
         XCTAssertFalse(compactBody.contains("ResourceLogsStatusPanel("))
         XCTAssertFalse(compactBody.contains("statusText: statusText,\n                showsPreviousHint: includePreviousLogs"))
     }
 
-    func testLogToolbarStatusIndicatorLivesWithModeControlsAndHasHelp() throws {
+    func testLogToolbarStatusIndicatorLivesWithActionControlsAndHasHelp() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let indicatorSource = try XCTUnwrap(source.slice(
             from: "private struct LogToolbarStatusIndicator",
@@ -236,11 +244,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     func testTerminalLogTabsExposePodNamesOnHover() throws {
-        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        let tabBarSource = try XCTUnwrap(source.slice(
-            from: "struct TerminalLogTabBar: View",
-            to: "private extension View"
-        ))
+        let tabBarSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
 
         XCTAssertTrue(tabBarSource.contains("Text(\"\\(number) \\(tab.title)\")"))
         XCTAssertTrue(tabBarSource.contains(".help(tab.helpText)"))
@@ -249,11 +253,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     func testTerminalLogTabsUseRuneSurfaceChrome() throws {
-        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        let tabBarSource = try XCTUnwrap(source.slice(
-            from: "struct TerminalLogTabBar: View",
-            to: "private extension View"
-        ))
+        let tabBarSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
+        let logsInspectorSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(tabBarSource.contains("RuneSurfaceBackground(kind: .inset)"))
         XCTAssertTrue(tabBarSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
@@ -261,6 +262,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(tabBarSource.contains(".frame(width: 3, height: 16)"))
         XCTAssertFalse(tabBarSource.contains("RuneSurfaceBackground(kind: .editor)"))
         XCTAssertFalse(tabBarSource.contains(".frame(height: 2)"))
+        XCTAssertFalse(logsInspectorSource.contains("struct TerminalLogTabBar: View"))
     }
 
     func testLogSearchReturnsOriginalTextWhenQueryIsBlank() {
@@ -709,6 +711,15 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceLogsInspectorView.swift").path
+    }
+
+    private var terminalLogTabBarPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalLogTabBar.swift").path
     }
 
     private var runeRootViewPath: String {

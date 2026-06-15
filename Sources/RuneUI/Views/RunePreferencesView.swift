@@ -1,8 +1,10 @@
 import AppKit
 import RuneCore
 import RuneDiagnostics
+import RuneExport
 import RuneStore
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct SettingsHelpButton: View {
     let text: String
@@ -44,6 +46,26 @@ private enum RuneSettingsMetrics {
     static let rowControlColumnWidth: CGFloat = 260
     static let compactControlHeight: CGFloat = 32
     static let textFieldWidth: CGFloat = 92
+}
+
+private struct ExportOpenerRecommendation {
+    let appName: String
+    let kind: ConfiguredExportFileKind
+
+    func detail(bundleIdentifier: String) -> String {
+        switch kind {
+        case .plainText:
+            return "Works well for .log, .txt, .yaml, .json, and terminal transcript exports. Bundle ID: \(bundleIdentifier)"
+        case .archive:
+            return "Works well for .zip log archives and transcript archives. Bundle ID: \(bundleIdentifier)"
+        }
+    }
+}
+
+private struct DetectedExportOpener {
+    let appName: String
+    let bundleIdentifier: String
+    let detail: String
 }
 
 private struct RuneSettingsTokenButtonStyle: ButtonStyle {
@@ -254,6 +276,10 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoLines) private var customTwoLinesRaw = "99999"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw = "6"
     @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
+    @AppStorage(RuneSettingsKeys.exportFolderDisplayName) private var exportFolderDisplayName = ""
+    @AppStorage(RuneSettingsKeys.exportTextOpenerBundleIdentifier) private var exportTextOpenerBundleIdentifier = ""
+    @AppStorage(RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) private var exportArchiveOpenerBundleIdentifier = ""
+    @AppStorage(RuneSettingsKeys.exportUsesPrivacySafeFilenames) private var exportUsesPrivacySafeFilenames = false
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
@@ -263,6 +289,9 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
+    @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
+    private let inklineRecommendation = ExportOpenerRecommendation(appName: "Inkline", kind: .plainText)
+    private let quikZipRecommendation = ExportOpenerRecommendation(appName: "QuikZip", kind: .archive)
     @AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit) private var sessionLogCacheEntryLimit =
         RuneSettingsKeys.sessionLogCacheEntryLimitDefault
     @AppStorage(RuneSettingsKeys.resourceYAMLUndoSnapshotLimit) private var resourceYAMLUndoSnapshotLimit =
@@ -787,6 +816,59 @@ public struct RunePreferencesView: View {
                 timeValueRaw: $customTwoTimeValueRaw,
                 timeUnitRaw: $customTwoTimeUnitRaw
             )
+
+            settingsSection("Export destination") {
+                settingsControlRow(
+                    title: "Default export folder",
+                    detail: "Used by Save to Export Folder and Save and Open actions."
+                ) {
+                    HStack(spacing: 8) {
+                        Text(exportFolderDisplayName.isEmpty ? "Not configured" : exportFolderDisplayName)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(exportFolderDisplayName.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Choose…", action: chooseExportFolder)
+                        Button("Clear", action: clearExportFolder)
+                            .disabled(exportFolderDisplayName.isEmpty)
+                    }
+                }
+
+                settingsControlRow(
+                    title: "Text opener bundle ID",
+                    detail: "Optional app bundle identifier for .log and .txt exports."
+                ) {
+                    HStack(spacing: 8) {
+                        TextField("System default", text: $exportTextOpenerBundleIdentifier)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose…") {
+                            chooseExportOpener(for: .plainText)
+                        }
+                    }
+                }
+
+                settingsControlRow(
+                    title: "Archive opener bundle ID",
+                    detail: "Optional app bundle identifier for .zip exports."
+                ) {
+                    HStack(spacing: 8) {
+                        TextField("System default", text: $exportArchiveOpenerBundleIdentifier)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose…") {
+                            chooseExportOpener(for: .archive)
+                        }
+                    }
+                }
+
+                exportOpenerRecommendationRow(inklineRecommendation)
+                exportOpenerRecommendationRow(quikZipRecommendation)
+
+                settingsToggleRow(
+                    "Privacy-safe export filenames",
+                    help: "Uses generic generated filenames for configured-folder exports instead of resource-derived names.",
+                    isOn: $exportUsesPrivacySafeFilenames
+                )
+            }
         }
     }
 
@@ -938,6 +1020,14 @@ public struct RunePreferencesView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Divider()
+
+                    settingsToggleRow(
+                        "Save terminal view state",
+                        help: "Restores open terminal targets and log tabs on next launch. Transcripts and shell commands are not saved.",
+                        isOn: $persistTerminalWorkspaceState
+                    )
                 }
             }
 
@@ -1031,6 +1121,103 @@ public struct RunePreferencesView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             helpInline("Shown in all log-window dropdowns.")
+        }
+    }
+
+    private func chooseExportFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let bookmark = try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            UserDefaults.standard.runeExportFolderBookmarkData = bookmark
+            exportFolderDisplayName = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        } catch {
+            UserDefaults.standard.runeExportFolderBookmarkData = nil
+            exportFolderDisplayName = ""
+        }
+    }
+
+    private func clearExportFolder() {
+        UserDefaults.standard.runeExportFolderBookmarkData = nil
+        exportFolderDisplayName = ""
+    }
+
+    private func chooseExportOpener(for kind: ConfiguredExportFileKind) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        panel.prompt = "Choose"
+
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let bundleIdentifier = Bundle(url: url)?.bundleIdentifier else {
+            return
+        }
+
+        switch kind {
+        case .plainText:
+            exportTextOpenerBundleIdentifier = bundleIdentifier
+        case .archive:
+            exportArchiveOpenerBundleIdentifier = bundleIdentifier
+        }
+    }
+
+    @ViewBuilder
+    private func exportOpenerRecommendationRow(_ recommendation: ExportOpenerRecommendation) -> some View {
+        if let detected = detectedRecommendedExportOpener(recommendation) {
+            settingsControlRow(
+                title: "\(detected.appName) detected",
+                detail: detected.detail
+            ) {
+                Button("Use \(detected.appName)") {
+                    setExportOpenerBundleIdentifier(detected.bundleIdentifier, for: recommendation.kind)
+                }
+            }
+        }
+    }
+
+    private func detectedRecommendedExportOpener(_ recommendation: ExportOpenerRecommendation) -> DetectedExportOpener? {
+        guard let appURL = applicationURL(named: recommendation.appName),
+              let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
+              !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+
+        return DetectedExportOpener(
+            appName: recommendation.appName,
+            bundleIdentifier: bundleIdentifier,
+            detail: recommendation.detail(bundleIdentifier: bundleIdentifier)
+        )
+    }
+
+    private func applicationURL(named appName: String) -> URL? {
+        let filename = "\(appName).app"
+        let directories = FileManager.default.urls(
+            for: .applicationDirectory,
+            in: [.userDomainMask, .localDomainMask, .systemDomainMask]
+        )
+        return directories
+            .map { $0.appendingPathComponent(filename, isDirectory: true) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func setExportOpenerBundleIdentifier(_ bundleIdentifier: String, for kind: ConfiguredExportFileKind) {
+        switch kind {
+        case .plainText:
+            exportTextOpenerBundleIdentifier = bundleIdentifier
+        case .archive:
+            exportArchiveOpenerBundleIdentifier = bundleIdentifier
         }
     }
 

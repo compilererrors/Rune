@@ -45,6 +45,31 @@ public struct KubeConfigImportContextPreview: Sendable, Equatable {
     }
 }
 
+public enum KubeConfigDuplicateHandlingChoice: String, CaseIterable, Sendable, Equatable {
+    case updateExisting
+    case importAsCopy
+    case skipDuplicate
+
+    public var title: String {
+        switch self {
+        case .updateExisting: return "Update existing"
+        case .importAsCopy: return "Import as copy"
+        case .skipDuplicate: return "Skip duplicate"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .updateExisting:
+            return "Replace the saved context metadata after review."
+        case .importAsCopy:
+            return "Keep both contexts by assigning a new alias before saving."
+        case .skipDuplicate:
+            return "Leave the existing context unchanged."
+        }
+    }
+}
+
 public struct KubeConfigImportReview: Sendable, Equatable {
     public let contexts: [KubeConfigImportContextPreview]
     public let issues: [KubeConfigImportIssue]
@@ -65,6 +90,10 @@ public struct KubeConfigImportReview: Sendable, Equatable {
 
     public var isValid: Bool {
         !issues.contains { $0.severity == .error }
+    }
+
+    public var duplicateHandlingChoices: [KubeConfigDuplicateHandlingChoice] {
+        issues.contains { $0.id.contains("duplicate") } ? KubeConfigDuplicateHandlingChoice.allCases : []
     }
 }
 

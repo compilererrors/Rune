@@ -725,6 +725,33 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         }
     }
 
+    func testExecAuthRejectsMissingTokenAndClientCertificateCredentials() async throws {
+        let execPlugin = try writeExecCredentialPlugin(
+            jsonPayload: #"{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{}}"#
+        )
+        defer { try? FileManager.default.removeItem(at: execPlugin) }
+
+        let kubeconfig = try writeKubeconfig(
+            serverURL: "https://127.0.0.1:6443",
+            userYAML: """
+            exec:
+              apiVersion: client.authentication.k8s.io/v1
+              command: \(execPlugin.path)
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        do {
+            _ = try await KubernetesRESTClient._testResolvedTLSDescription(
+                environment: ["KUBECONFIG": kubeconfig.path],
+                contextName: "local-fixture"
+            )
+            XCTFail("Expected exec auth without token or client certificate credentials to be rejected")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("missing token or client certificate credentials"))
+        }
+    }
+
     func testLiveKubeconfigContextListsNamespacesWhenExplicitlyEnabled() async throws {
         guard ProcessInfo.processInfo.environment["RUNE_ALLOW_LIVE_K8S_TESTS"] == "1" else {
             throw XCTSkip("Set RUNE_ALLOW_LIVE_K8S_TESTS=1 plus RUNE_LIVE_K8S_CONTEXT to run this against a real kubeconfig context")

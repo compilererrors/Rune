@@ -365,6 +365,10 @@ private struct RuneFakeK8sRouter {
                 ))
             }
 
+            if pathParts == ["apis", "apiextensions.k8s.io", "v1", "customresourcedefinitions"] {
+                return .json(status: 200, object: customResourceDefinitionListObject(cluster.operatorResources))
+            }
+
             if pathParts.count >= 5,
                Array(pathParts[0...2]) == ["api", "v1", "namespaces"],
                let namespace = cluster.namespaces.first(where: { $0.name == pathParts[3] }) {
@@ -822,6 +826,48 @@ private struct RuneFakeK8sRouter {
         )
     }
 
+    private func customResourceDefinitionListObject(_ resources: [RuneFakeK8sOperatorResource]) -> [String: Any] {
+        var seen = Set<String>()
+        let items = resources.compactMap { resource -> [String: Any]? in
+            guard !resource.printerColumnDefinitions.isEmpty else { return nil }
+            let key = "\(resource.plural).\(resource.apiGroup)"
+            guard seen.insert("\(key)/\(resource.apiVersion)").inserted else { return nil }
+            return customResourceDefinitionObject(resource, name: key)
+        }
+        return listObject(
+            apiVersion: "apiextensions.k8s.io/v1",
+            kind: "CustomResourceDefinitionList",
+            items: items,
+            query: [:]
+        )
+    }
+
+    private func customResourceDefinitionObject(_ resource: RuneFakeK8sOperatorResource, name: String) -> [String: Any] {
+        [
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": [
+                "name": name,
+                "creationTimestamp": "2026-04-20T10:00:00Z"
+            ],
+            "spec": [
+                "group": resource.apiGroup,
+                "names": [
+                    "kind": resource.kind,
+                    "plural": resource.plural
+                ],
+                "versions": [[
+                    "name": resource.apiVersion,
+                    "served": true,
+                    "storage": true,
+                    "additionalPrinterColumns": resource.printerColumnDefinitions
+                        .sorted { $0.key < $1.key }
+                        .map { ["name": $0.key, "jsonPath": $0.value, "type": "string"] }
+                ]]
+            ]
+        ]
+    }
+
     private func operatorResourceObject(_ resource: RuneFakeK8sOperatorResource) -> [String: Any] {
         var metadata: [String: Any] = [
             "name": resource.name,
@@ -832,7 +878,7 @@ private struct RuneFakeK8sRouter {
             metadata["namespace"] = namespace
         }
 
-        return [
+        var object: [String: Any] = [
             "apiVersion": "\(resource.apiGroup)/\(resource.apiVersion)",
             "kind": resource.kind,
             "metadata": metadata,
@@ -847,6 +893,12 @@ private struct RuneFakeK8sRouter {
                 ]
             ]
         ]
+        if !resource.printerColumns.isEmpty {
+            object["additionalPrinterColumns"] = resource.printerColumns
+                .sorted { $0.key < $1.key }
+                .map { ["name": $0.key, "value": $0.value] }
+        }
+        return object
     }
 
     private func configMapObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {

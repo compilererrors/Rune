@@ -177,6 +177,21 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(review.isValid)
         XCTAssertTrue(review.issues.contains { $0.id == "missing-current-context" && $0.severity == .error })
         XCTAssertTrue(review.issues.contains { $0.id == "duplicate-context-context-alpha" && $0.severity == .error })
+        XCTAssertEqual(
+            review.duplicateHandlingChoices,
+            [.updateExisting, .importAsCopy, .skipDuplicate]
+        )
+    }
+
+    @MainActor
+    func testKubeConfigDuplicateHandlingChoiceDefaultsToSkipAndCanChange() {
+        let viewModel = RuneAppViewModel(state: RuneAppState())
+
+        XCTAssertEqual(viewModel.kubeConfigDuplicateHandlingChoice, .skipDuplicate)
+
+        viewModel.kubeConfigDuplicateHandlingChoice = .importAsCopy
+
+        XCTAssertEqual(viewModel.kubeConfigDuplicateHandlingChoice, .importAsCopy)
     }
 
     func testKubeConfigImportValidatorReportsDuplicateClustersAndUsersWithoutCrashing() {
@@ -1032,6 +1047,7 @@ final class RuneAppStateTests: XCTestCase {
         store.saveManualProductionContextIDs(["context-alpha"])
         store.saveManualNamespaces(["zeta", "alpha", "alpha"], for: "context-alpha")
         store.savePreferredNamespace("zeta", for: "context-alpha")
+        store.saveHiddenOperatorPrinterColumnFamilies(["Flux", "cert-manager", "Flux"])
 
         let reloaded = FileBackedContextPreferencesStore(url: url)
 
@@ -1041,10 +1057,260 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(reloaded.loadManualProductionContextIDs(), ["context-alpha"])
         XCTAssertEqual(reloaded.loadManualNamespaces(for: "context-alpha"), ["alpha", "zeta"])
         XCTAssertEqual(reloaded.loadPreferredNamespace(for: "context-alpha"), "zeta")
+        XCTAssertEqual(reloaded.loadHiddenOperatorPrinterColumnFamilies(), ["Flux", "cert-manager"])
 
         let json = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(json.contains("\"schemaVersion\""))
         XCTAssertTrue(json.contains("\(FileBackedContextPreferencesStore.currentSchemaVersion)"))
+    }
+
+    @MainActor
+    func testSavedWorkspaceStorePersistsSyntheticSnapshotsWithoutSensitiveMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.savedWorkspaces.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("saved-workspaces.json")
+        let store = JSONSavedWorkspaceStore(url: url)
+
+        store.saveSavedWorkspaces([
+            SavedWorkspaceSnapshot(
+                id: "workspace-beta",
+                name: "  Workload Drilldown  ",
+                contextName: "context-beta",
+                namespace: "observability",
+                section: .workloads,
+                workloadKind: .deployment,
+                isFavorite: true,
+                resourceKind: "deployment",
+                resourceName: "api",
+                resourceNamespace: "observability",
+                inspectorState: SavedWorkspaceInspectorState(
+                    podTabID: "logs",
+                    serviceTabID: "unifiedLogs",
+                    deploymentTabID: "rollout",
+                    genericManifestTabID: "yaml",
+                    helmTabID: "history",
+                    terminalTabID: "yaml",
+                    isYAMLInlineEditing: true
+                )
+            ),
+            SavedWorkspaceSnapshot(
+                id: "workspace-alpha",
+                name: "Cluster Overview",
+                contextName: "context-alpha",
+                namespace: "default",
+                section: .overview,
+                workloadKind: .pod,
+                resourceKind: nil,
+                resourceName: nil,
+                resourceNamespace: nil
+            )
+        ])
+
+        let reloaded = store.loadSavedWorkspaces()
+
+        XCTAssertEqual(reloaded.map(\.id), ["workspace-beta", "workspace-alpha"])
+        XCTAssertEqual(reloaded.map(\.name), ["Workload Drilldown", "Cluster Overview"])
+        XCTAssertEqual(reloaded.first?.isFavorite, true)
+        XCTAssertEqual(reloaded.first?.contextName, "context-beta")
+        XCTAssertEqual(reloaded.first?.resourceName, "api")
+        XCTAssertEqual(reloaded.first?.inspectorState?.podTabID, "logs")
+        XCTAssertEqual(reloaded.first?.inspectorState?.deploymentTabID, "rollout")
+        XCTAssertEqual(reloaded.first?.inspectorState?.isYAMLInlineEditing, true)
+
+        let json = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(json.contains("\"schemaVersion\""))
+        XCTAssertFalse(json.contains("/Users/"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("token"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("client-certificate-data"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("client-key-data"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("server:"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("certificate-authority-data"))
+    }
+
+    @MainActor
+    func testTerminalWorkspaceStateStorePersistsTargetsWithoutTranscriptPayloads() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.terminalWorkspace.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("terminal-workspace-state.json")
+        let store = JSONTerminalWorkspaceStateStore(url: url)
+        let session = PodTerminalSession(
+            id: "shell-a",
+            contextName: "context-alpha",
+            namespace: "default",
+            podName: "api-0",
+            containerName: "app",
+            shell: "sh",
+            transcript: "synthetic-sensitive-marker\nshell command payload\n",
+            status: .connected
+        )
+        let snapshot = TerminalWorkspaceStateSnapshot(
+            sessions: [TerminalWorkspaceSessionSnapshot(session: session)],
+            activeSessionID: "shell-a",
+            logTabs: [
+                TerminalWorkspaceLogTabSnapshot(
+                    id: "log-a",
+                    podID: "default/api-0",
+                    namespace: "default",
+                    podName: "api-0"
+                )
+            ],
+            activeLogTabID: "log-a",
+            selectedLogPodID: "default/api-0",
+            shellPodID: "default/api-0",
+            portForwardPodID: "default/api-0",
+            inspectorTabID: "logs"
+        )
+
+        store.saveTerminalWorkspaceState(snapshot)
+
+        let reloaded = try XCTUnwrap(store.loadTerminalWorkspaceState())
+        XCTAssertEqual(reloaded.sessions.first?.podName, "api-0")
+        XCTAssertEqual(reloaded.logTabs.first?.podID, "default/api-0")
+        XCTAssertEqual(reloaded.activeSessionID, "shell-a")
+        let restored = try XCTUnwrap(reloaded.sessions.first?.restoredSession)
+        XCTAssertEqual(restored.status, .disconnected)
+        XCTAssertEqual(restored.transcript, "")
+
+        let json = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(json.contains("\"schemaVersion\""))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("synthetic-sensitive-marker"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("shell command payload"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("transcript"))
+        XCTAssertFalse(json.contains("/Users/"))
+    }
+
+    @MainActor
+    func testViewModelSavesAndOpensWorkspaceFromCurrentSelection() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.viewModelSavedWorkspaces.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = JSONSavedWorkspaceStore(url: directory.appendingPathComponent("saved-workspaces.json"))
+        let contextAlpha = KubeContext(name: "context-alpha")
+        let contextBeta = KubeContext(name: "context-beta")
+        let pod = PodSummary(
+            name: "api",
+            namespace: "observability",
+            status: "Running",
+            containerNamesLine: "api, sidecar"
+        )
+        let state = RuneAppState()
+        state.setContexts([contextAlpha, contextBeta])
+        state.setNamespaces(["default", "observability"])
+        state.selectedContext = contextBeta
+        state.selectedNamespace = "observability"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setPods([pod])
+        state.setSelectedPod(pod)
+        let resourceStore = ResourceStore()
+        resourceStore.cacheNamespaces(["default", "observability"], context: contextBeta)
+        resourceStore.cacheSnapshot(
+            context: contextBeta,
+            namespace: "observability",
+            pods: [pod],
+            deployments: [],
+            statefulSets: [],
+            daemonSets: [],
+            jobs: [],
+            cronJobs: [],
+            replicaSets: [],
+            persistentVolumeClaims: [],
+            horizontalPodAutoscalers: [],
+            networkPolicies: [],
+            services: [],
+            ingresses: [],
+            configMaps: [],
+            secrets: [],
+            events: []
+        )
+        let viewModel = RuneAppViewModel(state: state, store: resourceStore, savedWorkspaceStore: store)
+        viewModel.selectedLogPreset = .last15Minutes
+        viewModel.includePreviousLogs = true
+        viewModel.selectedLogContainer = "sidecar"
+        viewModel.isLogTailModeEnabled = true
+        viewModel.isSidebarVisible = false
+        viewModel.isDetailPaneVisible = false
+        viewModel.updateSavedWorkspaceInspectorState(
+            SavedWorkspaceInspectorState(
+                podTabID: "logs",
+                serviceTabID: "unifiedLogs",
+                deploymentTabID: "rollout",
+                genericManifestTabID: "yaml",
+                helmTabID: "history",
+                terminalTabID: "yaml",
+                isYAMLInlineEditing: true
+            )
+        )
+
+        let saveCommand = try XCTUnwrap(viewModel.commandPaletteItems(query: ":savews Observability API").first)
+        XCTAssertEqual(saveCommand.title, "Save Workspace: Observability API")
+        viewModel.executeCommandPaletteItem(saveCommand)
+
+        let saved = try XCTUnwrap(viewModel.savedWorkspaces.first)
+        XCTAssertEqual(saved.name, "Observability API")
+        XCTAssertEqual(saved.contextName, "context-beta")
+        XCTAssertEqual(saved.namespace, "observability")
+        XCTAssertEqual(saved.section, .workloads)
+        XCTAssertEqual(saved.workloadKind, .pod)
+        XCTAssertEqual(saved.resourceKind, "pod")
+        XCTAssertEqual(saved.resourceName, "api")
+        XCTAssertEqual(saved.resourceNamespace, "observability")
+        XCTAssertEqual(saved.logPresetID, PodLogPreset.last15Minutes.rawValue)
+        XCTAssertEqual(saved.logContainer, "sidecar")
+        XCTAssertEqual(saved.includePreviousLogs, true)
+        XCTAssertEqual(saved.isLogTailModeEnabled, true)
+        XCTAssertEqual(saved.isSidebarVisible, false)
+        XCTAssertEqual(saved.isDetailPaneVisible, false)
+        XCTAssertEqual(saved.inspectorState?.podTabID, "logs")
+        XCTAssertEqual(saved.inspectorState?.serviceTabID, "unifiedLogs")
+        XCTAssertEqual(saved.inspectorState?.deploymentTabID, "rollout")
+        XCTAssertEqual(saved.inspectorState?.genericManifestTabID, "yaml")
+        XCTAssertEqual(saved.inspectorState?.helmTabID, "history")
+        XCTAssertEqual(saved.inspectorState?.terminalTabID, "yaml")
+        XCTAssertEqual(saved.inspectorState?.isYAMLInlineEditing, true)
+
+        let favoriteCommand = try XCTUnwrap(viewModel.commandPaletteItems(query: ":favws api").first)
+        XCTAssertEqual(favoriteCommand.title, "Favorite Workspace: Observability API")
+        viewModel.executeCommandPaletteItem(favoriteCommand)
+        XCTAssertEqual(viewModel.savedWorkspaces.first?.isFavorite, true)
+
+        state.selectedContext = contextAlpha
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .deployment
+        state.setSelectedPod(nil)
+        viewModel.selectedLogPreset = .recentLines
+        viewModel.includePreviousLogs = false
+        viewModel.selectedLogContainer = ""
+        viewModel.isLogTailModeEnabled = false
+        viewModel.isSidebarVisible = true
+        viewModel.isDetailPaneVisible = true
+
+        let commandItem = try XCTUnwrap(viewModel.commandPaletteItems(query: ":ws api").first)
+        XCTAssertEqual(commandItem.title, "Observability API")
+        viewModel.executeCommandPaletteItem(commandItem)
+
+        XCTAssertEqual(state.selectedContext, contextBeta)
+        XCTAssertEqual(state.selectedNamespace, "observability")
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod, pod)
+        XCTAssertEqual(viewModel.selectedLogPreset, .last15Minutes)
+        XCTAssertEqual(viewModel.includePreviousLogs, true)
+        XCTAssertEqual(viewModel.selectedLogContainer, "sidecar")
+        XCTAssertEqual(viewModel.isLogTailModeEnabled, true)
+        XCTAssertEqual(viewModel.isSidebarVisible, false)
+        XCTAssertEqual(viewModel.isDetailPaneVisible, false)
+        XCTAssertEqual(viewModel.savedWorkspaceInspectorRestoreRequest?.inspectorState.podTabID, "logs")
+        XCTAssertEqual(viewModel.savedWorkspaceInspectorRestoreRequest?.inspectorState.deploymentTabID, "rollout")
+        XCTAssertEqual(viewModel.savedWorkspaceInspectorRestoreRequest?.inspectorState.isYAMLInlineEditing, true)
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ws").first?.symbolName, "star.fill")
+        XCTAssertEqual(store.loadSavedWorkspaces().map(\.name), ["Observability API"])
+        XCTAssertEqual(store.loadSavedWorkspaces().first?.isFavorite, true)
     }
 
     func testFileBackedContextPreferencesStoreRecoversFromBackupWhenPrimaryIsCorrupt() throws {
@@ -1305,6 +1571,35 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testEventSourceNavigationUsesInvolvedNamespaceWhenNamesCollide() {
+        let state = RuneAppState()
+        state.selectedNamespace = "frontend"
+        state.setPods([
+            PodSummary(name: "api-0", namespace: "backend", status: "Running"),
+            PodSummary(name: "api-0", namespace: "frontend", status: "CrashLoopBackOff")
+        ])
+        let event = EventSummary(
+            type: "Warning",
+            reason: "BackOff",
+            objectName: "api-0",
+            message: "Back-off restarting container",
+            lastTimestamp: "2026-05-05T10:03:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: "frontend"
+        )
+        state.setEvents([event])
+        state.selectedSection = .events
+        let viewModel = RuneAppViewModel(state: state)
+
+        viewModel.openEventSource(event)
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.namespace, "frontend")
+        XCTAssertEqual(state.selectedPod?.status, "CrashLoopBackOff")
+    }
+
+    @MainActor
     func testLoadDemoClusterWinsOverPendingBootstrap() async throws {
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
@@ -1546,6 +1841,777 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testOverviewOperatorSignalNavigationOpensOperatorResource() throws {
+        let state = RuneAppState()
+        state.selectedSection = .overview
+        let certificate = OperatorResourceSummary(
+            family: "cert-manager",
+            kind: "Certificates",
+            apiPath: "/apis/cert-manager.io/v1/namespaces/synthetic/certificates",
+            name: "api-tls",
+            namespace: "synthetic",
+            status: "Ready False",
+            message: "Certificate renewal failed"
+        )
+        state.setOperatorResources([certificate])
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+
+        let signal = try XCTUnwrap(viewModel.overviewUnhealthyItems.first { $0.title == "api-tls" })
+        XCTAssertEqual(signal.operatorResourceID, certificate.id)
+
+        viewModel.openOverviewSignal(signal)
+
+        XCTAssertEqual(state.selectedSection, .helm)
+        XCTAssertEqual(viewModel.operatorResourceFocus, .all)
+        XCTAssertEqual(state.selectedOperatorResource, certificate)
+        XCTAssertNil(state.selectedHelmRelease)
+    }
+
+    @MainActor
+    func testOverviewGitOpsSignalNavigationOpensOperatorResourceWithGitOpsFocus() throws {
+        let state = RuneAppState()
+        state.selectedSection = .overview
+        let application = OperatorResourceSummary(
+            family: "ArgoCD",
+            kind: "Applications",
+            apiPath: "/apis/argoproj.io/v1alpha1/namespaces/synthetic/applications",
+            name: "payments",
+            namespace: "synthetic",
+            status: "OutOfSync Degraded",
+            message: "Application health is degraded"
+        )
+        state.setOperatorResources([application])
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+
+        let signal = try XCTUnwrap(viewModel.overviewUnhealthyItems.first { $0.title == "payments" })
+        XCTAssertEqual(signal.operatorResourceID, application.id)
+
+        viewModel.openOverviewSignal(signal)
+
+        XCTAssertEqual(state.selectedSection, .helm)
+        XCTAssertEqual(viewModel.operatorResourceFocus, .gitOps)
+        XCTAssertEqual(state.selectedOperatorResource, application)
+    }
+
+    @MainActor
+    func testOverviewGitOpsRollupSummarizesControllersAndOpensFocus() throws {
+        let state = RuneAppState()
+        state.selectedSection = .overview
+        state.setOperatorResources([
+            OperatorResourceSummary(
+                family: "Flux",
+                kind: "Kustomizations",
+                apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/synthetic/kustomizations",
+                name: "apps",
+                namespace: "synthetic",
+                status: "Ready False",
+                message: "Reconciliation failed"
+            ),
+            OperatorResourceSummary(
+                family: "Flux",
+                kind: "HelmReleases",
+                apiPath: "/apis/helm.toolkit.fluxcd.io/v2/namespaces/synthetic/helmreleases",
+                name: "frontend",
+                namespace: "synthetic",
+                status: "Ready True",
+                message: "Release is in sync"
+            ),
+            OperatorResourceSummary(
+                family: "ArgoCD",
+                kind: "Applications",
+                apiPath: "/apis/argoproj.io/v1alpha1/namespaces/synthetic/applications",
+                name: "payments",
+                namespace: "synthetic",
+                status: "OutOfSync Degraded",
+                message: "Application health is degraded"
+            ),
+            OperatorResourceSummary(
+                family: "cert-manager",
+                kind: "Certificates",
+                apiPath: "/apis/cert-manager.io/v1/namespaces/synthetic/certificates",
+                name: "api-tls",
+                namespace: "synthetic",
+                status: "Ready True",
+                message: "Certificate is ready"
+            )
+        ])
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+
+        let rollups = viewModel.overviewGitOpsRollupItems
+
+        XCTAssertEqual(rollups.map(\.title), ["GitOps resources", "Flux", "ArgoCD", "Unhealthy GitOps"])
+        XCTAssertEqual(rollups[0].detail, "3 loaded • Flux 2 • ArgoCD 1")
+        XCTAssertEqual(rollups[1].detail, "2 resources • 1 unhealthy")
+        XCTAssertEqual(rollups[2].detail, "1 resource • 1 unhealthy")
+        XCTAssertEqual(rollups[3].detail, "2 resources need attention")
+        XCTAssertEqual(rollups[0].severity, .warning)
+        XCTAssertEqual(rollups[3].severity, .critical)
+
+        viewModel.openOverviewGitOpsRollup(try XCTUnwrap(rollups.first { $0.controller == .flux }))
+        XCTAssertEqual(state.selectedSection, .helm)
+        XCTAssertEqual(viewModel.operatorResourceFocus, .flux)
+
+        viewModel.openOverviewGitOpsRollup(try XCTUnwrap(rollups.first { $0.controller == .unhealthy }))
+        XCTAssertEqual(state.selectedSection, .helm)
+        XCTAssertEqual(viewModel.operatorResourceFocus, .unhealthy)
+    }
+
+    @MainActor
+    func testDeploymentRelationshipNavigationOpensLikelyOwnedPodWithoutReload() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "api-7c9d8f6b5c-abc12", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "api-7c9d8f6b5c-def34", namespace: "synthetic", status: "Pending"),
+            PodSummary(name: "worker-7c9d8f6b5c-def34", namespace: "synthetic", status: "Running")
+        ]
+        let replicaSets = [
+            ClusterResourceSummary(kind: .replicaSet, name: "api-7c9d8f6b5c", namespace: "synthetic", primaryText: "1/2 ready", secondaryText: "Owned by Deployment/api"),
+            ClusterResourceSummary(kind: .replicaSet, name: "worker-7c9d8f6b5c", namespace: "synthetic", primaryText: "1/1 ready", secondaryText: "Owned by Deployment/worker")
+        ]
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1,
+            selector: ["app": "api"]
+        )
+        state.setPods(pods)
+        state.setReplicaSets(replicaSets)
+        state.setDeployments([deployment])
+        state.setSelectedDeployment(deployment)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .deployment
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedDeploymentRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12", "api-7c9d8f6b5c-def34"])
+        XCTAssertEqual(viewModel.selectedDeploymentRelatedReplicaSets.map(\.name), ["api-7c9d8f6b5c"])
+
+        viewModel.openDeploymentRelatedPod(pods[1])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "api-7c9d8f6b5c-def34")
+
+        viewModel.openDeploymentRelatedReplicaSet(replicaSets[0])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .replicaSet)
+        XCTAssertEqual(state.selectedReplicaSet?.name, "api-7c9d8f6b5c")
+    }
+
+    @MainActor
+    func testDeploymentRelationshipPodsUseRelatedReplicaSetPrefixBeforeDeploymentPrefix() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "api-v2-7c9d8f6b5c-abc12", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "api-legacy-abc12", namespace: "synthetic", status: "Running")
+        ]
+        let replicaSet = ClusterResourceSummary(
+            kind: .replicaSet,
+            name: "api-v2-7c9d8f6b5c",
+            namespace: "synthetic",
+            primaryText: "1/1 ready",
+            secondaryText: "Owned by Deployment/api"
+        )
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1,
+            selector: ["app": "api"]
+        )
+        state.setPods(pods)
+        state.setReplicaSets([replicaSet])
+        state.setDeployments([deployment])
+        state.setSelectedDeployment(deployment)
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(
+            viewModel.selectedDeploymentRelatedPods.map(\.name),
+            ["api-v2-7c9d8f6b5c-abc12", "api-legacy-abc12"]
+        )
+    }
+
+    @MainActor
+    func testServiceRelationshipNavigationUsesMatchingDeploymentSelectorBeforePodPrefixFallback() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "api-7c9d8f6b5c-abc12", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "api-7c9d8f6b5c-def34", namespace: "synthetic", status: "Pending"),
+            PodSummary(name: "service-name-only-abc12", namespace: "synthetic", status: "Running")
+        ]
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1,
+            selector: ["app": "api", "tier": "web"]
+        )
+        let service = ServiceSummary(
+            name: "service-name-only",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.10",
+            selector: ["app": "api"]
+        )
+        state.setPods(pods)
+        state.setDeployments([deployment])
+        state.setServices([service])
+        state.setSelectedService(service)
+        state.selectedSection = .networking
+        state.selectedWorkloadKind = .service
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedServiceRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12", "api-7c9d8f6b5c-def34"])
+
+        viewModel.openServiceRelatedPod(pods[1])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "api-7c9d8f6b5c-def34")
+    }
+
+    @MainActor
+    func testIngressRelationshipNavigationOpensBackendService() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let api = ServiceSummary(
+            name: "api",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.10",
+            selector: ["app": "api"]
+        )
+        let metrics = ServiceSummary(
+            name: "metrics",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.11",
+            selector: ["app": "metrics"]
+        )
+        let ingress = ClusterResourceSummary(
+            kind: .ingress,
+            name: "api-public",
+            namespace: "synthetic",
+            primaryText: "api.synthetic.example",
+            secondaryText: "Service api:80, metrics:9090"
+        )
+        state.setServices([api, metrics])
+        state.setIngresses([ingress])
+        state.setSelectedIngress(ingress)
+        state.setSelectedService(api)
+        state.selectedSection = .networking
+        state.selectedWorkloadKind = .ingress
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedIngressRelatedServices.map(\.name), ["api", "metrics"])
+        XCTAssertEqual(viewModel.selectedServiceRelatedIngresses.map(\.name), ["api-public"])
+
+        viewModel.openIngressRelatedService(metrics)
+
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .service)
+        XCTAssertEqual(state.selectedService?.name, "metrics")
+
+        viewModel.openServiceRelatedIngress(ingress)
+
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .ingress)
+        XCTAssertEqual(state.selectedIngress?.name, "api-public")
+    }
+
+    @MainActor
+    func testOverviewDependencyProjectionIncludesIngressBackendServices() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        state.selectedSection = .overview
+        let api = ServiceSummary(
+            name: "api",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.10",
+            selector: ["app": "api"]
+        )
+        let metrics = ServiceSummary(
+            name: "metrics",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.11",
+            selector: ["app": "metrics"]
+        )
+        let ingress = ClusterResourceSummary(
+            kind: .ingress,
+            name: "api-public",
+            namespace: "synthetic",
+            primaryText: "api.synthetic.example",
+            secondaryText: "Services api:80, metrics:9090"
+        )
+        state.setServices([api, metrics])
+        state.setIngresses([ingress])
+        let viewModel = RuneAppViewModel(state: state)
+
+        let dependencies = viewModel.overviewDependencyItems.filter { $0.source == "Ingress/api-public" }
+
+        XCTAssertEqual(dependencies.map(\.target), ["Service/api", "Service/metrics"])
+        XCTAssertEqual(dependencies.map(\.relation), ["routes to", "routes to"])
+        let metricsDependency = try XCTUnwrap(dependencies.first { $0.target == "Service/metrics" })
+        XCTAssertEqual(metricsDependency.detail, "api.synthetic.example")
+
+        viewModel.openOverviewDependency(metricsDependency)
+
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .service)
+        XCTAssertEqual(state.selectedService?.name, "metrics")
+    }
+
+    @MainActor
+    func testOverviewDependencyProjectionIncludesPersistentVolumeClaimBinding() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        state.selectedSection = .overview
+        let pvc = ClusterResourceSummary(
+            kind: .persistentVolumeClaim,
+            name: "postgres-data",
+            namespace: "synthetic",
+            primaryText: "Bound",
+            secondaryText: "PV pv-postgres-data · 20Gi"
+        )
+        let pv = ClusterResourceSummary(
+            kind: .persistentVolume,
+            name: "pv-postgres-data",
+            namespace: nil,
+            primaryText: "Bound",
+            secondaryText: "20Gi"
+        )
+        state.setPersistentVolumeClaims([pvc])
+        state.setPersistentVolumes([pv])
+        let viewModel = RuneAppViewModel(state: state)
+
+        let dependency = try XCTUnwrap(viewModel.overviewDependencyItems.first { $0.source == "PVC/postgres-data" })
+
+        XCTAssertEqual(dependency.relation, "binds to")
+        XCTAssertEqual(dependency.target, "PV/pv-postgres-data")
+        XCTAssertEqual(dependency.detail, "Bound")
+
+        viewModel.openOverviewDependency(dependency)
+
+        XCTAssertEqual(state.selectedSection, .storage)
+        XCTAssertEqual(state.selectedWorkloadKind, .persistentVolume)
+        XCTAssertEqual(state.selectedPersistentVolume?.name, "pv-postgres-data")
+    }
+
+    @MainActor
+    func testPersistentVolumeClaimRelationshipNavigationOpensBoundPersistentVolume() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pvc = ClusterResourceSummary(
+            kind: .persistentVolumeClaim,
+            name: "postgres-data",
+            namespace: "synthetic",
+            primaryText: "Bound",
+            secondaryText: "PV pv-postgres-data · 20Gi"
+        )
+        let pv = ClusterResourceSummary(
+            kind: .persistentVolume,
+            name: "pv-postgres-data",
+            namespace: nil,
+            primaryText: "Bound",
+            secondaryText: "20Gi"
+        )
+        state.setPersistentVolumeClaims([pvc])
+        state.setPersistentVolumes([pv])
+        state.setSelectedPersistentVolumeClaim(pvc)
+        state.selectedSection = .storage
+        state.selectedWorkloadKind = .persistentVolumeClaim
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedPersistentVolumeClaimRelatedPersistentVolume?.name, "pv-postgres-data")
+
+        viewModel.openPersistentVolumeClaimRelatedPersistentVolume(pv)
+
+        XCTAssertEqual(state.selectedSection, .storage)
+        XCTAssertEqual(state.selectedWorkloadKind, .persistentVolume)
+        XCTAssertEqual(state.selectedPersistentVolume?.name, "pv-postgres-data")
+    }
+
+    @MainActor
+    func testPersistentVolumeRelationshipNavigationOpensBoundClaims() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pvc = ClusterResourceSummary(
+            kind: .persistentVolumeClaim,
+            name: "postgres-data",
+            namespace: "synthetic",
+            primaryText: "Bound",
+            secondaryText: "PV pv-postgres-data · 20Gi"
+        )
+        let otherPVC = ClusterResourceSummary(
+            kind: .persistentVolumeClaim,
+            name: "cache-data",
+            namespace: "synthetic",
+            primaryText: "Bound",
+            secondaryText: "PV pv-cache-data · 5Gi"
+        )
+        let pv = ClusterResourceSummary(
+            kind: .persistentVolume,
+            name: "pv-postgres-data",
+            namespace: nil,
+            primaryText: "Bound",
+            secondaryText: "20Gi"
+        )
+        state.setPersistentVolumeClaims([pvc, otherPVC])
+        state.setPersistentVolumes([pv])
+        state.setSelectedPersistentVolume(pv)
+        state.selectedSection = .storage
+        state.selectedWorkloadKind = .persistentVolume
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedPersistentVolumeRelatedPersistentVolumeClaims.map(\.name), ["postgres-data"])
+
+        viewModel.openPersistentVolumeRelatedPersistentVolumeClaim(pvc)
+
+        XCTAssertEqual(state.selectedSection, .storage)
+        XCTAssertEqual(state.selectedWorkloadKind, .persistentVolumeClaim)
+        XCTAssertEqual(state.selectedPersistentVolumeClaim?.name, "postgres-data")
+    }
+
+    @MainActor
+    func testReplicaSetRelationshipNavigationOpensOwnedPod() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "api-7c9d8f6b5c-abc12", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "worker-7c9d8f6b5c-def34", namespace: "synthetic", status: "Running")
+        ]
+        let replicaSet = ClusterResourceSummary(
+            kind: .replicaSet,
+            name: "api-7c9d8f6b5c",
+            namespace: "synthetic",
+            primaryText: "1/1 ready",
+            secondaryText: "Owned by Deployment/api"
+        )
+        state.setPods(pods)
+        state.setReplicaSets([replicaSet])
+        state.setSelectedReplicaSet(replicaSet)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .replicaSet
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedReplicaSetRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12"])
+
+        viewModel.openReplicaSetRelatedPod(pods[0])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "api-7c9d8f6b5c-abc12")
+    }
+
+    @MainActor
+    func testStatefulSetRelationshipNavigationOpensOrdinalPod() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "database-0", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "database-1", namespace: "synthetic", status: "Pending"),
+            PodSummary(name: "api-0", namespace: "synthetic", status: "Running")
+        ]
+        let statefulSet = ClusterResourceSummary(
+            kind: .statefulSet,
+            name: "database",
+            namespace: "synthetic",
+            primaryText: "1/2 ready",
+            secondaryText: "Stateful workload"
+        )
+        state.setPods(pods)
+        state.setStatefulSets([statefulSet])
+        state.setSelectedStatefulSet(statefulSet)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .statefulSet
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedStatefulSetRelatedPods.map(\.name), ["database-0", "database-1"])
+
+        viewModel.openStatefulSetRelatedPod(pods[1])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "database-1")
+    }
+
+    @MainActor
+    func testDaemonSetRelationshipNavigationOpensMatchingPodPrefix() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "node-agent-abc12", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "node-agent-def34", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "other-agent-abc12", namespace: "synthetic", status: "Running")
+        ]
+        let daemonSet = ClusterResourceSummary(
+            kind: .daemonSet,
+            name: "node-agent",
+            namespace: "synthetic",
+            primaryText: "2/2 ready",
+            secondaryText: "Daemon workload"
+        )
+        state.setPods(pods)
+        state.setDaemonSets([daemonSet])
+        state.setSelectedDaemonSet(daemonSet)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .daemonSet
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedDaemonSetRelatedPods.map(\.name), ["node-agent-abc12", "node-agent-def34"])
+
+        viewModel.openDaemonSetRelatedPod(pods[0])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "node-agent-abc12")
+    }
+
+    @MainActor
+    func testJobRelationshipNavigationOpensCreatedPod() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "backup-28600123-x4k9p", namespace: "synthetic", status: "Succeeded"),
+            PodSummary(name: "backup-28600123-z8m2q", namespace: "synthetic", status: "Running"),
+            PodSummary(name: "other-28600123-x4k9p", namespace: "synthetic", status: "Succeeded")
+        ]
+        let job = ClusterResourceSummary(
+            kind: .job,
+            name: "backup-28600123",
+            namespace: "synthetic",
+            primaryText: "1/1 complete",
+            secondaryText: "Age 2m"
+        )
+        state.setPods(pods)
+        state.setJobs([job])
+        state.setSelectedJob(job)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .job
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedJobRelatedPods.map(\.name), ["backup-28600123-x4k9p", "backup-28600123-z8m2q"])
+
+        viewModel.openJobRelatedPod(pods[0])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "backup-28600123-x4k9p")
+    }
+
+    @MainActor
+    func testCronJobRelationshipNavigationOpensCreatedJob() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let jobs = [
+            ClusterResourceSummary(kind: .job, name: "backup-28600123", namespace: "synthetic", primaryText: "Complete", secondaryText: "Age 2m"),
+            ClusterResourceSummary(kind: .job, name: "backup-28600124", namespace: "synthetic", primaryText: "Running", secondaryText: "Age 1m"),
+            ClusterResourceSummary(kind: .job, name: "restore-28600124", namespace: "synthetic", primaryText: "Complete", secondaryText: "Age 1m")
+        ]
+        let cronJob = ClusterResourceSummary(
+            kind: .cronJob,
+            name: "backup",
+            namespace: "synthetic",
+            primaryText: "*/5 * * * *",
+            secondaryText: "Active"
+        )
+        state.setJobs(jobs)
+        state.setCronJobs([cronJob])
+        state.setSelectedCronJob(cronJob)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .cronJob
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedCronJobRelatedJobs.map(\.name), ["backup-28600123", "backup-28600124"])
+
+        viewModel.openCronJobRelatedJob(jobs[1])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .job)
+        XCTAssertEqual(state.selectedJob?.name, "backup-28600124")
+    }
+
+    @MainActor
+    func testHorizontalPodAutoscalerRelationshipNavigationOpensScaleTarget() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "synthetic",
+            readyReplicas: 2,
+            desiredReplicas: 3,
+            selector: ["app": "api"]
+        )
+        let hpa = ClusterResourceSummary(
+            kind: .horizontalPodAutoscaler,
+            name: "api",
+            namespace: "synthetic",
+            primaryText: "2-6 replicas (current 3)",
+            secondaryText: "Deployment/api"
+        )
+        state.setDeployments([deployment])
+        state.setHorizontalPodAutoscalers([hpa])
+        state.setSelectedHorizontalPodAutoscaler(hpa)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .horizontalPodAutoscaler
+        let viewModel = RuneAppViewModel(state: state)
+
+        let target = try XCTUnwrap(viewModel.selectedHorizontalPodAutoscalerScaleTarget)
+        XCTAssertEqual(target.kind, .deployment)
+        XCTAssertEqual(target.name, "api")
+        XCTAssertEqual(target.subtitle, "synthetic · 2/3 replicas")
+
+        viewModel.openHorizontalPodAutoscalerScaleTarget(target)
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .deployment)
+        XCTAssertEqual(state.selectedDeployment?.name, "api")
+    }
+
+    @MainActor
+    func testNodeRelationshipNavigationOpensScheduledPod() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pods = [
+            PodSummary(name: "api-0", namespace: "synthetic", status: "Running", nodeName: "node-a"),
+            PodSummary(name: "worker-0", namespace: "synthetic", status: "Running", nodeName: "node-b"),
+            PodSummary(name: "api-1", namespace: "synthetic", status: "Pending")
+        ]
+        let node = ClusterResourceSummary(
+            kind: .node,
+            name: "node-a",
+            namespace: nil,
+            primaryText: "Ready",
+            secondaryText: "v1.30.0"
+        )
+        state.setPods(pods)
+        state.setNodes([node])
+        state.setSelectedNode(node)
+        state.selectedSection = .storage
+        state.selectedWorkloadKind = .node
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedNodeRelatedPods.map(\.name), ["api-0"])
+
+        viewModel.openNodeRelatedPod(pods[0])
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "api-0")
+    }
+
+    @MainActor
+    func testPodRelationshipNavigationOpensScheduledNode() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pod = PodSummary(name: "api-0", namespace: "synthetic", status: "Running", nodeName: "node-a")
+        let node = ClusterResourceSummary(
+            kind: .node,
+            name: "node-a",
+            namespace: nil,
+            primaryText: "Ready",
+            secondaryText: "v1.30.0"
+        )
+        state.setPods([pod])
+        state.setNodes([node])
+        state.setSelectedPod(pod)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedPodRelatedNode?.name, "node-a")
+
+        viewModel.openPodRelatedNode(node)
+
+        XCTAssertEqual(state.selectedSection, .storage)
+        XCTAssertEqual(state.selectedWorkloadKind, .node)
+        XCTAssertEqual(state.selectedNode?.name, "node-a")
+    }
+
+    @MainActor
+    func testRelatedEventsNavigationFiltersNamespaceAndDeduplicatesOverviewEvents() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let pod = PodSummary(name: "api-0", namespace: "synthetic", status: "Running", nodeName: "node-a")
+        let deployment = DeploymentSummary(name: "api", namespace: "synthetic", readyReplicas: 1, desiredReplicas: 1)
+        let service = ServiceSummary(name: "api", namespace: "synthetic", type: "ClusterIP", clusterIP: "10.96.0.10")
+        let matchingEvent = EventSummary(
+            type: "Warning",
+            reason: "BackOff",
+            objectName: "api-0",
+            message: "Back-off restarting failed container",
+            lastTimestamp: "2026-05-05T10:03:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: "synthetic"
+        )
+        let otherNamespaceEvent = EventSummary(
+            type: "Warning",
+            reason: "FailedScheduling",
+            objectName: "api-0",
+            message: "Unschedulable in another namespace",
+            lastTimestamp: "2026-05-05T10:04:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: "other"
+        )
+        let otherKindEvent = EventSummary(
+            type: "Normal",
+            reason: "ScalingReplicaSet",
+            objectName: "api",
+            message: "Deployment changed",
+            lastTimestamp: "2026-05-05T10:05:00Z",
+            involvedKind: "Deployment",
+            involvedNamespace: "synthetic"
+        )
+        let serviceEvent = EventSummary(
+            type: "Normal",
+            reason: "UpdatedLoadBalancer",
+            objectName: "api",
+            message: "Service updated",
+            lastTimestamp: "2026-05-05T10:06:00Z",
+            involvedKind: "Service",
+            involvedNamespace: "synthetic"
+        )
+        state.setPods([pod])
+        state.setDeployments([deployment])
+        state.setServices([service])
+        state.setEvents([matchingEvent, otherNamespaceEvent, otherKindEvent, serviceEvent])
+        state.setOverviewSnapshot(
+            pods: [],
+            deploymentsCount: 0,
+            servicesCount: 0,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 0,
+            events: [matchingEvent]
+        )
+        state.setSelectedPod(pod)
+        state.setSelectedDeployment(deployment)
+        state.setSelectedService(service)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedPodRelatedEvents.map(\.reason), ["BackOff"])
+        state.setSelectedDeployment(deployment)
+        XCTAssertEqual(viewModel.selectedDeploymentRelatedEvents.map(\.reason), ["ScalingReplicaSet"])
+        state.setSelectedService(service)
+        XCTAssertEqual(viewModel.selectedServiceRelatedEvents.map(\.reason), ["UpdatedLoadBalancer"])
+        state.setSelectedPod(pod)
+
+        viewModel.openRelatedEvent(matchingEvent)
+
+        XCTAssertEqual(state.selectedSection, .events)
+        XCTAssertEqual(state.selectedEvent?.reason, "BackOff")
+    }
+
+    @MainActor
     func testOverviewUnhealthyIgnoresSucceededCronJobPodsWithNotReadyContainers() {
         let projector = OverviewInsightsProjector(
             pods: [
@@ -1601,6 +2667,160 @@ final class RuneAppStateTests: XCTestCase {
         let unhealthy = projector.unhealthyItems()
         XCTAssertFalse(unhealthy.contains { $0.title == "api-0" })
         XCTAssertTrue(unhealthy.contains { $0.title == "worker-0" && $0.badge == "Restart" })
+    }
+
+    @MainActor
+    func testOverviewUnhealthyIncludesCertificateExpiryAndGatewayReadinessSignals() throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-15T10:00:00Z"))
+        let projector = OverviewInsightsProjector(
+            pods: [],
+            deployments: [],
+            services: [],
+            events: [],
+            operatorResources: [
+                OperatorResourceSummary(
+                    family: "cert-manager",
+                    kind: "Certificates",
+                    apiPath: "/apis/cert-manager.io/v1/namespaces/synthetic/certificates",
+                    name: "api-tls",
+                    namespace: "synthetic",
+                    status: "Ready True",
+                    message: "Certificate is up to date",
+                    printerColumns: [
+                        OperatorResourceSummary.PrinterColumn(title: "Not After", value: "2026-06-20T00:00:00Z")
+                    ]
+                ),
+                OperatorResourceSummary(
+                    family: "cert-manager",
+                    kind: "Certificates",
+                    apiPath: "/apis/cert-manager.io/v1/namespaces/synthetic/certificates",
+                    name: "old-tls",
+                    namespace: "synthetic",
+                    status: "Ready True",
+                    message: "Certificate is stale",
+                    printerColumns: [
+                        OperatorResourceSummary.PrinterColumn(title: "Expires", value: "2026-06-01")
+                    ]
+                ),
+                OperatorResourceSummary(
+                    family: "Gateway API",
+                    kind: "Gateways",
+                    apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/synthetic/gateways",
+                    name: "edge",
+                    namespace: "synthetic",
+                    status: "Programmed False",
+                    message: "Listener failed to attach"
+                )
+            ],
+            now: now
+        )
+
+        let unhealthy = projector.unhealthyItems()
+        XCTAssertTrue(unhealthy.contains { $0.title == "api-tls" && $0.badge == "Cert" && $0.detail == "Certificate expires 2026-06-20" && $0.severity == .warning && $0.operatorResourceID != nil })
+        XCTAssertTrue(unhealthy.contains { $0.title == "old-tls" && $0.badge == "Cert" && $0.detail == "Certificate expired 2026-06-01" && $0.severity == .critical && $0.operatorResourceID != nil })
+        XCTAssertTrue(unhealthy.contains { $0.title == "edge" && $0.badge == "Gateway" && $0.detail == "Listener failed to attach" && $0.severity == .critical && $0.operatorResourceID != nil })
+    }
+
+    @MainActor
+    func testOverviewUnhealthyIncludesGitOpsDriftSignals() {
+        let projector = OverviewInsightsProjector(
+            pods: [],
+            deployments: [],
+            services: [],
+            events: [],
+            operatorResources: [
+                OperatorResourceSummary(
+                    family: "Flux",
+                    kind: "Kustomizations",
+                    apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/synthetic/kustomizations",
+                    name: "apps",
+                    namespace: "synthetic",
+                    status: "Ready False",
+                    message: "Reconciliation failed"
+                ),
+                OperatorResourceSummary(
+                    family: "ArgoCD",
+                    kind: "Applications",
+                    apiPath: "/apis/argoproj.io/v1alpha1/namespaces/synthetic/applications",
+                    name: "payments",
+                    namespace: "synthetic",
+                    status: "OutOfSync Degraded",
+                    message: "Application health is degraded"
+                ),
+                OperatorResourceSummary(
+                    family: "Flux",
+                    kind: "HelmReleases",
+                    apiPath: "/apis/helm.toolkit.fluxcd.io/v2/namespaces/synthetic/helmreleases",
+                    name: "healthy",
+                    namespace: "synthetic",
+                    status: "Ready True",
+                    message: "Release is in sync"
+                )
+            ]
+        )
+
+        let unhealthy = projector.unhealthyItems()
+        XCTAssertTrue(unhealthy.contains { $0.title == "apps" && $0.badge == "Flux" && $0.detail == "Reconciliation failed" && $0.severity == .critical && $0.operatorResourceID != nil })
+        XCTAssertTrue(unhealthy.contains { $0.title == "payments" && $0.badge == "ArgoCD" && $0.detail == "Application health is degraded" && $0.severity == .critical && $0.operatorResourceID != nil })
+        XCTAssertFalse(unhealthy.contains { $0.title == "healthy" })
+    }
+
+    @MainActor
+    func testOverviewUnhealthyIncludesNodeAndJobSignals() {
+        let projector = OverviewInsightsProjector(
+            pods: [],
+            deployments: [],
+            services: [],
+            events: [],
+            jobs: [
+                ClusterResourceSummary(
+                    kind: .job,
+                    name: "nightly-backup",
+                    namespace: "synthetic",
+                    primaryText: "Failed",
+                    secondaryText: "BackoffLimitExceeded"
+                ),
+                ClusterResourceSummary(
+                    kind: .job,
+                    name: "report-rollup",
+                    namespace: "synthetic",
+                    primaryText: "Complete",
+                    secondaryText: "Succeeded"
+                )
+            ],
+            nodes: [
+                ClusterResourceSummary(
+                    kind: .node,
+                    name: "node-a",
+                    namespace: nil,
+                    primaryText: "NotReady",
+                    secondaryText: "Kubelet unreachable"
+                ),
+                ClusterResourceSummary(
+                    kind: .node,
+                    name: "node-b",
+                    namespace: nil,
+                    primaryText: "Ready",
+                    secondaryText: "Healthy"
+                )
+            ]
+        )
+
+        let unhealthy = projector.unhealthyItems()
+        XCTAssertTrue(unhealthy.contains { item in
+            item.title == "nightly-backup"
+                && item.badge == "Job"
+                && item.severity == .critical
+                && item.target == OverviewResourceReference(kind: .job, namespace: "synthetic", name: "nightly-backup")
+        })
+        XCTAssertTrue(unhealthy.contains { item in
+            item.title == "node-a"
+                && item.badge == "Node"
+                && item.severity == .critical
+                && item.target == OverviewResourceReference(kind: .node, namespace: nil, name: "node-a")
+        })
+        XCTAssertFalse(unhealthy.contains { $0.title == "report-rollup" })
+        XCTAssertFalse(unhealthy.contains { $0.title == "node-b" })
     }
 
     func testAuthDoctorLogProbePrefersRunningReadyPodOverTerminalOrPendingPods() {
@@ -2036,6 +3256,49 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testCurrentLogsConfiguredExportUsesExportFolderWorkflow() {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setPodLogs("line\n")
+
+        viewModel.saveCurrentLogsToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertEqual(String(data: configuredExporter.saves[0].data, encoding: .utf8), "line\n")
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("pod-api-0-logs-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["log", "txt"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testVisibleLogsZipConfiguredExportUsesArchiveWorkflow() {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "default"
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+
+        viewModel.saveVisibleLogsZipToExportFolder(visibleText: "matched line\n", openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("pod-api-0-visible-logs-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["zip"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .archive)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        XCTAssertTrue(configuredExporter.saves[0].data.count > 0)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
     func testUserCancelledErrorsDoNotCreateGlobalNotice() {
         let state = RuneAppState()
 
@@ -2126,6 +3389,36 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(exporter.saves.count, 1)
         XCTAssertTrue(exporter.saves[0].suggestedName.hasPrefix("pod-api-0-"))
+    }
+
+    @MainActor
+    func testCurrentResourceYAMLConfiguredExportUsesTextWorkflow() {
+        let configuredExporter = RecordingConfiguredExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.selectedContext = KubeContext(name: "fake")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: "fake",
+            namespace: "default",
+            kind: .pod,
+            name: "api-0"
+        ))
+        state.setResourceYAML("kind: Pod\nmetadata:\n  name: api-0\n")
+        state.finishResourceDetailLoad()
+
+        viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("pod-api-0-"))
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasSuffix(".yaml"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["yaml", "yml"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        XCTAssertEqual(String(decoding: configuredExporter.saves[0].data, as: UTF8.self), state.resourceYAML)
     }
 
     @MainActor
@@ -2790,6 +4083,33 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testActiveTerminalTranscriptConfiguredExportUsesTextWorkflow() {
+        let configuredExporter = RecordingConfiguredExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "api-0",
+            shell: "sh",
+            transcript: "active line\n",
+            status: .connected
+        ))
+
+        viewModel.saveActiveTerminalTranscriptToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("terminal-demo-api-0-transcript-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["log", "txt"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        let payload = String(decoding: configuredExporter.saves[0].data, as: UTF8.self)
+        XCTAssertTrue(payload.contains("Context: demo-context"))
+        XCTAssertTrue(payload.contains("active line"))
+    }
+
+    @MainActor
     func testAllTerminalTranscriptExportBuildsOneArchiveForEveryShellTab() throws {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
@@ -2830,10 +4150,50 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testAllTerminalTranscriptConfiguredExportUsesArchiveWorkflow() throws {
+        let configuredExporter = RecordingConfiguredExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "api-0",
+            shell: "sh",
+            transcript: "alpha\n",
+            status: .disconnected,
+            lastExitCode: 0
+        ))
+        state.setTerminalSession(PodTerminalSession(
+            id: "shell-b",
+            contextName: "demo-context",
+            namespace: "demo",
+            podName: "worker-0",
+            shell: "sh",
+            transcript: "beta\n",
+            status: .failed,
+            lastExitCode: 137
+        ))
+
+        viewModel.saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("terminal-transcripts-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["zip"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .archive)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        let archiveBytes = String(decoding: configuredExporter.saves[0].data, as: UTF8.self)
+        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/README.txt"))
+        XCTAssertTrue(archiveBytes.contains("alpha"))
+        XCTAssertTrue(archiveBytes.contains("beta"))
+    }
+
+    @MainActor
     func testTerminalTranscriptExportSkipsWhenNoTranscriptExists() {
         let exporter = RecordingFileExporter()
+        let configuredExporter = RecordingConfiguredExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter, configuredExporter: configuredExporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-empty",
             contextName: "demo-context",
@@ -2846,8 +4206,11 @@ final class RuneAppStateTests: XCTestCase {
 
         viewModel.saveActiveTerminalTranscript()
         viewModel.saveAllTerminalTranscriptsZip()
+        viewModel.saveActiveTerminalTranscriptToExportFolder(openAfterSave: true)
+        viewModel.saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: true)
 
         XCTAssertTrue(exporter.saves.isEmpty)
+        XCTAssertTrue(configuredExporter.saves.isEmpty)
     }
 
     @MainActor
@@ -3183,6 +4546,7 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.setNamespace("team-a")
 
         XCTAssertEqual(store.loadManualNamespaces(for: "demo"), ["team-a"])
+        XCTAssertEqual(viewModel.manualNamespaceOptions, ["team-a"])
 
         let reloadedState = RuneAppState()
         let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
@@ -3191,6 +4555,7 @@ final class RuneAppStateTests: XCTestCase {
         reloadedState.setNamespaces([])
 
         XCTAssertEqual(reloadedViewModel.namespaceOptions, ["team-a"])
+        XCTAssertEqual(reloadedViewModel.manualNamespaceOptions, ["team-a"])
     }
 
     @MainActor
@@ -3554,7 +4919,11 @@ final class RuneAppStateTests: XCTestCase {
                 name: "frontend",
                 namespace: "default",
                 status: "Ready True",
-                message: "Applied revision main@sha1"
+                message: "Applied revision main@sha1",
+                printerColumns: [
+                    OperatorResourceSummary.PrinterColumn(title: "Revision", value: "main@sha1"),
+                    OperatorResourceSummary.PrinterColumn(title: "Age", value: "8m")
+                ]
             ),
             OperatorResourceSummary(
                 family: "ArgoCD",
@@ -3575,6 +4944,90 @@ final class RuneAppStateTests: XCTestCase {
 
         state.resourceSearchQuery = "flux"
         XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["frontend"])
+
+        state.resourceSearchQuery = "8m"
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["frontend"])
+    }
+
+    @MainActor
+    func testOperatorResourceGitOpsFocusFiltersFluxAndArgoWithoutDroppingSortOrFavorites() {
+        let state = RuneAppState()
+        let suiteName = "RuneAppStateTests.operatorGitOpsFocus.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        state.selectedContext = KubeContext(name: "demo")
+        state.setOperatorResources([
+            OperatorResourceSummary(
+                family: "cert-manager",
+                kind: "Certificates",
+                apiPath: "/apis/cert-manager.io/v1/namespaces/default/certificates",
+                name: "api-tls",
+                namespace: "default",
+                status: "Ready",
+                message: ""
+            ),
+            OperatorResourceSummary(
+                family: "Flux",
+                kind: "Kustomizations",
+                apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/default/kustomizations",
+                name: "frontend",
+                namespace: "default",
+                status: "Ready",
+                message: ""
+            ),
+            OperatorResourceSummary(
+                family: "ArgoCD",
+                kind: "Applications",
+                apiPath: "/apis/argoproj.io/v1alpha1/namespaces/default/applications",
+                name: "payments",
+                namespace: "default",
+                status: "OutOfSync",
+                message: ""
+            ),
+            OperatorResourceSummary(
+                family: "Gateway API",
+                kind: "Gateways",
+                apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/default/gateways",
+                name: "edge",
+                namespace: "default",
+                status: "Programmed",
+                message: ""
+            )
+        ])
+
+        XCTAssertEqual(viewModel.gitOpsOperatorResourceCount, 2)
+        XCTAssertEqual(viewModel.fluxOperatorResourceCount, 1)
+        XCTAssertEqual(viewModel.argoCDOperatorResourceCount, 1)
+        XCTAssertEqual(viewModel.unhealthyGitOpsOperatorResourceCount, 1)
+        XCTAssertEqual(viewModel.operatorResourceFocusSummary, "4 operator resources")
+
+        viewModel.pageOperatorResourcesForward()
+        viewModel.toggleFavoriteOperatorResource(state.operatorResources[1])
+        viewModel.setOperatorResourceFocus(.gitOps)
+
+        XCTAssertEqual(viewModel.operatorResourcePage, 0)
+        XCTAssertEqual(viewModel.operatorResourceFocusSummary, "2 GitOps resources • Flux 1 • ArgoCD 1 • Unhealthy 1")
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["frontend", "payments"])
+
+        state.resourceSearchQuery = "outofsync"
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["payments"])
+        state.resourceSearchQuery = ""
+        viewModel.setOperatorResourceFocus(.flux)
+        XCTAssertEqual(viewModel.operatorResourceFocusSummary, "1 Flux resource • Unhealthy 0")
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["frontend"])
+
+        viewModel.setOperatorResourceFocus(.argoCD)
+        XCTAssertEqual(viewModel.operatorResourceFocusSummary, "1 ArgoCD resource • Unhealthy 1")
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["payments"])
+
+        viewModel.setOperatorResourceFocus(.unhealthy)
+        XCTAssertEqual(viewModel.operatorResourceFocusSummary, "1 unhealthy GitOps resource")
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["payments"])
+        XCTAssertTrue(RuneAppViewModel.isGitOpsOperatorResource(state.operatorResources[1]))
+        XCTAssertTrue(RuneAppViewModel.isGitOpsOperatorResource(state.operatorResources[2]))
+        XCTAssertFalse(RuneAppViewModel.isGitOpsOperatorResource(state.operatorResources[0]))
     }
 
     @MainActor
@@ -3610,6 +5063,52 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["alpha", "beta"])
         viewModel.toggleFavoriteOperatorResource(state.operatorResources[1])
         XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["beta", "alpha"])
+    }
+
+    @MainActor
+    func testOperatorPrinterColumnsCanBeHiddenPerFamilyWithoutChangingFavoriteOrder() {
+        let state = RuneAppState()
+        let suiteName = "RuneAppStateTests.operatorPrinterColumns.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        state.selectedContext = KubeContext(name: "demo")
+        state.setOperatorResources([
+            OperatorResourceSummary(
+                family: "Custom Resources",
+                kind: "Widgets",
+                apiPath: "/apis/example.io/v1/namespaces/default/widgets",
+                name: "alpha",
+                namespace: "default",
+                status: "Ready",
+                message: "",
+                printerColumns: [OperatorResourceSummary.PrinterColumn(title: "Age", value: "1m")]
+            ),
+            OperatorResourceSummary(
+                family: "Custom Resources",
+                kind: "Widgets",
+                apiPath: "/apis/example.io/v1/namespaces/default/widgets",
+                name: "beta",
+                namespace: "default",
+                status: "Ready",
+                message: "",
+                printerColumns: [OperatorResourceSummary.PrinterColumn(title: "Age", value: "2m")]
+            )
+        ])
+        viewModel.toggleFavoriteOperatorResource(state.operatorResources[1])
+
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["beta", "alpha"])
+        XCTAssertTrue(viewModel.showsOperatorPrinterColumnsForCurrentFamily)
+
+        viewModel.toggleOperatorPrinterColumnsForCurrentFamily()
+
+        XCTAssertFalse(viewModel.showsOperatorPrinterColumnsForCurrentFamily)
+        XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["beta", "alpha"])
+        XCTAssertEqual(store.loadHiddenOperatorPrinterColumnFamilies(), ["Custom Resources"])
+
+        let reloaded = RuneAppViewModel(state: state, contextPreferences: store)
+        XCTAssertFalse(reloaded.showsOperatorPrinterColumnsForCurrentFamily)
     }
 
     @MainActor
@@ -4261,6 +5760,44 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testWriteAuditConfiguredExportUsesVisibleEntriesAndTextWorkflow() throws {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.appendWriteAuditEntry(
+            WriteAuditEntry(
+                action: "Apply YAML",
+                contextName: "demo",
+                namespace: "default",
+                resource: "configmap/settings",
+                status: "Succeeded",
+                message: "Write action completed"
+            )
+        )
+        state.appendWriteAuditEntry(
+            WriteAuditEntry(
+                action: "Delete",
+                contextName: "demo",
+                namespace: "default",
+                resource: "pod/api-0",
+                status: "Failed",
+                message: "forbidden"
+            )
+        )
+
+        viewModel.writeAuditSearchQuery = "failed pod/api-0"
+        viewModel.saveVisibleWriteAuditLogToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("write-audit-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["json"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        let entries = try JSONDecoder().decode([WriteAuditEntry].self, from: configuredExporter.saves[0].data)
+        XCTAssertEqual(entries.map(\.resource), ["pod/api-0"])
+    }
+
+    @MainActor
     func testVisibleLogZipExportUsesDisplayedText() throws {
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
@@ -4315,6 +5852,25 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(exporter.saves.first?.allowedFileTypes, ["txt", "log"])
         XCTAssertTrue(exporter.saves.first?.suggestedName.contains("pod-api-0-describe") == true)
         XCTAssertEqual(String(data: try XCTUnwrap(exporter.saves.first?.data), encoding: .utf8), state.resourceDescribe)
+    }
+
+    @MainActor
+    func testResourceDescribeConfiguredExportUsesTextWorkflow() {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
+        state.setResourceDescribe("Name: api-0\nManaged Fields:\n  manager: kube-controller\n")
+
+        viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 1)
+        XCTAssertEqual(configuredExporter.saves.first?.allowedFileTypes, ["txt", "log"])
+        XCTAssertEqual(configuredExporter.saves.first?.kind, .plainText)
+        XCTAssertEqual(configuredExporter.saves.first?.openAfterSave, true)
+        XCTAssertTrue(configuredExporter.saves.first?.suggestedName.contains("pod-api-0-describe") == true)
+        XCTAssertEqual(String(decoding: configuredExporter.saves[0].data, as: UTF8.self), state.resourceDescribe)
     }
 
     func testPodContainerLogArchiveIncludesDeploymentMergedAndContainerFiles() throws {
@@ -4603,7 +6159,82 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testRequestMetricsSummaryRefreshesFromKubeClientRecorder() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic-namespace/pods",
+            statusCode: 200,
+            responseBytes: 1_024,
+            durationSeconds: 0.01,
+            attempt: 1,
+            outcome: .success
+        ))
+        await recorder.record(KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic-namespace/services",
+            statusCode: 504,
+            responseBytes: 128,
+            durationSeconds: 0.20,
+            attempt: 2,
+            outcome: .httpError
+        ))
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
+        let viewModel = RuneAppViewModel(state: RuneAppState(), kubeClient: client)
+
+        viewModel.refreshKubernetesRequestMetricsSummary()
+
+        try await waitUntilForRuneAppState {
+            !viewModel.isRefreshingKubernetesRequestMetricsSummary
+                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "2 requests"
+        }
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.outcomeText, "1 ok • 1 failed • 0 cancelled")
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.transferText, "1.1 KB • 210 ms total")
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.retainedText, "2 retained")
+        XCTAssertTrue(viewModel.kubernetesRequestMetricsSummary.hasFailures)
+    }
+
+    @MainActor
+    func testSaveSupportBundleConfiguredExportUsesTextWorkflow() async throws {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "default"
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+
+        viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
+        try await waitUntilForRuneAppState {
+            configuredExporter.saves.count == 1
+        }
+
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("support-bundle-"))
+        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["json"])
+        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
+        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: configuredExporter.saves[0].data)
+        XCTAssertEqual(decoded.contextName, "<context-name>")
+        XCTAssertEqual(decoded.namespace, "default")
+    }
+
+    @MainActor
     func testSupportBundleRedactsSensitiveValuesLocalPathsAndContextName() throws {
+        let defaults = UserDefaults.standard
+        let previousExportFolderDisplayName = defaults.object(forKey: RuneSettingsKeys.exportFolderDisplayName)
+        let previousTextOpener = defaults.object(forKey: RuneSettingsKeys.exportTextOpenerBundleIdentifier)
+        let previousArchiveOpener = defaults.object(forKey: RuneSettingsKeys.exportArchiveOpenerBundleIdentifier)
+        let previousPrivacySafeFilenames = defaults.object(forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames)
+        defer {
+            restoreUserDefaultsValue(previousExportFolderDisplayName, forKey: RuneSettingsKeys.exportFolderDisplayName)
+            restoreUserDefaultsValue(previousTextOpener, forKey: RuneSettingsKeys.exportTextOpenerBundleIdentifier)
+            restoreUserDefaultsValue(previousArchiveOpener, forKey: RuneSettingsKeys.exportArchiveOpenerBundleIdentifier)
+            restoreUserDefaultsValue(previousPrivacySafeFilenames, forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames)
+        }
+        defaults.runeExportFolderDisplayName = "Synthetic Export Folder"
+        defaults.runeExportTextOpenerBundleIdentifier = "com.example.SyntheticTextViewer"
+        defaults.runeExportArchiveOpenerBundleIdentifier = "com.example.SyntheticArchiveViewer"
+        defaults.runeExportUsesPrivacySafeFilenames = true
+
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-production-context")
         state.selectedNamespace = "synthetic-namespace"
@@ -4692,6 +6323,9 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(json.contains("synthetic-key-data-value"))
         XCTAssertFalse(json.contains("synthetic-health-token-value"))
         XCTAssertFalse(json.contains("synthetic-audit-token-value"))
+        XCTAssertFalse(json.contains("Synthetic Export Folder"))
+        XCTAssertFalse(json.contains("com.example.SyntheticTextViewer"))
+        XCTAssertFalse(json.contains("com.example.SyntheticArchiveViewer"))
         XCTAssertTrue(json.contains("<context-name>"))
         XCTAssertTrue(json.contains("<local-path>"))
         XCTAssertTrue(json.contains("<redacted>"))
@@ -4741,6 +6375,103 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(messages.contains("Custom certificate authority configuration was detected."))
         XCTAssertFalse(messages.contains("get-token"))
         XCTAssertFalse(messages.contains(kubeconfig.path))
+    }
+
+    @MainActor
+    func testAuthDoctorKubeconfigInspectorAddsProviderLifecycleChecksWithoutLeakingValues() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try """
+        apiVersion: v1
+        clusters:
+        - name: synthetic-eks
+          cluster:
+            server: https://synthetic.eks.amazonaws.com
+        - name: synthetic-gke
+          cluster:
+            server: https://container.googleapis.com
+        - name: synthetic-aks
+          cluster:
+            server: https://synthetic-aks.example.invalid
+        - name: synthetic-oidc
+          cluster:
+            server: https://synthetic-oidc.example.invalid
+        users:
+        - name: synthetic-eks
+          user:
+            exec:
+              command: aws
+              args:
+              - eks
+              - get-token
+              - --role-arn
+              - arn:aws:iam::000000000000:role/synthetic-private-role
+        - name: synthetic-gke
+          user:
+            exec:
+              command: gke-gcloud-auth-plugin
+        - name: synthetic-aks
+          user:
+            exec:
+              command: kubelogin
+        - name: synthetic-oidc
+          user:
+            auth-provider:
+              name: oidc
+              config:
+                id-token: synthetic-id-token-value
+                expiry: "2099-01-01T00:00:00Z"
+        contexts: []
+        """.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let checks = AuthDoctorKubeconfigInspector(
+            fileExists: { path in
+                path.hasSuffix("/aws")
+                    || path.hasSuffix("/gke-gcloud-auth-plugin")
+                    || path.hasSuffix("/kubelogin")
+            },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).inspect(sources: [KubeConfigSource(url: kubeconfig)])
+        let messages = checks.map(\.message).joined(separator: " ")
+
+        XCTAssertEqual(checks.first { $0.id == "eks-role-profile" }?.status, .passed)
+        XCTAssertEqual(checks.first { $0.id == "gke-auth-plugin-profile" }?.status, .passed)
+        XCTAssertEqual(checks.first { $0.id == "aks-kubelogin-profile" }?.status, .passed)
+        XCTAssertEqual(checks.first { $0.id == "oidc-token-profile" }?.status, .passed)
+        XCTAssertFalse(messages.contains("synthetic-private-role"))
+        XCTAssertFalse(messages.contains("synthetic-id-token-value"))
+        XCTAssertFalse(messages.contains("2099-01-01"))
+        XCTAssertFalse(messages.contains(kubeconfig.path))
+    }
+
+    @MainActor
+    func testAuthDoctorKubeconfigInspectorWarnsForExpiredOIDCProfile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try """
+        apiVersion: v1
+        users:
+        - name: synthetic-oidc
+          user:
+            auth-provider:
+              name: oidc
+              config:
+                id-token: synthetic-id-token-value
+                expiry: "2000-01-01T00:00:00Z"
+        """.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let checks = AuthDoctorKubeconfigInspector(
+            fileExists: { _ in false },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).inspect(sources: [KubeConfigSource(url: kubeconfig)])
+        let oidc = try XCTUnwrap(checks.first { $0.id == "oidc-token-profile" })
+
+        XCTAssertEqual(oidc.status, .warning)
+        XCTAssertTrue(oidc.message.contains("appears expired"))
+        XCTAssertFalse(oidc.message.contains("synthetic-id-token-value"))
+        XCTAssertFalse(oidc.message.contains("2000-01-01"))
     }
 
     @MainActor
@@ -4875,14 +6606,23 @@ final class RuneAppStateTests: XCTestCase {
         ).inspect(sources: [KubeConfigSource(url: kubeconfig)])
         let messages = checks.map(\.message).joined(separator: " ")
         let cloudTools = try XCTUnwrap(checks.first { $0.id == "cloud-login-tools" })
+        let doksProfile = try XCTUnwrap(checks.first { $0.id == "doks-doctl-profile" })
+        let rancherProfile = try XCTUnwrap(checks.first { $0.id == "rancher-cli-profile" })
+        let openShiftProfile = try XCTUnwrap(checks.first { $0.id == "openshift-cli-profile" })
 
         XCTAssertEqual(cloudTools.status, .warning)
+        XCTAssertEqual(doksProfile.status, .warning)
+        XCTAssertEqual(rancherProfile.status, .warning)
+        XCTAssertEqual(openShiftProfile.status, .warning)
         XCTAssertTrue(messages.contains("DOKS auth hints detected."))
         XCTAssertTrue(messages.contains("Rancher auth hints detected."))
         XCTAssertTrue(messages.contains("OpenShift auth hints detected."))
         XCTAssertTrue(cloudTools.message.contains("doctl"))
         XCTAssertTrue(cloudTools.message.contains("rancher"))
         XCTAssertTrue(cloudTools.message.contains("oc"))
+        XCTAssertTrue(doksProfile.message.contains("doctl"))
+        XCTAssertTrue(rancherProfile.message.contains("rancher"))
+        XCTAssertTrue(openShiftProfile.message.contains("oc"))
         XCTAssertFalse(messages.contains(kubeconfig.path))
     }
 
@@ -4897,6 +6637,241 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.clearAuthDoctorOutput()
 
         XCTAssertTrue(state.authDoctorChecks.isEmpty)
+    }
+
+    @MainActor
+    func testRBACCanISimulatorRunsReadOnlyNamespaceScopedRequest() async throws {
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "synthetic-context")])
+        state.selectedNamespace = "payments"
+        state.setSources([KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))])
+        let checker = RecordingRBACCanIChecker(result: true)
+        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+        viewModel.rbacCanIVerb = " create "
+        viewModel.rbacCanIResource = " pods "
+        viewModel.rbacCanIApiGroup = " "
+        viewModel.rbacCanISubresource = " exec "
+        viewModel.rbacCanIScope = .namespace
+
+        viewModel.runRBACCanISimulator()
+
+        try await waitUntilForRuneAppState {
+            viewModel.rbacCanIResult != nil && !viewModel.isRunningRBACCanI
+        }
+        let request = try XCTUnwrap(checker.requests.first)
+        XCTAssertEqual(request.contextName, "synthetic-context")
+        XCTAssertEqual(request.namespace, "payments")
+        XCTAssertEqual(request.verb, "create")
+        XCTAssertEqual(request.resource, "pods")
+        XCTAssertNil(request.apiGroup)
+        XCTAssertEqual(request.subresource, "exec")
+        XCTAssertEqual(viewModel.rbacCanIResult?.allowed, true)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testRBACCanISimulatorUsesSelectedClusterScopedResourceDefaults() async throws {
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "synthetic-context")])
+        state.selectedNamespace = "payments"
+        state.setSources([KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))])
+        let clusterRole = ClusterResourceSummary(
+            kind: .clusterRole,
+            name: "operator-view",
+            namespace: nil,
+            primaryText: "Rules: 4",
+            secondaryText: "ClusterRole"
+        )
+        state.setRBACData(roles: [], roleBindings: [], clusterRoles: [clusterRole], clusterRoleBindings: [])
+        let checker = RecordingRBACCanIChecker(result: false)
+        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+
+        viewModel.selectRBACResource(clusterRole)
+
+        XCTAssertEqual(viewModel.rbacCanIVerb, "list")
+        XCTAssertEqual(viewModel.rbacCanIResource, "clusterroles")
+        XCTAssertEqual(viewModel.rbacCanIApiGroup, "rbac.authorization.k8s.io")
+        XCTAssertEqual(viewModel.rbacCanIScope, .cluster)
+
+        viewModel.runRBACCanISimulator()
+
+        try await waitUntilForRuneAppState {
+            viewModel.rbacCanIResult != nil && !viewModel.isRunningRBACCanI
+        }
+        let request = try XCTUnwrap(checker.requests.first)
+        XCTAssertNil(request.namespace)
+        XCTAssertEqual(request.verb, "list")
+        XCTAssertEqual(request.resource, "clusterroles")
+        XCTAssertEqual(request.apiGroup, "rbac.authorization.k8s.io")
+        XCTAssertEqual(viewModel.rbacCanIResult?.allowed, false)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testRBACCanIPresetPopulatesSimulatorFields() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+
+        viewModel.useRBACCanIPreset(
+            verb: " list ",
+            resource: " deployments ",
+            apiGroup: " apps ",
+            subresource: nil,
+            scope: .namespace
+        )
+
+        XCTAssertEqual(viewModel.rbacCanIVerb, "list")
+        XCTAssertEqual(viewModel.rbacCanIResource, "deployments")
+        XCTAssertEqual(viewModel.rbacCanIApiGroup, "apps")
+        XCTAssertEqual(viewModel.rbacCanISubresource, "")
+        XCTAssertEqual(viewModel.rbacCanIScope, .namespace)
+        XCTAssertNil(viewModel.rbacCanIResult)
+    }
+
+    @MainActor
+    func testRBACBindingRelationshipNavigationOpensReferencedRole() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "payments"
+        let binding = ClusterResourceSummary(
+            kind: .roleBinding,
+            name: "api-readers",
+            namespace: "payments",
+            primaryText: "→ ClusterRole/view",
+            secondaryText: "1 subject(s)"
+        )
+        let clusterRole = ClusterResourceSummary(
+            kind: .clusterRole,
+            name: "view",
+            namespace: nil,
+            primaryText: "6 rules",
+            secondaryText: "Cluster role"
+        )
+        state.setRBACData(roles: [], roleBindings: [binding], clusterRoles: [clusterRole], clusterRoleBindings: [])
+        state.setSelectedRBACResource(binding)
+        state.selectedSection = .rbac
+        state.selectedWorkloadKind = .roleBinding
+        let viewModel = RuneAppViewModel(state: state)
+
+        let referencedRole = try XCTUnwrap(viewModel.selectedRBACBindingReferencedRole)
+        XCTAssertEqual(referencedRole.kind, .clusterRole)
+        XCTAssertEqual(referencedRole.name, "view")
+
+        viewModel.openRBACBindingReferencedRole(referencedRole)
+
+        XCTAssertEqual(state.selectedSection, .rbac)
+        XCTAssertEqual(state.selectedWorkloadKind, .clusterRole)
+        XCTAssertEqual(state.selectedRBACResource?.name, "view")
+    }
+
+    @MainActor
+    func testRBACRoleRelationshipNavigationOpensRelatedBinding() {
+        let state = RuneAppState()
+        state.selectedNamespace = "payments"
+        let role = ClusterResourceSummary(
+            kind: .role,
+            name: "api-reader",
+            namespace: "payments",
+            primaryText: "2 rules",
+            secondaryText: "Namespaced role"
+        )
+        let binding = ClusterResourceSummary(
+            kind: .roleBinding,
+            name: "api-reader-binding",
+            namespace: "payments",
+            primaryText: "→ Role/api-reader",
+            secondaryText: "1 subject(s)"
+        )
+        let otherNamespaceBinding = ClusterResourceSummary(
+            kind: .roleBinding,
+            name: "api-reader-other",
+            namespace: "other",
+            primaryText: "→ Role/api-reader",
+            secondaryText: "1 subject(s)"
+        )
+        state.setRBACData(
+            roles: [role],
+            roleBindings: [binding, otherNamespaceBinding],
+            clusterRoles: [],
+            clusterRoleBindings: []
+        )
+        state.setSelectedRBACResource(role)
+        state.selectedSection = .rbac
+        state.selectedWorkloadKind = .role
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedRBACRoleRelatedBindings.map(\.name), ["api-reader-binding"])
+
+        viewModel.openRBACRoleRelatedBinding(binding)
+
+        XCTAssertEqual(state.selectedSection, .rbac)
+        XCTAssertEqual(state.selectedWorkloadKind, .roleBinding)
+        XCTAssertEqual(state.selectedRBACResource?.name, "api-reader-binding")
+    }
+
+    @MainActor
+    func testRBACCanISimulatorReportsValidationErrorsWithoutRunningChecker() {
+        let state = RuneAppState()
+        state.selectedNamespace = "payments"
+        let checker = RecordingRBACCanIChecker(result: true)
+        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+
+        viewModel.runRBACCanISimulator()
+
+        XCTAssertEqual(viewModel.rbacCanIResult?.errorMessage, "Select a Kubernetes context before checking RBAC.")
+        XCTAssertTrue(checker.requests.isEmpty)
+
+        state.setContexts([KubeContext(name: "synthetic-context")])
+        viewModel.rbacCanIVerb = " "
+        viewModel.runRBACCanISimulator()
+
+        XCTAssertEqual(viewModel.rbacCanIResult?.errorMessage, "Enter a verb to check.")
+        XCTAssertTrue(checker.requests.isEmpty)
+
+        viewModel.rbacCanIVerb = "list"
+        viewModel.rbacCanIResource = " "
+        viewModel.runRBACCanISimulator()
+
+        XCTAssertEqual(viewModel.rbacCanIResult?.errorMessage, "Enter a resource to check.")
+        XCTAssertTrue(checker.requests.isEmpty)
+
+        viewModel.rbacCanIResource = "pods"
+        state.selectedNamespace = " "
+        viewModel.rbacCanIScope = .namespace
+        viewModel.runRBACCanISimulator()
+
+        XCTAssertEqual(viewModel.rbacCanIResult?.errorMessage, "Select or enter a namespace, or switch scope to Cluster.")
+        XCTAssertTrue(checker.requests.isEmpty)
+    }
+
+    @MainActor
+    func testRBACCanISimulatorReportsCheckerFailure() async throws {
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "synthetic-context")])
+        state.selectedNamespace = "payments"
+        state.setSources([KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))])
+        let checker = RecordingRBACCanIChecker(error: RuneError.invalidInput(message: "Synthetic RBAC failure"))
+        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+
+        viewModel.runRBACCanISimulator()
+
+        try await waitUntilForRuneAppState {
+            viewModel.rbacCanIResult != nil && !viewModel.isRunningRBACCanI
+        }
+        XCTAssertEqual(checker.requests.count, 1)
+        XCTAssertEqual(viewModel.rbacCanIResult?.allowed, nil)
+        XCTAssertEqual(viewModel.rbacCanIResult?.errorMessage, "Invalid input: Synthetic RBAC failure")
+    }
+
+    func testKubeResourceKindProjectsRBACAPIGroupForAccessReviews() {
+        XCTAssertEqual(KubeResourceKind.deployment.rbacAPIGroup, "apps")
+        XCTAssertEqual(KubeResourceKind.cronJob.rbacAPIGroup, "batch")
+        XCTAssertEqual(KubeResourceKind.ingress.rbacAPIGroup, "networking.k8s.io")
+        XCTAssertEqual(KubeResourceKind.storageClass.rbacAPIGroup, "storage.k8s.io")
+        XCTAssertEqual(KubeResourceKind.clusterRoleBinding.rbacAPIGroup, "rbac.authorization.k8s.io")
+        XCTAssertNil(KubeResourceKind.pod.rbacAPIGroup)
+        XCTAssertNil(KubeResourceKind.persistentVolume.rbacAPIGroup)
     }
 }
 
@@ -4985,12 +6960,82 @@ private final class RecordingFileExporter: FileExporting {
     }
 }
 
+@MainActor
+private final class RecordingConfiguredExporter: ConfiguredExporting {
+    private(set) var saves: [
+        (
+            data: Data,
+            suggestedName: String,
+            allowedFileTypes: [String],
+            kind: ConfiguredExportFileKind,
+            openAfterSave: Bool
+        )
+    ] = []
+
+    func save(
+        data: Data,
+        suggestedName: String,
+        allowedFileTypes: [String],
+        kind: ConfiguredExportFileKind,
+        openAfterSave: Bool
+    ) throws -> URL {
+        saves.append((data, suggestedName, allowedFileTypes, kind, openAfterSave))
+        return URL(fileURLWithPath: "/tmp/\(suggestedName)")
+    }
+}
+
 private final class RecordingHelmCommandRunner: HelmCommandRunning, @unchecked Sendable {
     private(set) var requests: [HelmRollbackRequest] = []
     var result = HelmCommandResult(exitCode: 0, stdout: "ok\n", stderr: "")
 
     func rollback(_ request: HelmRollbackRequest, timeout: TimeInterval) async throws -> HelmCommandResult {
         requests.append(request)
+        return result
+    }
+}
+
+@MainActor
+private final class RecordingRBACCanIChecker {
+    struct Request: Equatable {
+        let sourcesCount: Int
+        let contextName: String
+        let namespace: String?
+        let verb: String
+        let resource: String
+        let apiGroup: String?
+        let subresource: String?
+    }
+
+    private let result: Bool
+    private let error: Error?
+    private(set) var requests: [Request] = []
+
+    init(result: Bool = true, error: Error? = nil) {
+        self.result = result
+        self.error = error
+    }
+
+    func check(
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String?,
+        subresource: String?
+    ) async throws -> Bool {
+        requests.append(Request(
+            sourcesCount: sources.count,
+            contextName: context.name,
+            namespace: namespace,
+            verb: verb,
+            resource: resource,
+            apiGroup: apiGroup,
+            subresource: subresource
+        ))
+        if let error {
+            throw error
+        }
         return result
     }
 }

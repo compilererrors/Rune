@@ -378,6 +378,83 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(pods.first?.totalRestarts, 2)
     }
 
+    func testOutputParserProjectsIngressBackendServices() throws {
+        let raw = """
+        {
+          "items": [
+            {
+              "metadata": {"name": "api-public", "namespace": "synthetic"},
+              "spec": {
+                "rules": [
+                  {
+                    "host": "api.synthetic.example",
+                    "http": {
+                      "paths": [
+                        {"backend": {"service": {"name": "api", "port": {"number": 80}}}},
+                        {"backend": {"service": {"name": "metrics", "port": {"number": 9090}}}}
+                      ]
+                    }
+                  }
+                ]
+              },
+              "status": {"loadBalancer": {"ingress": [{"hostname": "lb.synthetic.example"}]}}
+            }
+          ]
+        }
+        """
+
+        let ingresses = try KubernetesOutputParser().parseIngresses(namespace: "synthetic", from: raw)
+
+        XCTAssertEqual(ingresses.first?.name, "api-public")
+        XCTAssertEqual(ingresses.first?.primaryText, "api.synthetic.example")
+        XCTAssertEqual(ingresses.first?.secondaryText, "Service api, metrics")
+    }
+
+    func testOutputParserProjectsPVCBoundPersistentVolume() throws {
+        let raw = """
+        {
+          "items": [
+            {
+              "metadata": {"name": "postgres-data", "namespace": "synthetic"},
+              "spec": {
+                "volumeName": "pv-postgres-data",
+                "resources": {"requests": {"storage": "20Gi"}}
+              },
+              "status": {"phase": "Bound", "capacity": {"storage": "20Gi"}}
+            }
+          ]
+        }
+        """
+
+        let pvcs = try KubernetesOutputParser().parsePersistentVolumeClaims(namespace: "synthetic", from: raw)
+
+        XCTAssertEqual(pvcs.first?.name, "postgres-data")
+        XCTAssertEqual(pvcs.first?.primaryText, "Bound")
+        XCTAssertEqual(pvcs.first?.secondaryText, "PV pv-postgres-data · 20Gi")
+    }
+
+    func testOutputParserProjectsRoleBindingRoleRefKindAndName() throws {
+        let raw = """
+        {
+          "items": [
+            {
+              "metadata": {"name": "api-readers", "namespace": "synthetic"},
+              "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "view"},
+              "subjects": [
+                {"kind": "ServiceAccount", "name": "api"}
+              ]
+            }
+          ]
+        }
+        """
+
+        let bindings = try KubernetesOutputParser().parseRoleBindings(namespace: "synthetic", from: raw)
+
+        XCTAssertEqual(bindings.first?.name, "api-readers")
+        XCTAssertEqual(bindings.first?.primaryText, "→ ClusterRole/view")
+        XCTAssertEqual(bindings.first?.secondaryText, "1 subject(s)")
+    }
+
     func testKubernetesListJSONReadsRemainingItemCount() {
         let raw = #"{"metadata":{"continue":"next","remainingItemCount":41},"items":[{"metadata":{"name":"one"}}]}"#
 

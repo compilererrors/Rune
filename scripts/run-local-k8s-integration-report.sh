@@ -297,12 +297,16 @@ else
     run_step docker_compose_read_write_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sReadWriteOperationsAreReversible
+    run_step docker_compose_terminal_smoke_test env \
+      RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
+      swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallback
     run_step docker_compose_view_model_feature_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests
   else
     skip_step docker_compose_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_read_write_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
+    skip_step docker_compose_terminal_smoke_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_view_model_feature_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
   fi
 fi

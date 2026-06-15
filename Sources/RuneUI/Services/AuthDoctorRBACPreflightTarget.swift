@@ -1,7 +1,7 @@
 import Foundation
 import RuneCore
 
-public enum AuthDoctorRBACPreflightScope: Sendable {
+public enum AuthDoctorRBACPreflightScope: Equatable, Sendable {
     case namespace
     case cluster
 }

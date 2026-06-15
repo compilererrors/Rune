@@ -144,6 +144,17 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         harness.viewModel.setWorkloadKind(.deployment)
         try await waitUntil {
             harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && harness.state.pods.map(\.name) == [
+                    "ember-gate-75c9f746b8-kq2wm",
+                    "orbit-lens-6f58d7d89b-hx9q2"
+                ]
+                && harness.state.replicaSets.map(\.name) == [
+                    "ember-gate-rs1",
+                    "ember-gate-rs2",
+                    "orbit-lens-rs1",
+                    "orbit-lens-rs2"
+                ]
+                && harness.viewModel.selectedDeploymentRelatedPods.map(\.name) == ["ember-gate-75c9f746b8-kq2wm"]
         }
 
         harness.viewModel.setSection(.networking)

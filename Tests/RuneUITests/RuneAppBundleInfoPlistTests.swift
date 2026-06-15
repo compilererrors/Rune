@@ -34,12 +34,12 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("<false/>"))
     }
 
-    private func configuredBundleIdentifier() throws -> String {
+    private func configuredLocalBundleIdentifier() throws -> String {
         let identifiers = repositoryRoot.appendingPathComponent("Sources/RuneCore/RuneApplicationIdentifiers.swift")
         let contents = try String(contentsOf: identifiers, encoding: .utf8)
 
         guard let assignment = contents.split(separator: "\n").first(where: { line in
-            line.contains("static let bundleIdentifier")
+            line.contains("static let localBundleIdentifier")
         }),
             let firstQuote = assignment.firstIndex(of: "\""),
             let lastQuote = assignment.lastIndex(of: "\""),
@@ -52,16 +52,25 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         return String(assignment[assignment.index(after: firstQuote)..<lastQuote])
     }
 
-    func testBuildScriptUsesConfiguredBundleIdentifierByDefault() throws {
+    func testBuildScriptUsesLocalBundleIdentifierByDefault() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)
-        let bundleIdentifier = try configuredBundleIdentifier()
+        let bundleIdentifier = try configuredLocalBundleIdentifier()
 
         XCTAssertTrue(contents.contains("BUNDLE_IDENTIFIER=\"${BUNDLE_IDENTIFIER:-\(bundleIdentifier)}\""))
         XCTAssertTrue(contents.contains("<string>__BUNDLE_IDENTIFIER__</string>"))
         XCTAssertFalse(contents.contains("com.rune.app"))
-        XCTAssertFalse(contents.contains("com.rune.local"))
         XCTAssertFalse(contents.contains("com.rune.desktop"))
+        XCTAssertFalse(contents.contains("BUNDLE_IDENTIFIER=\"${BUNDLE_IDENTIFIER:-com."))
+    }
+
+    func testRuntimeApplicationIdentifierUsesBundleMetadataWithLocalFallback() throws {
+        let identifiers = repositoryRoot.appendingPathComponent("Sources/RuneCore/RuneApplicationIdentifiers.swift")
+        let contents = try String(contentsOf: identifiers, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("Bundle.main.bundleIdentifier"))
+        XCTAssertTrue(contents.contains("localBundleIdentifier"))
+        XCTAssertFalse(contents.contains("static let bundleIdentifier = \""))
     }
 
     func testBuildScriptOnlyBuildsLocalUnsignedAppBundle() throws {

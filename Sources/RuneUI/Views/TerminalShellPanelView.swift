@@ -25,6 +25,10 @@ struct TerminalShellPanelView: View {
     let onClearTranscript: () -> Void
     let onSaveActiveTranscript: () -> Void
     let onSaveAllTranscripts: () -> Void
+    let onSaveActiveTranscriptToExportFolder: () -> Void
+    let onSaveActiveTranscriptAndOpen: () -> Void
+    let onSaveAllTranscriptsToExportFolder: () -> Void
+    let onSaveAllTranscriptsAndOpen: () -> Void
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
@@ -249,8 +253,30 @@ struct TerminalShellPanelView: View {
             }
             .disabled(!canSaveActiveTranscript)
 
+            Button("Save Active to Export Folder") {
+                onSaveActiveTranscriptToExportFolder()
+            }
+            .disabled(!canSaveActiveTranscript)
+
+            Button("Save Active and Open") {
+                onSaveActiveTranscriptAndOpen()
+            }
+            .disabled(!canSaveActiveTranscript)
+
+            Divider()
+
             Button("Save All Transcripts ZIP") {
                 onSaveAllTranscripts()
+            }
+            .disabled(!canSaveAllTranscripts)
+
+            Button("Save All ZIP to Export Folder") {
+                onSaveAllTranscriptsToExportFolder()
+            }
+            .disabled(!canSaveAllTranscripts)
+
+            Button("Save All ZIP and Open") {
+                onSaveAllTranscriptsAndOpen()
             }
             .disabled(!canSaveAllTranscripts)
         } label: {

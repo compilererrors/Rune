@@ -1687,7 +1687,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "Kubeconfig exec auth returned incomplete client certificate credentials")
         }
 
-        return RESTCredentialResolution(authentication: .none, clientTLSIdentity: nil)
+        throw RuneError.invalidInput(message: "Kubeconfig exec auth returned missing token or client certificate credentials")
     }
 
     private func runExecCredential(

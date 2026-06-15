@@ -21,5 +21,8 @@ final class RuneSmokeTests: XCTestCase {
         XCTAssertTrue(titles.contains(":po"))
         XCTAssertTrue(titles.contains(":svc"))
         XCTAssertTrue(titles.contains(":ctx"))
+        XCTAssertTrue(titles.contains(":ws"))
+        XCTAssertTrue(titles.contains(":savews"))
+        XCTAssertTrue(titles.contains(":favws"))
     }
 }

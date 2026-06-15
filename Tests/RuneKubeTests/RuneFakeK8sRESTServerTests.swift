@@ -351,7 +351,13 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
                         conditionType: "Ready",
                         conditionStatus: "True",
                         reason: "Issued",
-                        message: "Certificate is up to date"
+                        message: "Certificate is up to date",
+                        printerColumnDefinitions: [
+                            "Message": ".status.conditions[0].message",
+                            "Namespace": ".metadata.namespace",
+                            "Ready": ".status.conditions[0].status",
+                            "UID": ".metadata.uid"
+                        ]
                     ),
                     RuneFakeK8sOperatorResource(
                         apiGroup: "source.toolkit.fluxcd.io",
@@ -412,6 +418,18 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
                         conditionStatus: "True",
                         reason: "ListenersValid",
                         message: "Gateway listeners are programmed"
+                    ),
+                    RuneFakeK8sOperatorResource(
+                        apiGroup: "monitoring.coreos.com",
+                        apiVersion: "v1",
+                        plural: "servicemonitors",
+                        kind: "ServiceMonitor",
+                        name: "api-metrics",
+                        namespace: "alpha-zone",
+                        conditionType: "Available",
+                        conditionStatus: "False",
+                        reason: "EndpointMissing",
+                        message: "No matching service endpoints"
                     )
                 ]
             )
@@ -428,14 +446,22 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             namespace: "alpha-zone"
         )
 
-        XCTAssertEqual(Set(resources.map(\.family)), Set(["ArgoCD", "Crossplane", "External Secrets", "Flux", "Gateway API", "cert-manager"]))
+        XCTAssertEqual(Set(resources.map(\.family)), Set(["ArgoCD", "Crossplane", "External Secrets", "Flux", "Gateway API", "Prometheus Operator", "cert-manager"]))
         XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.kind, "Certificates")
         XCTAssertEqual(resources.first(where: { $0.name == "web-tls" })?.status, "Ready True")
+        let printerColumns = try XCTUnwrap(resources.first(where: { $0.name == "web-tls" })?.printerColumns)
+        XCTAssertEqual(printerColumns.count, 3)
+        XCTAssertTrue(printerColumns.contains(OperatorResourceSummary.PrinterColumn(title: "Message", value: "Certificate is up to date")))
+        XCTAssertTrue(printerColumns.contains(OperatorResourceSummary.PrinterColumn(title: "Namespace", value: "alpha-zone")))
+        XCTAssertTrue(printerColumns.contains(OperatorResourceSummary.PrinterColumn(title: "Ready", value: "True")))
         XCTAssertEqual(resources.first(where: { $0.name == "platform" })?.message, "Waiting for repository access")
         XCTAssertEqual(resources.first(where: { $0.name == "control-plane" })?.apiPath, "/apis/argoproj.io/v1alpha1/namespaces/alpha-zone/applications")
         XCTAssertEqual(resources.first(where: { $0.name == "payments-api" })?.family, "External Secrets")
         XCTAssertEqual(resources.first(where: { $0.name == "postgresql" })?.namespace, nil)
         XCTAssertEqual(resources.first(where: { $0.name == "edge" })?.status, "Programmed True")
+        XCTAssertEqual(resources.first(where: { $0.name == "api-metrics" })?.kind, "ServiceMonitors")
+        XCTAssertEqual(resources.first(where: { $0.name == "api-metrics" })?.status, "Available False")
+        XCTAssertEqual(resources.first(where: { $0.name == "api-metrics" })?.message, "No matching service endpoints")
     }
 
     func testOperatorResourceYAMLAndDescribeDrilldownReadsNamespacedAndClusterScopedResources() async throws {

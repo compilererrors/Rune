@@ -13,6 +13,8 @@ public protocol ContextPreferencesStoring {
     func saveManualNamespaces(_ namespaces: [String], for contextName: String)
     func loadPreferredNamespace(for contextName: String) -> String?
     func savePreferredNamespace(_ namespace: String, for contextName: String)
+    func loadHiddenOperatorPrinterColumnFamilies() -> Set<String>
+    func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>)
 }
 
 public extension ContextPreferencesStoring {
@@ -27,6 +29,12 @@ public extension ContextPreferencesStoring {
     }
 
     func savePreferredNamespace(_ namespace: String, for contextName: String) {}
+
+    func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
+        []
+    }
+
+    func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>) {}
 
     func loadFavoriteResourceIDs() -> Set<String> {
         []
@@ -55,6 +63,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
     private let manualProductionContextsKey: String
     private let manualNamespacesKey: String
     private let preferredNamespacesKey: String
+    private let hiddenOperatorPrinterColumnFamiliesKey: String
 
     public init(
         defaults: UserDefaults = .standard,
@@ -63,7 +72,8 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         favoriteNamespacesKey: String = "rune.favorite.namespaces",
         manualProductionContextsKey: String = "rune.manual.production.contexts",
         manualNamespacesKey: String = "rune.manual.namespaces",
-        preferredNamespacesKey: String = "rune.preferred.namespaces"
+        preferredNamespacesKey: String = "rune.preferred.namespaces",
+        hiddenOperatorPrinterColumnFamiliesKey: String = "rune.hidden.operator.printer.column.families"
     ) {
         self.defaults = defaults
         self.favoriteContextsKey = favoriteContextsKey
@@ -72,6 +82,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         self.manualProductionContextsKey = manualProductionContextsKey
         self.manualNamespacesKey = manualNamespacesKey
         self.preferredNamespacesKey = preferredNamespacesKey
+        self.hiddenOperatorPrinterColumnFamiliesKey = hiddenOperatorPrinterColumnFamiliesKey
     }
 
     public func loadFavoriteContextNames() -> Set<String> {
@@ -147,6 +158,25 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         }
 
         defaults.set(map, forKey: preferredNamespacesKey)
+    }
+
+    public func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
+        Set(Self.normalizedStrings(defaults.stringArray(forKey: hiddenOperatorPrinterColumnFamiliesKey) ?? []))
+    }
+
+    public func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>) {
+        defaults.set(Self.normalizedStrings(Array(families)), forKey: hiddenOperatorPrinterColumnFamiliesKey)
+    }
+
+    private static func normalizedStrings(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private func normalizedNamespaces(_ namespaces: [String]) -> [String] {
@@ -283,6 +313,16 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
         }
     }
 
+    public func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
+        Set(loadDocument().hiddenOperatorPrinterColumnFamilies)
+    }
+
+    public func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>) {
+        updateDocument { document in
+            document.hiddenOperatorPrinterColumnFamilies = Self.normalizedStrings(Array(families))
+        }
+    }
+
     private func loadDocument() -> ContextPreferencesDocument {
         if let cachedDocument {
             return cachedDocument
@@ -379,6 +419,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
         var manualProductionContextIDs: [String]
         var manualNamespaces: [String: [String]]
         var preferredNamespaces: [String: String]
+        var hiddenOperatorPrinterColumnFamilies: [String]
 
         init(
             schemaVersion: Int = FileBackedContextPreferencesStore.currentSchemaVersion,
@@ -387,7 +428,8 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             favoriteNamespaceIDs: [String] = [],
             manualProductionContextIDs: [String] = [],
             manualNamespaces: [String: [String]] = [:],
-            preferredNamespaces: [String: String] = [:]
+            preferredNamespaces: [String: String] = [:],
+            hiddenOperatorPrinterColumnFamilies: [String] = []
         ) {
             self.schemaVersion = schemaVersion
             self.favoriteContextNames = favoriteContextNames
@@ -396,6 +438,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             self.manualProductionContextIDs = manualProductionContextIDs
             self.manualNamespaces = manualNamespaces
             self.preferredNamespaces = preferredNamespaces
+            self.hiddenOperatorPrinterColumnFamilies = hiddenOperatorPrinterColumnFamilies
         }
 
         init(legacyStore: ContextPreferencesStoring) {
@@ -420,6 +463,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                     preferredNamespaces[contextName] = preferred
                 }
             }
+            let hiddenOperatorPrinterColumnFamilies = Array(legacyStore.loadHiddenOperatorPrinterColumnFamilies())
 
             self.init(
                 favoriteContextNames: favoriteContextNames,
@@ -427,7 +471,8 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 favoriteNamespaceIDs: favoriteNamespaceIDs,
                 manualProductionContextIDs: manualProductionContextIDs,
                 manualNamespaces: manualNamespaces,
-                preferredNamespaces: preferredNamespaces
+                preferredNamespaces: preferredNamespaces,
+                hiddenOperatorPrinterColumnFamilies: hiddenOperatorPrinterColumnFamilies
             )
         }
 
@@ -441,6 +486,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             manualProductionContextIDs = try container.decodeIfPresent([String].self, forKey: .manualProductionContextIDs) ?? []
             manualNamespaces = try container.decodeIfPresent([String: [String]].self, forKey: .manualNamespaces) ?? [:]
             preferredNamespaces = try container.decodeIfPresent([String: String].self, forKey: .preferredNamespaces) ?? [:]
+            hiddenOperatorPrinterColumnFamilies = try container.decodeIfPresent([String].self, forKey: .hiddenOperatorPrinterColumnFamilies) ?? []
         }
 
         var isEmpty: Bool {
@@ -450,6 +496,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 && manualProductionContextIDs.isEmpty
                 && manualNamespaces.isEmpty
                 && preferredNamespaces.isEmpty
+                && hiddenOperatorPrinterColumnFamilies.isEmpty
         }
 
         func normalized() -> ContextPreferencesDocument {
@@ -477,7 +524,8 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 favoriteNamespaceIDs: FileBackedContextPreferencesStore.normalizedStrings(favoriteNamespaceIDs),
                 manualProductionContextIDs: FileBackedContextPreferencesStore.normalizedStrings(manualProductionContextIDs),
                 manualNamespaces: normalizedManualNamespaces,
-                preferredNamespaces: normalizedPreferredNamespaces
+                preferredNamespaces: normalizedPreferredNamespaces,
+                hiddenOperatorPrinterColumnFamilies: FileBackedContextPreferencesStore.normalizedStrings(hiddenOperatorPrinterColumnFamilies)
             )
         }
 

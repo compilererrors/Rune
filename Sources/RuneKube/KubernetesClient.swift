@@ -367,10 +367,17 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             Definition(family: "Gateway API", kind: "GatewayClasses", apiPath: "/apis/gateway.networking.k8s.io/v1/gatewayclasses"),
             Definition(family: "Gateway API", kind: "Gateways", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/gateways"),
             Definition(family: "Gateway API", kind: "HTTPRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/httproutes"),
-            Definition(family: "Gateway API", kind: "GRPCRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/grpcroutes")
+            Definition(family: "Gateway API", kind: "GRPCRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/grpcroutes"),
+            Definition(family: "Prometheus Operator", kind: "Prometheuses", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/prometheuses"),
+            Definition(family: "Prometheus Operator", kind: "Alertmanagers", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/alertmanagers"),
+            Definition(family: "Prometheus Operator", kind: "ServiceMonitors", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/servicemonitors"),
+            Definition(family: "Prometheus Operator", kind: "PodMonitors", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/podmonitors"),
+            Definition(family: "Prometheus Operator", kind: "PrometheusRules", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/prometheusrules"),
+            Definition(family: "Prometheus Operator", kind: "ThanosRulers", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/thanosrulers")
         ]
 
         let env = try kubeconfigEnvironment(from: sources)
+        let crdPrinterColumns = await crdPrinterColumnDefinitions(environment: env, contextName: context.name)
         var output: [OperatorResourceSummary] = []
 
         for definition in definitions {
@@ -386,7 +393,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 raw,
                 family: definition.family,
                 kind: definition.kind,
-                apiPath: definition.apiPath
+                apiPath: definition.apiPath,
+                printerColumnDefinitions: Self.printerColumnDefinitions(for: definition.apiPath, in: crdPrinterColumns)
             )
         }
 
@@ -394,7 +402,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             environment: env,
             contextName: context.name,
             namespace: namespace,
-            alreadyListedPaths: Set(definitions.map(\.apiPath))
+            alreadyListedPaths: Set(definitions.map(\.apiPath)),
+            crdPrinterColumns: crdPrinterColumns
         )
 
         return output.sorted {
@@ -2670,7 +2679,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         _ raw: String,
         family: String,
         kind: String,
-        apiPath: String
+        apiPath: String,
+        printerColumnDefinitions: [CRDPrinterColumnDefinition] = []
     ) -> [OperatorResourceSummary] {
         guard
             let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
@@ -2696,9 +2706,96 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 name: name,
                 namespace: namespace,
                 status: conditionSummary.status,
-                message: conditionSummary.message
+                message: conditionSummary.message,
+                printerColumns: Self.operatorPrinterColumns(item, definitions: printerColumnDefinitions)
             )
         }
+    }
+
+    private static func operatorPrinterColumns(
+        _ item: [String: Any],
+        definitions: [CRDPrinterColumnDefinition]
+    ) -> [OperatorResourceSummary.PrinterColumn] {
+        let fromDefinitions = definitions.compactMap { definition -> OperatorResourceSummary.PrinterColumn? in
+            guard let rawValue = value(atJSONPath: definition.jsonPath, in: item) else { return nil }
+            let title = boundedPrinterColumnText(definition.name, limit: 24)
+            let value = boundedPrinterColumnText(rawValue, limit: 80)
+            guard !title.isEmpty, !value.isEmpty else { return nil }
+            return OperatorResourceSummary.PrinterColumn(title: title, value: value)
+        }
+        if !fromDefinitions.isEmpty {
+            return Array(fromDefinitions.prefix(3))
+        }
+
+        guard let rawColumns = item["additionalPrinterColumns"] as? [[String: Any]] else { return [] }
+        return rawColumns.compactMap { column in
+            guard let rawTitle = column["name"] as? String else { return nil }
+            let title = boundedPrinterColumnText(rawTitle, limit: 24)
+            guard !title.isEmpty else { return nil }
+
+            let rawValue = column["value"] as? String
+                ?? column["displayValue"] as? String
+                ?? column["text"] as? String
+                ?? ""
+            let value = boundedPrinterColumnText(rawValue, limit: 80)
+            guard !value.isEmpty else { return nil }
+            return OperatorResourceSummary.PrinterColumn(title: title, value: value)
+        }
+        .prefix(3)
+        .map { $0 }
+    }
+
+    private static func value(atJSONPath jsonPath: String, in object: [String: Any]) -> String? {
+        let trimmed = jsonPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(".") else { return nil }
+        let tokens = trimmed.dropFirst().split(separator: ".").map(String.init)
+        guard !tokens.isEmpty else { return nil }
+
+        var current: Any = object
+        for token in tokens {
+            let (key, index) = jsonPathToken(token)
+            guard !key.isEmpty,
+                  let dictionary = current as? [String: Any],
+                  let next = dictionary[key]
+            else { return nil }
+
+            if let index {
+                guard let array = next as? [Any], array.indices.contains(index) else { return nil }
+                current = array[index]
+            } else {
+                current = next
+            }
+        }
+
+        switch current {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        case let value as Bool:
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonPathToken(_ token: String) -> (key: String, index: Int?) {
+        guard let open = token.firstIndex(of: "["),
+              let close = token.firstIndex(of: "]"),
+              open < close
+        else { return (token, nil) }
+        let key = String(token[..<open])
+        let rawIndex = token[token.index(after: open)..<close]
+        return (key, Int(rawIndex))
+    }
+
+    private static func boundedPrinterColumnText(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        return String(normalized.prefix(max(0, limit - 1))) + "…"
     }
 
     private static func operatorConditionSummary(_ conditions: [[String: Any]]?) -> (status: String, message: String) {
@@ -2739,7 +2836,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         environment: [String: String],
         contextName: String,
         namespace: String,
-        alreadyListedPaths: Set<String>
+        alreadyListedPaths: Set<String>,
+        crdPrinterColumns: [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]]
     ) async -> [OperatorResourceSummary] {
         guard let groupsRaw = try? await restClient.rawGET(
             environment: environment,
@@ -2788,13 +2886,92 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     raw,
                     family: "Custom Resources",
                     kind: resource.kind,
-                    apiPath: path
+                    apiPath: path,
+                    printerColumnDefinitions: Self.printerColumnDefinitions(for: path, in: crdPrinterColumns)
                 )
                 if output.count >= 500 { return output }
             }
         }
 
         return output
+    }
+
+    private struct CRDPrinterColumnKey: Hashable {
+        let group: String
+        let version: String
+        let plural: String
+    }
+
+    private struct CRDPrinterColumnDefinition {
+        let name: String
+        let jsonPath: String
+    }
+
+    private func crdPrinterColumnDefinitions(
+        environment: [String: String],
+        contextName: String
+    ) async -> [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]] {
+        guard let raw = try? await restClient.rawGET(
+            environment: environment,
+            contextName: contextName,
+            apiPath: "/apis/apiextensions.k8s.io/v1/customresourcedefinitions",
+            timeout: 15
+        ) else { return [:] }
+        return Self.parseCRDPrinterColumnDefinitions(raw)
+    }
+
+    private static func parseCRDPrinterColumnDefinitions(_ raw: String) -> [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]] {
+        guard let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let items = root["items"] as? [[String: Any]]
+        else { return [:] }
+
+        var output: [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]] = [:]
+        for item in items {
+            guard let spec = item["spec"] as? [String: Any],
+                  let group = spec["group"] as? String,
+                  let names = spec["names"] as? [String: Any],
+                  let plural = names["plural"] as? String,
+                  let versions = spec["versions"] as? [[String: Any]]
+            else { continue }
+
+            for version in versions {
+                guard let versionName = version["name"] as? String else { continue }
+                let columns = parseCRDPrinterColumns(version["additionalPrinterColumns"] as? [[String: Any]])
+                guard !columns.isEmpty else { continue }
+                output[CRDPrinterColumnKey(group: group, version: versionName, plural: plural)] = columns
+            }
+        }
+        return output
+    }
+
+    private static func parseCRDPrinterColumns(_ rawColumns: [[String: Any]]?) -> [CRDPrinterColumnDefinition] {
+        (rawColumns ?? []).compactMap { column in
+            guard let name = column["name"] as? String,
+                  let jsonPath = column["jsonPath"] as? String
+            else { return nil }
+            let boundedName = boundedPrinterColumnText(name, limit: 24)
+            guard !boundedName.isEmpty, jsonPath.hasPrefix(".") else { return nil }
+            return CRDPrinterColumnDefinition(name: boundedName, jsonPath: jsonPath)
+        }
+        .prefix(3)
+        .map { $0 }
+    }
+
+    private static func printerColumnDefinitions(
+        for apiPath: String,
+        in definitions: [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]]
+    ) -> [CRDPrinterColumnDefinition] {
+        guard let key = crdPrinterColumnKey(for: apiPath) else { return [] }
+        return definitions[key] ?? []
+    }
+
+    private static func crdPrinterColumnKey(for apiPath: String) -> CRDPrinterColumnKey? {
+        let parts = apiPath.split(separator: "/").map(String.init)
+        guard parts.count >= 4, parts[0] == "apis" else { return nil }
+        if parts.count >= 6, parts[3] == "namespaces" {
+            return CRDPrinterColumnKey(group: parts[1], version: parts[2], plural: parts[5])
+        }
+        return CRDPrinterColumnKey(group: parts[1], version: parts[2], plural: parts[3])
     }
 
     private static func isLikelyBuiltInAPIGroup(_ group: String) -> Bool {

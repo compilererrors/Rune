@@ -26,6 +26,9 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         let incompleteCertificate = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "Kubeconfig exec auth returned incomplete client certificate credentials"
         ).first)
+        let missingCredential = try XCTUnwrap(AuthDoctorFailureProjector.checks(
+            for: "Kubeconfig exec auth returned missing token or client certificate credentials"
+        ).first)
         let missingCommand = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "Command failed: kubeconfig exec auth provider: executable file not found"
         ).first)
@@ -37,6 +40,7 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertTrue(apiVersion.message.contains("API version"))
         XCTAssertTrue(missingStatus.message.contains("without status credentials"))
         XCTAssertTrue(incompleteCertificate.message.contains("incomplete credentials"))
+        XCTAssertTrue(missingCredential.message.contains("incomplete credentials"))
         XCTAssertTrue(missingCommand.message.contains("could not be started"))
         XCTAssertTrue(nonZeroExit.message.contains("returned an error"))
     }

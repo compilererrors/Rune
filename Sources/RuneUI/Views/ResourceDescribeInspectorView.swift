@@ -12,6 +12,8 @@ struct ResourceDescribeInspectorPane: View {
     let onApply: () -> Void
     let onOpenYAMLEditor: () -> Void
     let onExport: () -> Void
+    let onExportToExportFolder: () -> Void
+    let onExportAndOpen: () -> Void
     let readOnlyResetID: String
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
@@ -59,10 +61,15 @@ struct ResourceDescribeInspectorPane: View {
                         .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
 
-                    Button("\(t(.exportDescribe))...", action: onExport)
-                        .buttonStyle(.bordered)
-                        .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Export the current describe output to a file.")
+                    Menu {
+                        Button("\(t(.exportDescribe))...", action: onExport)
+                        Button("Save Describe to Export Folder", action: onExportToExportFolder)
+                        Button("Save Describe and Open", action: onExportAndOpen)
+                    } label: {
+                        Label(t(.exportDescribe), systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Export the current describe output to a file.")
                 }
             }
         } status: {

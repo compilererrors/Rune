@@ -14,6 +14,22 @@ struct TerminalPodLogTab: Identifiable, Hashable {
         self.podName = pod.name
     }
 
+    init(snapshot: TerminalWorkspaceLogTabSnapshot) {
+        self.id = snapshot.id
+        self.podID = snapshot.podID
+        self.namespace = snapshot.namespace
+        self.podName = snapshot.podName
+    }
+
+    var snapshot: TerminalWorkspaceLogTabSnapshot {
+        TerminalWorkspaceLogTabSnapshot(
+            id: id,
+            podID: podID,
+            namespace: namespace,
+            podName: podName
+        )
+    }
+
     mutating func update(to pod: PodSummary) {
         podID = pod.id
         namespace = pod.namespace
@@ -49,6 +65,7 @@ struct TerminalPodLogTabState: Equatable {
             let namespace = pod?.namespace ?? tab.namespace
             return TerminalLogTabPresentation(
                 id: tab.id,
+                podID: tab.podID,
                 title: title,
                 subtitle: namespace,
                 isFavorite: pod.map(isFavorite) ?? false,
@@ -72,6 +89,7 @@ struct TerminalPodLogTabState: Equatable {
     }
 
     mutating func reconcile(availablePods: [PodSummary], fallbackPod: PodSummary?) {
+        guard !availablePods.isEmpty else { return }
         let availableIDs = Set(availablePods.map(\.id))
         tabs.removeAll { !availableIDs.contains($0.podID) }
 
@@ -129,6 +147,22 @@ struct TerminalPodLogTabState: Equatable {
             ensureTab(for: pod)
         }
         selectedPodID = pod.id
+    }
+
+    mutating func restore(
+        tabs snapshots: [TerminalWorkspaceLogTabSnapshot],
+        activeTabID: String?,
+        selectedPodID: String?
+    ) {
+        tabs = snapshots.map(TerminalPodLogTab.init(snapshot:))
+        self.activeTabID = activeTabID.flatMap { id in
+            tabs.contains(where: { $0.id == id }) ? id : tabs.first?.id
+        } ?? tabs.first?.id
+        self.selectedPodID = selectedPodID ?? tabs.first(where: { $0.id == self.activeTabID })?.podID ?? ""
+    }
+
+    var snapshotTabs: [TerminalWorkspaceLogTabSnapshot] {
+        tabs.map(\.snapshot)
     }
 
     func preferredPodForNewTab(

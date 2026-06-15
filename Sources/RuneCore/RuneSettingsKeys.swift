@@ -2,6 +2,8 @@ import Foundation
 
 /// UserDefaults keys for in-app preferences (Settings, gear menu).
 public enum RuneSettingsKeys {
+    public static let pendingLaunchAction = "rune.pendingLaunchAction"
+    public static let pendingLaunchQuery = "rune.pendingLaunchQuery"
     /// When true, Rune restores the last namespace list from disk on launch and saves it again after a successful namespace refresh.
     public static let persistNamespaceListCache = "rune.settings.persistNamespaceListCache"
     /// When false, `DiagnosticsRecorder` does not emit unified logging lines.
@@ -20,6 +22,11 @@ public enum RuneSettingsKeys {
     public static let logsCustomPresetTwoLines = "rune.settings.logs.customPresetTwo.lines"
     public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
     public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
+    public static let exportFolderBookmark = "rune.settings.export.folderBookmark"
+    public static let exportFolderDisplayName = "rune.settings.export.folderDisplayName"
+    public static let exportTextOpenerBundleIdentifier = "rune.settings.export.textOpenerBundleIdentifier"
+    public static let exportArchiveOpenerBundleIdentifier = "rune.settings.export.archiveOpenerBundleIdentifier"
+    public static let exportUsesPrivacySafeFilenames = "rune.settings.export.privacySafeFilenames"
     public static let keyBindingCommandPalette = "rune.settings.keybindings.commandPalette"
     public static let keyBindingFilterResources = "rune.settings.keybindings.filterResources"
     public static let keyBindingDescribe = "rune.settings.keybindings.describe"
@@ -67,6 +74,7 @@ public enum RuneSettingsKeys {
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
     public static let terminalScrollbackLineLimitMaximum = 200_000
+    public static let persistTerminalWorkspaceState = "rune.settings.terminal.persistWorkspaceState"
     public static let sessionLogCacheEntryLimit = "rune.settings.performance.sessionLogCacheEntryLimit"
     public static let sessionLogCacheEntryLimitDefault = 128
     public static let sessionLogCacheEntryLimitMinimum = 16
@@ -114,6 +122,7 @@ public enum RuneSettingsKeys {
     public static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             persistNamespaceListCache: true,
+            pendingLaunchAction: "",
             diagnosticsLogging: true,
             verboseDebugTrace: false,
             backgroundPrefetchOtherContexts: false,
@@ -126,6 +135,10 @@ public enum RuneSettingsKeys {
             logsCustomPresetTwoLines: "99999",
             logsCustomPresetTwoTimeValue: "6",
             logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue,
+            exportFolderDisplayName: "",
+            exportTextOpenerBundleIdentifier: "",
+            exportArchiveOpenerBundleIdentifier: "",
+            exportUsesPrivacySafeFilenames: false,
             keyBindingCommandPalette: RuneKeyBindingAction.commandPalette.defaultShortcut.storageValue,
             keyBindingFilterResources: RuneKeyBindingAction.filterResources.defaultShortcut.storageValue,
             keyBindingDescribe: RuneKeyBindingAction.describe.defaultShortcut.storageValue,
@@ -154,6 +167,7 @@ public enum RuneSettingsKeys {
             appearanceTheme: appearanceThemeDefault,
             appearanceRecentThemes: [appearanceThemeDefault],
             terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault,
+            persistTerminalWorkspaceState: false,
             sessionLogCacheEntryLimit: sessionLogCacheEntryLimitDefault,
             resourceYAMLUndoSnapshotLimit: resourceYAMLUndoSnapshotLimitDefault,
             writeSafetyRequireApplyDryRun: true,
@@ -167,7 +181,78 @@ public enum RuneSettingsKeys {
     }
 }
 
+public enum RuneLaunchAction: String, Codable, Sendable {
+    case authDoctor
+    case commandPalette
+    case recentContexts
+    case savedWorkspaces
+}
+
+public struct RunePendingLaunchRequest: Equatable, Sendable {
+    public let action: RuneLaunchAction
+    public let query: String?
+
+    public init(action: RuneLaunchAction, query: String? = nil) {
+        self.action = action
+        self.query = query?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+}
+
 public extension UserDefaults {
+    var runePendingLaunchAction: RuneLaunchAction? {
+        get {
+            guard let raw = string(forKey: RuneSettingsKeys.pendingLaunchAction),
+                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return RuneLaunchAction(rawValue: raw)
+        }
+        set {
+            set(newValue?.rawValue ?? "", forKey: RuneSettingsKeys.pendingLaunchAction)
+        }
+    }
+
+    var runePendingLaunchQuery: String? {
+        get {
+            string(forKey: RuneSettingsKeys.pendingLaunchQuery)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+        }
+        set {
+            let sanitized = Self.sanitizedPendingLaunchQuery(newValue)
+            set(sanitized ?? "", forKey: RuneSettingsKeys.pendingLaunchQuery)
+        }
+    }
+
+    func setRunePendingLaunchRequest(_ request: RunePendingLaunchRequest?) {
+        runePendingLaunchAction = request?.action
+        runePendingLaunchQuery = request?.query
+    }
+
+    func consumeRunePendingLaunchAction() -> RuneLaunchAction? {
+        consumeRunePendingLaunchRequest()?.action
+    }
+
+    func consumeRunePendingLaunchRequest() -> RunePendingLaunchRequest? {
+        guard let action = runePendingLaunchAction else {
+            runePendingLaunchQuery = nil
+            return nil
+        }
+        let request = RunePendingLaunchRequest(action: action, query: runePendingLaunchQuery)
+        runePendingLaunchAction = nil
+        runePendingLaunchQuery = nil
+        return request
+    }
+
+    private static func sanitizedPendingLaunchQuery(_ query: String?) -> String? {
+        let sanitized = query?
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        guard let sanitized else { return nil }
+        return String(sanitized.prefix(160))
+    }
+
     var runePersistNamespaceListCache: Bool {
         get { (object(forKey: RuneSettingsKeys.persistNamespaceListCache) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.persistNamespaceListCache) }
@@ -228,6 +313,11 @@ public extension UserDefaults {
         }
     }
 
+    var runePersistTerminalWorkspaceState: Bool {
+        get { (object(forKey: RuneSettingsKeys.persistTerminalWorkspaceState) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.persistTerminalWorkspaceState) }
+    }
+
     var runeSessionLogCacheEntryLimit: Int {
         get {
             let raw = (object(forKey: RuneSettingsKeys.sessionLogCacheEntryLimit) as? Int)
@@ -279,6 +369,37 @@ public extension UserDefaults {
         set { set(newValue, forKey: RuneSettingsKeys.interfaceLanguage) }
     }
 
+    var runeExportFolderBookmarkData: Data? {
+        get { data(forKey: RuneSettingsKeys.exportFolderBookmark) }
+        set {
+            if let newValue {
+                set(newValue, forKey: RuneSettingsKeys.exportFolderBookmark)
+            } else {
+                removeObject(forKey: RuneSettingsKeys.exportFolderBookmark)
+            }
+        }
+    }
+
+    var runeExportFolderDisplayName: String {
+        get { (object(forKey: RuneSettingsKeys.exportFolderDisplayName) as? String) ?? "" }
+        set { set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: RuneSettingsKeys.exportFolderDisplayName) }
+    }
+
+    var runeExportTextOpenerBundleIdentifier: String? {
+        get { Self.normalizedOptionalString(object(forKey: RuneSettingsKeys.exportTextOpenerBundleIdentifier) as? String) }
+        set { set(newValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", forKey: RuneSettingsKeys.exportTextOpenerBundleIdentifier) }
+    }
+
+    var runeExportArchiveOpenerBundleIdentifier: String? {
+        get { Self.normalizedOptionalString(object(forKey: RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) as? String) }
+        set { set(newValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", forKey: RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) }
+    }
+
+    var runeExportUsesPrivacySafeFilenames: Bool {
+        get { (object(forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames) }
+    }
+
     var runeAppearanceRecentThemes: [String] {
         get {
             RuneSettingsKeys.normalizedAppearanceRecentThemes(
@@ -291,6 +412,13 @@ public extension UserDefaults {
                 forKey: RuneSettingsKeys.appearanceRecentThemes
             )
         }
+    }
+
+    private static func normalizedOptionalString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     func recordRuneAppearanceTheme(_ themeID: String, limit: Int = RuneSettingsKeys.appearanceRecentThemeLimit) {
@@ -379,5 +507,11 @@ public extension UserDefaults {
                 timeUnit: RuneSettingsKeys.logsCustomPresetTwoTimeUnit
             )
         }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

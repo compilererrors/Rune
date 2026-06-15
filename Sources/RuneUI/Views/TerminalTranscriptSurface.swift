@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RuneCore
 import struct RuneSharedCore.RuneLargeTextIndex
 import struct RuneSharedUI.RuneLargeTextSurface
 
@@ -19,6 +20,10 @@ struct TerminalTranscriptSurface: View {
 
     private var shouldUseLargeTextSurface: Bool {
         text.utf8.count > 250_000
+    }
+
+    private var hasTrimmedScrollback: Bool {
+        Self.hasTrimmedScrollback(text)
     }
 
     var body: some View {
@@ -99,6 +104,26 @@ struct TerminalTranscriptSurface: View {
                 .help("Find in terminal")
                 .accessibilityLabel("Find in terminal")
                 .keyboardShortcut("f", modifiers: [.command])
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if hasTrimmedScrollback {
+                Label("Scrollback trimmed", systemImage: "scissors")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.84))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.orange.opacity(0.42), lineWidth: 1)
+                    )
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .help("Older terminal output was discarded by the scrollback limit")
+                    .accessibilityLabel("Scrollback trimmed")
             }
         }
         .onChange(of: searchQuery) { _, _ in
@@ -218,6 +243,10 @@ struct TerminalTranscriptSurface: View {
             columns: max(20, Int(innerWidth / characterWidth)),
             rows: max(4, Int(innerHeight / lineHeight))
         )
+    }
+
+    nonisolated static func hasTrimmedScrollback(_ text: String) -> Bool {
+        text.hasPrefix(TerminalScrollbackRetention.truncationMarker)
     }
 }
 

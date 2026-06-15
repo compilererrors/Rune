@@ -196,6 +196,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(describeSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
         XCTAssertTrue(describeSource.contains("let presentedDescribeText = effectiveHidesManagedFields ? managedFieldsFilter.text : describeText"))
         XCTAssertTrue(describeSource.contains("Button(\"\\(t(.exportDescribe))...\", action: onExport)"))
+        XCTAssertTrue(describeSource.contains("Button(\"Save Describe to Export Folder\", action: onExportToExportFolder)"))
+        XCTAssertTrue(describeSource.contains("Button(\"Save Describe and Open\", action: onExportAndOpen)"))
         XCTAssertTrue(describeSource.contains("text: presentedDescribeText"))
     }
 
@@ -234,6 +236,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("Label(t(.file), systemImage: \"doc\")"))
         XCTAssertTrue(yamlSource.contains("Button(\"Import YAML…\""))
         XCTAssertTrue(yamlSource.contains("Button(\"Export YAML…\""))
+        XCTAssertTrue(yamlSource.contains("Button(\"Save YAML to Export Folder\", action: onExportToExportFolder)"))
+        XCTAssertTrue(yamlSource.contains("Button(\"Save YAML and Open\", action: onExportAndOpen)"))
         XCTAssertFalse(yamlSource.contains("Re-apply Snapshot"))
     }
 
@@ -458,6 +462,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
                 onApply: {},
                 onOpenYAMLEditor: {},
                 onExport: {},
+                onExportToExportFolder: {},
+                onExportAndOpen: {},
                 readOnlyResetID: "describe-scroll-test"
             )
             .frame(width: 640, height: 520)

@@ -58,6 +58,10 @@ struct ResourceTerminalWorkspaceView: View {
     let onClearTranscript: () -> Void
     let onSaveActiveTerminalTranscript: () -> Void
     let onSaveAllTerminalTranscripts: () -> Void
+    let onSaveActiveTerminalTranscriptToExportFolder: () -> Void
+    let onSaveActiveTerminalTranscriptAndOpen: () -> Void
+    let onSaveAllTerminalTranscriptsToExportFolder: () -> Void
+    let onSaveAllTerminalTranscriptsAndOpen: () -> Void
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     @State private var isPortForwardExpanded = false
@@ -134,6 +138,10 @@ struct ResourceTerminalWorkspaceView: View {
                         onClearTranscript: onClearTranscript,
                         onSaveActiveTranscript: onSaveActiveTerminalTranscript,
                         onSaveAllTranscripts: onSaveAllTerminalTranscripts,
+                        onSaveActiveTranscriptToExportFolder: onSaveActiveTerminalTranscriptToExportFolder,
+                        onSaveActiveTranscriptAndOpen: onSaveActiveTerminalTranscriptAndOpen,
+                        onSaveAllTranscriptsToExportFolder: onSaveAllTerminalTranscriptsToExportFolder,
+                        onSaveAllTranscriptsAndOpen: onSaveAllTerminalTranscriptsAndOpen,
                         isFavoritePod: isFavoritePod,
                         onToggleFavoritePod: onToggleFavoritePod
                     )

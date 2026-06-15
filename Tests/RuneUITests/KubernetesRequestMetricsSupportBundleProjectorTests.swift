@@ -3,6 +3,24 @@ import XCTest
 @testable import RuneUI
 
 final class KubernetesRequestMetricsSupportBundleProjectorTests: XCTestCase {
+    func testProjectsRequestMetricsSummaryForDebugUI() {
+        let presentation = KubernetesRequestMetricsDebugPresentation(summary: KubernetesRESTRequestMetricsSummary(
+            requestCount: 12,
+            successCount: 8,
+            failureCount: 3,
+            cancelledCount: 1,
+            responseBytes: 4_096,
+            totalDurationSeconds: 1.25,
+            retainedMetricCount: 5
+        ))
+
+        XCTAssertEqual(presentation.requestCountText, "12 requests")
+        XCTAssertEqual(presentation.outcomeText, "8 ok • 3 failed • 1 cancelled")
+        XCTAssertEqual(presentation.transferText, "4.0 KB • 1.25 s total")
+        XCTAssertEqual(presentation.retainedText, "5 retained")
+        XCTAssertTrue(presentation.hasFailures)
+    }
+
     func testProjectsRequestMetricsForSupportBundle() {
         let metrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: [
             KubernetesRESTRequestMetric(

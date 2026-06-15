@@ -952,6 +952,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 canAddTab: true,
                 onSelectTab: { _ in },
                 onCloseTab: { _ in },
+                onToggleFavoriteTab: { _ in },
                 onAddTab: {}
             )
         )
@@ -1794,6 +1795,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             selectedResourceID: operatorResources[50].id,
             sortColumn: .name,
             sortAscending: true,
+            showsPrinterColumns: true,
             isFavorite: { resource in resource.name.hasSuffix("0") },
             onSelectResource: { _ in },
             onToggleSort: { _ in },
@@ -1912,6 +1914,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             selectedResourceID: operatorResources[0].id,
             sortColumn: .name,
             sortAscending: true,
+            showsPrinterColumns: true,
             isFavorite: { resource in resource.name.hasSuffix("0") },
             onSelectResource: { _ in },
             onToggleSort: { _ in },
@@ -2101,6 +2104,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             selectedResourceID: operatorResources[0].id,
             sortColumn: .name,
             sortAscending: true,
+            showsPrinterColumns: true,
             isFavorite: { _ in false },
             onSelectResource: { _ in },
             onToggleSort: { _ in },
@@ -2179,7 +2183,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     let eventWidths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
                     checksum += eventWidths.reason + eventWidths.type + eventWidths.object + eventWidths.namespace + eventWidths.lastSeen + eventWidths.message
                     let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
-                    checksum += operatorWidths.name + operatorWidths.family + operatorWidths.kind + operatorWidths.namespace + operatorWidths.status + operatorWidths.apiPath + operatorWidths.favorite
+                    checksum += operatorWidths.name + operatorWidths.family + operatorWidths.kind + operatorWidths.namespace + operatorWidths.status + operatorWidths.printerColumns + operatorWidths.apiPath + operatorWidths.favorite
                 }
             }
             XCTAssertGreaterThan(checksum, 0)
@@ -2193,11 +2197,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 + RuneAppKitResourceListLayout.deploymentReplicaColumnWidth
                 + RuneAppKitResourceListLayout.deploymentFavoriteColumnWidth
             let deploymentUsableWidth = min(
-                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                RuneAppKitResourceListLayout.deploymentMaximumContentWidth,
                 visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.deploymentTrailingBreathingRoom
             )
             XCTAssertEqual(total, max(deploymentUsableWidth, deploymentMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(total, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+            XCTAssertLessThanOrEqual(total, max(RuneAppKitResourceListLayout.deploymentMaximumContentWidth, deploymentMinimumTotal))
             XCTAssertGreaterThanOrEqual(total, previousTotal)
             previousTotal = total
 
@@ -2208,11 +2212,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 + RuneAppKitResourceListLayout.serviceClusterIPColumnWidth
                 + RuneAppKitResourceListLayout.serviceFavoriteColumnWidth
             let serviceUsableWidth = min(
-                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                RuneAppKitResourceListLayout.serviceMaximumContentWidth,
                 visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.serviceTrailingBreathingRoom
             )
             XCTAssertEqual(serviceTotal, max(serviceUsableWidth, serviceMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(serviceTotal, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+            XCTAssertLessThanOrEqual(serviceTotal, max(RuneAppKitResourceListLayout.serviceMaximumContentWidth, serviceMinimumTotal))
 
             let genericWidths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
             let genericLeadingTotal = genericWidths.selection + genericWidths.name + genericWidths.primary
@@ -2225,11 +2229,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 + RuneAppKitResourceListLayout.genericNamespaceColumnWidth
                 + RuneAppKitResourceListLayout.genericFavoriteColumnWidth
             let genericUsableWidth = min(
-                RuneAppKitResourceListLayout.resourceMaximumContentWidth,
+                RuneAppKitResourceListLayout.genericMaximumContentWidth,
                 visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.genericTrailingBreathingRoom
             )
             XCTAssertEqual(genericTotal, max(genericUsableWidth, genericMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(genericTotal, RuneAppKitResourceListLayout.resourceMaximumContentWidth)
+            XCTAssertLessThanOrEqual(genericTotal, max(RuneAppKitResourceListLayout.genericMaximumContentWidth, genericMinimumTotal))
 
             let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
             let helmPrimaryTotal = helmWidths.name + helmWidths.status + helmWidths.namespace
@@ -2267,7 +2271,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
             let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
             let operatorPrimaryTotal = operatorWidths.name + operatorWidths.family + operatorWidths.kind
-            let operatorMetadataTotal = operatorWidths.namespace + operatorWidths.status + operatorWidths.apiPath + operatorWidths.favorite
+            let operatorMetadataTotal = operatorWidths.namespace + operatorWidths.status + operatorWidths.printerColumns + operatorWidths.apiPath + operatorWidths.favorite
             let operatorTotal = operatorPrimaryTotal + operatorMetadataTotal
             let operatorMinimumTotal = RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth
                 + RuneAppKitResourceListLayout.operatorFamilyColumnWidth
@@ -2307,21 +2311,21 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         let wideDeployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: 1320)
         XCTAssertGreaterThanOrEqual(wideDeployment.replicas, 88)
-        XCTAssertGreaterThanOrEqual(wideDeployment.name, 900)
+        XCTAssertLessThanOrEqual(wideDeployment.name, 510)
 
         let wideGeneric = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: 1320)
-        XCTAssertGreaterThanOrEqual(wideGeneric.name, 480)
+        XCTAssertLessThanOrEqual(wideGeneric.name, 380)
         XCTAssertLessThanOrEqual(wideGeneric.primary, 144)
         XCTAssertLessThanOrEqual(wideGeneric.secondary, 164)
         XCTAssertLessThanOrEqual(wideGeneric.namespace, 132)
 
         let wideEvents = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: 1320)
-        XCTAssertGreaterThanOrEqual(wideEvents.reason, 300)
+        XCTAssertLessThanOrEqual(wideEvents.reason, 204)
         XCTAssertLessThanOrEqual(wideEvents.type, 120)
         XCTAssertLessThanOrEqual(wideEvents.namespace, 140)
 
         let wideOperators = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: 1320)
-        XCTAssertGreaterThanOrEqual(wideOperators.name, 280)
+        XCTAssertLessThanOrEqual(wideOperators.name, 262)
         XCTAssertLessThanOrEqual(wideOperators.family, 140)
         XCTAssertLessThanOrEqual(wideOperators.status, 130)
 
@@ -2340,7 +2344,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     let event = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
                     checksum += event.reason + event.type + event.object + event.namespace + event.lastSeen + event.message
                     let operatorResource = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
-                    checksum += operatorResource.name + operatorResource.family + operatorResource.kind + operatorResource.namespace + operatorResource.status + operatorResource.apiPath + operatorResource.favorite
+                    checksum += operatorResource.name + operatorResource.family + operatorResource.kind + operatorResource.namespace + operatorResource.status + operatorResource.printerColumns + operatorResource.apiPath + operatorResource.favorite
                 }
             }
             return checksum
@@ -3907,6 +3911,10 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     onClearTranscript: {},
                     onSaveActiveTranscript: {},
                     onSaveAllTranscripts: {},
+                    onSaveActiveTranscriptToExportFolder: {},
+                    onSaveActiveTranscriptAndOpen: {},
+                    onSaveAllTranscriptsToExportFolder: {},
+                    onSaveAllTranscriptsAndOpen: {},
                     isFavoritePod: { _ in false },
                     onToggleFavoritePod: { _ in }
                 )
@@ -3938,6 +3946,10 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 onClearTranscript: {},
                 onSaveActiveTranscript: {},
                 onSaveAllTranscripts: {},
+                onSaveActiveTranscriptToExportFolder: {},
+                onSaveActiveTranscriptAndOpen: {},
+                onSaveAllTranscriptsToExportFolder: {},
+                onSaveAllTranscriptsAndOpen: {},
                 isFavoritePod: { _ in false },
                 onToggleFavoritePod: { _ in }
             )

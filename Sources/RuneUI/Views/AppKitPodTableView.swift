@@ -2,21 +2,28 @@ import AppKit
 import RuneCore
 import SwiftUI
 
+fileprivate func copyLabelSelector(_ selector: [String: String]) -> String {
+    selector
+        .sorted { lhs, rhs in lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending }
+        .map { "\($0.key)=\($0.value)" }
+        .joined(separator: ",")
+}
+
 enum RuneAppKitResourceListLayout {
     static let sortIndicatorReservedWidth: CGFloat = 22
     static let sortIndicatorSize = NSSize(width: 8, height: 8)
-    static let resourceMaximumContentWidth: CGFloat = 1_200
+    static let resourceMaximumContentWidth: CGFloat = 860
     static let deploymentReplicaColumnWidth: CGFloat = 88
     static let deploymentFavoriteColumnWidth: CGFloat = PodTableLayout.favoriteColumnWidth
     static let deploymentMinimumNameColumnWidth: CGFloat = 260
     static let deploymentTrailingBreathingRoom: CGFloat = 14
-    static let deploymentMaximumContentWidth = resourceMaximumContentWidth
+    static let deploymentMaximumContentWidth: CGFloat = 620
     static let serviceTypeColumnWidth: CGFloat = 140
     static let serviceClusterIPColumnWidth: CGFloat = 172
     static let serviceFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let serviceMinimumNameColumnWidth: CGFloat = 260
     static let serviceTrailingBreathingRoom: CGFloat = 14
-    static let serviceMaximumContentWidth = resourceMaximumContentWidth
+    static let serviceMaximumContentWidth: CGFloat = 740
     static let genericSelectionColumnWidth = PodTableLayout.selectionColumnWidth
     static let genericPrimaryColumnWidth: CGFloat = 136
     static let genericSecondaryColumnWidth: CGFloat = 152
@@ -27,7 +34,7 @@ enum RuneAppKitResourceListLayout {
     static let genericFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let genericMinimumNameColumnWidth: CGFloat = 300
     static let genericTrailingBreathingRoom: CGFloat = 14
-    static let genericMaximumContentWidth = resourceMaximumContentWidth
+    static let genericMaximumContentWidth: CGFloat = 820
     static let helmStatusColumnWidth: CGFloat = 100
     static let helmNamespaceColumnWidth: CGFloat = 150
     static let helmRevisionColumnWidth: CGFloat = 76
@@ -40,7 +47,7 @@ enum RuneAppKitResourceListLayout {
     static let helmAppVersionMinimumColumnWidth: CGFloat = 80
     static let helmMinimumNameColumnWidth: CGFloat = 300
     static let helmTrailingBreathingRoom: CGFloat = 14
-    static let helmMaximumContentWidth = resourceMaximumContentWidth
+    static let helmMaximumContentWidth: CGFloat = 980
     static let eventTypeColumnWidth: CGFloat = 108
     static let eventObjectColumnWidth: CGFloat = 210
     static let eventNamespaceColumnWidth: CGFloat = 132
@@ -53,12 +60,13 @@ enum RuneAppKitResourceListLayout {
     static let eventMessageMinimumColumnWidth: CGFloat = 160
     static let eventMinimumReasonColumnWidth: CGFloat = 180
     static let eventTrailingBreathingRoom: CGFloat = 14
-    static let eventMaximumContentWidth = resourceMaximumContentWidth
+    static let eventMaximumContentWidth: CGFloat = 1_080
     static let operatorFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let operatorFamilyColumnWidth: CGFloat = 132
     static let operatorKindColumnWidth: CGFloat = 150
     static let operatorNamespaceColumnWidth: CGFloat = 126
     static let operatorStatusColumnWidth: CGFloat = 120
+    static let operatorPrinterColumnsColumnWidth: CGFloat = 170
     static let operatorAPIPathColumnWidth: CGFloat = 260
     static let operatorFamilyMinimumColumnWidth: CGFloat = 96
     static let operatorKindMinimumColumnWidth: CGFloat = 110
@@ -67,7 +75,7 @@ enum RuneAppKitResourceListLayout {
     static let operatorAPIPathMinimumColumnWidth: CGFloat = 150
     static let operatorMinimumNameColumnWidth: CGFloat = 240
     static let operatorTrailingBreathingRoom: CGFloat = 14
-    static let operatorMaximumContentWidth = resourceMaximumContentWidth
+    static let operatorMaximumContentWidth: CGFloat = 1_080
 
     static func minimumHeaderColumnWidth(title: String, reservesSortIndicator: Bool) -> CGFloat {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
@@ -171,7 +179,7 @@ enum RuneAppKitResourceListLayout {
 
     static func operatorColumnWidths(
         visibleWidth: CGFloat
-    ) -> (name: CGFloat, family: CGFloat, kind: CGFloat, namespace: CGFloat, status: CGFloat, apiPath: CGFloat, favorite: CGFloat) {
+    ) -> (name: CGFloat, family: CGFloat, kind: CGFloat, namespace: CGFloat, status: CGFloat, printerColumns: CGFloat, apiPath: CGFloat, favorite: CGFloat) {
         let visibleWidth = min(
             operatorMaximumContentWidth,
             max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - operatorTrailingBreathingRoom)
@@ -180,6 +188,7 @@ enum RuneAppKitResourceListLayout {
             + operatorKindColumnWidth
             + operatorNamespaceColumnWidth
             + operatorStatusColumnWidth
+            + operatorPrinterColumnsColumnWidth
             + operatorAPIPathColumnWidth
             + operatorFavoriteColumnWidth
         return (
@@ -188,6 +197,7 @@ enum RuneAppKitResourceListLayout {
             kind: operatorKindColumnWidth,
             namespace: operatorNamespaceColumnWidth,
             status: operatorStatusColumnWidth,
+            printerColumns: operatorPrinterColumnsColumnWidth,
             apiPath: operatorAPIPathColumnWidth,
             favorite: operatorFavoriteColumnWidth
         )
@@ -270,6 +280,7 @@ private enum RuneAppKitResourceTableStyle {
     static let rowHeight: CGFloat = 34
     static let rowGap: CGFloat = 4
     static let rowHorizontalInset: CGFloat = 6
+    static let actionColumnTrailingPadding: CGFloat = 18
     static let contentLeadingInset: CGFloat = 10
     static let contentTrailingInset: CGFloat = 10
     static let sortIndicatorGap: CGFloat = 4
@@ -291,6 +302,58 @@ private enum RuneAppKitResourceTableStyle {
 
     static func apply(to headerView: RuneAppKitResourceTableHeaderView) {
         headerView.horizontalInset = rowHorizontalInset
+    }
+
+    static func columnContentWidth(in tableView: NSTableView) -> CGFloat {
+        tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
+    }
+
+    static func renderedTableWidth(in tableView: NSTableView) -> CGFloat {
+        columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding
+    }
+
+    static func updateRenderedTableWidth(on tableView: NSTableView?) {
+        guard let tableView else { return }
+        let tableWidth = renderedTableWidth(in: tableView)
+        if abs(tableView.frame.width - tableWidth) >= 1 {
+            tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
+        }
+        if let headerView = tableView.headerView,
+           abs(headerView.frame.width - tableWidth) >= 1 {
+            headerView.setFrameSize(NSSize(width: tableWidth, height: headerView.frame.height))
+        }
+        tableView.headerView?.needsDisplay = true
+        tableView.needsLayout = true
+        tableView.needsDisplay = true
+        tableView.layoutSubtreeIfNeeded()
+        tableView.headerView?.needsLayout = true
+        tableView.headerView?.layoutSubtreeIfNeeded()
+        if let scrollView = tableView.enclosingScrollView {
+            scrollView.contentView.needsDisplay = true
+            scrollView.contentView.needsLayout = true
+            scrollView.contentView.layoutSubtreeIfNeeded()
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            scrollView.tile()
+        }
+        let visibleRows = tableView.rows(in: tableView.visibleRect)
+        guard visibleRows.location != NSNotFound else { return }
+        let upperBound = min(tableView.numberOfRows, visibleRows.location + visibleRows.length)
+        guard visibleRows.location < upperBound else { return }
+        for row in visibleRows.location..<upperBound {
+            if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) {
+                rowView.needsLayout = true
+                rowView.needsDisplay = true
+                rowView.layoutSubtreeIfNeeded()
+            }
+            for column in 0..<tableView.numberOfColumns {
+                guard let cellView = tableView.view(atColumn: column, row: row, makeIfNecessary: false) else { continue }
+                cellView.needsLayout = true
+                cellView.needsDisplay = true
+                cellView.layoutSubtreeIfNeeded()
+            }
+        }
+        tableView.displayIfNeeded()
+        tableView.headerView?.displayIfNeeded()
     }
 
     static func invalidateTheme(in scrollView: NSScrollView) {
@@ -443,6 +506,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                       generation == self.applyGeneration else { return }
                 self.updateNameColumnWidthIfNeeded(on: tableView, width: self.parent.nameColumnWidth)
                 self.updateStoredColumnWidthsIfNeeded(on: tableView)
+                self.updateTableWidth(on: tableView)
                 tableView.reloadData()
                 self.applySelection(on: tableView)
                 self.updateSortIndicator(on: tableView)
@@ -544,6 +608,7 @@ struct AppKitPodTableView: NSViewRepresentable {
             let width = min(max(tableColumn.width, tableColumn.minWidth), tableColumn.maxWidth)
             tableColumn.width = width
             RuneAppKitColumnWidthStore.shared.setWidth(width, tableID: tableID, columnID: column.rawValue)
+            updateTableWidth(on: tableView)
 
             guard column == .name else { return }
 
@@ -573,6 +638,15 @@ struct AppKitPodTableView: NSViewRepresentable {
             menu.addItem(.separator())
             menu.addItem(menuItem("Copy pod name", action: #selector(copyPodNameFromMenu(_:)), pod: pod))
             menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), pod: pod))
+            if pod.containerNamesLine != nil {
+                menu.addItem(menuItem("Copy container names", action: #selector(copyContainerNamesFromMenu(_:)), pod: pod))
+            }
+            if pod.nodeName != nil {
+                menu.addItem(menuItem("Copy node name", action: #selector(copyNodeNameFromMenu(_:)), pod: pod))
+            }
+            if pod.podIP != nil {
+                menu.addItem(menuItem("Copy pod IP", action: #selector(copyPodIPFromMenu(_:)), pod: pod))
+            }
             menu.addItem(.separator())
             menu.addItem(menuItem("Delete Pod", action: #selector(deleteFromMenu(_:)), pod: pod, isEnabled: parent.canApplyClusterMutations))
             return menu
@@ -610,6 +684,30 @@ struct AppKitPodTableView: NSViewRepresentable {
             withPod(sender) { pod in copyToClipboard(pod.namespace) }
         }
 
+        @objc private func copyContainerNamesFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                if let containerNamesLine = pod.containerNamesLine {
+                    copyToClipboard(containerNamesLine)
+                }
+            }
+        }
+
+        @objc private func copyNodeNameFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                if let nodeName = pod.nodeName {
+                    copyToClipboard(nodeName)
+                }
+            }
+        }
+
+        @objc private func copyPodIPFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                if let podIP = pod.podIP {
+                    copyToClipboard(podIP)
+                }
+            }
+        }
+
         private func updateNameColumnWidthIfNeeded(on tableView: NSTableView, width: CGFloat) {
             guard let column = tableView.tableColumns.first(where: { $0.identifier.rawValue == PodColumn.name.rawValue }) else { return }
             let clamped = PodTableLayout.clampedNameColumnWidth(
@@ -630,6 +728,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                       let tableColumn = tableView.tableColumns.first(where: { $0.identifier.rawValue == columnID }) else { return }
                 let width = columnKind.width(nameColumnWidth: PodTableLayout.nameColumnDefaultWidth)
                 tableColumn.width = width
+                updateTableWidth(on: tableView)
                 return
             }
 
@@ -641,6 +740,7 @@ struct AppKitPodTableView: NSViewRepresentable {
             }
             let width = PodTableLayout.nameColumnDefaultWidth
             column.width = width
+            updateTableWidth(on: tableView)
             parent.onNameColumnWidthChanged(width)
         }
 
@@ -655,6 +755,10 @@ struct AppKitPodTableView: NSViewRepresentable {
                     tableColumn.width = clamped
                 }
             }
+        }
+
+        private func updateTableWidth(on tableView: NSTableView?) {
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -973,6 +1077,9 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             menu.addItem(.separator())
             menu.addItem(menuItem("Copy deployment name", action: #selector(copyDeploymentNameFromMenu(_:)), deployment: deployment))
             menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), deployment: deployment))
+            if deployment.selector?.isEmpty == false {
+                menu.addItem(menuItem("Copy selector", action: #selector(copySelectorFromMenu(_:)), deployment: deployment))
+            }
             menu.addItem(.separator())
             menu.addItem(menuItem("Delete Deployment", action: #selector(deleteFromMenu(_:)), deployment: deployment, isEnabled: parent.canApplyClusterMutations))
             return menu
@@ -1013,6 +1120,14 @@ struct AppKitDeploymentListView: NSViewRepresentable {
 
         @objc private func copyNamespaceFromMenu(_ sender: NSMenuItem) {
             withDeployment(sender) { deployment in copyToClipboard(deployment.namespace) }
+        }
+
+        @objc private func copySelectorFromMenu(_ sender: NSMenuItem) {
+            withDeployment(sender) { deployment in
+                if let selector = deployment.selector, !selector.isEmpty {
+                    copyToClipboard(copyLabelSelector(selector))
+                }
+            }
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -1063,11 +1178,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateDeploymentSortIndicator(on tableView: NSTableView) {
@@ -1289,6 +1400,10 @@ struct AppKitServiceListView: NSViewRepresentable {
             menu.addItem(.separator())
             menu.addItem(menuItem("Copy service name", action: #selector(copyServiceNameFromMenu(_:)), service: service))
             menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), service: service))
+            menu.addItem(menuItem("Copy cluster IP", action: #selector(copyClusterIPFromMenu(_:)), service: service))
+            if service.selector?.isEmpty == false {
+                menu.addItem(menuItem("Copy selector", action: #selector(copySelectorFromMenu(_:)), service: service))
+            }
             menu.addItem(.separator())
             menu.addItem(menuItem("Delete Service", action: #selector(deleteFromMenu(_:)), service: service, isEnabled: parent.canApplyClusterMutations))
             return menu
@@ -1329,6 +1444,18 @@ struct AppKitServiceListView: NSViewRepresentable {
 
         @objc private func copyNamespaceFromMenu(_ sender: NSMenuItem) {
             withService(sender) { service in copyToClipboard(service.namespace) }
+        }
+
+        @objc private func copyClusterIPFromMenu(_ sender: NSMenuItem) {
+            withService(sender) { service in copyToClipboard(service.clusterIP) }
+        }
+
+        @objc private func copySelectorFromMenu(_ sender: NSMenuItem) {
+            withService(sender) { service in
+                if let selector = service.selector, !selector.isEmpty {
+                    copyToClipboard(copyLabelSelector(selector))
+                }
+            }
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -1382,11 +1509,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateServiceSortIndicator(on tableView: NSTableView) {
@@ -1625,6 +1748,12 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             if resource.namespace != nil {
                 menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), resource: resource))
             }
+            if !resource.primaryText.isEmpty {
+                menu.addItem(menuItem("Copy primary detail", action: #selector(copyPrimaryTextFromMenu(_:)), resource: resource))
+            }
+            if !resource.secondaryText.isEmpty {
+                menu.addItem(menuItem("Copy secondary detail", action: #selector(copySecondaryTextFromMenu(_:)), resource: resource))
+            }
             menu.addItem(.separator())
             menu.addItem(menuItem("Delete \(resource.kind.singularTypeName)", action: #selector(deleteFromMenu(_:)), resource: resource, isEnabled: parent.canApplyClusterMutations))
             return menu
@@ -1666,6 +1795,14 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                     copyToClipboard(namespace)
                 }
             }
+        }
+
+        @objc private func copyPrimaryTextFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in copyToClipboard(resource.primaryText) }
+        }
+
+        @objc private func copySecondaryTextFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in copyToClipboard(resource.secondaryText) }
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -1723,11 +1860,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateGenericSortIndicator(on tableView: NSTableView) {
@@ -2031,11 +2164,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateHelmSortIndicator(on tableView: NSTableView) {
@@ -2274,6 +2403,9 @@ struct AppKitEventListView: NSViewRepresentable {
             let event = parent.events[row]
             let menu = NSMenu()
             menu.addItem(menuItem("Copy event reason", action: #selector(copyReasonFromMenu(_:)), event: event))
+            if event.involvedKind != nil {
+                menu.addItem(menuItem("Copy object kind", action: #selector(copyObjectKindFromMenu(_:)), event: event))
+            }
             menu.addItem(menuItem("Copy object name", action: #selector(copyObjectNameFromMenu(_:)), event: event))
             if event.involvedNamespace != nil {
                 menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), event: event))
@@ -2284,6 +2416,14 @@ struct AppKitEventListView: NSViewRepresentable {
 
         @objc private func copyReasonFromMenu(_ sender: NSMenuItem) {
             withEvent(sender) { event in copyToClipboard(event.reason) }
+        }
+
+        @objc private func copyObjectKindFromMenu(_ sender: NSMenuItem) {
+            withEvent(sender) { event in
+                if let kind = event.involvedKind {
+                    copyToClipboard(kind)
+                }
+            }
         }
 
         @objc private func copyObjectNameFromMenu(_ sender: NSMenuItem) {
@@ -2361,11 +2501,7 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateEventSortIndicator(on tableView: NSTableView) {
@@ -2418,6 +2554,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     let selectedResourceID: String?
     let sortColumn: OperatorResourceListSortColumn
     let sortAscending: Bool
+    let showsPrinterColumns: Bool
     let isFavorite: (OperatorResourceSummary) -> Bool
     let onSelectResource: (OperatorResourceSummary) -> Void
     let onToggleSort: (OperatorResourceListSortColumn) -> Void
@@ -2544,6 +2681,17 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 )
             case .status:
                 return RuneAppKitPillCell(text: resource.status, color: statusColor(for: resource.status))
+            case .printerColumns:
+                let text = resource.printerColumns
+                    .map { "\($0.title): \($0.value)" }
+                    .joined(separator: "  ")
+                return RuneAppKitCenteredLabelCell(
+                    text: text.isEmpty ? "—" : text,
+                    font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                    alignment: .left,
+                    tooltip: text.isEmpty ? "No custom columns" : text,
+                    lineBreakMode: .byTruncatingTail
+                )
             case .apiPath:
                 return RuneAppKitCenteredLabelCell(
                     text: resource.apiPath,
@@ -2611,9 +2759,12 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             menu.addItem(menuItem("Open YAML", action: #selector(openYAMLFromMenu(_:)), resource: resource))
             menu.addItem(.separator())
             menu.addItem(menuItem("Copy resource name", action: #selector(copyNameFromMenu(_:)), resource: resource))
+            menu.addItem(menuItem("Copy family", action: #selector(copyFamilyFromMenu(_:)), resource: resource))
+            menu.addItem(menuItem("Copy kind", action: #selector(copyKindFromMenu(_:)), resource: resource))
             if resource.namespace != nil {
                 menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), resource: resource))
             }
+            menu.addItem(menuItem("Copy status", action: #selector(copyStatusFromMenu(_:)), resource: resource))
             menu.addItem(menuItem("Copy API path", action: #selector(copyAPIPathFromMenu(_:)), resource: resource))
             return menu
         }
@@ -2639,12 +2790,24 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             withResource(sender) { resource in copyToClipboard(resource.name) }
         }
 
+        @objc private func copyFamilyFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in copyToClipboard(resource.family) }
+        }
+
+        @objc private func copyKindFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in copyToClipboard(resource.kind) }
+        }
+
         @objc private func copyNamespaceFromMenu(_ sender: NSMenuItem) {
             withResource(sender) { resource in
                 if let namespace = resource.namespace {
                     copyToClipboard(namespace)
                 }
             }
+        }
+
+        @objc private func copyStatusFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in copyToClipboard(resource.status) }
         }
 
         @objc private func copyAPIPathFromMenu(_ sender: NSMenuItem) {
@@ -2682,11 +2845,15 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             let namespaceWidth = min(max(storedNamespace ?? widths.namespace, OperatorResourceColumn.namespace.minimumWidth), OperatorResourceColumn.namespace.maximumWidth)
             let storedStatus = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.status.rawValue)
             let statusWidth = min(max(storedStatus ?? widths.status, OperatorResourceColumn.status.minimumWidth), OperatorResourceColumn.status.maximumWidth)
+            let storedPrinterColumns = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.printerColumns.rawValue)
+            let printerColumnsWidth = parent.showsPrinterColumns
+                ? min(max(storedPrinterColumns ?? widths.printerColumns, OperatorResourceColumn.printerColumns.minimumWidth), OperatorResourceColumn.printerColumns.maximumWidth)
+                : 0
             let storedAPIPath = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.apiPath.rawValue)
             let apiPathWidth = min(max(storedAPIPath ?? widths.apiPath, OperatorResourceColumn.apiPath.minimumWidth), OperatorResourceColumn.apiPath.maximumWidth)
             let dynamicNameWidth = max(
                 RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth,
-                projectedWidth - familyWidth - kindWidth - namespaceWidth - statusWidth - apiPathWidth - widths.favorite
+                projectedWidth - familyWidth - kindWidth - namespaceWidth - statusWidth - printerColumnsWidth - apiPathWidth - widths.favorite
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.name.rawValue)
             let nameWidth = min(max(storedName ?? dynamicNameWidth, OperatorResourceColumn.name.minimumWidth), OperatorResourceColumn.name.maximumWidth)
@@ -2698,6 +2865,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 case .kind: tableColumn.width = kindWidth
                 case .namespace: tableColumn.width = namespaceWidth
                 case .status: tableColumn.width = statusWidth
+                case .printerColumns:
+                    tableColumn.isHidden = !parent.showsPrinterColumns
+                    tableColumn.width = printerColumnsWidth
                 case .apiPath: tableColumn.width = apiPathWidth
                 case .favorite: tableColumn.width = widths.favorite
                 }
@@ -2711,11 +2881,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
-            guard let tableView else { return }
-            let tableWidth = tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
-            if abs(tableView.frame.width - tableWidth) >= 1 {
-                tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
-            }
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
         }
 
         private func updateOperatorResourceSortIndicator(on tableView: NSTableView) {
@@ -2894,10 +3060,11 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
         }
 
         RuneAppKitResourceTableTheme.current.headerDivider.setFill()
+        let renderedWidth = tableView.map(RuneAppKitResourceTableStyle.renderedTableWidth(in:)) ?? bounds.width
         NSRect(
             x: bounds.minX + horizontalInset,
             y: bounds.minY,
-            width: max(0, bounds.width - (horizontalInset * 2)),
+            width: max(0, min(bounds.width, renderedWidth) - (horizontalInset * 2)),
             height: 1
         ).fill()
     }
@@ -3009,7 +3176,14 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {}
 
     override func drawBackground(in dirtyRect: NSRect) {
-        let rowRect = bounds.insetBy(dx: horizontalInset, dy: 1)
+        let contentWidth = (superview as? NSTableView)
+            .map(RuneAppKitResourceTableStyle.renderedTableWidth(in:)) ?? bounds.width
+        let rowRect = NSRect(
+            x: bounds.minX + horizontalInset,
+            y: bounds.minY + 1,
+            width: max(0, min(bounds.width, contentWidth) - (horizontalInset * 2)),
+            height: max(0, bounds.height - 2)
+        )
         let path = NSBezierPath(roundedRect: rowRect, xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, yRadius: RuneUILayoutMetrics.compactGlyphCornerRadius)
         let tableTheme = RuneAppKitResourceTableTheme.current
         let fill = isSelected
@@ -3655,6 +3829,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
     case kind
     case namespace
     case status
+    case printerColumns
     case apiPath
     case favorite
 
@@ -3682,6 +3857,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
         case .kind: return .kind
         case .namespace: return .namespace
         case .status: return .status
+        case .printerColumns: return nil
         case .apiPath: return .apiPath
         case .favorite: return nil
         }
@@ -3694,6 +3870,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
         case .kind: return "Kind"
         case .namespace: return "Namespace"
         case .status: return "Status"
+        case .printerColumns: return "Columns"
         case .apiPath: return "API Path"
         case .favorite: return ""
         }
@@ -3702,7 +3879,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
     var alignment: NSTextAlignment {
         switch self {
         case .status: return .center
-        case .favorite, .name, .family, .kind, .namespace, .apiPath: return .left
+        case .favorite, .name, .family, .kind, .namespace, .printerColumns, .apiPath: return .left
         }
     }
 
@@ -3713,6 +3890,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
         case .kind: return RuneAppKitResourceListLayout.operatorKindColumnWidth
         case .namespace: return RuneAppKitResourceListLayout.operatorNamespaceColumnWidth
         case .status: return RuneAppKitResourceListLayout.operatorStatusColumnWidth
+        case .printerColumns: return RuneAppKitResourceListLayout.operatorPrinterColumnsColumnWidth
         case .apiPath: return RuneAppKitResourceListLayout.operatorAPIPathColumnWidth
         case .favorite: return RuneAppKitResourceListLayout.operatorFavoriteColumnWidth
         }
@@ -3730,6 +3908,8 @@ private enum OperatorResourceColumn: String, CaseIterable {
             return RuneAppKitResourceListLayout.operatorNamespaceMinimumColumnWidth
         case .status:
             return RuneAppKitResourceListLayout.operatorStatusMinimumColumnWidth
+        case .printerColumns:
+            return 120
         case .apiPath:
             return RuneAppKitResourceListLayout.operatorAPIPathMinimumColumnWidth
         case .favorite:
@@ -3744,6 +3924,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
         case .kind: return 300
         case .namespace: return 260
         case .status: return 220
+        case .printerColumns: return 280
         case .apiPath: return 520
         case .favorite: return width
         }
@@ -3752,7 +3933,7 @@ private enum OperatorResourceColumn: String, CaseIterable {
     var isUserResizable: Bool {
         switch self {
         case .favorite: return false
-        case .name, .family, .kind, .namespace, .status, .apiPath: return true
+        case .name, .family, .kind, .namespace, .status, .printerColumns, .apiPath: return true
         }
     }
 }

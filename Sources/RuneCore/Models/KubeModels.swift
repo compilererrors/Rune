@@ -208,6 +208,25 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
             return true
         }
     }
+
+    public var rbacAPIGroup: String? {
+        switch self {
+        case .deployment, .statefulSet, .daemonSet, .replicaSet:
+            return "apps"
+        case .job, .cronJob:
+            return "batch"
+        case .ingress, .networkPolicy:
+            return "networking.k8s.io"
+        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return "rbac.authorization.k8s.io"
+        case .storageClass:
+            return "storage.k8s.io"
+        case .horizontalPodAutoscaler:
+            return "autoscaling"
+        case .pod, .service, .configMap, .secret, .node, .event, .persistentVolumeClaim, .persistentVolume:
+            return nil
+        }
+    }
 }
 
 public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
@@ -574,6 +593,16 @@ public struct WriteAuditEntry: Identifiable, Hashable, Codable, Sendable {
 }
 
 public struct OperatorResourceSummary: Identifiable, Hashable, Codable, Sendable {
+    public struct PrinterColumn: Hashable, Codable, Sendable {
+        public let title: String
+        public let value: String
+
+        public init(title: String, value: String) {
+            self.title = title
+            self.value = value
+        }
+    }
+
     public let family: String
     public let kind: String
     public let apiPath: String
@@ -581,6 +610,7 @@ public struct OperatorResourceSummary: Identifiable, Hashable, Codable, Sendable
     public let namespace: String?
     public let status: String
     public let message: String
+    public let printerColumns: [PrinterColumn]
 
     public init(
         family: String,
@@ -589,7 +619,8 @@ public struct OperatorResourceSummary: Identifiable, Hashable, Codable, Sendable
         name: String,
         namespace: String?,
         status: String,
-        message: String
+        message: String,
+        printerColumns: [PrinterColumn] = []
     ) {
         self.family = family
         self.kind = kind
@@ -598,6 +629,7 @@ public struct OperatorResourceSummary: Identifiable, Hashable, Codable, Sendable
         self.namespace = namespace
         self.status = status
         self.message = message
+        self.printerColumns = Array(printerColumns.prefix(3))
     }
 
     public var id: String {
@@ -615,6 +647,7 @@ public enum PodTerminalSessionStatus: String, Codable, Sendable {
 public enum PodTerminalSessionFailureCategory: String, Codable, Sendable {
     case rbacDenied
     case missingShell
+    case podRestarted
     case podOrContainerUnavailable
     case transportDisconnected
     case unknown
@@ -668,6 +701,19 @@ public struct PodTerminalSessionDiagnostic: Hashable, Codable, Sendable {
                 category: .missingShell,
                 summary: "Shell not found in pod `\(podName)`\(containerLabel).",
                 recoveryHint: "Try `sh`, `ash`, or another shell that exists in the image instead of `\(shell)`."
+            )
+        }
+
+        if lower.contains("restarted")
+            || lower.contains("container restart")
+            || lower.contains("pod restart")
+            || lower.contains("container was killed")
+            || lower.contains("pod was terminated")
+            || lower.contains("pod terminated while") {
+            return PodTerminalSessionDiagnostic(
+                category: .podRestarted,
+                summary: "Pod restarted during terminal exec for `\(podName)`\(containerLabel).",
+                recoveryHint: "Refresh the workload, wait for the new pod to become Ready, then reconnect."
             )
         }
 

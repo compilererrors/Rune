@@ -76,6 +76,8 @@ struct ResourceYAMLInspectorPane: View {
     let onRevert: () -> Void
     let onImport: () -> Void
     let onExport: () -> Void
+    let onExportToExportFolder: () -> Void
+    let onExportAndOpen: () -> Void
     let readOnlyResetID: String
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
@@ -166,6 +168,14 @@ struct ResourceYAMLInspectorPane: View {
                         Button("Export YAML…", action: onExport)
                             .disabled(yamlText.isEmpty)
                             .help("Export the current YAML text to a file.")
+
+                        Button("Save YAML to Export Folder", action: onExportToExportFolder)
+                            .disabled(yamlText.isEmpty)
+                            .help("Save the current YAML text to the configured export folder.")
+
+                        Button("Save YAML and Open", action: onExportAndOpen)
+                            .disabled(yamlText.isEmpty)
+                            .help("Save the current YAML text to the configured export folder and open it.")
                     } label: {
                         Label(t(.file), systemImage: "doc")
                     }
@@ -423,6 +433,8 @@ struct ResourceYAMLEditorSheetView: View {
     let onRevert: () -> Void
     let onImport: () -> Void
     let onExport: () -> Void
+    let onExportToExportFolder: () -> Void
+    let onExportAndOpen: () -> Void
     let onClose: () -> Void
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
@@ -483,6 +495,12 @@ struct ResourceYAMLEditorSheetView: View {
                         Button("Import YAML…", action: onImport)
 
                         Button("Export YAML…", action: onExport)
+                            .disabled(yamlText.isEmpty)
+
+                        Button("Save YAML to Export Folder", action: onExportToExportFolder)
+                            .disabled(yamlText.isEmpty)
+
+                        Button("Save YAML and Open", action: onExportAndOpen)
                             .disabled(yamlText.isEmpty)
                     } label: {
                         Label(t(.file), systemImage: "doc")

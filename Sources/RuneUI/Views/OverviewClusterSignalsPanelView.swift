@@ -3,21 +3,24 @@ import RuneCore
 
 enum OverviewInsightPanelID: Hashable {
     case unhealthy
+    case gitOps
     case incidents
     case dependencies
 }
 
 struct OverviewClusterSignalsPanelView: View {
     let unhealthy: [OverviewSignalItem]
+    let gitOpsRollups: [OverviewGitOpsRollupItem]
     let incidents: [OverviewSignalItem]
     let dependencies: [OverviewDependencyItem]
     @Binding var expandedPanels: Set<OverviewInsightPanelID>
     let onOpenSignal: (OverviewSignalItem) -> Void
+    let onOpenGitOpsRollup: (OverviewGitOpsRollupItem) -> Void
     let onOpenDependency: (OverviewDependencyItem) -> Void
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
 
     private var activeCount: Int {
-        unhealthy.count + incidents.count + dependencies.count
+        unhealthy.count + gitOpsRollups.count + incidents.count + dependencies.count
     }
 
     var body: some View {
@@ -47,6 +50,10 @@ struct OverviewClusterSignalsPanelView: View {
                     emptyText: "No unhealthy pods or deployments in the current snapshot.",
                     items: unhealthy
                 )
+
+                panelDivider
+
+                gitOpsSection(id: .gitOps, items: gitOpsRollups)
 
                 panelDivider
 
@@ -106,6 +113,45 @@ struct OverviewClusterSignalsPanelView: View {
                                 onOpenSignal(item)
                             }
                             .runeHelp(overviewSignalRowHelp(item), enabled: showHoverTooltips)
+                        }
+                    }
+                    .padding(.leading, 28)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func gitOpsSection(
+        id: OverviewInsightPanelID,
+        items: [OverviewGitOpsRollupItem]
+    ) -> some View {
+        let isExpanded = expandedPanels.contains(id)
+        let summary = items.first?.detail ?? "No Flux or ArgoCD resources loaded."
+        let severity = items.first?.severity ?? .info
+
+        return VStack(alignment: .leading, spacing: 8) {
+            disclosureHeader(
+                id: id,
+                title: "GitOps",
+                symbol: "arrow.triangle.2.circlepath",
+                badge: items.isEmpty ? "None" : "\(items.count)",
+                summary: summary,
+                severity: severity,
+                isExpanded: isExpanded,
+                help: overviewInsightHelp(for: id)
+            )
+
+            if isExpanded {
+                if items.isEmpty {
+                    emptyTextView("No Flux or ArgoCD resources loaded.")
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items) { item in
+                            gitOpsRow(item) {
+                                onOpenGitOpsRollup(item)
+                            }
+                            .runeHelp(overviewGitOpsRowHelp(item), enabled: showHoverTooltips)
                         }
                     }
                     .padding(.leading, 28)
@@ -244,6 +290,39 @@ struct OverviewClusterSignalsPanelView: View {
         .buttonStyle(.plain)
     }
 
+    private func gitOpsRow(_ item: OverviewGitOpsRollupItem, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 7) {
+                Circle()
+                    .fill(signalColor(item.severity))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(item.title)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Text(item.badge)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 3)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func dependencyRow(_ item: OverviewDependencyItem, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 7) {
@@ -291,13 +370,15 @@ struct OverviewClusterSignalsPanelView: View {
     }
 
     private var overviewClusterSignalsHelp: String {
-        "Cluster Signals is a triage summary from the current snapshot. Unhealthy shows current resource health, Incident Timeline promotes warning events, and Dependency Map shows loaded service/workload relationships."
+        "Cluster Signals is a triage summary from the current snapshot. Unhealthy shows current resource health, GitOps summarizes Flux and ArgoCD controllers, Incident Timeline promotes warning events, and Dependency Map shows loaded service/workload relationships."
     }
 
     private func overviewInsightHelp(for id: OverviewInsightPanelID) -> String {
         switch id {
         case .unhealthy:
             return "Current-state health signals from pods and deployments, such as failed status, readiness gaps, or restarts. These are not raw Kubernetes Events."
+        case .gitOps:
+            return "Flux and ArgoCD rollups from loaded custom resources. Open a row to focus the operator browser on all GitOps, Flux, ArgoCD, or unhealthy GitOps resources."
         case .incidents:
             return "Warning Kubernetes Events promoted into a short incident timeline. Use Events for the full raw event list."
         case .dependencies:
@@ -308,6 +389,10 @@ struct OverviewClusterSignalsPanelView: View {
     private func overviewSignalRowHelp(_ item: OverviewSignalItem) -> String {
         let targetText = item.target.map { "\($0.kind.singularTypeName) \($0.name)" } ?? "the related resource"
         return "Open \(targetText). This row is derived from current health state or a warning Event, depending on the section."
+    }
+
+    private func overviewGitOpsRowHelp(_ item: OverviewGitOpsRollupItem) -> String {
+        "Open the operator browser focused on \(item.title). This rollup is derived from loaded Flux and ArgoCD custom resources."
     }
 
     private func overviewDependencyRowHelp(_ item: OverviewDependencyItem) -> String {

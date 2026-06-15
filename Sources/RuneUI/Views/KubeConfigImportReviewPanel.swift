@@ -3,6 +3,7 @@ import SwiftUI
 
 struct KubeConfigImportReviewPanel: View {
     let review: KubeConfigImportReview
+    @Binding var duplicateHandlingChoice: KubeConfigDuplicateHandlingChoice
     let onClear: () -> Void
     let onRunAuthDoctor: () -> Void
 
@@ -110,11 +111,32 @@ struct KubeConfigImportReviewPanel: View {
 
     @ViewBuilder
     private var duplicateNameGuidance: some View {
-        if review.issues.contains(where: { $0.id.contains("duplicate") }) {
-            Text("Duplicate handling will require an explicit choice: update existing, import as copy, or skip.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        if !review.duplicateHandlingChoices.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Duplicate handling requires an explicit choice before saving:")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Picker("Duplicate handling", selection: $duplicateHandlingChoice) {
+                    ForEach(review.duplicateHandlingChoices, id: \.rawValue) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                ForEach(review.duplicateHandlingChoices, id: \.rawValue) { choice in
+                    Label {
+                        Text("\(choice.title): \(choice.detail)")
+                            .font(.caption2)
+                            .foregroundStyle(choice == duplicateHandlingChoice ? .primary : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: duplicateHandlingChoiceIcon(choice))
+                    }
+                }
+            }
         }
     }
 
@@ -231,5 +253,13 @@ struct KubeConfigImportReviewPanel: View {
         ]
         .compactMap { $0 }
         .joined(separator: " • ")
+    }
+
+    private func duplicateHandlingChoiceIcon(_ choice: KubeConfigDuplicateHandlingChoice) -> String {
+        switch choice {
+        case .updateExisting: return "arrow.triangle.2.circlepath"
+        case .importAsCopy: return "doc.on.doc"
+        case .skipDuplicate: return "minus.circle"
+        }
     }
 }
