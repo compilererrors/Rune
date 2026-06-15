@@ -1,5 +1,61 @@
 import Foundation
 
+public struct ContextDisplayMetadata: Codable, Equatable, Sendable {
+    public let alias: String?
+    public let colorKey: String?
+    public let iconName: String?
+    public let tags: [String]
+    public let group: String?
+
+    public init(
+        alias: String? = nil,
+        colorKey: String? = nil,
+        iconName: String? = nil,
+        tags: [String] = [],
+        group: String? = nil
+    ) {
+        self.alias = Self.normalizedOptional(alias)
+        self.colorKey = Self.normalizedOptional(colorKey)
+        self.iconName = Self.normalizedOptional(iconName)
+        self.tags = Self.normalizedStrings(tags)
+        self.group = Self.normalizedOptional(group)
+    }
+
+    public var isEmpty: Bool {
+        alias == nil
+            && colorKey == nil
+            && iconName == nil
+            && tags.isEmpty
+            && group == nil
+    }
+
+    public func normalized() -> ContextDisplayMetadata {
+        ContextDisplayMetadata(
+            alias: alias,
+            colorKey: colorKey,
+            iconName: iconName,
+            tags: tags,
+            group: group
+        )
+    }
+
+    private static func normalizedOptional(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func normalizedStrings(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+}
+
 public protocol ContextPreferencesStoring {
     func loadFavoriteContextNames() -> Set<String>
     func saveFavoriteContextNames(_ names: Set<String>)
@@ -13,6 +69,8 @@ public protocol ContextPreferencesStoring {
     func saveManualNamespaces(_ namespaces: [String], for contextName: String)
     func loadPreferredNamespace(for contextName: String) -> String?
     func savePreferredNamespace(_ namespace: String, for contextName: String)
+    func loadContextDisplayMetadata(for contextName: String) -> ContextDisplayMetadata?
+    func saveContextDisplayMetadata(_ metadata: ContextDisplayMetadata?, for contextName: String)
     func loadHiddenOperatorPrinterColumnFamilies() -> Set<String>
     func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>)
 }
@@ -29,6 +87,12 @@ public extension ContextPreferencesStoring {
     }
 
     func savePreferredNamespace(_ namespace: String, for contextName: String) {}
+
+    func loadContextDisplayMetadata(for contextName: String) -> ContextDisplayMetadata? {
+        nil
+    }
+
+    func saveContextDisplayMetadata(_ metadata: ContextDisplayMetadata?, for contextName: String) {}
 
     func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
         []
@@ -63,6 +127,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
     private let manualProductionContextsKey: String
     private let manualNamespacesKey: String
     private let preferredNamespacesKey: String
+    private let contextDisplayMetadataKey: String
     private let hiddenOperatorPrinterColumnFamiliesKey: String
 
     public init(
@@ -73,6 +138,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         manualProductionContextsKey: String = "rune.manual.production.contexts",
         manualNamespacesKey: String = "rune.manual.namespaces",
         preferredNamespacesKey: String = "rune.preferred.namespaces",
+        contextDisplayMetadataKey: String = "rune.context.display.metadata",
         hiddenOperatorPrinterColumnFamiliesKey: String = "rune.hidden.operator.printer.column.families"
     ) {
         self.defaults = defaults
@@ -82,6 +148,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         self.manualProductionContextsKey = manualProductionContextsKey
         self.manualNamespacesKey = manualNamespacesKey
         self.preferredNamespacesKey = preferredNamespacesKey
+        self.contextDisplayMetadataKey = contextDisplayMetadataKey
         self.hiddenOperatorPrinterColumnFamiliesKey = hiddenOperatorPrinterColumnFamiliesKey
     }
 
@@ -160,6 +227,24 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
         defaults.set(map, forKey: preferredNamespacesKey)
     }
 
+    public func loadContextDisplayMetadata(for contextName: String) -> ContextDisplayMetadata? {
+        let context = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !context.isEmpty else { return nil }
+        return Self.decodedContextDisplayMetadata(from: defaults.data(forKey: contextDisplayMetadataKey))?[context]
+    }
+
+    public func saveContextDisplayMetadata(_ metadata: ContextDisplayMetadata?, for contextName: String) {
+        let context = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !context.isEmpty else { return }
+        var map = Self.decodedContextDisplayMetadata(from: defaults.data(forKey: contextDisplayMetadataKey)) ?? [:]
+        if let normalized = metadata?.normalized(), !normalized.isEmpty {
+            map[context] = normalized
+        } else {
+            map.removeValue(forKey: context)
+        }
+        defaults.set(try? JSONEncoder().encode(map), forKey: contextDisplayMetadataKey)
+    }
+
     public func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
         Set(Self.normalizedStrings(defaults.stringArray(forKey: hiddenOperatorPrinterColumnFamiliesKey) ?? []))
     }
@@ -177,6 +262,11 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
             return normalized
         }
         .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private static func decodedContextDisplayMetadata(from data: Data?) -> [String: ContextDisplayMetadata]? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode([String: ContextDisplayMetadata].self, from: data)
     }
 
     private func normalizedNamespaces(_ namespaces: [String]) -> [String] {
@@ -198,7 +288,7 @@ public final class UserDefaultsContextPreferencesStore: ContextPreferencesStorin
 }
 
 public final class FileBackedContextPreferencesStore: ContextPreferencesStoring {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     private let url: URL
     private let backupURL: URL
@@ -313,6 +403,24 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
         }
     }
 
+    public func loadContextDisplayMetadata(for contextName: String) -> ContextDisplayMetadata? {
+        let context = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !context.isEmpty else { return nil }
+        return loadDocument().contextDisplayMetadata[context]
+    }
+
+    public func saveContextDisplayMetadata(_ metadata: ContextDisplayMetadata?, for contextName: String) {
+        let context = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !context.isEmpty else { return }
+        updateDocument { document in
+            if let normalized = metadata?.normalized(), !normalized.isEmpty {
+                document.contextDisplayMetadata[context] = normalized
+            } else {
+                document.contextDisplayMetadata.removeValue(forKey: context)
+            }
+        }
+    }
+
     public func loadHiddenOperatorPrinterColumnFamilies() -> Set<String> {
         Set(loadDocument().hiddenOperatorPrinterColumnFamilies)
     }
@@ -419,6 +527,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
         var manualProductionContextIDs: [String]
         var manualNamespaces: [String: [String]]
         var preferredNamespaces: [String: String]
+        var contextDisplayMetadata: [String: ContextDisplayMetadata]
         var hiddenOperatorPrinterColumnFamilies: [String]
 
         init(
@@ -429,6 +538,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             manualProductionContextIDs: [String] = [],
             manualNamespaces: [String: [String]] = [:],
             preferredNamespaces: [String: String] = [:],
+            contextDisplayMetadata: [String: ContextDisplayMetadata] = [:],
             hiddenOperatorPrinterColumnFamilies: [String] = []
         ) {
             self.schemaVersion = schemaVersion
@@ -438,6 +548,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             self.manualProductionContextIDs = manualProductionContextIDs
             self.manualNamespaces = manualNamespaces
             self.preferredNamespaces = preferredNamespaces
+            self.contextDisplayMetadata = contextDisplayMetadata
             self.hiddenOperatorPrinterColumnFamilies = hiddenOperatorPrinterColumnFamilies
         }
 
@@ -454,6 +565,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             )
             var manualNamespaces: [String: [String]] = [:]
             var preferredNamespaces: [String: String] = [:]
+            var contextDisplayMetadata: [String: ContextDisplayMetadata] = [:]
             for contextName in contextNames {
                 let namespaces = legacyStore.loadManualNamespaces(for: contextName)
                 if !namespaces.isEmpty {
@@ -461,6 +573,9 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 }
                 if let preferred = legacyStore.loadPreferredNamespace(for: contextName) {
                     preferredNamespaces[contextName] = preferred
+                }
+                if let metadata = legacyStore.loadContextDisplayMetadata(for: contextName) {
+                    contextDisplayMetadata[contextName] = metadata
                 }
             }
             let hiddenOperatorPrinterColumnFamilies = Array(legacyStore.loadHiddenOperatorPrinterColumnFamilies())
@@ -472,6 +587,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 manualProductionContextIDs: manualProductionContextIDs,
                 manualNamespaces: manualNamespaces,
                 preferredNamespaces: preferredNamespaces,
+                contextDisplayMetadata: contextDisplayMetadata,
                 hiddenOperatorPrinterColumnFamilies: hiddenOperatorPrinterColumnFamilies
             )
         }
@@ -486,6 +602,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
             manualProductionContextIDs = try container.decodeIfPresent([String].self, forKey: .manualProductionContextIDs) ?? []
             manualNamespaces = try container.decodeIfPresent([String: [String]].self, forKey: .manualNamespaces) ?? [:]
             preferredNamespaces = try container.decodeIfPresent([String: String].self, forKey: .preferredNamespaces) ?? [:]
+            contextDisplayMetadata = try container.decodeIfPresent([String: ContextDisplayMetadata].self, forKey: .contextDisplayMetadata) ?? [:]
             hiddenOperatorPrinterColumnFamilies = try container.decodeIfPresent([String].self, forKey: .hiddenOperatorPrinterColumnFamilies) ?? []
         }
 
@@ -496,6 +613,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 && manualProductionContextIDs.isEmpty
                 && manualNamespaces.isEmpty
                 && preferredNamespaces.isEmpty
+                && contextDisplayMetadata.isEmpty
                 && hiddenOperatorPrinterColumnFamilies.isEmpty
         }
 
@@ -517,6 +635,14 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 normalizedPreferredNamespaces[normalizedContext] = normalizedNamespace
             }
 
+            var normalizedContextDisplayMetadata: [String: ContextDisplayMetadata] = [:]
+            for (context, metadata) in contextDisplayMetadata {
+                let normalizedContext = context.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedMetadata = metadata.normalized()
+                guard !normalizedContext.isEmpty, !normalizedMetadata.isEmpty else { continue }
+                normalizedContextDisplayMetadata[normalizedContext] = normalizedMetadata
+            }
+
             return ContextPreferencesDocument(
                 schemaVersion: FileBackedContextPreferencesStore.currentSchemaVersion,
                 favoriteContextNames: FileBackedContextPreferencesStore.normalizedStrings(favoriteContextNames),
@@ -525,6 +651,7 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
                 manualProductionContextIDs: FileBackedContextPreferencesStore.normalizedStrings(manualProductionContextIDs),
                 manualNamespaces: normalizedManualNamespaces,
                 preferredNamespaces: normalizedPreferredNamespaces,
+                contextDisplayMetadata: normalizedContextDisplayMetadata,
                 hiddenOperatorPrinterColumnFamilies: FileBackedContextPreferencesStore.normalizedStrings(hiddenOperatorPrinterColumnFamilies)
             )
         }

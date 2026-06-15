@@ -124,7 +124,7 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("Label(t(.hideManaged), systemImage: \"eye.slash\")"))
 
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
-        XCTAssertTrue(describeSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
+        XCTAssertTrue(describeSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
         XCTAssertTrue(describeSource.contains("Button(t(.apply), action: onApply)"))
         XCTAssertTrue(describeSource.contains("placeholder: t(.findInDescribe)"))
     }

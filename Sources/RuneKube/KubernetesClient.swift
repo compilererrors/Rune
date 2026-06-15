@@ -251,7 +251,16 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 namespace: pod.namespace,
                 status: pod.status,
                 totalRestarts: pod.totalRestarts,
-                ageDescription: pod.ageDescription
+                ageDescription: pod.ageDescription,
+                podIP: pod.podIP,
+                hostIP: pod.hostIP,
+                nodeName: pod.nodeName,
+                qosClass: pod.qosClass,
+                containersReady: pod.containersReady,
+                containerNamesLine: pod.containerNamesLine,
+                labels: pod.labels,
+                containerImagesLine: pod.containerImagesLine,
+                ownerReferencesLine: pod.ownerReferencesLine
             )
         }
     }
@@ -1538,6 +1547,24 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func scaleStatefulSet(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        statefulSetName: String,
+        replicas: Int
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        try await restClient.scaleStatefulSet(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            statefulSetName: statefulSetName,
+            replicas: replicas,
+            timeout: 90
+        )
+    }
+
     public func restartDeploymentRollout(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -1550,6 +1577,22 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             contextName: context.name,
             namespace: namespace,
             deploymentName: deploymentName,
+            timeout: 90
+        )
+    }
+
+    public func restartStatefulSetRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        statefulSetName: String
+    ) async throws {
+        let env = try kubeconfigEnvironment(from: sources)
+        try await restClient.restartStatefulSetRollout(
+            environment: env,
+            contextName: context.name,
+            namespace: namespace,
+            statefulSetName: statefulSetName,
             timeout: 90
         )
     }
@@ -2453,7 +2496,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             nodeName: detail.nodeName ?? base.nodeName,
             qosClass: detail.qosClass ?? base.qosClass,
             containersReady: detail.containersReady ?? base.containersReady,
-            containerNamesLine: detail.containerNamesLine ?? base.containerNamesLine
+            containerNamesLine: detail.containerNamesLine ?? base.containerNamesLine,
+            labels: detail.labels.isEmpty ? base.labels : detail.labels,
+            containerImagesLine: detail.containerImagesLine ?? base.containerImagesLine,
+            ownerReferencesLine: detail.ownerReferencesLine ?? base.ownerReferencesLine
         )
     }
 
@@ -2645,7 +2691,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 nodeName: pod.nodeName,
                 qosClass: pod.qosClass,
                 containersReady: pod.containersReady,
-                containerNamesLine: pod.containerNamesLine
+                containerNamesLine: pod.containerNamesLine,
+                labels: pod.labels,
+                containerImagesLine: pod.containerImagesLine,
+                ownerReferencesLine: pod.ownerReferencesLine
             )
         }
     }
@@ -2670,7 +2719,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 nodeName: pod.nodeName,
                 qosClass: pod.qosClass,
                 containersReady: pod.containersReady,
-                containerNamesLine: pod.containerNamesLine
+                containerNamesLine: pod.containerNamesLine,
+                labels: pod.labels,
+                containerImagesLine: pod.containerImagesLine,
+                ownerReferencesLine: pod.ownerReferencesLine
             )
         }
     }

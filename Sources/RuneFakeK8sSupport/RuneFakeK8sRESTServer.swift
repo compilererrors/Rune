@@ -250,8 +250,8 @@ private struct RuneFakeK8sRouter {
             return .json(status: 400, object: status(message: "Malformed HTTP request"))
         }
         let method = parts[0]
-        guard method == "GET" || method == "PATCH" else {
-            return .json(status: 405, object: status(message: "Only GET and PATCH are supported by RuneFakeK8s REST."))
+        guard method == "GET" || method == "PATCH" || method == "POST" else {
+            return .json(status: 405, object: status(message: "Only GET, PATCH, and POST are supported by RuneFakeK8s REST."))
         }
         guard let cluster = fixture.cluster(named: contextName) else {
             return .json(status: 404, object: status(message: "Unknown fake context \(contextName)."))
@@ -298,6 +298,17 @@ private struct RuneFakeK8sRouter {
                     kind: "DeploymentList",
                     items: cluster.namespaces.flatMap { namespace in
                         namespace.deployments.map { deploymentObject($0, namespace: namespace.name) }
+                    },
+                    query: query
+                ))
+            }
+
+            if pathParts == ["apis", "apps", "v1", "statefulsets"] {
+                return .json(status: 200, object: listObject(
+                    apiVersion: "apps/v1",
+                    kind: "StatefulSetList",
+                    items: cluster.namespaces.flatMap { namespace in
+                        namespace.statefulSets.map { statefulSetObject($0, namespace: namespace.name) }
                     },
                     query: query
                 ))
@@ -384,7 +395,7 @@ private struct RuneFakeK8sRouter {
             if pathParts.count >= 6,
                Array(pathParts[0...3]) == ["apis", "batch", "v1", "namespaces"],
                let namespace = cluster.namespaces.first(where: { $0.name == pathParts[4] }) {
-                return routeBatchNamespaced(pathParts: pathParts, namespace: namespace, query: query)
+                return routeBatchNamespaced(method: method, pathParts: pathParts, namespace: namespace, query: query)
             }
 
             if pathParts.count >= 6,
@@ -543,6 +554,37 @@ private struct RuneFakeK8sRouter {
                 return .json(status: 404, object: status(message: "Deployment \(pathParts[6]) was not found."))
             }
             return .json(status: 200, object: deploymentObject(deployment, namespace: namespace.name))
+        case 8 where pathParts[5] == "deployments" && pathParts[7] == "scale":
+            guard method == "PATCH" else {
+                return .json(status: 405, object: status(message: "Only PATCH is supported for Deployment scale."))
+            }
+            guard let deployment = namespace.deployments.first(where: { $0.name == pathParts[6] }) else {
+                return .json(status: 404, object: status(message: "Deployment \(pathParts[6]) was not found."))
+            }
+            return .json(status: 200, object: deploymentObject(deployment, namespace: namespace.name))
+        case 6 where pathParts[5] == "statefulsets":
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET is supported for StatefulSet lists."))
+            }
+            return .json(status: 200, object: listObject(
+                apiVersion: "apps/v1",
+                kind: "StatefulSetList",
+                items: namespace.statefulSets.map { statefulSetObject($0, namespace: namespace.name) },
+                query: query
+            ))
+        case 7 where pathParts[5] == "statefulsets":
+            guard let statefulSet = namespace.statefulSets.first(where: { $0.name == pathParts[6] }) else {
+                return .json(status: 404, object: status(message: "StatefulSet \(pathParts[6]) was not found."))
+            }
+            return .json(status: 200, object: statefulSetObject(statefulSet, namespace: namespace.name))
+        case 8 where pathParts[5] == "statefulsets" && pathParts[7] == "scale":
+            guard method == "PATCH" else {
+                return .json(status: 405, object: status(message: "Only PATCH is supported for StatefulSet scale."))
+            }
+            guard let statefulSet = namespace.statefulSets.first(where: { $0.name == pathParts[6] }) else {
+                return .json(status: 404, object: status(message: "StatefulSet \(pathParts[6]) was not found."))
+            }
+            return .json(status: 200, object: statefulSetObject(statefulSet, namespace: namespace.name))
         case 6 where pathParts[5] == "replicasets":
             guard method == "GET" else {
                 return .json(status: 405, object: status(message: "Only GET is supported for ReplicaSet lists."))
@@ -559,12 +601,39 @@ private struct RuneFakeK8sRouter {
     }
 
     private func routeBatchNamespaced(
+        method: String,
         pathParts: [String],
         namespace: RuneFakeK8sNamespace,
         query: [String: String]
     ) -> RuneFakeK8sHTTPResponse {
         switch pathParts.count {
+        case 6 where pathParts[5] == "jobs":
+            if method == "POST" {
+                return .json(status: 201, object: [
+                    "apiVersion": "batch/v1",
+                    "kind": "Job",
+                    "metadata": [
+                        "name": "manual-job",
+                        "namespace": namespace.name,
+                        "creationTimestamp": "2026-04-26T10:00:00Z"
+                    ],
+                    "spec": [:],
+                    "status": [:]
+                ])
+            }
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET and POST are supported for Jobs."))
+            }
+            return .json(status: 200, object: listObject(
+                apiVersion: "batch/v1",
+                kind: "JobList",
+                items: [],
+                query: query
+            ))
         case 6 where pathParts[5] == "cronjobs":
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET is supported for CronJob lists."))
+            }
             return .json(status: 200, object: listObject(
                 apiVersion: "batch/v1",
                 kind: "CronJobList",
@@ -572,6 +641,9 @@ private struct RuneFakeK8sRouter {
                 query: query
             ))
         case 7 where pathParts[5] == "cronjobs":
+            guard method == "GET" else {
+                return .json(status: 405, object: status(message: "Only GET is supported for CronJob resources."))
+            }
             guard let cronJob = cronJobObjects(namespace).first(where: { metadataName($0) == pathParts[6] }) else {
                 return .json(status: 404, object: status(message: "CronJob \(pathParts[6]) was not found."))
             }
@@ -743,6 +815,33 @@ private struct RuneFakeK8sRouter {
                 "replicas": deployment.replicas,
                 "updatedReplicas": deployment.readyReplicas,
                 "availableReplicas": deployment.readyReplicas
+            ]
+        ]
+    }
+
+    private func statefulSetObject(_ statefulSet: RuneFakeK8sStatefulSet, namespace: String) -> [String: Any] {
+        [
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": [
+                "name": statefulSet.name,
+                "namespace": namespace,
+                "creationTimestamp": "2026-04-25T10:00:00Z"
+            ],
+            "spec": [
+                "replicas": statefulSet.replicas,
+                "selector": ["matchLabels": statefulSet.selector],
+                "serviceName": statefulSet.name,
+                "template": [
+                    "metadata": ["labels": statefulSet.selector],
+                    "spec": ["containers": [["name": statefulSet.name, "image": "ghcr.io/rune/\(statefulSet.name):fake"]]]
+                ]
+            ],
+            "status": [
+                "readyReplicas": statefulSet.readyReplicas,
+                "replicas": statefulSet.replicas,
+                "updatedReplicas": statefulSet.readyReplicas,
+                "availableReplicas": statefulSet.readyReplicas
             ]
         ]
     }
@@ -931,7 +1030,27 @@ private struct RuneFakeK8sRouter {
             ],
             "spec": [
                 "schedule": "*/20 * * * *",
-                "suspend": false
+                "suspend": false,
+                "jobTemplate": [
+                    "metadata": [
+                        "labels": [
+                            "app": deployment.name,
+                            "rune.fake/source": "cronjob"
+                        ]
+                    ],
+                    "spec": [
+                        "template": [
+                            "spec": [
+                                "restartPolicy": "OnFailure",
+                                "containers": [[
+                                    "name": "report",
+                                    "image": "example.invalid/rune/report:1.0",
+                                    "command": ["sh", "-c", "echo synthetic report"]
+                                ]]
+                            ]
+                        ]
+                    ]
+                ]
             ],
             "status": [
                 "lastScheduleTime": "2026-04-26T09:00:00Z"

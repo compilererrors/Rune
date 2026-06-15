@@ -113,6 +113,27 @@ final class ConfiguredExportServiceTests: XCTestCase {
         }
     }
 
+    func testUnavailableConfiguredFolderReturnsRecoveryErrorWithoutOpeningFile() {
+        let opener = RecordingExportFileOpener()
+        let exporter = ConfiguredFolderExporter(
+            resolver: ThrowingExportDestinationResolver(error: FileExportError.exportFolderUnavailable),
+            opener: opener
+        )
+
+        XCTAssertThrowsError(
+            try exporter.save(
+                data: Data("line one\n".utf8),
+                suggestedName: "logs.log",
+                allowedFileTypes: ["log"],
+                kind: .plainText,
+                openAfterSave: true
+            )
+        ) { error in
+            XCTAssertEqual(error as? FileExportError, .exportFolderUnavailable)
+        }
+        XCTAssertTrue(opener.opened.isEmpty)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneConfiguredExportServiceTests-\(UUID().uuidString)", isDirectory: true)
@@ -138,6 +159,19 @@ private struct StaticExportDestinationResolver: ExportDestinationResolving {
         case .archive:
             return archiveOpenerBundleIdentifier
         }
+    }
+}
+
+private struct ThrowingExportDestinationResolver: ExportDestinationResolving {
+    let error: Error
+    var usesPrivacySafeFilenames = false
+
+    func exportFolderURL() throws -> URL? {
+        throw error
+    }
+
+    func preferredOpenerBundleIdentifier(for kind: ConfiguredExportFileKind) -> String? {
+        nil
     }
 }
 

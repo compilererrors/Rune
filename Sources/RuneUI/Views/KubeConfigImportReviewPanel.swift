@@ -4,6 +4,8 @@ import SwiftUI
 struct KubeConfigImportReviewPanel: View {
     let review: KubeConfigImportReview
     @Binding var duplicateHandlingChoice: KubeConfigDuplicateHandlingChoice
+    let metadataDrafts: [String: ContextDisplayMetadata]
+    let onUpdateMetadata: (String, ContextDisplayMetadata) -> Void
     let onClear: () -> Void
     let onRunAuthDoctor: () -> Void
 
@@ -23,6 +25,7 @@ struct KubeConfigImportReviewPanel: View {
             header
             sourceSummary
             contextSummary
+            importMetadataSection
             issueSummary
             duplicateNameGuidance
             fullReviewDisclosure
@@ -91,6 +94,48 @@ struct KubeConfigImportReviewPanel: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var importMetadataSection: some View {
+        if !review.contexts.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
+                        let metadata = metadataDrafts[context.name] ?? ContextDisplayMetadata()
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(context.name)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                TextField("Alias", text: metadataAliasBinding(for: context, metadata: metadata))
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Group", text: metadataGroupBinding(for: context, metadata: metadata))
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            HStack(spacing: 6) {
+                                TextField("Color key", text: metadataColorBinding(for: context, metadata: metadata))
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Icon", text: metadataIconBinding(for: context, metadata: metadata))
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            TextField("Tags", text: metadataTagsBinding(for: context, metadata: metadata))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+
+                    if review.contexts.count > 3 {
+                        Text("\(review.contexts.count - 3) more contexts can keep generated metadata during import.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } label: {
+                Text("Import metadata")
+                    .font(.caption.weight(.semibold))
             }
         }
     }
@@ -261,5 +306,75 @@ struct KubeConfigImportReviewPanel: View {
         case .importAsCopy: return "doc.on.doc"
         case .skipDuplicate: return "minus.circle"
         }
+    }
+
+    private func metadataAliasBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
+        Binding(
+            get: { metadata.alias ?? "" },
+            set: { value in
+                updateMetadata(for: context, metadata: metadata, alias: value)
+            }
+        )
+    }
+
+    private func metadataColorBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
+        Binding(
+            get: { metadata.colorKey ?? "" },
+            set: { value in
+                updateMetadata(for: context, metadata: metadata, colorKey: value)
+            }
+        )
+    }
+
+    private func metadataIconBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
+        Binding(
+            get: { metadata.iconName ?? "" },
+            set: { value in
+                updateMetadata(for: context, metadata: metadata, iconName: value)
+            }
+        )
+    }
+
+    private func metadataTagsBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
+        Binding(
+            get: { metadata.tags.joined(separator: ", ") },
+            set: { value in
+                updateMetadata(
+                    for: context,
+                    metadata: metadata,
+                    tags: value.split(separator: ",").map(String.init)
+                )
+            }
+        )
+    }
+
+    private func metadataGroupBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
+        Binding(
+            get: { metadata.group ?? "" },
+            set: { value in
+                updateMetadata(for: context, metadata: metadata, group: value)
+            }
+        )
+    }
+
+    private func updateMetadata(
+        for context: KubeConfigImportContextPreview,
+        metadata: ContextDisplayMetadata,
+        alias: String? = nil,
+        colorKey: String? = nil,
+        iconName: String? = nil,
+        tags: [String]? = nil,
+        group: String? = nil
+    ) {
+        onUpdateMetadata(
+            context.name,
+            ContextDisplayMetadata(
+                alias: alias ?? metadata.alias,
+                colorKey: colorKey ?? metadata.colorKey,
+                iconName: iconName ?? metadata.iconName,
+                tags: tags ?? metadata.tags,
+                group: group ?? metadata.group
+            )
+        )
     }
 }

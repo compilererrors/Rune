@@ -555,6 +555,38 @@ final class KubernetesRESTClient: @unchecked Sendable {
         )
     }
 
+    func scaleStatefulSet(
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        statefulSetName: String,
+        replicas: Int,
+        timeout: TimeInterval
+    ) async throws {
+        let path = try resourcePath(
+            kind: .statefulSet,
+            namespace: namespace,
+            resource: "statefulsets",
+            name: statefulSetName,
+            subresource: "scale"
+        )
+        let body = """
+        {"spec":{"replicas":\(replicas)}}
+        """
+        _ = try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "PATCH",
+            apiPath: path,
+            headers: [
+                "Accept": "application/json",
+                "Content-Type": "application/merge-patch+json"
+            ],
+            body: body,
+            timeout: timeout
+        )
+    }
+
     func restartDeploymentRollout(
         environment: [String: String],
         contextName: String,
@@ -567,6 +599,38 @@ final class KubernetesRESTClient: @unchecked Sendable {
             namespace: namespace,
             resource: "deployments",
             name: deploymentName,
+            subresource: nil
+        )
+        let restartedAt = ISO8601DateFormatter().string(from: Date())
+        let body = """
+        {"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"\(restartedAt)"}}}}}
+        """
+        _ = try await rawRequest(
+            environment: environment,
+            contextName: contextName,
+            method: "PATCH",
+            apiPath: path,
+            headers: [
+                "Accept": "application/json",
+                "Content-Type": "application/strategic-merge-patch+json"
+            ],
+            body: body,
+            timeout: timeout
+        )
+    }
+
+    func restartStatefulSetRollout(
+        environment: [String: String],
+        contextName: String,
+        namespace: String,
+        statefulSetName: String,
+        timeout: TimeInterval
+    ) async throws {
+        let path = try resourcePath(
+            kind: .statefulSet,
+            namespace: namespace,
+            resource: "statefulsets",
+            name: statefulSetName,
             subresource: nil
         )
         let restartedAt = ISO8601DateFormatter().string(from: Date())

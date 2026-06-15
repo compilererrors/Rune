@@ -24,6 +24,7 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let requestMetrics: [SupportBundleRequestMetric]
     public let requestMetricsSummary: SupportBundleRequestMetricsSummary?
     public let requestMetricGroups: [SupportBundleRequestMetricGroup]
+    public let resourceListFreshness: [SupportBundleResourceListFreshness]
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt
@@ -48,6 +49,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         case requestMetrics
         case requestMetricsSummary
         case requestMetricGroups
+        case resourceListFreshness
     }
 
     public init(
@@ -72,7 +74,8 @@ public struct SupportBundleRequest: Codable, Sendable {
         writeAuditLog: [WriteAuditEntry],
         requestMetrics: [SupportBundleRequestMetric] = [],
         requestMetricsSummary: SupportBundleRequestMetricsSummary? = nil,
-        requestMetricGroups: [SupportBundleRequestMetricGroup] = []
+        requestMetricGroups: [SupportBundleRequestMetricGroup] = [],
+        resourceListFreshness: [SupportBundleResourceListFreshness] = []
     ) {
         self.generatedAt = generatedAt
         self.contextName = contextName
@@ -96,6 +99,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.requestMetrics = requestMetrics
         self.requestMetricsSummary = requestMetricsSummary
         self.requestMetricGroups = requestMetricGroups
+        self.resourceListFreshness = resourceListFreshness
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +126,21 @@ public struct SupportBundleRequest: Codable, Sendable {
         requestMetrics = try container.decodeIfPresent([SupportBundleRequestMetric].self, forKey: .requestMetrics) ?? []
         requestMetricsSummary = try container.decodeIfPresent(SupportBundleRequestMetricsSummary.self, forKey: .requestMetricsSummary)
         requestMetricGroups = try container.decodeIfPresent([SupportBundleRequestMetricGroup].self, forKey: .requestMetricGroups) ?? []
+        resourceListFreshness = try container.decodeIfPresent([SupportBundleResourceListFreshness].self, forKey: .resourceListFreshness) ?? []
+    }
+}
+
+public struct SupportBundleResourceListFreshness: Codable, Sendable, Equatable {
+    public let family: String
+    public let status: String
+    public let updatedAt: Date?
+    public let message: String
+
+    public init(family: String, status: String, updatedAt: Date?, message: String) {
+        self.family = family
+        self.status = status
+        self.updatedAt = updatedAt
+        self.message = message
     }
 }
 
@@ -281,7 +300,10 @@ public extension SupportBundleRequest {
             writeAuditLog: state.writeAuditLog.map(sanitizer.sanitizedWriteAuditEntry),
             requestMetrics: requestMetrics.map(sanitizer.sanitizedRequestMetric),
             requestMetricsSummary: requestMetricsSummary,
-            requestMetricGroups: requestMetricGroups.map(sanitizer.sanitizedRequestMetricGroup)
+            requestMetricGroups: requestMetricGroups.map(sanitizer.sanitizedRequestMetricGroup),
+            resourceListFreshness: state.resourceListFreshness
+                .sorted { $0.key.rawValue < $1.key.rawValue }
+                .map { sanitizer.sanitizedResourceListFreshness($0, selectedNamespace: state.selectedNamespace) }
         )
     }
 
@@ -429,6 +451,24 @@ public extension SupportBundleRequest {
                 maxDurationSeconds: group.maxDurationSeconds,
                 latestStatusCode: group.latestStatusCode,
                 latestOutcome: sanitizedText(group.latestOutcome)
+            )
+        }
+
+        func sanitizedResourceListFreshness(
+            _ entry: (key: RuneResourceListFamily, value: RuneResourceListFreshness),
+            selectedNamespace: String
+        ) -> SupportBundleResourceListFreshness {
+            var message = entry.value.message.replacingOccurrences(of: " / ", with: " namespace ")
+            let namespace = selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !namespace.isEmpty {
+                message = message.replacingOccurrences(of: namespace, with: "<namespace>")
+            }
+            message = sanitizedText(message)
+            return SupportBundleResourceListFreshness(
+                family: entry.key.rawValue,
+                status: entry.value.status.rawValue,
+                updatedAt: entry.value.updatedAt,
+                message: message
             )
         }
 

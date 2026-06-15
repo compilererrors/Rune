@@ -277,6 +277,7 @@ func applyImmediateResourceContextMenuSelection(
 
 @MainActor
 private enum RuneAppKitResourceTableStyle {
+    static let headerHeight: CGFloat = 24
     static let rowHeight: CGFloat = 34
     static let rowGap: CGFloat = 4
     static let rowHorizontalInset: CGFloat = 6
@@ -302,6 +303,8 @@ private enum RuneAppKitResourceTableStyle {
 
     static func apply(to headerView: RuneAppKitResourceTableHeaderView) {
         headerView.horizontalInset = rowHorizontalInset
+        headerView.frame = NSRect(x: 0, y: 0, width: 0, height: headerHeight)
+        headerView.autoresizingMask = [.width]
     }
 
     static func columnContentWidth(in tableView: NSTableView) -> CGFloat {
@@ -318,9 +321,12 @@ private enum RuneAppKitResourceTableStyle {
         if abs(tableView.frame.width - tableWidth) >= 1 {
             tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
         }
-        if let headerView = tableView.headerView,
-           abs(headerView.frame.width - tableWidth) >= 1 {
-            headerView.setFrameSize(NSSize(width: tableWidth, height: headerView.frame.height))
+        if let headerView = tableView.headerView {
+            let headerSize = NSSize(width: tableWidth, height: headerHeight)
+            if abs(headerView.frame.width - headerSize.width) >= 1
+                || abs(headerView.frame.height - headerSize.height) >= 1 {
+                headerView.setFrameSize(headerSize)
+            }
         }
         tableView.headerView?.needsDisplay = true
         tableView.needsLayout = true
@@ -367,6 +373,7 @@ private enum RuneAppKitResourceTableStyle {
 }
 
 private struct RuneAppKitResourceTableTheme {
+    let headerFill: NSColor
     let headerText: NSColor
     let headerDivider: NSColor
     let columnDivider: NSColor
@@ -379,6 +386,7 @@ private struct RuneAppKitResourceTableTheme {
         let theme = RuneAppearanceTheme.resolved(UserDefaults.standard.string(forKey: RuneSettingsKeys.appearanceTheme) ?? RuneSettingsKeys.appearanceThemeDefault)
         if theme.isNative {
             return RuneAppKitResourceTableTheme(
+                headerFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42),
                 headerText: .headerTextColor,
                 headerDivider: NSColor.separatorColor.withAlphaComponent(0.24),
                 columnDivider: NSColor.gridColor.withAlphaComponent(0.28),
@@ -409,6 +417,7 @@ private struct RuneAppKitResourceTableTheme {
     ) -> RuneAppKitResourceTableTheme {
         let strokeColor = NSColor.runeTableHex(stroke)
         return RuneAppKitResourceTableTheme(
+            headerFill: NSColor.runeTableHex(row).withAlphaComponent(0.62),
             headerText: NSColor.runeTableHex(text).withAlphaComponent(0.92),
             headerDivider: strokeColor.withAlphaComponent(0.40),
             columnDivider: strokeColor.withAlphaComponent(0.32),
@@ -463,7 +472,10 @@ struct AppKitPodTableView: NSViewRepresentable {
             tableView.addTableColumn(column.tableColumn(nameColumnWidth: nameColumnWidth))
         }
 
-        let scrollView = NSScrollView()
+        let scrollView = RuneAppKitResourceListScrollView()
+        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
+            coordinator?.updateTableGeometry()
+        }
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -641,6 +653,15 @@ struct AppKitPodTableView: NSViewRepresentable {
             if pod.containerNamesLine != nil {
                 menu.addItem(menuItem("Copy container names", action: #selector(copyContainerNamesFromMenu(_:)), pod: pod))
             }
+            if pod.containerImagesLine != nil {
+                menu.addItem(menuItem("Copy images", action: #selector(copyImagesFromMenu(_:)), pod: pod))
+            }
+            if !pod.labels.isEmpty {
+                menu.addItem(menuItem("Copy labels", action: #selector(copyLabelsFromMenu(_:)), pod: pod))
+            }
+            if pod.ownerReferencesLine != nil {
+                menu.addItem(menuItem("Copy owner reference", action: #selector(copyOwnerReferenceFromMenu(_:)), pod: pod))
+            }
             if pod.nodeName != nil {
                 menu.addItem(menuItem("Copy node name", action: #selector(copyNodeNameFromMenu(_:)), pod: pod))
             }
@@ -654,6 +675,12 @@ struct AppKitPodTableView: NSViewRepresentable {
 
         @objc private func toggleFavoriteFromMenu(_ sender: NSMenuItem) {
             withPod(sender, parent.onToggleFavorite)
+        }
+
+        func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
+            guard tableView.selectedRow >= 0,
+                  tableView.selectedRow < parent.pods.count else { return }
+            parent.onToggleFavorite(parent.pods[tableView.selectedRow])
         }
 
         @objc private func openLogsFromMenu(_ sender: NSMenuItem) {
@@ -688,6 +715,28 @@ struct AppKitPodTableView: NSViewRepresentable {
             withPod(sender) { pod in
                 if let containerNamesLine = pod.containerNamesLine {
                     copyToClipboard(containerNamesLine)
+                }
+            }
+        }
+
+        @objc private func copyImagesFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                if let containerImagesLine = pod.containerImagesLine {
+                    copyToClipboard(containerImagesLine)
+                }
+            }
+        }
+
+        @objc private func copyLabelsFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                copyToClipboard(copyLabelSelector(pod.labels))
+            }
+        }
+
+        @objc private func copyOwnerReferenceFromMenu(_ sender: NSMenuItem) {
+            withPod(sender) { pod in
+                if let ownerReferencesLine = pod.ownerReferencesLine {
+                    copyToClipboard(ownerReferencesLine)
                 }
             }
         }
@@ -759,6 +808,10 @@ struct AppKitPodTableView: NSViewRepresentable {
 
         private func updateTableWidth(on tableView: NSTableView?) {
             RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
+        }
+
+        func updateTableGeometry() {
+            updateTableWidth(on: tableView)
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -1089,6 +1142,12 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             withDeployment(sender, parent.onToggleFavorite)
         }
 
+        func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
+            guard tableView.selectedRow >= 0,
+                  tableView.selectedRow < parent.deployments.count else { return }
+            parent.onToggleFavorite(parent.deployments[tableView.selectedRow])
+        }
+
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
             guard sender.tag >= 0, sender.tag < parent.deployments.count else { return }
             parent.onToggleFavorite(parent.deployments[sender.tag])
@@ -1411,6 +1470,12 @@ struct AppKitServiceListView: NSViewRepresentable {
 
         @objc private func toggleFavoriteFromMenu(_ sender: NSMenuItem) {
             withService(sender, parent.onToggleFavorite)
+        }
+
+        func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
+            guard tableView.selectedRow >= 0,
+                  tableView.selectedRow < parent.services.count else { return }
+            parent.onToggleFavorite(parent.services[tableView.selectedRow])
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
@@ -1754,6 +1819,9 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             if !resource.secondaryText.isEmpty {
                 menu.addItem(menuItem("Copy secondary detail", action: #selector(copySecondaryTextFromMenu(_:)), resource: resource))
             }
+            if resource.ownerReferencesLine != nil {
+                menu.addItem(menuItem("Copy owner reference", action: #selector(copyOwnerReferenceFromMenu(_:)), resource: resource))
+            }
             menu.addItem(.separator())
             menu.addItem(menuItem("Delete \(resource.kind.singularTypeName)", action: #selector(deleteFromMenu(_:)), resource: resource, isEnabled: parent.canApplyClusterMutations))
             return menu
@@ -1767,6 +1835,12 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
             guard sender.tag >= 0, sender.tag < parent.resources.count else { return }
             parent.onToggleFavorite(parent.resources[sender.tag])
+        }
+
+        func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
+            guard tableView.selectedRow >= 0,
+                  tableView.selectedRow < parent.resources.count else { return }
+            parent.onToggleFavorite(parent.resources[tableView.selectedRow])
         }
 
         @objc private func toggleFavoriteFromMenu(_ sender: NSMenuItem) {
@@ -1803,6 +1877,14 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 
         @objc private func copySecondaryTextFromMenu(_ sender: NSMenuItem) {
             withResource(sender) { resource in copyToClipboard(resource.secondaryText) }
+        }
+
+        @objc private func copyOwnerReferenceFromMenu(_ sender: NSMenuItem) {
+            withResource(sender) { resource in
+                if let ownerReferencesLine = resource.ownerReferencesLine {
+                    copyToClipboard(ownerReferencesLine)
+                }
+            }
         }
 
         private func applySelection(on tableView: NSTableView) {
@@ -2773,6 +2855,12 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             withResource(sender, parent.onToggleFavorite)
         }
 
+        func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
+            guard tableView.selectedRow >= 0,
+                  tableView.selectedRow < parent.resources.count else { return }
+            parent.onToggleFavorite(parent.resources[tableView.selectedRow])
+        }
+
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
             guard sender.tag >= 0, sender.tag < parent.resources.count else { return }
             parent.onToggleFavorite(parent.resources[sender.tag])
@@ -2942,6 +3030,14 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
 private final class PodNSTableView: NSTableView {
     weak var coordinator: AppKitPodTableView.Coordinator?
 
+    override func keyDown(with event: NSEvent) {
+        if runeAppKitEventIsFavoriteToggle(event) {
+            coordinator?.toggleFavoriteForSelectedRow(in: self)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
@@ -2954,6 +3050,14 @@ private final class PodNSTableView: NSTableView {
 @MainActor
 private final class DeploymentNSTableView: NSTableView {
     weak var coordinator: AppKitDeploymentListView.Coordinator?
+
+    override func keyDown(with event: NSEvent) {
+        if runeAppKitEventIsFavoriteToggle(event) {
+            coordinator?.toggleFavoriteForSelectedRow(in: self)
+            return
+        }
+        super.keyDown(with: event)
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -2968,6 +3072,14 @@ private final class DeploymentNSTableView: NSTableView {
 private final class ServiceNSTableView: NSTableView {
     weak var coordinator: AppKitServiceListView.Coordinator?
 
+    override func keyDown(with event: NSEvent) {
+        if runeAppKitEventIsFavoriteToggle(event) {
+            coordinator?.toggleFavoriteForSelectedRow(in: self)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
@@ -2980,6 +3092,14 @@ private final class ServiceNSTableView: NSTableView {
 @MainActor
 private final class GenericResourceNSTableView: NSTableView {
     weak var coordinator: AppKitGenericResourceListView.Coordinator?
+
+    override func keyDown(with event: NSEvent) {
+        if runeAppKitEventIsFavoriteToggle(event) {
+            coordinator?.toggleFavoriteForSelectedRow(in: self)
+            return
+        }
+        super.keyDown(with: event)
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -3020,6 +3140,14 @@ private final class EventNSTableView: NSTableView {
 private final class OperatorResourceNSTableView: NSTableView {
     weak var coordinator: AppKitOperatorResourceListView.Coordinator?
 
+    override func keyDown(with event: NSEvent) {
+        if runeAppKitEventIsFavoriteToggle(event) {
+            coordinator?.toggleFavoriteForSelectedRow(in: self)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
@@ -3027,6 +3155,12 @@ private final class OperatorResourceNSTableView: NSTableView {
         coordinator?.selectRowForContextMenu(row, in: self)
         return coordinator?.makeMenu(forRow: row)
     }
+}
+
+private func runeAppKitEventIsFavoriteToggle(_ event: NSEvent) -> Bool {
+    let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+    guard event.modifierFlags.intersection(disallowedModifiers).isEmpty else { return false }
+    return event.charactersIgnoringModifiers?.lowercased() == "f"
 }
 
 private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
@@ -3045,6 +3179,7 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.clear.setFill()
         dirtyRect.fill()
+        drawHeaderBackground(in: dirtyRect)
 
         if let tableView {
             for columnIndex in 0..<tableView.numberOfColumns {
@@ -3066,6 +3201,23 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
             y: bounds.minY,
             width: max(0, min(bounds.width, renderedWidth) - (horizontalInset * 2)),
             height: 1
+        ).fill()
+    }
+
+    private func drawHeaderBackground(in dirtyRect: NSRect) {
+        let renderedWidth = tableView.map(RuneAppKitResourceTableStyle.renderedTableWidth(in:)) ?? bounds.width
+        let rect = NSRect(
+            x: bounds.minX + horizontalInset,
+            y: bounds.minY + 1,
+            width: max(0, min(bounds.width, renderedWidth) - (horizontalInset * 2)),
+            height: max(0, bounds.height - 2)
+        )
+        guard rect.intersects(dirtyRect), rect.width > 0, rect.height > 0 else { return }
+        RuneAppKitResourceTableTheme.current.headerFill.setFill()
+        NSBezierPath(
+            roundedRect: rect,
+            xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius,
+            yRadius: RuneUILayoutMetrics.compactGlyphCornerRadius
         ).fill()
     }
 
@@ -3204,13 +3356,46 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
 private final class RuneAppKitResourceListScrollView: NSScrollView {
     var onVisibleWidthChanged: (() -> Void)?
     private var lastVisibleWidth: CGFloat = -1
+    private var isSendingVisibleWidthChange = false
 
     override func layout() {
         super.layout()
+        notifyVisibleWidthChangedIfNeeded()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        notifyVisibleWidthChangedIfNeeded()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        notifyVisibleWidthChangedIfNeeded()
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        notifyVisibleWidthChangedIfNeeded()
+    }
+
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        notifyVisibleWidthChangedIfNeeded(force: true)
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        notifyVisibleWidthChangedIfNeeded(force: true)
+    }
+
+    private func notifyVisibleWidthChangedIfNeeded(force: Bool = false) {
+        guard !isSendingVisibleWidthChange else { return }
         let visibleWidth = contentView.bounds.width.rounded(.toNearestOrAwayFromZero)
-        guard abs(visibleWidth - lastVisibleWidth) >= 1 else { return }
+        guard force || abs(visibleWidth - lastVisibleWidth) >= 1 else { return }
         lastVisibleWidth = visibleWidth
+        isSendingVisibleWidthChange = true
         onVisibleWidthChanged?()
+        isSendingVisibleWidthChange = false
     }
 }
 

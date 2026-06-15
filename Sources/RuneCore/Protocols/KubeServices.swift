@@ -204,11 +204,26 @@ public protocol ResourceWriteService: Sendable {
         replicas: Int
     ) async throws
 
+    func scaleStatefulSet(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        statefulSetName: String,
+        replicas: Int
+    ) async throws
+
     func restartDeploymentRollout(
         from sources: [KubeConfigSource],
         context: KubeContext,
         namespace: String,
         deploymentName: String
+    ) async throws
+
+    func restartStatefulSetRollout(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        statefulSetName: String
     ) async throws
 
     func applyYAML(

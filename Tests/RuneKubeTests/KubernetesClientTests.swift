@@ -367,7 +367,7 @@ final class KubernetesClientTests: XCTestCase {
 
     func testOutputParserParsesKubernetesPodJSON() throws {
         let raw = """
-        {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z"},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}}]}
+        {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z","labels":{"app":"api","tier":"web"},"ownerReferences":[{"kind":"ReplicaSet","name":"api-7c9d8f6b5c"}]},"spec":{"containers":[{"name":"app","image":"example.test/api:v1"},{"name":"sidecar","image":"example.test/sidecar:v2"}]},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}}]}
         """
 
         let pods = try KubernetesOutputParser().parsePodsListJSON(namespace: "default", from: raw)
@@ -376,6 +376,10 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(pods.first?.name, "api-0")
         XCTAssertEqual(pods.first?.status, "Running")
         XCTAssertEqual(pods.first?.totalRestarts, 2)
+        XCTAssertEqual(pods.first?.labels, ["app": "api", "tier": "web"])
+        XCTAssertEqual(pods.first?.containerNamesLine, "app, sidecar")
+        XCTAssertEqual(pods.first?.containerImagesLine, "example.test/api:v1, example.test/sidecar:v2")
+        XCTAssertEqual(pods.first?.ownerReferencesLine, "ReplicaSet/api-7c9d8f6b5c")
     }
 
     func testOutputParserProjectsIngressBackendServices() throws {
@@ -431,6 +435,32 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(pvcs.first?.name, "postgres-data")
         XCTAssertEqual(pvcs.first?.primaryText, "Bound")
         XCTAssertEqual(pvcs.first?.secondaryText, "PV pv-postgres-data · 20Gi")
+    }
+
+    func testOutputParserProjectsOwnerReferencesForGenericResources() throws {
+        let raw = """
+        {
+          "items": [
+            {
+              "metadata": {
+                "name": "api-7c9d8f6b5c",
+                "namespace": "synthetic",
+                "ownerReferences": [
+                  {"kind": "Deployment", "name": "api"}
+                ]
+              },
+              "spec": {"replicas": 3},
+              "status": {"replicas": 3, "readyReplicas": 2}
+            }
+          ]
+        }
+        """
+
+        let replicaSets = try KubernetesOutputParser().parseReplicaSets(namespace: "synthetic", from: raw)
+
+        XCTAssertEqual(replicaSets.first?.name, "api-7c9d8f6b5c")
+        XCTAssertEqual(replicaSets.first?.primaryText, "2/3 ready")
+        XCTAssertEqual(replicaSets.first?.ownerReferencesLine, "Deployment/api")
     }
 
     func testOutputParserProjectsRoleBindingRoleRefKindAndName() throws {

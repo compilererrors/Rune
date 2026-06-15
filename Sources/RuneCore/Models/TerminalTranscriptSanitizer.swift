@@ -29,17 +29,29 @@ public enum TerminalTranscriptSanitizer {
 
                 if introducer == "[" {
                     var foundTerminator = false
+                    var terminator: UnicodeScalar?
+                    var parameters = String.UnicodeScalarView()
                     while index < combined.unicodeScalars.endIndex {
                         let value = combined.unicodeScalars[index].value
+                        let current = combined.unicodeScalars[index]
                         combined.unicodeScalars.formIndex(after: &index)
                         if (0x40...0x7E).contains(value) {
+                            terminator = current
                             foundTerminator = true
                             break
                         }
+                        parameters.append(current)
                     }
                     if !foundTerminator {
                         pendingEscape = String(combined.unicodeScalars[escapeStart...])
                         break
+                    }
+                    if terminator == "K" {
+                        removeCurrentLine(from: &output)
+                    } else if terminator == "J" {
+                        output.removeAll(keepingCapacity: true)
+                    } else if terminator == "D" {
+                        removeScalarsFromCurrentLine(parseFirstPositiveInteger(parameters) ?? 1, from: &output)
                     }
                     continue
                 }
@@ -119,5 +131,29 @@ public enum TerminalTranscriptSanitizer {
         default:
             return false
         }
+    }
+
+    private static func removeCurrentLine(from output: inout String.UnicodeScalarView) {
+        while !output.isEmpty, output.last?.value != 0x0A {
+            output.removeLast()
+        }
+    }
+
+    private static func removeScalarsFromCurrentLine(_ count: Int, from output: inout String.UnicodeScalarView) {
+        guard count > 0 else { return }
+        var remaining = count
+        while remaining > 0, !output.isEmpty, output.last?.value != 0x0A {
+            output.removeLast()
+            remaining -= 1
+        }
+    }
+
+    private static func parseFirstPositiveInteger(_ scalars: String.UnicodeScalarView) -> Int? {
+        let value = String(scalars)
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .flatMap { Int($0) }
+        guard let value, value > 0 else { return nil }
+        return value
     }
 }

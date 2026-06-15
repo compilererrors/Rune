@@ -45,6 +45,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var authDoctorChecks: [RuneHealthCheck] = []
     @Published public private(set) var isRunningAuthDoctor = false
     @Published public private(set) var snapshotFreshness = RuneSnapshotFreshness()
+    @Published public private(set) var resourceListFreshness: [RuneResourceListFamily: RuneResourceListFreshness] = [:]
     @Published public private(set) var isManualNamespaceMode = false
     @Published public private(set) var namespaceAccessWarning: String?
 
@@ -194,6 +195,70 @@ public final class RuneAppState: ObservableObject {
 
     public func setSnapshotFreshness(_ freshness: RuneSnapshotFreshness) {
         snapshotFreshness = freshness
+    }
+
+    public func freshness(for family: RuneResourceListFamily) -> RuneResourceListFreshness {
+        resourceListFreshness[family] ?? RuneResourceListFreshness()
+    }
+
+    public func markResourceListsRefreshing(
+        _ families: some Sequence<RuneResourceListFamily>,
+        message: String = "Refreshing"
+    ) {
+        for family in families {
+            let current = freshness(for: family)
+            resourceListFreshness[family] = RuneResourceListFreshness(
+                status: .refreshing,
+                updatedAt: current.updatedAt,
+                message: message
+            )
+        }
+    }
+
+    public func markResourceListsLive(
+        _ families: some Sequence<RuneResourceListFamily>,
+        updatedAt: Date = Date(),
+        message: String = "Live"
+    ) {
+        for family in families {
+            resourceListFreshness[family] = RuneResourceListFreshness(
+                status: .live,
+                updatedAt: updatedAt,
+                message: message
+            )
+        }
+    }
+
+    public func markResourceListsReconnecting(
+        _ families: some Sequence<RuneResourceListFamily>,
+        message: String = "Reconnecting"
+    ) {
+        for family in families {
+            let current = freshness(for: family)
+            resourceListFreshness[family] = RuneResourceListFreshness(
+                status: .reconnecting,
+                updatedAt: current.updatedAt,
+                message: message
+            )
+        }
+    }
+
+    public func markResourceListsFailed(
+        _ families: some Sequence<RuneResourceListFamily>,
+        message: String
+    ) {
+        for family in families {
+            let current = freshness(for: family)
+            resourceListFreshness[family] = RuneResourceListFreshness(
+                status: current.updatedAt == nil ? .failed : .stale,
+                updatedAt: current.updatedAt,
+                message: message
+            )
+        }
+    }
+
+    public func clearResourceListFreshness() {
+        resourceListFreshness = [:]
     }
 
     public func setManualNamespaceMode(_ enabled: Bool, warning: String? = nil) {

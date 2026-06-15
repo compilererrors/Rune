@@ -714,6 +714,7 @@ public struct RuneRootView: View {
     @State private var podInspectorTab: PodInspectorTab = .overview
     @State private var serviceInspectorTab: ServiceInspectorTab = .overview
     @State private var deploymentInspectorTab: DeploymentInspectorTab = .overview
+    @State private var showsHistoricalDeploymentReplicaSets = false
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var helmBrowserTab: HelmBrowserTab = .releases
     @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
@@ -2254,6 +2255,17 @@ public struct RuneRootView: View {
                     KubeConfigImportReviewPanel(
                         review: review,
                         duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
+                        metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
+                        onUpdateMetadata: { contextName, metadata in
+                            viewModel.setKubeConfigImportContextMetadata(
+                                contextName: contextName,
+                                alias: metadata.alias,
+                                colorKey: metadata.colorKey,
+                                iconName: metadata.iconName,
+                                tags: metadata.tags,
+                                group: metadata.group
+                            )
+                        },
                         onClear: viewModel.clearKubeConfigImportReviews,
                         onRunAuthDoctor: {
                             addClusterPopoverPresented = false
@@ -2467,50 +2479,28 @@ public struct RuneRootView: View {
     }
 
     private func contextRow(_ context: KubeContext) -> some View {
-        HStack(spacing: 8) {
-            Button {
+        let displayName = viewModel.contextDisplayName(for: context)
+        let secondaryText = viewModel.contextSecondaryDisplayText(for: context)
+        let iconName = viewModel.contextDisplayIconName(for: context)
+        return ContextSidebarRow(
+            displayName: displayName,
+            rawName: context.name,
+            secondaryText: secondaryText,
+            iconName: iconName,
+            isSelected: viewModel.state.selectedContext == context,
+            isFavorite: viewModel.state.isFavorite(context),
+            isProduction: viewModel.isProductionContext(context),
+            isManuallyMarkedProduction: viewModel.isManuallyMarkedProduction(context),
+            onSelect: {
                 viewModel.setContext(context)
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(viewModel.state.selectedContext == context ? Color.accentColor : Color.gray.opacity(0.6))
-                        .frame(width: 7, height: 7)
-                    Text(context.name)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                        .help(context.name)
-                    if viewModel.isProductionContext(context) {
-                        Image(systemName: "exclamationmark.shield.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .help(viewModel.isManuallyMarkedProduction(context) ? "Marked as production" : "Production context detected")
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .runeSidebarSelection(isSelected: viewModel.state.selectedContext == context)
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button {
-                    viewModel.toggleProductionMark(for: context)
-                } label: {
-                    Label(
-                        viewModel.isManuallyMarkedProduction(context) ? "Unmark Production" : "Mark as Production",
-                        systemImage: viewModel.isManuallyMarkedProduction(context) ? "shield.slash" : "exclamationmark.shield"
-                    )
-                }
-            }
-
-            Button {
+            },
+            onToggleProduction: {
+                viewModel.toggleProductionMark(for: context)
+            },
+            onToggleFavorite: {
                 viewModel.toggleFavorite(for: context)
-            } label: {
-                Image(systemName: viewModel.state.isFavorite(context) ? "star.fill" : "star")
-                    .foregroundStyle(viewModel.state.isFavorite(context) ? Color.yellow : Color.gray)
             }
-            .buttonStyle(.plain)
-        }
+        )
     }
 
     private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View {
@@ -2766,6 +2756,9 @@ public struct RuneRootView: View {
                 if viewModel.state.selectedSection != .terminal {
                     contextUsageBadge(label: "CPU", value: contextUsageValue(viewModel.state.overviewClusterCPUPercent))
                     contextUsageBadge(label: "MEM", value: contextUsageValue(viewModel.state.overviewClusterMemoryPercent))
+                    if let freshness = currentResourceListFreshness {
+                        ResourceListFreshnessBadge(freshness: freshness)
+                    }
                 }
 
                 if viewModel.state.isReadOnlyMode {
@@ -3031,6 +3024,17 @@ public struct RuneRootView: View {
                             KubeConfigImportReviewPanel(
                                 review: review,
                                 duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
+                                metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
+                                onUpdateMetadata: { contextName, metadata in
+                                    viewModel.setKubeConfigImportContextMetadata(
+                                        contextName: contextName,
+                                        alias: metadata.alias,
+                                        colorKey: metadata.colorKey,
+                                        iconName: metadata.iconName,
+                                        tags: metadata.tags,
+                                        group: metadata.group
+                                    )
+                                },
                                 onClear: viewModel.clearKubeConfigImportReviews,
                                 onRunAuthDoctor: viewModel.runAuthDoctor
                             )
@@ -3835,6 +3839,34 @@ public struct RuneRootView: View {
 
     private var statefulSetDetails: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if viewModel.state.selectedStatefulSet != nil,
+               let replicas = viewModel.selectedStatefulSetReplicaCounts {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(replicas.ready >= replicas.desired ? .green : (replicas.ready > 0 ? .orange : .red))
+                        .frame(width: 8, height: 8)
+                    Text("\(replicas.ready) of \(replicas.desired) ready")
+                        .font(.body.weight(.semibold))
+                }
+
+                WorkloadReplicaScaleControlsView(
+                    label: "Replicas",
+                    isDirty: viewModel.scaleReplicaInput != replicas.desired,
+                    canMutate: viewModel.canApplyClusterMutations,
+                    replicas: $viewModel.scaleReplicaInput,
+                    action: viewModel.requestScaleSelectedStatefulSet
+                )
+
+                Button("Restart Rollout") {
+                    viewModel.requestRolloutRestartSelectedStatefulSet()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.canApplyClusterMutations)
+
+                Divider()
+                    .opacity(0.45)
+            }
+
             let relatedPods = viewModel.selectedStatefulSetRelatedPods
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openStatefulSetRelatedPod)
@@ -4149,6 +4181,14 @@ public struct RuneRootView: View {
                             if viewModel.state.helmHistory.isEmpty {
                                 inspectorEmptyState("No history loaded", symbol: "clock.arrow.circlepath")
                             } else {
+                                HelmRollbackOptionsView(
+                                    wait: $viewModel.helmRollbackWait,
+                                    timeout: $viewModel.helmRollbackTimeoutInput,
+                                    cleanupOnFail: $viewModel.helmRollbackCleanupOnFail
+                                )
+                                .padding(10)
+                                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+
                                 ScrollView {
                                     LazyVStack(alignment: .leading, spacing: 10) {
                                         ForEach(viewModel.state.helmHistory) { entry in
@@ -7013,6 +7053,7 @@ public struct RuneRootView: View {
         switch viewModel.state.snapshotFreshness.status {
         case .idle: return "No data"
         case .refreshing: return "Refreshing"
+        case .reconnecting: return "Reconnecting"
         case .live: return "Live"
         case .stale: return "Stale"
         case .failed: return "Failed"
@@ -7023,9 +7064,61 @@ public struct RuneRootView: View {
         switch viewModel.state.snapshotFreshness.status {
         case .idle: return .secondary
         case .refreshing: return .blue
+        case .reconnecting: return .blue
         case .live: return .green
         case .stale: return .orange
         case .failed: return .red
+        }
+    }
+
+    private var currentResourceListFreshness: RuneResourceListFreshness? {
+        guard let family = currentResourceListFamily else { return nil }
+        return viewModel.state.freshness(for: family)
+    }
+
+    private var currentResourceListFamily: RuneResourceListFamily? {
+        switch viewModel.state.selectedSection {
+        case .overview:
+            return nil
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .deployment: return .deployments
+            case .statefulSet: return .statefulSets
+            case .daemonSet: return .daemonSets
+            case .job: return .jobs
+            case .cronJob: return .cronJobs
+            case .replicaSet: return .replicaSets
+            case .horizontalPodAutoscaler: return .horizontalPodAutoscalers
+            default: return .pods
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .ingress: return .ingresses
+            case .networkPolicy: return .networkPolicies
+            default: return .services
+            }
+        case .storage:
+            switch viewModel.state.selectedWorkloadKind {
+            case .persistentVolume: return .persistentVolumes
+            case .storageClass: return .storageClasses
+            case .node: return .nodes
+            default: return .persistentVolumeClaims
+            }
+        case .config:
+            return viewModel.state.selectedWorkloadKind == .secret ? .secrets : .configMaps
+        case .rbac:
+            switch viewModel.state.selectedWorkloadKind {
+            case .roleBinding: return .rbacRoleBindings
+            case .clusterRole: return .rbacClusterRoles
+            case .clusterRoleBinding: return .rbacClusterRoleBindings
+            default: return .rbacRoles
+            }
+        case .events:
+            return .events
+        case .helm:
+            return helmBrowserTab == .operatorResources ? .operatorResources : .helmReleases
+        case .terminal:
+            return .pods
         }
     }
 
@@ -7309,24 +7402,6 @@ public struct RuneRootView: View {
         viewModel.scaleReplicaInput != deployment.desiredReplicas
     }
 
-    @ViewBuilder
-    private func deploymentScaleButton(deployment: DeploymentSummary) -> some View {
-        Group {
-            if deploymentScaleIsDirty(deployment), viewModel.canApplyClusterMutations {
-                Button("Scale") {
-                    viewModel.requestScaleSelectedDeployment()
-                }
-                .buttonStyle(.borderedProminent)
-            } else {
-                Button("Scale") {
-                    viewModel.requestScaleSelectedDeployment()
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .disabled(!viewModel.canApplyClusterMutations || !deploymentScaleIsDirty(deployment))
-    }
-
     private func podOverviewSection(pod: PodSummary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if shouldShowResourceNamespaceLabel(pod.namespace) {
@@ -7423,29 +7498,26 @@ public struct RuneRootView: View {
                     .font(.body.weight(.semibold))
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text("Replicas")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Stepper(value: $viewModel.scaleReplicaInput, in: 0...500) {
-                        Text("\(viewModel.scaleReplicaInput)")
-                            .monospacedDigit()
-                            .font(.body.weight(.medium))
-                            .frame(minWidth: 32, alignment: .trailing)
-                    }
-                    deploymentScaleButton(deployment: deployment)
-                }
-                .fixedSize(horizontal: true, vertical: false)
-            }
+            WorkloadReplicaScaleControlsView(
+                label: "Replicas",
+                isDirty: deploymentScaleIsDirty(deployment),
+                canMutate: viewModel.canApplyClusterMutations,
+                replicas: $viewModel.scaleReplicaInput,
+                action: viewModel.requestScaleSelectedDeployment
+            )
 
             Divider()
                 .opacity(0.45)
 
             let relatedReplicaSets = viewModel.selectedDeploymentRelatedReplicaSets
             if !relatedReplicaSets.isEmpty {
+                let historicalReplicaSetCount = relatedReplicaSets.filter(isHistoricalDeploymentReplicaSet).count
+                let visibleReplicaSets = showsHistoricalDeploymentReplicaSets
+                    ? relatedReplicaSets
+                    : relatedReplicaSets.filter { !isHistoricalDeploymentReplicaSet($0) }
+
                 ResourceRelationshipSection(title: "Related ReplicaSets") {
-                    ForEach(relatedReplicaSets) { replicaSet in
+                    ForEach(visibleReplicaSets) { replicaSet in
                         ResourceRelationshipLinkButton(
                             title: replicaSet.name,
                             subtitle: "\(replicaSet.namespace ?? deployment.namespace) · \(replicaSet.primaryText)",
@@ -7453,6 +7525,34 @@ public struct RuneRootView: View {
                         ) {
                             viewModel.openDeploymentRelatedReplicaSet(replicaSet)
                         }
+                    }
+
+                    if historicalReplicaSetCount > 0 {
+                        Button {
+                            showsHistoricalDeploymentReplicaSets.toggle()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .frame(width: 16)
+                                    .foregroundStyle(.secondary)
+                                Text(showsHistoricalDeploymentReplicaSets ? "Hide history" : "Show history")
+                                    .font(.caption.weight(.semibold))
+                                Text("(\(historicalReplicaSetCount))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                                Image(systemName: showsHistoricalDeploymentReplicaSets ? "chevron.up" : "chevron.down")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(
+                            showsHistoricalDeploymentReplicaSets
+                                ? "Hide inactive ReplicaSets with 0/0 ready replicas."
+                                : "Show inactive ReplicaSets kept for rollout history and debugging."
+                        )
                     }
                 }
             }
@@ -7527,6 +7627,13 @@ public struct RuneRootView: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+
+    private func isHistoricalDeploymentReplicaSet(_ replicaSet: ClusterResourceSummary) -> Bool {
+        replicaSet.primaryText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("0/0 ready")
     }
 
     private func inspectorEmptyState(_ message: String, symbol: String, detail: String = "Select an item in the center list to inspect details and actions here.") -> some View {

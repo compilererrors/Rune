@@ -162,7 +162,7 @@ struct ResourceLogsToolbar: View {
         if isTailModeEnabled {
             if isStreamPaused {
                 Button(action: toggleTailPlayback) {
-                    Label(t(.resume), systemImage: "play.fill")
+                    toolbarIconLabel(t(.resume), systemImage: "play.fill", help: t(.resumeTailHelp))
                 }
                 .buttonStyle(.bordered)
                 .logToolbarIconButtonFrame()
@@ -175,7 +175,7 @@ struct ResourceLogsToolbar: View {
                 .help(t(.resumeTailHelp))
             } else {
                 Button(action: toggleTailPlayback) {
-                    Label(t(.pause), systemImage: "pause.fill")
+                    toolbarIconLabel(t(.pause), systemImage: "pause.fill", help: t(.pauseTailHelp))
                 }
                 .buttonStyle(.borderedProminent)
                 .logToolbarIconButtonFrame()
@@ -189,7 +189,7 @@ struct ResourceLogsToolbar: View {
             }
         } else {
             Button(action: toggleTailPlayback) {
-                Label(t(.tail), systemImage: "play.fill")
+                toolbarIconLabel(t(.tail), systemImage: "play.fill", help: t(.startTailHelp))
             }
             .buttonStyle(.bordered)
             .logToolbarIconButtonFrame()
@@ -228,7 +228,7 @@ struct ResourceLogsToolbar: View {
             .help(t(.saveCurrentLogsHelp))
 
             Toggle(isOn: $includePreviousLogs) {
-                Label(t(.previous), systemImage: "clock.arrow.circlepath")
+                toolbarIconLabel(t(.previous), systemImage: "clock.arrow.circlepath", help: t(.previousLogsHelp))
             }
                 .toggleStyle(.button)
                 .logToolbarIconButtonFrame()
@@ -305,6 +305,12 @@ struct ResourceLogsToolbar: View {
 
     private func t(_ key: RuneLocalizedStringKey) -> String {
         RuneLocalizedStrings.shared.string(key, language: language)
+    }
+
+    private func toolbarIconLabel(_ title: String, systemImage: String, help: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .help(help)
+            .accessibilityLabel(title)
     }
 }
 

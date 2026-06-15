@@ -3,6 +3,57 @@ import XCTest
 
 final class RuneCoreTests: XCTestCase {
     @MainActor
+    func testResourceListFreshnessTracksRefreshingLiveAndStalePerFamily() {
+        let state = RuneAppState()
+        let loadedAt = Date(timeIntervalSince1970: 1_700)
+
+        state.markResourceListsRefreshing([.pods, .services], message: "Refreshing synthetic")
+
+        XCTAssertEqual(state.freshness(for: .pods).status, .refreshing)
+        XCTAssertNil(state.freshness(for: .pods).updatedAt)
+        XCTAssertEqual(state.freshness(for: .services).status, .refreshing)
+        XCTAssertEqual(state.freshness(for: .events).status, .idle)
+
+        state.markResourceListsLive([.pods], updatedAt: loadedAt, message: "Live synthetic")
+        state.markResourceListsFailed([.services], message: "Partial load: services forbidden")
+
+        XCTAssertEqual(state.freshness(for: .pods).status, .live)
+        XCTAssertEqual(state.freshness(for: .pods).updatedAt, loadedAt)
+        XCTAssertEqual(state.freshness(for: .pods).message, "Live synthetic")
+        XCTAssertEqual(state.freshness(for: .services).status, .failed)
+        XCTAssertNil(state.freshness(for: .services).updatedAt)
+
+        state.markResourceListsLive([.services], updatedAt: loadedAt, message: "Live synthetic")
+        state.markResourceListsFailed([.services], message: "Partial load: services timeout")
+
+        XCTAssertEqual(state.freshness(for: .services).status, .stale)
+        XCTAssertEqual(state.freshness(for: .services).updatedAt, loadedAt)
+        XCTAssertEqual(state.freshness(for: .services).message, "Partial load: services timeout")
+
+        state.markResourceListsReconnecting([.pods, .events], message: "Refresh cancelled; reconnecting")
+
+        XCTAssertEqual(state.freshness(for: .pods).status, .reconnecting)
+        XCTAssertEqual(state.freshness(for: .pods).updatedAt, loadedAt)
+        XCTAssertEqual(state.freshness(for: .events).status, .reconnecting)
+        XCTAssertNil(state.freshness(for: .events).updatedAt)
+        XCTAssertEqual(state.freshness(for: .events).message, "Refresh cancelled; reconnecting")
+
+        state.clearResourceListFreshness()
+
+        XCTAssertEqual(state.freshness(for: .pods).status, .idle)
+        XCTAssertEqual(state.freshness(for: .services).status, .idle)
+    }
+
+    func testResourceListFreshnessMapsSnapshotWarningLabelsToFamilies() {
+        XCTAssertEqual(RuneResourceListFamily(snapshotWarningLabel: "pods"), .pods)
+        XCTAssertEqual(RuneResourceListFamily(snapshotWarningLabel: "services-count"), .services)
+        XCTAssertEqual(RuneResourceListFamily(snapshotWarningLabel: "cronjobs-count"), .cronJobs)
+        XCTAssertEqual(RuneResourceListFamily(snapshotWarningLabel: "roles"), .rbacRoles)
+        XCTAssertEqual(RuneResourceListFamily(snapshotWarningLabel: "clusterrolebindings"), .rbacClusterRoleBindings)
+        XCTAssertNil(RuneResourceListFamily(snapshotWarningLabel: "unknown-resource"))
+    }
+
+    @MainActor
     func testAppendPodLogTailTrimsOlderSegmentsWhenSessionCacheExceedsCharacterBudget() {
         let state = RuneAppState()
         let earlySentinel = "RUNE_EARLY_TAIL_SENTINEL"
@@ -474,6 +525,35 @@ final class RuneCoreTests: XCTestCase {
         let raw = "pulling layer 10%\rpulling layer 20%\nready\n"
 
         XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "pulling layer 20%\nready\n")
+    }
+
+    func testTerminalTranscriptSanitizerHandlesEraseLineSequences() {
+        let raw = "pulling layer 10%\u{001B}[2Kpulling layer 20%\nready\n"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "pulling layer 20%\nready\n")
+    }
+
+    func testTerminalTranscriptSanitizerCarriesSplitEraseLineSequences() {
+        var pendingEscape = ""
+
+        let first = TerminalTranscriptSanitizer.sanitize("pulling layer 10%\u{001B}[", pendingEscape: &pendingEscape)
+        let second = TerminalTranscriptSanitizer.sanitize("2Kpulling layer 20%\n", pendingEscape: &pendingEscape)
+
+        XCTAssertEqual(first, "pulling layer 10%")
+        XCTAssertEqual(second, "pulling layer 20%\n")
+        XCTAssertTrue(pendingEscape.isEmpty)
+    }
+
+    func testTerminalTranscriptSanitizerHandlesCursorLeftOverwriteSequences() {
+        let raw = "pulling layer 10%\u{001B}[3D20%\n"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "pulling layer 20%\n")
+    }
+
+    func testTerminalTranscriptSanitizerHandlesClearScreenSequences() {
+        let raw = "stale menu\nold status\u{001B}[2Jfresh menu\nready\n"
+
+        XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "fresh menu\nready\n")
     }
 
     func testTerminalTranscriptSanitizerDropsCharsetAndSingleCharacterEscapes() {

@@ -80,6 +80,21 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertTrue(check.message.contains("missing permission"))
     }
 
+    func testProjectsFailedAPIEndpointWithoutLeakingPathValuesOrQueryTokens() throws {
+        let checks = AuthDoctorFailureProjector.checks(
+            for: "HTTP status 403 GET https://cluster.example.invalid/api/v1/namespaces/team-a/pods/api-0/log?container=app&token=secret-token"
+        )
+        let endpoint = try XCTUnwrap(checks.first { $0.id == "api-request-endpoint" })
+
+        XCTAssertEqual(checks.first?.id, "api-authorization")
+        XCTAssertEqual(endpoint.status, .warning)
+        XCTAssertTrue(endpoint.message.contains("/api/v1/namespaces/<namespace>/pods/<name>/log?container=<redacted>&token=<redacted>"))
+        XCTAssertFalse(endpoint.message.contains("team-a"))
+        XCTAssertFalse(endpoint.message.contains("api-0"))
+        XCTAssertFalse(endpoint.message.contains("secret-token"))
+        XCTAssertFalse(endpoint.message.contains("cluster.example.invalid"))
+    }
+
     func testClassifiesTLSProxyAndConnectivityFailures() throws {
         let tls = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "TLS handshake failed: x509 certificate signed by unknown authority"

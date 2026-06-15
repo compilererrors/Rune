@@ -859,6 +859,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipSection(title: \"Related ReplicaSets\")"))
         XCTAssertTrue(deploymentOverview.contains("viewModel.openDeploymentRelatedReplicaSet(replicaSet)"))
+        XCTAssertTrue(deploymentOverview.contains("showsHistoricalDeploymentReplicaSets"))
+        XCTAssertTrue(deploymentOverview.contains("isHistoricalDeploymentReplicaSet"))
+        XCTAssertTrue(deploymentOverview.contains("\"Show history\""))
+        XCTAssertTrue(deploymentOverview.contains("\"Hide history\""))
         XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipSection(title: \"Related Pods\")"))
         XCTAssertTrue(deploymentOverview.contains("ResourceRelationshipEmptyRow("))
         XCTAssertTrue(deploymentOverview.contains("viewModel.openDeploymentRelatedPod(pod)"))
@@ -902,6 +906,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rolloutHistorySource.contains("struct DeploymentRolloutHistoryView"))
         XCTAssertTrue(rolloutHistorySource.contains("DeploymentRolloutHistoryPresentation.rows(from: history)"))
         XCTAssertTrue(rolloutHistorySource.contains("private var header: some View"))
+        XCTAssertTrue(rolloutHistorySource.contains("ScrollView(.vertical)"))
+        XCTAssertFalse(rolloutHistorySource.contains("ScrollView([.vertical, .horizontal])"))
+        XCTAssertTrue(rolloutHistorySource.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
         XCTAssertTrue(viewModelSource.contains("public func openDeploymentRelatedReplicaSet"))
         XCTAssertTrue(viewModelSource.contains("public func openPodRelatedNode"))
         XCTAssertTrue(viewModelSource.contains("public var selectedDeploymentRelatedEvents"))
@@ -962,9 +969,22 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(header.contains(".padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)"))
         XCTAssertTrue(header.contains(".frame(height: RuneUILayoutMetrics.headerChipHeight)"))
         XCTAssertTrue(header.contains(".background(.thinMaterial, in: Capsule())"))
+        XCTAssertTrue(header.contains("if let freshness = currentResourceListFreshness"))
+        XCTAssertTrue(header.contains("ResourceListFreshnessBadge(freshness: freshness)"))
         XCTAssertTrue(header.contains(".background(Color.orange.opacity(0.16), in: Capsule())"))
         XCTAssertFalse(header.contains(".frame(height: 36)"))
         XCTAssertFalse(header.contains("RoundedRectangle(cornerRadius: 10, style: .continuous)"))
+
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRootURL = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let freshnessBadgePath = repoRootURL.appendingPathComponent("Sources/RuneUI/Views/ResourceListFreshnessBadge.swift").path
+        let freshnessBadgeSource = try String(contentsOfFile: freshnessBadgePath, encoding: .utf8)
+        XCTAssertTrue(freshnessBadgeSource.contains("struct ResourceListFreshnessBadge: View"))
+        XCTAssertTrue(freshnessBadgeSource.contains("ResourceListFreshnessPresentation.text(for: freshness.status)"))
+        XCTAssertTrue(freshnessBadgeSource.contains("case .reconnecting: return \"Reconnecting\""))
     }
 
     func testLocalK8sIntegrationReportScriptUsesSandboxSafeSwiftHarness() throws {
@@ -1856,6 +1876,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
 
         XCTAssertTrue(appKitPodTableSource.contains("private enum RuneAppKitResourceTableStyle"))
+        XCTAssertTrue(appKitPodTableSource.contains("static let headerHeight: CGFloat = 24"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowHeight: CGFloat = 34"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 4"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowHorizontalInset: CGFloat = 6"))
@@ -1863,7 +1884,22 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("static let contentTrailingInset: CGFloat = 10"))
         XCTAssertTrue(appKitPodTableSource.contains("static let sortIndicatorGap: CGFloat = 4"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.horizontalInset = rowHorizontalInset"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerView.frame = NSRect(x: 0, y: 0, width: 0, height: headerHeight)"))
+        XCTAssertTrue(appKitPodTableSource.contains("let headerSize = NSSize(width: tableWidth, height: headerHeight)"))
+        XCTAssertTrue(appKitPodTableSource.contains("private final class RuneAppKitResourceListScrollView: NSScrollView"))
+        XCTAssertTrue(appKitPodTableSource.contains("override func setFrameSize(_ newSize: NSSize)"))
+        XCTAssertTrue(appKitPodTableSource.contains("override func setBoundsSize(_ newSize: NSSize)"))
+        XCTAssertTrue(appKitPodTableSource.contains("override func viewWillStartLiveResize()"))
+        XCTAssertTrue(appKitPodTableSource.contains("override func viewDidEndLiveResize()"))
+        XCTAssertTrue(appKitPodTableSource.contains("private var isSendingVisibleWidthChange = false"))
+        XCTAssertEqual(appKitPodTableSource.components(separatedBy: "let scrollView = RuneAppKitResourceListScrollView()").count - 1, 7)
         XCTAssertTrue(appKitPodTableSource.contains("private struct RuneAppKitResourceTableTheme"))
+        XCTAssertTrue(appKitPodTableSource.contains("let headerFill: NSColor"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42)"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerFill: NSColor.runeTableHex(row).withAlphaComponent(0.62)"))
+        XCTAssertTrue(appKitPodTableSource.contains("private func drawHeaderBackground(in dirtyRect: NSRect)"))
+        XCTAssertTrue(appKitPodTableSource.contains("roundedRect: rect"))
+        XCTAssertTrue(appKitPodTableSource.contains("xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppearanceTheme.resolved(UserDefaults.standard.string(forKey: RuneSettingsKeys.appearanceTheme)"))
         XCTAssertTrue(appKitPodTableSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
         XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)").count - 1, 14)
@@ -1946,6 +1982,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("Copy pod name"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy namespace"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy container names"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy images"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy labels"))
+        XCTAssertTrue(appKitPodTableSource.contains("Copy owner reference"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy node name"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy pod IP"))
 
@@ -1957,6 +1996,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("copyLabelSelector"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy primary detail"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy secondary detail"))
+        XCTAssertTrue(appKitPodTableSource.contains("resource.ownerReferencesLine"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy object kind"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy family"))
         XCTAssertTrue(appKitPodTableSource.contains("Copy kind"))
@@ -2130,6 +2170,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
         let importReviewPanelSource = try String(contentsOfFile: kubeConfigImportReviewPanelPath, encoding: .utf8)
+        let contextSidebarRowSource = try String(contentsOfFile: contextSidebarRowPath, encoding: .utf8)
         let pickerSource = try String(contentsOfFile: kubeConfigPickerPath, encoding: .utf8)
         let kubernetesClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
 
@@ -2167,9 +2208,22 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("viewModel.importManualTokenKubeConfig()"))
         XCTAssertTrue(rootViewSource.contains("KubeConfigImportReviewPanel"))
         XCTAssertTrue(rootViewSource.contains("viewModel.clearKubeConfigImportReviews"))
+        XCTAssertTrue(rootViewSource.contains("metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setKubeConfigImportContextMetadata"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.contextDisplayName(for: context)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.contextSecondaryDisplayText(for: context)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.contextDisplayIconName(for: context)"))
+        XCTAssertTrue(rootViewSource.contains("ContextSidebarRow("))
+        XCTAssertTrue(contextSidebarRowSource.contains("struct ContextSidebarRow: View"))
+        XCTAssertTrue(contextSidebarRowSource.contains("displayName == rawName ? secondaryText : \"\\(rawName) • \\(secondaryText)\""))
+        XCTAssertTrue(contextSidebarRowSource.contains("isManuallyMarkedProduction ? \"Unmark Production\" : \"Mark as Production\""))
+        XCTAssertTrue(contextSidebarRowSource.contains("isFavorite ? \"star.fill\" : \"star\""))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Import Review\")"))
         XCTAssertTrue(importReviewPanelSource.contains("Label(\"Clear\", systemImage: \"xmark.circle\")"))
         XCTAssertTrue(importReviewPanelSource.contains("doc.text.magnifyingglass"))
+        XCTAssertTrue(importReviewPanelSource.contains("Text(\"Import metadata\")"))
+        XCTAssertTrue(importReviewPanelSource.contains("TextField(\"Alias\""))
+        XCTAssertTrue(importReviewPanelSource.contains("TextField(\"Tags\""))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Full review\")"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Contexts"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Issues"))
@@ -2622,6 +2676,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("Describe"))
     }
 
+    func testAppKitFavoriteResourceListsExposeKeyboardToggle() throws {
+        let source = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private func runeAppKitEventIsFavoriteToggle(_ event: NSEvent) -> Bool"))
+        XCTAssertTrue(source.contains("let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]"))
+        XCTAssertTrue(source.contains("event.charactersIgnoringModifiers?.lowercased() == \"f\""))
+
+        for tableName in [
+            "PodNSTableView",
+            "DeploymentNSTableView",
+            "ServiceNSTableView",
+            "GenericResourceNSTableView",
+            "OperatorResourceNSTableView"
+        ] {
+            XCTAssertTrue(source.contains("private final class \(tableName): NSTableView"))
+        }
+
+        XCTAssertEqual(source.components(separatedBy: "override func keyDown(with event: NSEvent)").count - 1, 5)
+        XCTAssertEqual(source.components(separatedBy: "runeAppKitEventIsFavoriteToggle(event)").count - 1, 5)
+        XCTAssertEqual(source.components(separatedBy: "coordinator?.toggleFavoriteForSelectedRow(in: self)").count - 1, 5)
+        XCTAssertEqual(source.components(separatedBy: "func toggleFavoriteForSelectedRow(in tableView: NSTableView)").count - 1, 5)
+    }
+
     func testGenericResourceBulkSelectionExposesQuickCompareAction() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
@@ -2981,6 +3058,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift").path
+    }
+
+    private var contextSidebarRowPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ContextSidebarRow.swift").path
     }
 
     private var appKitPodTableViewPath: String {

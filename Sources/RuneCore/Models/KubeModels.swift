@@ -50,12 +50,107 @@ public struct RuneHealthCheck: Identifiable, Hashable, Codable, Sendable {
 public enum RuneSnapshotFreshnessStatus: String, Codable, Sendable {
     case idle
     case refreshing
+    case reconnecting
     case live
     case stale
     case failed
 }
 
 public struct RuneSnapshotFreshness: Hashable, Codable, Sendable {
+    public let status: RuneSnapshotFreshnessStatus
+    public let updatedAt: Date?
+    public let message: String
+
+    public init(status: RuneSnapshotFreshnessStatus = .idle, updatedAt: Date? = nil, message: String = "No data loaded") {
+        self.status = status
+        self.updatedAt = updatedAt
+        self.message = message
+    }
+}
+
+public enum RuneResourceListFamily: String, CaseIterable, Hashable, Codable, Sendable {
+    case pods
+    case deployments
+    case statefulSets
+    case daemonSets
+    case jobs
+    case cronJobs
+    case replicaSets
+    case persistentVolumeClaims
+    case persistentVolumes
+    case storageClasses
+    case horizontalPodAutoscalers
+    case networkPolicies
+    case services
+    case ingresses
+    case configMaps
+    case secrets
+    case nodes
+    case events
+    case helmReleases
+    case operatorResources
+    case rbacRoles
+    case rbacRoleBindings
+    case rbacClusterRoles
+    case rbacClusterRoleBindings
+
+    public init?(snapshotWarningLabel: String) {
+        switch snapshotWarningLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pods", "podstatuses":
+            self = .pods
+        case "deployments", "deployments-count":
+            self = .deployments
+        case "statefulsets":
+            self = .statefulSets
+        case "daemonsets":
+            self = .daemonSets
+        case "jobs":
+            self = .jobs
+        case "cronjobs", "cronjobs-count":
+            self = .cronJobs
+        case "replicasets":
+            self = .replicaSets
+        case "pvcs":
+            self = .persistentVolumeClaims
+        case "pvs":
+            self = .persistentVolumes
+        case "storageclasses":
+            self = .storageClasses
+        case "hpas":
+            self = .horizontalPodAutoscalers
+        case "networkpolicies":
+            self = .networkPolicies
+        case "services", "services-count":
+            self = .services
+        case "ingresses", "ingresses-count":
+            self = .ingresses
+        case "configmaps", "configmaps-count":
+            self = .configMaps
+        case "secrets":
+            self = .secrets
+        case "nodes", "nodes-count":
+            self = .nodes
+        case "events":
+            self = .events
+        case "helmreleases":
+            self = .helmReleases
+        case "operatorresources":
+            self = .operatorResources
+        case "roles":
+            self = .rbacRoles
+        case "rolebindings":
+            self = .rbacRoleBindings
+        case "clusterroles":
+            self = .rbacClusterRoles
+        case "clusterrolebindings":
+            self = .rbacClusterRoleBindings
+        default:
+            return nil
+        }
+    }
+}
+
+public struct RuneResourceListFreshness: Hashable, Codable, Sendable {
     public let status: RuneSnapshotFreshnessStatus
     public let updatedAt: Date?
     public let message: String
@@ -252,6 +347,12 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let containersReady: String?
     /// Comma-separated `spec.containers[].name` for quick reference.
     public let containerNamesLine: String?
+    /// Sorted pod metadata labels for quick-copy and relationship hints.
+    public let labels: [String: String]
+    /// Comma-separated `spec.containers[].image` values for quick reference.
+    public let containerImagesLine: String?
+    /// Comma-separated owner references as `Kind/name`, when Kubernetes metadata includes them.
+    public let ownerReferencesLine: String?
 
     public init(
         name: String,
@@ -266,7 +367,10 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         nodeName: String? = nil,
         qosClass: String? = nil,
         containersReady: String? = nil,
-        containerNamesLine: String? = nil
+        containerNamesLine: String? = nil,
+        labels: [String: String] = [:],
+        containerImagesLine: String? = nil,
+        ownerReferencesLine: String? = nil
     ) {
         self.name = name
         self.namespace = namespace
@@ -281,6 +385,9 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         self.qosClass = qosClass
         self.containersReady = containersReady
         self.containerNamesLine = containerNamesLine
+        self.labels = labels
+        self.containerImagesLine = containerImagesLine
+        self.ownerReferencesLine = ownerReferencesLine
     }
 
     public var id: String { "\(namespace)/\(name)" }
@@ -289,6 +396,12 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public var memoryDisplay: String { memoryUsage ?? "—" }
     public var containerNames: [String] {
         containerNamesLine?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+    }
+    public var containerImages: [String] {
+        containerImagesLine?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty } ?? []
@@ -309,7 +422,10 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
             nodeName: detail.nodeName ?? nodeName,
             qosClass: detail.qosClass ?? qosClass,
             containersReady: detail.containersReady ?? containersReady,
-            containerNamesLine: detail.containerNamesLine ?? containerNamesLine
+            containerNamesLine: detail.containerNamesLine ?? containerNamesLine,
+            labels: detail.labels.isEmpty ? labels : detail.labels,
+            containerImagesLine: detail.containerImagesLine ?? containerImagesLine,
+            ownerReferencesLine: detail.ownerReferencesLine ?? ownerReferencesLine
         )
     }
 }
@@ -459,19 +575,22 @@ public struct ClusterResourceSummary: Identifiable, Hashable, Codable, Sendable 
     public let namespace: String?
     public let primaryText: String
     public let secondaryText: String
+    public let ownerReferencesLine: String?
 
     public init(
         kind: KubeResourceKind,
         name: String,
         namespace: String?,
         primaryText: String,
-        secondaryText: String
+        secondaryText: String,
+        ownerReferencesLine: String? = nil
     ) {
         self.kind = kind
         self.name = name
         self.namespace = namespace
         self.primaryText = primaryText
         self.secondaryText = secondaryText
+        self.ownerReferencesLine = ownerReferencesLine
     }
 
     public var id: String {

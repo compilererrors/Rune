@@ -4026,10 +4026,12 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             generatedAt: "20260508T100000Z"
         )
         let elapsed = started.duration(to: .now)
-        let archiveBytes = String(decoding: data, as: UTF8.self)
+        let entries = try ZipArchiveTestSupport.entries(from: data)
 
-        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-1-default-pod-00-20260508T100000Z.log"))
-        XCTAssertTrue(archiveBytes.contains("session=7 line=2499 status=ok"))
+        XCTAssertNotNil(entries["terminal-transcripts/session-1-default-pod-00-20260508T100000Z.log"])
+        XCTAssertTrue(entries.values.contains { entry in
+            String(decoding: entry, as: UTF8.self).contains("session=7 line=2499 status=ok")
+        })
         XCTAssertLessThan(seconds(elapsed), 0.25, "KPI: terminal transcript ZIP export should stay below 250ms for 20k synthetic lines.")
     }
 

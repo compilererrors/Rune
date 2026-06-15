@@ -222,13 +222,15 @@ public struct KubernetesOutputParser {
         let age = KubernetesAgeFormatting.describe(creationISO8601: item.metadata.creationTimestamp)
         let spec = item.spec
         let st = item.status
-        let containersReady = containersReadySummary(spec: spec, status: st)
-        let names = spec?.containers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let containerNamesLine = names.map { $0.joined(separator: ", ") }
         func nonEmpty(_ s: String?) -> String? {
             let t = s?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return t.isEmpty ? nil : t
         }
+        let containersReady = containersReadySummary(spec: spec, status: st)
+        let names = spec?.containers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let containerNamesLine = names.map { $0.joined(separator: ", ") }
+        let images = spec?.containers?.compactMap { nonEmpty($0.image) }
+        let containerImagesLine = images.map { $0.joined(separator: ", ") }
         return PodSummary(
             name: item.metadata.name,
             namespace: namespace,
@@ -242,7 +244,10 @@ public struct KubernetesOutputParser {
             nodeName: nonEmpty(spec?.nodeName),
             qosClass: nonEmpty(st?.qosClass),
             containersReady: containersReady,
-            containerNamesLine: nonEmpty(containerNamesLine)
+            containerNamesLine: nonEmpty(containerNamesLine),
+            labels: item.metadata.labels ?? [:],
+            containerImagesLine: nonEmpty(containerImagesLine),
+            ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
         )
     }
 
@@ -311,6 +316,12 @@ public struct KubernetesOutputParser {
         let containerStatuses = status?["containerStatuses"] as? [[String: Any]]
         let initContainerStatuses = status?["initContainerStatuses"] as? [[String: Any]]
         let creationTimestamp = metadata["creationTimestamp"] as? String
+        let labels = (metadata["labels"] as? [String: Any])?.compactMapValues { value in
+            nonEmpty(value as? String)
+        } ?? [:]
+        let ownerReferences = (metadata["ownerReferences"] as? [[String: Any]])?
+            .compactMap { ownerReferenceLine(kind: $0["kind"] as? String, name: $0["name"] as? String) }
+            .joined(separator: ", ")
 
         let ageDescription: String = {
             guard let creationTimestamp else { return "—" }
@@ -322,6 +333,9 @@ public struct KubernetesOutputParser {
 
         let containerNames = containers?
             .compactMap { nonEmpty($0["name"] as? String) }
+            .joined(separator: ", ")
+        let containerImages = containers?
+            .compactMap { nonEmpty($0["image"] as? String) }
             .joined(separator: ", ")
         let totalContainers = containers?.count ?? 0
         let readyContainers = containerStatuses?.filter { ($0["ready"] as? Bool) == true }.count ?? 0
@@ -340,8 +354,23 @@ public struct KubernetesOutputParser {
             nodeName: nonEmpty(spec?["nodeName"] as? String),
             qosClass: nonEmpty(status?["qosClass"] as? String),
             containersReady: containersReady,
-            containerNamesLine: nonEmpty(containerNames)
+            containerNamesLine: nonEmpty(containerNames),
+            labels: labels,
+            containerImagesLine: nonEmpty(containerImages),
+            ownerReferencesLine: nonEmpty(ownerReferences)
         )
+    }
+
+    private func ownerReferencesLine(from references: [KubeOwnerReference]?) -> String? {
+        let line = references?
+            .compactMap { ownerReferenceLine(kind: $0.kind, name: $0.name) }
+            .joined(separator: ", ")
+        return nonEmpty(line)
+    }
+
+    private func ownerReferenceLine(kind: String?, name: String?) -> String? {
+        guard let kind = nonEmpty(kind), let name = nonEmpty(name) else { return nil }
+        return "\(kind)/\(name)"
     }
 
     private func restartSum(from statuses: [[String: Any]]?) -> Int {
@@ -432,7 +461,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.readyReplicas ?? 0)/\(item.spec.replicas ?? 0) ready",
-                    secondaryText: "Stateful workload"
+                    secondaryText: "Stateful workload",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -447,7 +477,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.numberReady ?? 0)/\(item.status.desiredNumberScheduled ?? 0) ready",
-                    secondaryText: "Daemon workload"
+                    secondaryText: "Daemon workload",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -541,7 +572,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: statusLabel,
-                    secondaryText: "Job"
+                    secondaryText: "Job",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -577,7 +609,8 @@ public struct KubernetesOutputParser {
                     name: cron.metadata.name,
                     namespace: cron.metadata.namespace ?? namespace,
                     primaryText: schedule,
-                    secondaryText: suspended ? "Suspended" : "Active"
+                    secondaryText: suspended ? "Suspended" : "Active",
+                    ownerReferencesLine: ownerReferencesLine(from: cron.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -594,7 +627,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(ready)/\(total) ready",
-                    secondaryText: "ReplicaSet"
+                    secondaryText: "ReplicaSet",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -612,7 +646,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: phase,
-                    secondaryText: secondaryText
+                    secondaryText: secondaryText,
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -629,7 +664,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: nil,
                     primaryText: phase,
-                    secondaryText: cap
+                    secondaryText: cap,
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -666,7 +702,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(min)–\(max) replicas (current \(current))",
-                    secondaryText: "\(targetKind)/\(targetName)"
+                    secondaryText: "\(targetKind)/\(targetName)",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -682,7 +719,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: types,
-                    secondaryText: "NetworkPolicy"
+                    secondaryText: "NetworkPolicy",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -721,7 +759,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: host,
-                    secondaryText: secondaryText
+                    secondaryText: secondaryText,
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -736,7 +775,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.data?.count ?? 0) keys",
-                    secondaryText: "Config data"
+                    secondaryText: "Config data",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -751,7 +791,8 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: item.type ?? "Opaque",
-                    secondaryText: "\(item.data?.count ?? 0) values"
+                    secondaryText: "\(item.data?.count ?? 0) values",
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -938,12 +979,20 @@ public struct KubernetesOutputParser {
 
     private struct KubePodSpecContainer: Decodable {
         let name: String
+        let image: String?
     }
 
     private struct KubePodRowMetadata: Decodable {
         let name: String
         let namespace: String?
         let creationTimestamp: String?
+        let labels: [String: String]?
+        let ownerReferences: [KubeOwnerReference]?
+    }
+
+    private struct KubeOwnerReference: Decodable {
+        let kind: String?
+        let name: String?
     }
 
     private struct KubePodRowStatus: Decodable {
@@ -964,6 +1013,7 @@ public struct KubernetesOutputParser {
     private struct KubeMetadata: Decodable {
         let name: String
         let namespace: String?
+        let ownerReferences: [KubeOwnerReference]?
     }
 
     private struct KubeDeploymentSpec: Decodable {

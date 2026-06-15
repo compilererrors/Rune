@@ -924,6 +924,86 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testImportKubeConfigPersistsContextDisplayMetadataDraftsWithoutSensitiveValues() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importContextMetadata.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = FileBackedContextPreferencesStore(url: directory.appendingPathComponent("context-preferences.json"))
+        let bookmarkStore = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarkStore),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            contextPreferences: store,
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: directory.appendingPathComponent("imports", isDirectory: true))
+        )
+        let raw = """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-import
+        clusters:
+        - name: synthetic-cluster
+          cluster:
+            server: https://synthetic.eks.amazonaws.com
+        contexts:
+        - name: synthetic-import
+          context:
+            cluster: synthetic-cluster
+            user: synthetic-user
+            namespace: synthetic-namespace
+        users:
+        - name: synthetic-user
+          user:
+            token: synthetic-token-value
+        """
+
+        let review = viewModel.reviewKubeConfigImport(raw: raw, sourceName: "synthetic.yaml")
+        XCTAssertEqual(review.contexts.first?.providerHint, "EKS")
+        XCTAssertEqual(
+            viewModel.kubeConfigImportContextMetadataDrafts["synthetic-import"],
+            ContextDisplayMetadata(
+                colorKey: "eks",
+                iconName: "cloud",
+                tags: ["EKS", "Token"],
+                group: "Provider clusters"
+            )
+        )
+
+        viewModel.setKubeConfigImportContextMetadata(
+            contextName: "synthetic-import",
+            alias: "Synthetic Import",
+            colorKey: "blue",
+            iconName: "server.rack",
+            tags: ["platform", "team-synthetic", "platform"],
+            group: "Synthetic Group"
+        )
+        viewModel.importKubeConfig(raw: raw, sourceName: "synthetic.yaml")
+
+        try await waitUntilForRuneAppState {
+            !bookmarkStore.records.isEmpty
+        }
+
+        XCTAssertEqual(
+            store.loadContextDisplayMetadata(for: "synthetic-import"),
+            ContextDisplayMetadata(
+                alias: "Synthetic Import",
+                colorKey: "blue",
+                iconName: "server.rack",
+                tags: ["platform", "team-synthetic"],
+                group: "Synthetic Group"
+            )
+        )
+        XCTAssertEqual(viewModel.contextDisplayMetadata(for: "synthetic-import")?.alias, "Synthetic Import")
+        let json = try String(contentsOf: directory.appendingPathComponent("context-preferences.json"), encoding: .utf8)
+        XCTAssertFalse(json.contains("synthetic-token-value"))
+        XCTAssertFalse(json.contains("synthetic.eks.amazonaws.com"))
+        XCTAssertFalse(json.contains("synthetic-user"))
+    }
+
+    @MainActor
     func testImportKubeConfigFolderImportsOnlyDirectKubeConfigCandidates() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.importFolder.\(UUID().uuidString)", isDirectory: true)
@@ -1047,6 +1127,16 @@ final class RuneAppStateTests: XCTestCase {
         store.saveManualProductionContextIDs(["context-alpha"])
         store.saveManualNamespaces(["zeta", "alpha", "alpha"], for: "context-alpha")
         store.savePreferredNamespace("zeta", for: "context-alpha")
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(
+                alias: " Synthetic Alpha ",
+                colorKey: " eks ",
+                iconName: " cloud ",
+                tags: [" EKS ", "Token", "EKS"],
+                group: " Provider clusters "
+            ),
+            for: "context-alpha"
+        )
         store.saveHiddenOperatorPrinterColumnFamilies(["Flux", "cert-manager", "Flux"])
 
         let reloaded = FileBackedContextPreferencesStore(url: url)
@@ -1057,6 +1147,16 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(reloaded.loadManualProductionContextIDs(), ["context-alpha"])
         XCTAssertEqual(reloaded.loadManualNamespaces(for: "context-alpha"), ["alpha", "zeta"])
         XCTAssertEqual(reloaded.loadPreferredNamespace(for: "context-alpha"), "zeta")
+        XCTAssertEqual(
+            reloaded.loadContextDisplayMetadata(for: "context-alpha"),
+            ContextDisplayMetadata(
+                alias: "Synthetic Alpha",
+                colorKey: "eks",
+                iconName: "cloud",
+                tags: ["EKS", "Token"],
+                group: "Provider clusters"
+            )
+        )
         XCTAssertEqual(reloaded.loadHiddenOperatorPrinterColumnFamilies(), ["Flux", "cert-manager"])
 
         let json = try String(contentsOf: url, encoding: .utf8)
@@ -1311,6 +1411,54 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.commandPaletteItems(query: ":ws").first?.symbolName, "star.fill")
         XCTAssertEqual(store.loadSavedWorkspaces().map(\.name), ["Observability API"])
         XCTAssertEqual(store.loadSavedWorkspaces().first?.isFavorite, true)
+    }
+
+    @MainActor
+    func testSavedWorkspaceCommandPaletteSearchUsesContextDisplayMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.workspaceContextMetadata.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspaceStore = JSONSavedWorkspaceStore(url: directory.appendingPathComponent("saved-workspaces.json"))
+        workspaceStore.saveSavedWorkspaces([
+            SavedWorkspaceSnapshot(
+                id: "workspace-payments",
+                name: "API Triage",
+                contextName: "context-alpha",
+                namespace: "observability",
+                section: .workloads,
+                workloadKind: .pod,
+                resourceKind: "pod",
+                resourceName: "api",
+                resourceNamespace: "observability"
+            )
+        ])
+        let contextPreferences = FileBackedContextPreferencesStore(url: directory.appendingPathComponent("context-preferences.json"))
+        contextPreferences.saveContextDisplayMetadata(
+            ContextDisplayMetadata(
+                alias: "Checkout Production",
+                iconName: "cloud",
+                tags: ["payments", "platform"],
+                group: "Provider clusters"
+            ),
+            for: "context-alpha"
+        )
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "context-alpha")])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            contextPreferences: contextPreferences,
+            savedWorkspaceStore: workspaceStore
+        )
+
+        let commandItem = try XCTUnwrap(viewModel.commandPaletteItems(query: ":ws payments").first)
+        XCTAssertEqual(commandItem.title, "API Triage")
+        XCTAssertTrue(commandItem.subtitle.contains("Checkout Production"))
+        XCTAssertTrue(commandItem.subtitle.contains("context-alpha"))
+        XCTAssertTrue(commandItem.subtitle.contains("payments"))
+
+        let globalItem = try XCTUnwrap(viewModel.commandPaletteItems(query: "Provider clusters").first { $0.id == "workspace:workspace-payments" })
+        XCTAssertEqual(globalItem.title, "API Triage")
     }
 
     func testFileBackedContextPreferencesStoreRecoversFromBackupWhenPrimaryIsCorrupt() throws {
@@ -1998,6 +2146,49 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(state.selectedSection, .workloads)
         XCTAssertEqual(state.selectedWorkloadKind, .replicaSet)
         XCTAssertEqual(state.selectedReplicaSet?.name, "api-7c9d8f6b5c")
+    }
+
+    @MainActor
+    func testOwnerReferenceRelationshipNavigationDoesNotRequireNamePrefixOrWriteAudit() {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1
+        )
+        let replicaSet = ClusterResourceSummary(
+            kind: .replicaSet,
+            name: "generated-rs",
+            namespace: "synthetic",
+            primaryText: "1/1 ready",
+            secondaryText: "ReplicaSet",
+            ownerReferencesLine: "Deployment/api"
+        )
+        let pod = PodSummary(
+            name: "generated-pod",
+            namespace: "synthetic",
+            status: "Running",
+            ownerReferencesLine: "ReplicaSet/generated-rs"
+        )
+        state.setDeployments([deployment])
+        state.setReplicaSets([replicaSet])
+        state.setPods([pod])
+        state.setSelectedDeployment(deployment)
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .deployment
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.selectedDeploymentRelatedReplicaSets.map(\.name), ["generated-rs"])
+        XCTAssertEqual(viewModel.selectedDeploymentRelatedPods.map(\.name), ["generated-pod"])
+
+        viewModel.openDeploymentRelatedPod(pod)
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod?.name, "generated-pod")
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
     }
 
     @MainActor
@@ -2931,6 +3122,98 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["prod", "alpha", "Beta"])
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["prod", "alpha", "Beta"])
+    }
+
+    @MainActor
+    func testVisibleContextSearchUsesDisplayMetadataAliasTagsAndGroup() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.contextSearchMetadata.\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileBackedContextPreferencesStore(url: directory.appendingPathComponent("context-preferences.json"))
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(
+                alias: "Checkout Production",
+                colorKey: "blue",
+                iconName: "cloud",
+                tags: ["payments", "platform"],
+                group: "Provider clusters"
+            ),
+            for: "context-alpha"
+        )
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(tags: ["observability"], group: "Internal tools"),
+            for: "context-beta"
+        )
+        store.saveFavoriteContextNames(["context-beta"])
+
+        let state = RuneAppState()
+        state.setContexts([
+            KubeContext(name: "context-alpha"),
+            KubeContext(name: "context-beta"),
+            KubeContext(name: "context-gamma")
+        ])
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+
+        viewModel.setContextSearchQuery("payments")
+        XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["context-alpha"])
+
+        viewModel.setContextSearchQuery("internal")
+        XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["context-beta"])
+
+        viewModel.setContextSearchQuery("context")
+        XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["context-beta", "context-alpha", "context-gamma"])
+    }
+
+    @MainActor
+    func testCommandPaletteContextItemsUseDisplayMetadata() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.commandPaletteContextMetadata.\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileBackedContextPreferencesStore(url: directory.appendingPathComponent("context-preferences.json"))
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(
+                alias: "Checkout Production",
+                iconName: "cloud",
+                tags: ["payments", "platform"],
+                group: "Provider clusters"
+            ),
+            for: "context-alpha"
+        )
+
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "context-alpha"), KubeContext(name: "context-beta")])
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+
+        let commandItem = viewModel.commandPaletteItems(query: ":ctx payments").first
+        XCTAssertEqual(commandItem?.title, "Checkout Production")
+        XCTAssertTrue(commandItem?.subtitle.contains("context-alpha") == true)
+        XCTAssertTrue(commandItem?.subtitle.contains("payments") == true)
+        XCTAssertEqual(commandItem?.symbolName, "cloud")
+
+        let globalItem = viewModel.commandPaletteItems(query: "Provider clusters").first { $0.id == "context:context-alpha" }
+        XCTAssertEqual(globalItem?.title, "Checkout Production")
     }
 
     @MainActor
@@ -4140,13 +4423,18 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(exporter.saves.count, 1)
         XCTAssertTrue(exporter.saves[0].suggestedName.hasPrefix("terminal-transcripts-"))
         XCTAssertEqual(exporter.saves[0].allowedFileTypes, ["zip"])
-        let archiveBytes = String(decoding: exporter.saves[0].data, as: UTF8.self)
-        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/README.txt"))
-        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-1-demo-api-0-"))
-        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/session-2-demo-worker-0-"))
-        XCTAssertTrue(archiveBytes.contains("alpha"))
-        XCTAssertTrue(archiveBytes.contains("beta"))
-        XCTAssertTrue(archiveBytes.contains("Exit Code: 137"))
+        let entries = try ZipArchiveTestSupport.entries(from: exporter.saves[0].data)
+        let readme = String(decoding: try XCTUnwrap(entries["terminal-transcripts/README.txt"]), as: UTF8.self)
+        let apiEntry = try XCTUnwrap(entries.first { key, _ in
+            key.hasPrefix("terminal-transcripts/session-1-demo-api-0-") && key.hasSuffix(".log")
+        })
+        let workerEntry = try XCTUnwrap(entries.first { key, _ in
+            key.hasPrefix("terminal-transcripts/session-2-demo-worker-0-") && key.hasSuffix(".log")
+        })
+        XCTAssertTrue(readme.contains("Sessions: 2"))
+        XCTAssertTrue(String(decoding: apiEntry.value, as: UTF8.self).contains("alpha"))
+        XCTAssertTrue(String(decoding: workerEntry.value, as: UTF8.self).contains("beta"))
+        XCTAssertTrue(String(decoding: workerEntry.value, as: UTF8.self).contains("Exit Code: 137"))
     }
 
     @MainActor
@@ -4182,10 +4470,10 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["zip"])
         XCTAssertEqual(configuredExporter.saves[0].kind, .archive)
         XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
-        let archiveBytes = String(decoding: configuredExporter.saves[0].data, as: UTF8.self)
-        XCTAssertTrue(archiveBytes.contains("terminal-transcripts/README.txt"))
-        XCTAssertTrue(archiveBytes.contains("alpha"))
-        XCTAssertTrue(archiveBytes.contains("beta"))
+        let entries = try ZipArchiveTestSupport.entries(from: configuredExporter.saves[0].data)
+        XCTAssertNotNil(entries["terminal-transcripts/README.txt"])
+        XCTAssertTrue(entries.values.contains { String(decoding: $0, as: UTF8.self).contains("alpha") })
+        XCTAssertTrue(entries.values.contains { String(decoding: $0, as: UTF8.self).contains("beta") })
     }
 
     @MainActor
@@ -5478,6 +5766,16 @@ final class RuneAppStateTests: XCTestCase {
                 .kubectlCommand(contextName: "dev", namespace: "default"),
             "kubectl --context dev --namespace default scale deployment 'api;service' --replicas 3"
         )
+        XCTAssertEqual(
+            PendingWriteAction.scaleStatefulSet(name: "ledger store", replicas: 2)
+                .kubectlCommand(contextName: "dev", namespace: "data"),
+            "kubectl --context dev --namespace data scale statefulset 'ledger store' --replicas 2"
+        )
+        XCTAssertEqual(
+            PendingWriteAction.rolloutRestartStatefulSet(name: "ledger store")
+                .kubectlCommand(contextName: "dev", namespace: "data"),
+            "kubectl --context dev --namespace data rollout restart statefulset 'ledger store'"
+        )
 
         XCTAssertEqual(
             PendingWriteAction.rolloutUndo(deploymentName: "api", revision: nil)
@@ -5699,6 +5997,81 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testHelmRollbackUsesEditableOptionsForPreviewAndExecution() async throws {
+        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
+        defer {
+            restoreUserDefaultsValue(previousPlan, forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        }
+
+        let state = RuneAppState()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try Data("apiVersion: v1\n".utf8).write(to: kubeconfig)
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        let helmRunner = RecordingHelmCommandRunner()
+        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+        state.selectedContext = KubeContext(name: "demo")
+        state.selectedNamespace = "payments"
+        state.setSelectedHelmRelease(
+            HelmReleaseSummary(
+                name: "api service",
+                namespace: "payments",
+                revision: 5,
+                updated: "2026-05-05 10:00:00",
+                status: "deployed",
+                chart: "api-1.2.0",
+                appVersion: "1.2.0"
+            )
+        )
+        viewModel.helmRollbackWait = false
+        viewModel.helmRollbackTimeoutInput = " 10m "
+        viewModel.helmRollbackCleanupOnFail = false
+
+        viewModel.requestHelmRollback(revision: 4)
+
+        try await waitUntilForRuneAppState {
+            viewModel.pendingWriteDryRunStatus == "Helm accepted rollback dry-run."
+        }
+
+        XCTAssertEqual(
+            viewModel.pendingWriteAction,
+            .helmRollback(
+                releaseName: "api service",
+                namespace: "payments",
+                revision: 4,
+                wait: false,
+                timeout: "10m",
+                cleanupOnFail: false
+            )
+        )
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("not wait for Kubernetes resources"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("cleanup-on-fail disabled"))
+        XCTAssertEqual(
+            viewModel.pendingWriteActionKubectlCommand,
+            "helm --kube-context demo --namespace payments rollback 'api service' 4 --timeout 10m"
+        )
+        XCTAssertEqual(helmRunner.requests.map(\.wait), [false])
+        XCTAssertEqual(helmRunner.requests.map(\.timeout), ["10m"])
+        XCTAssertEqual(helmRunner.requests.map(\.cleanupOnFail), [false])
+
+        viewModel.confirmPendingWriteAction()
+
+        try await waitUntilForRuneAppState {
+            state.writeAuditLog.contains { $0.action == "Helm Rollback" && $0.status == "Succeeded" }
+        }
+        XCTAssertEqual(helmRunner.requests.map(\.dryRun), [true, true, false])
+        XCTAssertEqual(helmRunner.requests.map(\.wait), [false, false, false])
+        XCTAssertEqual(helmRunner.requests.map(\.timeout), ["10m", "10m", "10m"])
+        XCTAssertEqual(helmRunner.requests.map(\.cleanupOnFail), [false, false, false])
+    }
+
+    @MainActor
     func testWriteAuditLogCapsEntriesAndKeepsNewestFirst() {
         let state = RuneAppState()
 
@@ -5886,13 +6259,28 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(Array(data.prefix(2)), [0x50, 0x4b])
         XCTAssertGreaterThan(data.count, 0)
-        let archiveText = String(decoding: data, as: UTF8.self)
-        XCTAssertTrue(archiveText.contains("deployment-api-pod-logs/merged-20260506T100000Z.log"))
-        XCTAssertTrue(archiveText.contains("deployment-api-pod-logs/pods/api-0/app-20260506T100000Z.log"))
-        XCTAssertTrue(archiveText.contains("deployment-api-pod-logs/pods/api-0/sidecar-20260506T100000Z.log"))
-        XCTAssertTrue(archiveText.contains("deployment-api-pod-logs/pods/api-1/api-1-20260506T100000Z.log"))
-        XCTAssertTrue(archiveText.contains("[api-0/app] ready"))
-        XCTAssertTrue(archiveText.contains("[api-0/sidecar] proxy ready"))
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        XCTAssertEqual(
+            Set(entries.keys),
+            [
+                "deployment-api-pod-logs/merged-20260506T100000Z.log",
+                "deployment-api-pod-logs/pods/api-0/app-20260506T100000Z.log",
+                "deployment-api-pod-logs/pods/api-0/sidecar-20260506T100000Z.log",
+                "deployment-api-pod-logs/pods/api-1/api-1-20260506T100000Z.log"
+            ]
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-pod-logs/merged-20260506T100000Z.log"]), as: UTF8.self),
+            "[api-0/app] ready\n[api-0/app] served request\n[api-0/sidecar] proxy ready\n[api-1] single container"
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-pod-logs/pods/api-0/app-20260506T100000Z.log"]), as: UTF8.self),
+            "ready\nserved request"
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-pod-logs/pods/api-0/sidecar-20260506T100000Z.log"]), as: UTF8.self),
+            "proxy ready"
+        )
     }
 
     func testLogArchiveIncludesMetadataWithoutSecretFields() throws {
@@ -5917,21 +6305,19 @@ final class RuneAppStateTests: XCTestCase {
             metadata: metadata
         )
 
-        let archiveText = String(decoding: data, as: UTF8.self)
-        XCTAssertTrue(archiveText.contains("deployment-api-full-logs/metadata-20260507T100000Z.json"))
-        XCTAssertTrue(archiveText.contains(#""context":"demo""#))
-        XCTAssertTrue(archiveText.contains(#""namespace":"default""#))
-        XCTAssertTrue(archiveText.contains(#""workloadKind":"deployment""#))
-        XCTAssertTrue(archiveText.contains(#""workloadName":"api""#))
-        XCTAssertTrue(archiveText.contains(#""selectedPods":["api-0","api-1"]"#))
-        XCTAssertTrue(archiveText.contains(#""timeWindow":"recent-200-lines""#))
-        XCTAssertTrue(archiveText.contains(#""previous":true"#))
-        XCTAssertTrue(archiveText.contains(#""tail":false"#))
-        XCTAssertTrue(archiveText.contains(#""scope":"full""#))
-        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("token"))
-        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("bearer"))
-        XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("kubeconfig"))
-        XCTAssertFalse(archiveText.contains("/Users/"))
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        let metadataData = try XCTUnwrap(entries["deployment-api-full-logs/metadata-20260507T100000Z.json"])
+        let decodedMetadata = try JSONDecoder().decode(LogArchiveMetadata.self, from: metadataData)
+        let metadataText = String(decoding: metadataData, as: UTF8.self)
+        XCTAssertEqual(decodedMetadata, metadata)
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-full-logs/merged-20260507T100000Z.log"]), as: UTF8.self),
+            "[api-0] ready\n[api-1] served"
+        )
+        XCTAssertFalse(metadataText.localizedCaseInsensitiveContains("token"))
+        XCTAssertFalse(metadataText.localizedCaseInsensitiveContains("bearer"))
+        XCTAssertFalse(metadataText.localizedCaseInsensitiveContains("kubeconfig"))
+        XCTAssertFalse(metadataText.contains("/Users/"))
     }
 
     func testPodContainerLogArchiveIncludesMetadataForSelectedPods() throws {
@@ -5957,11 +6343,14 @@ final class RuneAppStateTests: XCTestCase {
             metadata: metadata
         )
 
-        let archiveText = String(decoding: data, as: UTF8.self)
-        XCTAssertTrue(archiveText.contains("selected-pod-full-logs/metadata-20260507T100100Z.json"))
-        XCTAssertTrue(archiveText.contains(#""workloadKind":"pod""#))
-        XCTAssertTrue(archiveText.contains(#""selectedPods":["api-0"]"#))
-        XCTAssertTrue(archiveText.contains(#""scope":"selected""#))
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        let metadataData = try XCTUnwrap(entries["selected-pod-full-logs/metadata-20260507T100100Z.json"])
+        let decodedMetadata = try JSONDecoder().decode(LogArchiveMetadata.self, from: metadataData)
+        XCTAssertEqual(decodedMetadata, metadata)
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["selected-pod-full-logs/pods/api-0/app-20260507T100100Z.log"]), as: UTF8.self),
+            "ready"
+        )
     }
 
     @MainActor
@@ -6009,6 +6398,16 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-context")
         state.selectedNamespace = "default"
+        let loadedAt = Date(timeIntervalSince1970: 1_700)
+        state.markResourceListsLive(
+            [.pods],
+            updatedAt: loadedAt,
+            message: "Live for synthetic-context / default"
+        )
+        state.markResourceListsFailed(
+            [.services],
+            message: "Partial load for synthetic-context / default: services forbidden"
+        )
 
         let request = SupportBundleRequest.snapshot(
             state: state,
@@ -6067,11 +6466,16 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.requestMetricGroups.count, 1)
         XCTAssertEqual(decoded.requestMetricGroups.first?.requestCount, 4)
         XCTAssertEqual(decoded.requestMetricGroups.first?.latestOutcome, "httpError")
+        XCTAssertEqual(decoded.resourceListFreshness.map(\.family), ["pods", "services"])
+        XCTAssertEqual(decoded.resourceListFreshness.map(\.status), ["live", "failed"])
+        XCTAssertEqual(decoded.resourceListFreshness.first?.updatedAt, loadedAt)
+        XCTAssertEqual(decoded.resourceListFreshness.first?.message, "Live for <context-name> namespace <namespace>")
+        XCTAssertEqual(decoded.resourceListFreshness.last?.message, "Partial load for <context-name> namespace <namespace>: services forbidden")
         XCTAssertFalse(json.contains("synthetic-namespace"))
         XCTAssertFalse(json.contains("synthetic-context"))
     }
 
-    func testSupportBundleDecodesOlderSnapshotsWithoutRequestMetrics() throws {
+    func testSupportBundleDecodesOlderSnapshotsWithoutOptionalDiagnostics() throws {
         let json = """
         {
           "generatedAt": "2026-05-06T00:00:00Z",
@@ -6098,6 +6502,67 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(decoded.requestMetrics.isEmpty)
         XCTAssertNil(decoded.requestMetricsSummary)
         XCTAssertTrue(decoded.requestMetricGroups.isEmpty)
+        XCTAssertTrue(decoded.resourceListFreshness.isEmpty)
+    }
+
+    func testSnapshotRefreshConcurrencyLimiterBoundsConcurrentOperations() async throws {
+        let limiter = SnapshotRefreshConcurrencyLimiter(limit: 3)
+        let tracker = SnapshotRefreshConcurrencyTracker()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<12 {
+                group.addTask {
+                    try? await limiter.withPermit {
+                        await tracker.started()
+                        try await Task.sleep(nanoseconds: 15_000_000)
+                        await tracker.finished()
+                    }
+                }
+            }
+        }
+
+        let maxActive = await tracker.maxActive
+        let completed = await tracker.completed
+        XCTAssertLessThanOrEqual(maxActive, 3)
+        XCTAssertEqual(completed, 12)
+    }
+
+    func testSnapshotRefreshConcurrencyLimiterCancelsWaitingOperations() async throws {
+        let limiter = SnapshotRefreshConcurrencyLimiter(limit: 1)
+        let tracker = SnapshotRefreshConcurrencyTracker()
+
+        let first = Task {
+            try await limiter.withPermit {
+                await tracker.started()
+                try await Task.sleep(nanoseconds: 40_000_000)
+                await tracker.finished()
+            }
+        }
+
+        for _ in 0..<100 where await tracker.maxActive == 0 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        let waiting = Task {
+            try await limiter.withPermit {
+                await tracker.started()
+                await tracker.finished()
+            }
+        }
+        waiting.cancel()
+
+        do {
+            try await waiting.value
+            XCTFail("Expected cancelled waiter to throw before running its operation.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error).")
+        }
+
+        try await first.value
+
+        let completed = await tracker.completed
+        XCTAssertEqual(completed, 1)
     }
 
     @MainActor
@@ -6948,6 +7413,22 @@ private func waitUntilForRuneAppState(
         try await Task.sleep(nanoseconds: 20_000_000)
     }
     XCTFail("Timed out waiting for condition", file: file, line: line)
+}
+
+private actor SnapshotRefreshConcurrencyTracker {
+    private var activeCount = 0
+    private(set) var maxActive = 0
+    private(set) var completed = 0
+
+    func started() {
+        activeCount += 1
+        maxActive = max(maxActive, activeCount)
+    }
+
+    func finished() {
+        activeCount -= 1
+        completed += 1
+    }
 }
 
 @MainActor

@@ -23,6 +23,7 @@ struct ResourceDescribeInspectorPane: View {
     @State private var findQuery = ""
     @State private var findMatchCase = false
     @State private var selectedFindMatchIndex = 0
+    @State private var isDescribeReadOnlyDialogPresented = false
 
     var body: some View {
         let canApplyYAML = canApplyMutations
@@ -34,8 +35,8 @@ struct ResourceDescribeInspectorPane: View {
         let presentedDescribeText = effectiveHidesManagedFields ? managedFieldsFilter.text : describeText
 
         ResourceManifestInspectorLayout {
-            ManifestInlineNote(t(.describeReadOnlyNote)) {
-                ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+            if hasUnsavedEdits {
+                ManifestUnsavedEditsChip()
             }
         } toolbar: {
             ManifestToolbarScrollRow {
@@ -56,7 +57,9 @@ struct ResourceDescribeInspectorPane: View {
                         .disabled(!canApplyYAML)
                         .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
 
-                    Button("\(t(.yamlManifest))...", action: onOpenYAMLEditor)
+                    Button("\(t(.yamlManifest))...") {
+                        isDescribeReadOnlyDialogPresented = true
+                    }
                         .buttonStyle(.bordered)
                         .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
@@ -94,6 +97,18 @@ struct ResourceDescribeInspectorPane: View {
             }
         } footer: {
             EmptyView()
+        }
+        .confirmationDialog(
+            t(.describeReadOnlyNote),
+            isPresented: $isDescribeReadOnlyDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button("\(t(.yamlManifest))...") {
+                onOpenYAMLEditor()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(t(.yamlEditsStayLocal))
         }
     }
 

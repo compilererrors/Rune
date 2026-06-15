@@ -57,6 +57,9 @@ public struct RuneFakeK8sFixture: Sendable {
                     services: [
                         RuneFakeK8sService(name: "ember-gate", selector: ["app": "ember-gate"], clusterIP: "10.96.0.21"),
                         RuneFakeK8sService(name: "orbit-lens", selector: ["app": "orbit-lens"], clusterIP: "10.96.0.20")
+                    ],
+                    statefulSets: [
+                        RuneFakeK8sStatefulSet(name: "ledger-store", readyReplicas: 1, replicas: 2, selector: ["app": "ledger-store"])
                     ]
                 ),
                 RuneFakeK8sNamespace(
@@ -80,7 +83,8 @@ public struct RuneFakeK8sFixture: Sendable {
                     ],
                     services: [
                         RuneFakeK8sService(name: "bravo-spoke", selector: ["app": "bravo-spoke"], clusterIP: "10.96.1.20")
-                    ]
+                    ],
+                    statefulSets: []
                 )
             ],
             nodes: [
@@ -124,6 +128,7 @@ public struct RuneFakeK8sNamespace: Sendable {
     public let pods: [RuneFakeK8sPod]
     public let deployments: [RuneFakeK8sDeployment]
     public let services: [RuneFakeK8sService]
+    public let statefulSets: [RuneFakeK8sStatefulSet]
     public let failingLogPodNames: Set<String>
 
     public init(
@@ -131,12 +136,14 @@ public struct RuneFakeK8sNamespace: Sendable {
         pods: [RuneFakeK8sPod],
         deployments: [RuneFakeK8sDeployment],
         services: [RuneFakeK8sService],
+        statefulSets: [RuneFakeK8sStatefulSet] = [],
         failingLogPodNames: Set<String> = []
     ) {
         self.name = name
         self.pods = pods
         self.deployments = deployments
         self.services = services
+        self.statefulSets = statefulSets
         self.failingLogPodNames = failingLogPodNames
     }
 }
@@ -155,6 +162,13 @@ public struct RuneFakeK8sPod: Sendable {
 }
 
 public struct RuneFakeK8sDeployment: Sendable {
+    public let name: String
+    public let readyReplicas: Int
+    public let replicas: Int
+    public let selector: [String: String]
+}
+
+public struct RuneFakeK8sStatefulSet: Sendable {
     public let name: String
     public let readyReplicas: Int
     public let replicas: Int

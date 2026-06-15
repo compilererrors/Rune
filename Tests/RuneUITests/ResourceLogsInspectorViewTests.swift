@@ -243,6 +243,22 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertFalse(indicatorSource.contains("Text(compactText)"))
     }
 
+    func testLogToolbarIconOnlyPreviousAndTailControlsExposeHoverHelp() throws {
+        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let toolbarSource = try XCTUnwrap(source.slice(
+            from: "struct ResourceLogsToolbar: View",
+            to: "private extension View"
+        ))
+
+        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\", help: t(.previousLogsHelp))"))
+        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.tail), systemImage: \"play.fill\", help: t(.startTailHelp))"))
+        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.pause), systemImage: \"pause.fill\", help: t(.pauseTailHelp))"))
+        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.resume), systemImage: \"play.fill\", help: t(.resumeTailHelp))"))
+        XCTAssertTrue(toolbarSource.contains("Label(title, systemImage: systemImage)"))
+        XCTAssertTrue(toolbarSource.contains(".help(help)"))
+        XCTAssertTrue(toolbarSource.contains(".accessibilityLabel(title)"))
+    }
+
     func testTerminalLogTabsExposePodNamesOnHover() throws {
         let tabBarSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
 

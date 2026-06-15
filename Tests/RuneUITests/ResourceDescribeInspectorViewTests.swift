@@ -135,7 +135,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(yamlSource.contains("ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)"))
-        XCTAssertTrue(describeSource.contains("ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)"))
+        XCTAssertTrue(describeSource.contains("if hasUnsavedEdits {\n                ManifestUnsavedEditsChip()"))
         XCTAssertTrue(yamlSource.contains("struct ManifestUnsavedEditsSlot"))
         XCTAssertTrue(yamlSource.contains(".opacity(isVisible ? 1 : 0)"))
         XCTAssertTrue(yamlSource.contains(".accessibilityHidden(!isVisible)"))
@@ -166,11 +166,23 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(describePaneSource.contains("ManifestToolbarScrollRow"))
         XCTAssertTrue(describePaneSource.contains("ManifestToolbarGroup"))
         XCTAssertTrue(describePaneSource.contains("ManifestStatusChip(text: statusText"))
-        XCTAssertTrue(describePaneSource.contains("ManifestInlineNote("))
+        XCTAssertFalse(describePaneSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
+        XCTAssertTrue(describePaneSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
         XCTAssertTrue(describePaneSource.contains("} status: {\n            EmptyView()"))
 
         XCTAssertFalse(yamlPaneSource.contains("Text(statusText)"))
         XCTAssertFalse(describePaneSource.contains("Text(statusText)"))
+    }
+
+    func testDescribeReadOnlyGuidanceIsDialogOnlyWhenOpeningYAMLEditor() throws {
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+
+        XCTAssertFalse(describeSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
+        XCTAssertTrue(describeSource.contains("@State private var isDescribeReadOnlyDialogPresented = false"))
+        XCTAssertTrue(describeSource.contains("isDescribeReadOnlyDialogPresented = true"))
+        XCTAssertTrue(describeSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
+        XCTAssertTrue(describeSource.contains("Button(\"\\(t(.yamlManifest))...\") {\n                onOpenYAMLEditor()"))
+        XCTAssertTrue(describeSource.contains("Text(t(.yamlEditsStayLocal))"))
     }
 
     func testYAMLPaneExposesManagedFieldsToggleWithoutHidingDuringEdit() throws {

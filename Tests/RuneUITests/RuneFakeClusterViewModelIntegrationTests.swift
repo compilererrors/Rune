@@ -670,6 +670,151 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/ember-gate ") })
     }
 
+    func testScaleAndRolloutRestartAuditAgainstFakeCluster() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && !harness.state.isLoading
+        }
+
+        let deployment = try XCTUnwrap(harness.state.deployments.first { $0.name == "orbit-lens" })
+        harness.viewModel.selectDeployment(deployment)
+        harness.server.resetRequestLines()
+
+        harness.viewModel.scaleReplicaInput = 4
+        harness.viewModel.requestScaleSelectedDeployment()
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Scale")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("scale deployment orbit-lens --replicas 4"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Scale"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "deployment/orbit-lens replicas=4"
+            }
+        }
+
+        var requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens/scale ") })
+
+        harness.server.resetRequestLines()
+        harness.viewModel.requestRolloutRestartSelectedDeployment()
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Restart")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("rollout restart deployment orbit-lens"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Restart"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "deployment/orbit-lens"
+            }
+        }
+
+        requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens ") })
+
+        harness.server.resetRequestLines()
+        harness.viewModel.setWorkloadKind(.statefulSet)
+
+        try await waitUntil {
+            harness.state.statefulSets.map(\.name) == ["ledger-store"]
+                && !harness.state.isLoading
+        }
+
+        let statefulSet = try XCTUnwrap(harness.state.statefulSets.first)
+        harness.viewModel.selectStatefulSet(statefulSet)
+        XCTAssertEqual(harness.viewModel.scaleReplicaInput, 2)
+
+        harness.viewModel.scaleReplicaInput = 3
+        harness.viewModel.requestScaleSelectedStatefulSet()
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Scale")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("scale statefulset ledger-store --replicas 3"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Scale"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "statefulset/ledger-store replicas=3"
+            }
+        }
+
+        requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/statefulsets/ledger-store/scale ") })
+
+        harness.server.resetRequestLines()
+        harness.viewModel.requestRolloutRestartSelectedStatefulSet()
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Restart")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("rollout restart statefulset ledger-store"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Restart"
+                    && entry.status == "Succeeded"
+                    && entry.resource == "statefulset/ledger-store"
+            }
+        }
+
+        requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/statefulsets/ledger-store ") })
+    }
+
+    func testCronJobManualTriggerAuditsCreateJobAgainstFakeCluster() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.cronJob)
+
+        try await waitUntil {
+            harness.state.cronJobs.map(\.name) == ["ember-gate-report"]
+                && !harness.state.isLoading
+        }
+
+        let cronJob = try XCTUnwrap(harness.state.cronJobs.first)
+        harness.viewModel.selectCronJob(cronJob)
+        harness.server.resetRequestLines()
+
+        harness.viewModel.createManualJobFromSelectedCronJob()
+
+        XCTAssertEqual(harness.viewModel.pendingWriteActionConfirmLabel, "Create Job")
+        XCTAssertTrue(harness.viewModel.pendingWriteActionMessage.contains("ember-gate-report-manual-"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("create job ember-gate-report-manual-"))
+        XCTAssertTrue(harness.viewModel.pendingWriteActionKubectlCommand.contains("--from=cronjob/ember-gate-report"))
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Create Job"
+                    && entry.status == "Succeeded"
+                    && entry.resource.contains("cronjob/ember-gate-report -> job/ember-gate-report-manual-")
+            }
+        }
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("GET /apis/batch/v1/namespaces/alpha-zone/cronjobs/ember-gate-report ") })
+        XCTAssertTrue(requestLines.contains { $0.hasPrefix("POST /apis/batch/v1/namespaces/alpha-zone/jobs ") })
+    }
+
     func testAuthDoctorDoesNotReportHelmRollbackAsAuthFailure() async throws {
         let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true

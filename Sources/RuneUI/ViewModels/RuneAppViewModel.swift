@@ -117,7 +117,9 @@ public enum PendingWriteAction: Equatable, Sendable {
     case deleteMany([BulkDeleteResource])
     case apply(kind: KubeResourceKind, name: String, yaml: String, baseline: String)
     case scale(deploymentName: String, replicas: Int)
+    case scaleStatefulSet(name: String, replicas: Int)
     case rolloutRestart(deploymentName: String)
+    case rolloutRestartStatefulSet(name: String)
     case rolloutUndo(deploymentName: String, revision: Int?)
     case controllerRolloutUndo(kind: KubeResourceKind, name: String, revision: Int?)
     case helmRollback(releaseName: String, namespace: String, revision: Int, wait: Bool, timeout: String, cleanupOnFail: Bool)
@@ -134,8 +136,12 @@ public enum PendingWriteAction: Equatable, Sendable {
             return "Apply YAML for \(kind.kubernetesResourceName) \(name)?"
         case let .scale(deploymentName, replicas):
             return "Scale deployment \(deploymentName) to \(replicas)?"
+        case let .scaleStatefulSet(name, replicas):
+            return "Scale statefulset \(name) to \(replicas)?"
         case let .rolloutRestart(deploymentName):
             return "Restart rollout for deployment \(deploymentName)?"
+        case let .rolloutRestartStatefulSet(name):
+            return "Restart rollout for statefulset \(name)?"
         case let .rolloutUndo(deploymentName, revision):
             if let revision {
                 return "Rollback deployment \(deploymentName) to revision \(revision)?"
@@ -168,10 +174,12 @@ public enum PendingWriteAction: Equatable, Sendable {
                 return "This applies the current YAML to the active namespace/context."
             }
             return "This applies the current YAML to the active namespace/context.\n\nYAML diff preview:\n\(diff)"
-        case .scale:
+        case .scale, .scaleStatefulSet:
             return "Replica count will be changed immediately."
         case .rolloutRestart:
             return "Pods in the deployment will be recreated according to rollout strategy."
+        case .rolloutRestartStatefulSet:
+            return "Pods in the statefulset will be recreated according to rollout strategy."
         case .rolloutUndo:
             return "Deployment rollout will be reverted to an earlier revision."
         case .controllerRolloutUndo:
@@ -192,8 +200,8 @@ public enum PendingWriteAction: Equatable, Sendable {
         case .delete: return "Delete"
         case let .deleteMany(resources): return "Delete \(resources.count)"
         case .apply: return "Apply"
-        case .scale: return "Scale"
-        case .rolloutRestart: return "Restart"
+        case .scale, .scaleStatefulSet: return "Scale"
+        case .rolloutRestart, .rolloutRestartStatefulSet: return "Restart"
         case .rolloutUndo: return "Rollback"
         case .controllerRolloutUndo: return "Copy Command"
         case .helmRollback: return "Rollback"
@@ -205,7 +213,7 @@ public enum PendingWriteAction: Equatable, Sendable {
     var isDestructive: Bool {
         switch self {
         case .delete, .deleteMany, .rolloutUndo, .controllerRolloutUndo, .helmRollback: return true
-        case .apply, .scale, .rolloutRestart, .exec, .createJobFromCronJob: return false
+        case .apply, .scale, .scaleStatefulSet, .rolloutRestart, .rolloutRestartStatefulSet, .exec, .createJobFromCronJob: return false
         }
     }
 
@@ -240,8 +248,12 @@ public enum PendingWriteAction: Equatable, Sendable {
             ])
         case let .scale(deploymentName, replicas):
             return Self.shellCommand(namespaced + ["scale", "deployment", deploymentName, "--replicas", "\(replicas)"])
+        case let .scaleStatefulSet(name, replicas):
+            return Self.shellCommand(namespaced + ["scale", "statefulset", name, "--replicas", "\(replicas)"])
         case let .rolloutRestart(deploymentName):
             return Self.shellCommand(namespaced + ["rollout", "restart", "deployment", deploymentName])
+        case let .rolloutRestartStatefulSet(name):
+            return Self.shellCommand(namespaced + ["rollout", "restart", "statefulset", name])
         case let .rolloutUndo(deploymentName, revision):
             var parts = namespaced + ["rollout", "undo", "deployment", deploymentName]
             if let revision {
@@ -464,6 +476,59 @@ public struct SavedWorkspaceInspectorRestoreRequest: Identifiable, Equatable, Se
 }
 
 /// Which cluster lists Rune loads for the current section and resource kind. Drives parallel work in `loadResourceSnapshot`.
+actor SnapshotRefreshConcurrencyLimiter {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private let limit: Int
+    private var activeCount = 0
+    private var waiters: [Waiter] = []
+
+    init(limit: Int = 6) {
+        self.limit = max(1, limit)
+    }
+
+    func withPermit<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        guard activeCount >= limit else {
+            activeCount += 1
+            return
+        }
+
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: id) }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func release() {
+        guard waiters.isEmpty else {
+            waiters.removeFirst().continuation.resume()
+            return
+        }
+        activeCount = max(0, activeCount - 1)
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume()
+    }
+}
+
 private struct SnapshotLoadPlan: Sendable {
     var podStatuses = false
     var pods = false
@@ -494,6 +559,33 @@ private struct SnapshotLoadPlan: Sendable {
     var rbacRoleBindings = false
     var rbacClusterRoles = false
     var rbacClusterRoleBindings = false
+
+    var resourceListFamilies: Set<RuneResourceListFamily> {
+        var families: Set<RuneResourceListFamily> = []
+        if podStatuses || pods { families.insert(.pods) }
+        if deployments || deploymentCount { families.insert(.deployments) }
+        if statefulSets { families.insert(.statefulSets) }
+        if daemonSets { families.insert(.daemonSets) }
+        if jobs { families.insert(.jobs) }
+        if cronJobs || cronJobsCount { families.insert(.cronJobs) }
+        if replicaSets { families.insert(.replicaSets) }
+        if persistentVolumeClaims { families.insert(.persistentVolumeClaims) }
+        if persistentVolumes { families.insert(.persistentVolumes) }
+        if storageClasses { families.insert(.storageClasses) }
+        if horizontalPodAutoscalers { families.insert(.horizontalPodAutoscalers) }
+        if networkPolicies { families.insert(.networkPolicies) }
+        if services || servicesCount { families.insert(.services) }
+        if ingresses || ingressesCount { families.insert(.ingresses) }
+        if configMaps || configMapsCount { families.insert(.configMaps) }
+        if secrets { families.insert(.secrets) }
+        if nodes || nodesCount { families.insert(.nodes) }
+        if events { families.insert(.events) }
+        if rbacRoles { families.insert(.rbacRoles) }
+        if rbacRoleBindings { families.insert(.rbacRoleBindings) }
+        if rbacClusterRoles { families.insert(.rbacClusterRoles) }
+        if rbacClusterRoleBindings { families.insert(.rbacClusterRoleBindings) }
+        return families
+    }
 
     static func forSelection(section: RuneSection, kind: KubeResourceKind) -> SnapshotLoadPlan {
         var plan = SnapshotLoadPlan()
@@ -744,6 +836,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var hiddenOperatorPrinterColumnFamilies: Set<String> = []
     @Published public private(set) var savedWorkspaces: [SavedWorkspaceSnapshot] = []
     @Published public private(set) var kubeConfigImportReviews: [KubeConfigImportReview] = []
+    @Published public private(set) var kubeConfigImportContextMetadataDrafts: [String: ContextDisplayMetadata] = [:]
     @Published public var favoriteImportedKubeConfigContexts: Bool = false
     @Published public var kubeConfigDuplicateHandlingChoice: KubeConfigDuplicateHandlingChoice = .skipDuplicate
     private var namespaceResolutionLookupCache: (namespaces: [String], lookup: [String: String])?
@@ -772,6 +865,9 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
     @Published public var rolloutRevisionInput: String = ""
+    @Published public var helmRollbackWait: Bool = true
+    @Published public var helmRollbackTimeoutInput: String = "5m"
+    @Published public var helmRollbackCleanupOnFail: Bool = true
     @Published public private(set) var pendingRollbackPlan: String?
     @Published public var rbacCanIVerb: String = "list"
     @Published public var rbacCanIResource: String = "pods"
@@ -818,6 +914,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let portForwardBrowserOpener: PortForwardBrowserOpening
     private let diagnostics: DiagnosticsRecorder
     private let rbacCanICheck: RBACCanIChecking
+    private let snapshotRefreshConcurrencyLimiter = SnapshotRefreshConcurrencyLimiter(limit: 6)
     private let terminalShellCommand = ["sh"]
 
     private var cancellables: Set<AnyCancellable> = []
@@ -1429,10 +1526,10 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var visibleContexts: [KubeContext] {
+        let query = state.contextSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = contextsIncludingEnabledDemo(state.contexts).filter { context in
-            let query = state.contextSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { return true }
-            return matches(context.name, query: query)
+            return contextSearchTokens(for: context).contains { matches($0, query: query) }
         }
 
         return filtered.sorted { lhs, rhs in
@@ -1458,6 +1555,36 @@ public final class RuneAppViewModel: ObservableObject {
 
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    public func contextDisplayName(for context: KubeContext) -> String {
+        contextPreferences.loadContextDisplayMetadata(for: context.name)?.alias ?? context.name
+    }
+
+    public func contextSecondaryDisplayText(for context: KubeContext) -> String? {
+        guard let metadata = contextPreferences.loadContextDisplayMetadata(for: context.name) else { return nil }
+        let parts = [
+            metadata.group,
+            metadata.tags.isEmpty ? nil : metadata.tags.joined(separator: ", ")
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    public func contextDisplayIconName(for context: KubeContext) -> String? {
+        contextPreferences.loadContextDisplayMetadata(for: context.name)?.iconName
+    }
+
+    private func contextSearchTokens(for context: KubeContext) -> [String] {
+        guard let metadata = contextPreferences.loadContextDisplayMetadata(for: context.name) else {
+            return [context.name]
+        }
+        return [
+            context.name,
+            metadata.alias,
+            metadata.colorKey,
+            metadata.iconName,
+            metadata.group
+        ].compactMap { $0 } + metadata.tags
     }
 
     public var visiblePods: [PodSummary] {
@@ -1832,6 +1959,7 @@ public final class RuneAppViewModel: ObservableObject {
             state.setSecrets([])
             state.setNodes([])
             state.setEvents([])
+            state.clearResourceListFreshness()
             state.setOverviewSnapshot(
                 pods: [],
                 deploymentsCount: 0,
@@ -2025,6 +2153,7 @@ public final class RuneAppViewModel: ObservableObject {
             kubeConfigImportValidator.validate(raw: payload.raw, sourceName: payload.sourceName)
         }
         kubeConfigImportReviews = reviews
+        syncKubeConfigImportContextMetadataDrafts(from: reviews)
 
         let blockingIssues = blockingKubeConfigImportIssues(in: reviews)
         guard blockingIssues.isEmpty else {
@@ -2060,6 +2189,9 @@ public final class RuneAppViewModel: ObservableObject {
                !namespace.isEmpty {
                 contextPreferences.savePreferredNamespace(namespace, for: context.name)
             }
+            let metadata = kubeConfigImportContextMetadataDrafts[context.name]
+                ?? suggestedContextDisplayMetadata(for: context)
+            contextPreferences.saveContextDisplayMetadata(metadata, for: context.name)
         }
 
         guard favoriteImportedKubeConfigContexts else { return }
@@ -2070,6 +2202,57 @@ public final class RuneAppViewModel: ObservableObject {
         }
         state.setFavoriteContextNames(favorites)
         contextPreferences.saveFavoriteContextNames(favorites)
+    }
+
+    private func syncKubeConfigImportContextMetadataDrafts(from reviews: [KubeConfigImportReview]) {
+        let contexts = reviews.flatMap(\.contexts)
+        let contextNames = Set(contexts.map(\.name))
+        var drafts = kubeConfigImportContextMetadataDrafts.filter { contextNames.contains($0.key) }
+        for context in contexts where drafts[context.name] == nil {
+            drafts[context.name] = suggestedContextDisplayMetadata(for: context)
+        }
+        kubeConfigImportContextMetadataDrafts = drafts
+    }
+
+    private func suggestedContextDisplayMetadata(for context: KubeConfigImportContextPreview) -> ContextDisplayMetadata {
+        let provider = context.providerHint?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let authType = context.authType.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tags: [String] = []
+        if let provider, !provider.isEmpty {
+            tags.append(provider)
+        }
+        if !authType.isEmpty, authType.localizedCaseInsensitiveCompare("Unknown") != .orderedSame {
+            tags.append(authType)
+        }
+
+        let providerKey = provider.map(Self.normalizedContextMetadataKey)
+        let isLocalCluster = provider.map(Self.isLocalClusterProvider) ?? false
+        return ContextDisplayMetadata(
+            colorKey: providerKey,
+            iconName: isLocalCluster ? "desktopcomputer" : (provider == nil ? nil : "cloud"),
+            tags: tags,
+            group: isLocalCluster ? "Local clusters" : (provider == nil ? nil : "Provider clusters")
+        )
+    }
+
+    private static func normalizedContextMetadataKey(_ value: String) -> String {
+        value
+            .lowercased()
+            .map { character -> Character in
+                character.isLetter || character.isNumber ? character : "-"
+            }
+            .reduce(into: "") { result, character in
+                if character == "-", result.last == "-" {
+                    return
+                }
+                result.append(character)
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    private static func isLocalClusterProvider(_ provider: String) -> Bool {
+        ["minikube", "kind", "k3d", "docker desktop", "orbstack"]
+            .contains { $0.localizedCaseInsensitiveCompare(provider) == .orderedSame }
     }
 
     private func blockingKubeConfigImportIssues(in reviews: [KubeConfigImportReview]) -> [KubeConfigImportIssue] {
@@ -2387,6 +2570,12 @@ public final class RuneAppViewModel: ObservableObject {
     private func performRefreshCurrentView(forceNamespaceMetadataRefresh: Bool) async {
         guard let context = state.selectedContext else { return }
         let namespace = state.selectedNamespace
+        var cancellationFamilies = SnapshotLoadPlan
+            .forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind)
+            .resourceListFamilies
+        if state.selectedSection == .helm {
+            cancellationFamilies.formUnion([.helmReleases, .operatorResources])
+        }
         if context.name == demoContextName {
             applyDemoClusterSnapshot()
             applyDemoResourceDetailsForCurrentSelection()
@@ -2426,11 +2615,15 @@ public final class RuneAppViewModel: ObservableObject {
         } catch {
             if Self.isBenignCancellationError(error) {
                 markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
+                state.markResourceListsReconnecting(
+                    cancellationFamilies,
+                    message: "Refresh cancelled; reconnecting to current view."
+                )
                 state.setSnapshotFreshness(
                     RuneSnapshotFreshness(
-                        status: .stale,
+                        status: .reconnecting,
                         updatedAt: state.snapshotFreshness.updatedAt,
-                        message: "Refresh cancelled; showing previous data."
+                        message: "Refresh cancelled; reconnecting to current view."
                     )
                 )
                 diagnostics.trace("refresh", "performRefreshCurrentView cancelled")
@@ -2549,6 +2742,7 @@ public final class RuneAppViewModel: ObservableObject {
     public func reviewKubeConfigImport(raw: String, sourceName: String? = nil) -> KubeConfigImportReview {
         let review = kubeConfigImportValidator.validate(raw: raw, sourceName: sourceName)
         kubeConfigImportReviews = [review]
+        syncKubeConfigImportContextMetadataDrafts(from: [review])
         return review
     }
 
@@ -2567,6 +2761,7 @@ public final class RuneAppViewModel: ObservableObject {
                 redactedPreview: ""
             )
             kubeConfigImportReviews = [review]
+            syncKubeConfigImportContextMetadataDrafts(from: [review])
             return [review]
         }
 
@@ -2590,11 +2785,36 @@ public final class RuneAppViewModel: ObservableObject {
             }
         }
         kubeConfigImportReviews = reviews
+        syncKubeConfigImportContextMetadataDrafts(from: reviews)
         return reviews
     }
 
     public func clearKubeConfigImportReviews() {
         kubeConfigImportReviews = []
+        kubeConfigImportContextMetadataDrafts = [:]
+    }
+
+    public func setKubeConfigImportContextMetadata(
+        contextName: String,
+        alias: String? = nil,
+        colorKey: String? = nil,
+        iconName: String? = nil,
+        tags: [String] = [],
+        group: String? = nil
+    ) {
+        let context = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !context.isEmpty else { return }
+        kubeConfigImportContextMetadataDrafts[context] = ContextDisplayMetadata(
+            alias: alias,
+            colorKey: colorKey,
+            iconName: iconName,
+            tags: tags,
+            group: group
+        )
+    }
+
+    public func contextDisplayMetadata(for contextName: String) -> ContextDisplayMetadata? {
+        contextPreferences.loadContextDisplayMetadata(for: contextName)
     }
 
     public func setContextSearchQuery(_ query: String) {
@@ -2760,6 +2980,7 @@ public final class RuneAppViewModel: ObservableObject {
         state.selectedContext = context
         if isChangingContext {
             state.setOverviewClusterUsage(cpuPercent: nil, memoryPercent: nil)
+            state.clearResourceListFreshness()
         }
         rememberRecentContext(context.name)
         // Clear immediately so the toolbar menu cannot briefly show the previous context's namespace list.
@@ -2839,6 +3060,7 @@ public final class RuneAppViewModel: ObservableObject {
         resourceDetailsTask?.cancel()
         pendingNamespaceRevalidationContextName = nil
         state.selectedNamespace = trimmed
+        state.clearResourceListFreshness()
         if let contextName = state.selectedContext?.name {
             contextPreferences.savePreferredNamespace(trimmed, for: contextName)
             if !state.namespaces.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
@@ -2971,6 +3193,10 @@ public final class RuneAppViewModel: ObservableObject {
     public var selectedStatefulSetRelatedPods: [PodSummary] {
         guard let statefulSet = state.selectedStatefulSet else { return [] }
         return relatedPods(forWorkloadResource: statefulSet)
+    }
+
+    public var selectedStatefulSetReplicaCounts: (ready: Int, desired: Int)? {
+        Self.replicaCounts(from: state.selectedStatefulSet?.primaryText)
     }
 
     public var selectedDaemonSetRelatedPods: [PodSummary] {
@@ -3252,6 +3478,7 @@ public final class RuneAppViewModel: ObservableObject {
                     replicaSet.name == deployment.name
                     || replicaSet.name.hasPrefix(deployment.name + "-")
                     || replicaSet.secondaryText.localizedCaseInsensitiveContains("Deployment/\(deployment.name)")
+                    || Self.ownerReferencesContain(replicaSet.ownerReferencesLine, kind: .deployment, name: deployment.name)
                 )
         }
     }
@@ -3263,7 +3490,11 @@ public final class RuneAppViewModel: ObservableObject {
     private func relatedPods(forWorkloadResource resource: ClusterResourceSummary) -> [PodSummary] {
         state.pods.filter { pod in
             pod.namespace == resource.namespace
-                && (pod.name == resource.name || pod.name.hasPrefix(resource.name + "-"))
+                && (
+                    pod.name == resource.name
+                    || pod.name.hasPrefix(resource.name + "-")
+                    || Self.ownerReferencesContain(pod.ownerReferencesLine, kind: resource.kind, name: resource.name)
+                )
         }
     }
 
@@ -3347,6 +3578,15 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private static func ownerReferencesContain(_ line: String?, kind: KubeResourceKind, name: String) -> Bool {
+        guard let line else { return false }
+        let expected = "\(kind.singularTypeName)/\(name)"
+        return line
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .contains { $0.caseInsensitiveCompare(expected) == .orderedSame }
+    }
+
     private static func serviceNames(fromIngressSecondaryText text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercased = trimmed.lowercased()
@@ -3401,6 +3641,22 @@ public final class RuneAppViewModel: ObservableObject {
         }
         guard let kind else { return nil }
         return (kind, namespace, parts[1])
+    }
+
+    private static func replicaCounts(from text: String?) -> (ready: Int, desired: Int)? {
+        guard let text else { return nil }
+        let firstToken = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .first
+        guard let firstToken,
+              let slash = firstToken.firstIndex(of: "/"),
+              let ready = Int(firstToken[..<slash]),
+              let desired = Int(firstToken[firstToken.index(after: slash)...])
+        else {
+            return nil
+        }
+        return (ready, desired)
     }
 
     private static func rbacRoleReference(fromPrimaryText text: String, bindingKind: KubeResourceKind) -> (kind: KubeResourceKind, name: String)? {
@@ -3885,6 +4141,9 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedStatefulSet(resource)
         state.selectedWorkloadKind = .statefulSet
+        if let replicas = Self.replicaCounts(from: resource?.primaryText)?.desired {
+            scaleReplicaInput = max(0, replicas)
+        }
         loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
@@ -5949,6 +6208,10 @@ public final class RuneAppViewModel: ObservableObject {
         )
         state.setHelmReleases(helmReleases)
         state.setOperatorResources(operatorResources)
+        state.markResourceListsLive(
+            RuneResourceListFamily.allCases,
+            message: "In-memory demo cluster loaded. No Kubernetes API calls are made."
+        )
         state.setOverviewSnapshot(
             pods: pods,
             deploymentsCount: deployments.count,
@@ -6253,6 +6516,15 @@ public final class RuneAppViewModel: ObservableObject {
         pendingWriteAction = .scale(deploymentName: deployment.name, replicas: max(0, scaleReplicaInput))
     }
 
+    public func requestScaleSelectedStatefulSet() {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        guard let statefulSet = state.selectedStatefulSet else { return }
+        pendingWriteAction = .scaleStatefulSet(name: statefulSet.name, replicas: max(0, scaleReplicaInput))
+    }
+
     public func requestRolloutRestartSelectedDeployment() {
         guard writeActionsEnabled else {
             state.setError(RuneError.readOnlyMode)
@@ -6260,6 +6532,15 @@ public final class RuneAppViewModel: ObservableObject {
         }
         guard let deployment = state.selectedDeployment else { return }
         pendingWriteAction = .rolloutRestart(deploymentName: deployment.name)
+    }
+
+    public func requestRolloutRestartSelectedStatefulSet() {
+        guard writeActionsEnabled else {
+            state.setError(RuneError.readOnlyMode)
+            return
+        }
+        guard let statefulSet = state.selectedStatefulSet else { return }
+        pendingWriteAction = .rolloutRestartStatefulSet(name: statefulSet.name)
     }
 
     public func requestRolloutUndoSelectedDeployment() {
@@ -6317,19 +6598,34 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func requestHelmRollback(revision: Int) {
+        requestHelmRollback(
+            revision: revision,
+            wait: helmRollbackWait,
+            timeout: helmRollbackTimeoutInput,
+            cleanupOnFail: helmRollbackCleanupOnFail
+        )
+    }
+
+    public func requestHelmRollback(
+        revision: Int,
+        wait: Bool,
+        timeout: String,
+        cleanupOnFail: Bool
+    ) {
         guard writeActionsEnabled else {
             state.setError(RuneError.readOnlyMode)
             return
         }
         guard let release = state.selectedHelmRelease else { return }
+        let normalizedTimeout = timeout.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let action = PendingWriteAction.helmRollback(
             releaseName: release.name,
             namespace: release.namespace,
             revision: revision,
-            wait: true,
-            timeout: "5m",
-            cleanupOnFail: true
+            wait: wait,
+            timeout: normalizedTimeout,
+            cleanupOnFail: cleanupOnFail
         )
         pendingWriteAction = action
         pendingRollbackPlan = helmRollbackPlan(for: release, revision: revision, action: action)
@@ -6828,12 +7124,27 @@ public final class RuneAppViewModel: ObservableObject {
                         deploymentName: deploymentName,
                         replicas: replicas
                     )
+                case let .scaleStatefulSet(name, replicas):
+                    try await kubeClient.scaleStatefulSet(
+                        from: state.kubeConfigSources,
+                        context: context,
+                        namespace: state.selectedNamespace,
+                        statefulSetName: name,
+                        replicas: replicas
+                    )
                 case let .rolloutRestart(deploymentName):
                     try await kubeClient.restartDeploymentRollout(
                         from: state.kubeConfigSources,
                         context: context,
                         namespace: state.selectedNamespace,
                         deploymentName: deploymentName
+                    )
+                case let .rolloutRestartStatefulSet(name):
+                    try await kubeClient.restartStatefulSetRollout(
+                        from: state.kubeConfigSources,
+                        context: context,
+                        namespace: state.selectedNamespace,
+                        statefulSetName: name
                     )
                 case let .rolloutUndo(deploymentName, revision):
                     if UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun {
@@ -7163,9 +7474,15 @@ public final class RuneAppViewModel: ObservableObject {
         case let .scale(deploymentName, replicas):
             actionName = "Scale"
             resource = "deployment/\(deploymentName) replicas=\(replicas)"
+        case let .scaleStatefulSet(name, replicas):
+            actionName = "Scale"
+            resource = "statefulset/\(name) replicas=\(replicas)"
         case let .rolloutRestart(deploymentName):
             actionName = "Rollout Restart"
             resource = "deployment/\(deploymentName)"
+        case let .rolloutRestartStatefulSet(name):
+            actionName = "Rollout Restart"
+            resource = "statefulset/\(name)"
         case let .rolloutUndo(deploymentName, revision):
             actionName = "Rollout Undo"
             resource = revision.map { "deployment/\(deploymentName) revision=\($0)" } ?? "deployment/\(deploymentName)"
@@ -7327,13 +7644,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let contexts = visibleContexts.map { context in
-            CommandPaletteItem(
-                id: "context:\(context.name)",
-                title: context.name,
-                subtitle: "Switch context",
-                symbolName: state.isFavorite(context) ? "star.fill" : "network",
-                action: .context(context)
-            )
+            commandPaletteContextItem(context, idPrefix: "context", subtitlePrefix: "Switch context")
         }
 
         let namespaces = namespaceOptions
@@ -7655,6 +7966,8 @@ public final class RuneAppViewModel: ObservableObject {
         )
         diagnostics.log("loadResourceSnapshot start context=\(context.name) namespace=\(namespace)")
 
+        let kubeClient = self.kubeClient
+        let kubeConfigSources = state.kubeConfigSources
         let storeWasEmpty = store.namespaces(context: context).isEmpty
         var hydratedNamespacesFromDisk = false
         if UserDefaults.standard.runePersistNamespaceListCache,
@@ -7686,11 +7999,11 @@ public final class RuneAppViewModel: ObservableObject {
         let contextDefaultNamespace: String?
         let loadedNamespaces: [String]
         if shouldRefreshNamespaceMetadata {
-            async let namespaceResult: Result<[String], Error> = Self.capture {
-                try await kubeClient.listNamespaces(from: state.kubeConfigSources, context: context)
+            async let namespaceResult: Result<[String], Error> = captureSnapshotRead {
+                try await kubeClient.listNamespaces(from: kubeConfigSources, context: context)
             }
-            async let contextNamespaceResult: Result<String?, Error> = Self.capture {
-                try await kubeClient.contextNamespace(from: state.kubeConfigSources, context: context)
+            async let contextNamespaceResult: Result<String?, Error> = captureSnapshotRead {
+                try await kubeClient.contextNamespace(from: kubeConfigSources, context: context)
             }
 
             switch await contextNamespaceResult {
@@ -7849,6 +8162,11 @@ public final class RuneAppViewModel: ObservableObject {
 
         let cachedSnapshot = store.snapshot(context: context, namespace: effectiveNamespace)
         let plan = SnapshotLoadPlan.forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind)
+        let plannedFreshnessFamilies = plan.resourceListFamilies
+        state.markResourceListsRefreshing(
+            plannedFreshnessFamilies,
+            message: "Refreshing \(context.name) / \(effectiveNamespace)"
+        )
         let shouldHydrateDeploymentsForOverview = state.selectedSection == .overview && cachedSnapshot.deployments.isEmpty
         let shouldHydrateServicesForOverview = state.selectedSection == .overview && cachedSnapshot.services.isEmpty
         try Task.checkCancellation()
@@ -7883,15 +8201,17 @@ public final class RuneAppViewModel: ObservableObject {
                    warmOverview.clusterCPUPercent != nil || warmOverview.clusterMemoryPercent != nil {
                     return (warmOverview.clusterCPUPercent, warmOverview.clusterMemoryPercent)
                 }
-                return await kubeClient.clusterUsagePercent(from: state.kubeConfigSources, context: context)
+                return (try? await snapshotRefreshConcurrencyLimiter.withPermit {
+                    await kubeClient.clusterUsagePercent(from: kubeConfigSources, context: context)
+                }) ?? (nil, nil)
             }
             return (currentOverviewClusterCPUPercent, currentOverviewClusterMemoryPercent)
         }()
 
-        async let podResult: Result<[PodSummary], Error> = Self.capture {
+        async let podResult: Result<[PodSummary], Error> = captureSnapshotRead {
             if plan.pods {
                 return try await kubeClient.listPods(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace
                 )
@@ -7911,18 +8231,18 @@ public final class RuneAppViewModel: ObservableObject {
                     }
                 }
                 return try await kubeClient.listPodStatuses(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace
                 )
             }
             return cachedSnapshot.pods
         }
-        async let deploymentResult: Result<[DeploymentSummary], Error> = Self.capture {
+        async let deploymentResult: Result<[DeploymentSummary], Error> = captureSnapshotRead {
             guard plan.deployments || shouldHydrateDeploymentsForOverview else { return cachedSnapshot.deployments }
-            return try await kubeClient.listDeployments(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listDeployments(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let deploymentCountResult: Result<Int, Error> = Self.capture {
+        async let deploymentCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.deploymentCount, !shouldHydrateDeploymentsForOverview else {
                 return cachedSnapshot.deployments.count
             }
@@ -7935,7 +8255,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countNamespacedResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace,
                     resource: "deployments"
@@ -7947,63 +8267,63 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let statefulSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let statefulSetResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.statefulSets else { return cachedSnapshot.statefulSets }
-            return try await kubeClient.listStatefulSets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listStatefulSets(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let daemonSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let daemonSetResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.daemonSets else { return cachedSnapshot.daemonSets }
-            return try await kubeClient.listDaemonSets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listDaemonSets(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let jobResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let jobResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.jobs else { return cachedSnapshot.jobs }
-            return try await kubeClient.listJobs(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listJobs(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let cronJobResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let cronJobResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.cronJobs else { return cachedSnapshot.cronJobs }
-            return try await kubeClient.listCronJobs(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listCronJobs(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let replicaSetResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let replicaSetResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.replicaSets else { return cachedSnapshot.replicaSets }
-            return try await kubeClient.listReplicaSets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listReplicaSets(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let pvcResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let pvcResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.persistentVolumeClaims else { return cachedSnapshot.persistentVolumeClaims }
             return try await kubeClient.listPersistentVolumeClaims(
-                from: state.kubeConfigSources,
+                from: kubeConfigSources,
                 context: context,
                 namespace: effectiveNamespace
             )
         }
-        async let pvResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let pvResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.persistentVolumes else { return cachedPersistentVolumes }
-            return try await kubeClient.listPersistentVolumes(from: state.kubeConfigSources, context: context)
+            return try await kubeClient.listPersistentVolumes(from: kubeConfigSources, context: context)
         }
-        async let storageClassResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let storageClassResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.storageClasses else { return cachedStorageClasses }
-            return try await kubeClient.listStorageClasses(from: state.kubeConfigSources, context: context)
+            return try await kubeClient.listStorageClasses(from: kubeConfigSources, context: context)
         }
-        async let hpaResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let hpaResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.horizontalPodAutoscalers else { return cachedSnapshot.horizontalPodAutoscalers }
             return try await kubeClient.listHorizontalPodAutoscalers(
-                from: state.kubeConfigSources,
+                from: kubeConfigSources,
                 context: context,
                 namespace: effectiveNamespace
             )
         }
-        async let networkPolicyResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let networkPolicyResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.networkPolicies else { return cachedSnapshot.networkPolicies }
             return try await kubeClient.listNetworkPolicies(
-                from: state.kubeConfigSources,
+                from: kubeConfigSources,
                 context: context,
                 namespace: effectiveNamespace
             )
         }
-        async let serviceResult: Result<[ServiceSummary], Error> = Self.capture {
+        async let serviceResult: Result<[ServiceSummary], Error> = captureSnapshotRead {
             guard plan.services || shouldHydrateServicesForOverview else { return cachedSnapshot.services }
-            return try await kubeClient.listServices(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listServices(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let serviceCountResult: Result<Int, Error> = Self.capture {
+        async let serviceCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.servicesCount, !shouldHydrateServicesForOverview else {
                 return cachedSnapshot.services.count
             }
@@ -8016,7 +8336,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countNamespacedResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace,
                     resource: "services"
@@ -8028,11 +8348,11 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let ingressResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let ingressResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.ingresses else { return cachedSnapshot.ingresses }
-            return try await kubeClient.listIngresses(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listIngresses(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let ingressCountResult: Result<Int, Error> = Self.capture {
+        async let ingressCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.ingressesCount else { return cachedSnapshot.ingresses.count }
             if !cachedSnapshot.ingresses.isEmpty {
                 return cachedSnapshot.ingresses.count
@@ -8043,7 +8363,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countNamespacedResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace,
                     resource: "ingresses"
@@ -8055,11 +8375,11 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let configMapResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let configMapResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.configMaps else { return cachedSnapshot.configMaps }
-            return try await kubeClient.listConfigMaps(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listConfigMaps(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let configMapCountResult: Result<Int, Error> = Self.capture {
+        async let configMapCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.configMapsCount else { return cachedSnapshot.configMaps.count }
             if !cachedSnapshot.configMaps.isEmpty {
                 return cachedSnapshot.configMaps.count
@@ -8070,7 +8390,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countNamespacedResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace,
                     resource: "configmaps"
@@ -8082,7 +8402,7 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let cronJobsCountResult: Result<Int, Error> = Self.capture {
+        async let cronJobsCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.cronJobsCount else { return cachedSnapshot.cronJobs.count }
             if !cachedSnapshot.cronJobs.isEmpty {
                 return cachedSnapshot.cronJobs.count
@@ -8093,7 +8413,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countNamespacedResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     namespace: effectiveNamespace,
                     resource: "cronjobs"
@@ -8105,15 +8425,15 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let secretResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let secretResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.secrets else { return cachedSnapshot.secrets }
-            return try await kubeClient.listSecrets(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listSecrets(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let nodeResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let nodeResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.nodes else { return cachedNodes }
-            return try await kubeClient.listNodes(from: state.kubeConfigSources, context: context)
+            return try await kubeClient.listNodes(from: kubeConfigSources, context: context)
         }
-        async let nodeCountResult: Result<Int, Error> = Self.capture {
+        async let nodeCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.nodesCount else { return cachedNodes.count }
             if !cachedNodes.isEmpty {
                 return cachedNodes.count
@@ -8124,7 +8444,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
             do {
                 return try await kubeClient.countClusterResources(
-                    from: state.kubeConfigSources,
+                    from: kubeConfigSources,
                     context: context,
                     resource: "nodes"
                 )
@@ -8135,7 +8455,7 @@ public final class RuneAppViewModel: ObservableObject {
                 throw error
             }
         }
-        async let eventResult: Result<[EventSummary], Error> = Self.capture {
+        async let eventResult: Result<[EventSummary], Error> = captureSnapshotRead {
             guard plan.events else { return cachedSnapshot.events }
             if !cachedSnapshot.events.isEmpty {
                 return cachedSnapshot.events
@@ -8143,31 +8463,31 @@ public final class RuneAppViewModel: ObservableObject {
             if let warmOverview {
                 return warmOverview.events
             }
-            return try await kubeClient.listEvents(from: state.kubeConfigSources, context: context, namespace: effectiveNamespace)
+            return try await kubeClient.listEvents(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
-        async let rbacRolesResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let rbacRolesResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.rbacRoles else { return preservedRBACRoles }
             return try await kubeClient.listRoles(
-                from: state.kubeConfigSources,
+                from: kubeConfigSources,
                 context: context,
                 namespace: effectiveNamespace
             )
         }
-        async let rbacRoleBindingsResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let rbacRoleBindingsResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.rbacRoleBindings else { return preservedRBACRoleBindings }
             return try await kubeClient.listRoleBindings(
-                from: state.kubeConfigSources,
+                from: kubeConfigSources,
                 context: context,
                 namespace: effectiveNamespace
             )
         }
-        async let rbacClusterRolesResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let rbacClusterRolesResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.rbacClusterRoles else { return preservedRBACClusterRoles }
-            return try await kubeClient.listClusterRoles(from: state.kubeConfigSources, context: context)
+            return try await kubeClient.listClusterRoles(from: kubeConfigSources, context: context)
         }
-        async let rbacClusterRoleBindingsResult: Result<[ClusterResourceSummary], Error> = Self.capture {
+        async let rbacClusterRoleBindingsResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.rbacClusterRoleBindings else { return preservedRBACClusterRoleBindings }
-            return try await kubeClient.listClusterRoleBindings(from: state.kubeConfigSources, context: context)
+            return try await kubeClient.listClusterRoleBindings(from: kubeConfigSources, context: context)
         }
 
         let loadedPods = unwrap(await podResult, label: "pods", fallback: cachedSnapshot.pods, warnings: &warnings)
@@ -8315,9 +8635,19 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         if warnings.isEmpty {
+            state.markResourceListsLive(
+                plannedFreshnessFamilies,
+                message: "Live for \(context.name) / \(effectiveNamespace)"
+            )
             state.clearError()
         } else {
             let warningText = warnings.joined(separator: " | ")
+            let failedFamilies = Self.resourceListFamilies(forSnapshotWarnings: warnings)
+            state.markResourceListsLive(
+                plannedFreshnessFamilies.subtracting(failedFamilies),
+                message: "Live for \(context.name) / \(effectiveNamespace)"
+            )
+            state.markResourceListsFailed(failedFamilies, message: "Partial load: \(warningText)")
             state.setErrorMessage("Partial load: \(warningText)")
             state.setSnapshotFreshness(
                 RuneSnapshotFreshness(
@@ -9383,26 +9713,55 @@ public final class RuneAppViewModel: ObservableObject {
         state.isLoading = true
         defer { state.isLoading = false }
 
-        let releases = try await kubeClient.listReleases(
-            from: state.kubeConfigSources,
-            context: context,
-            namespace: state.isHelmAllNamespaces ? nil : namespace,
-            allNamespaces: state.isHelmAllNamespaces
-        )
+        let scope = state.isHelmAllNamespaces ? "all namespaces" : namespace
+        state.markResourceListsRefreshing([.helmReleases], message: "Refreshing \(context.name) / \(scope)")
+        let releases: [HelmReleaseSummary]
+        do {
+            releases = try await kubeClient.listReleases(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: state.isHelmAllNamespaces ? nil : namespace,
+                allNamespaces: state.isHelmAllNamespaces
+            )
+        } catch {
+            state.markResourceListsFailed([.helmReleases], message: error.localizedDescription)
+            throw error
+        }
 
         state.setHelmReleases(releases)
+        state.markResourceListsLive(
+            [.helmReleases],
+            message: "Live for \(context.name) / \(scope)"
+        )
         await loadHelmDetailsForCurrentSelectionAsync()
     }
 
     private func loadOperatorResources(context: KubeContext, namespace: String) async {
-        let resources = (try? await kubeClient.listOperatorResources(
-            from: state.kubeConfigSources,
-            context: context,
-            namespace: namespace
-        )) ?? []
+        state.markResourceListsRefreshing([.operatorResources], message: "Refreshing \(context.name) / \(namespace)")
+        let resources: [OperatorResourceSummary]
+        let loadedFreshly: Bool
+        let loadErrorMessage: String?
+        do {
+            resources = try await kubeClient.listOperatorResources(
+                from: state.kubeConfigSources,
+                context: context,
+                namespace: namespace
+            )
+            loadedFreshly = true
+            loadErrorMessage = nil
+        } catch {
+            resources = []
+            loadedFreshly = false
+            loadErrorMessage = error.localizedDescription
+        }
         guard state.selectedContext == context, state.selectedNamespace == namespace else { return }
         operatorResourcePage = 0
         state.setOperatorResources(resources)
+        if loadedFreshly {
+            state.markResourceListsLive([.operatorResources], message: "Live for \(context.name) / \(namespace)")
+        } else if let loadErrorMessage {
+            state.markResourceListsFailed([.operatorResources], message: loadErrorMessage)
+        }
     }
 
     private func loadHelmDetailsForCurrentSelection() {
@@ -10294,11 +10653,11 @@ public final class RuneAppViewModel: ObservableObject {
             )
         }
 
-        async let namespaceResult: Result<[String], Error> = Self.capture {
-            try await kubeClient.listNamespaces(from: sources, context: context)
+        async let namespaceResult: Result<[String], Error> = captureSnapshotRead {
+            try await self.kubeClient.listNamespaces(from: sources, context: context)
         }
-        async let contextNamespaceResult: Result<String?, Error> = Self.capture {
-            try await kubeClient.contextNamespace(from: sources, context: context)
+        async let contextNamespaceResult: Result<String?, Error> = captureSnapshotRead {
+            try await self.kubeClient.contextNamespace(from: sources, context: context)
         }
 
         let contextDefaultNamespace: String?
@@ -11044,6 +11403,25 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func captureSnapshotRead<T: Sendable>(
+        operation: @Sendable @escaping () async throws -> T
+    ) async -> Result<T, Error> {
+        await Self.capture {
+            try await snapshotRefreshConcurrencyLimiter.withPermit(operation)
+        }
+    }
+
+    private nonisolated static func resourceListFamilies(forSnapshotWarnings warnings: [String]) -> Set<RuneResourceListFamily> {
+        Set(
+            warnings.compactMap { warning in
+                guard let label = warning.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first else {
+                    return nil
+                }
+                return RuneResourceListFamily(snapshotWarningLabel: String(label))
+            }
+        )
+    }
+
     private nonisolated static func isBenignCancellationError(_ error: Error) -> Bool {
         if error is CancellationError {
             return true
@@ -11767,12 +12145,33 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func commandPaletteContextItem(
+        _ context: KubeContext,
+        idPrefix: String,
+        subtitlePrefix: String
+    ) -> CommandPaletteItem {
+        let displayName = contextDisplayName(for: context)
+        let secondary = contextSecondaryDisplayText(for: context)
+        let subtitleParts = [
+            subtitlePrefix,
+            displayName == context.name ? nil : context.name,
+            secondary
+        ].compactMap { $0 }
+        return CommandPaletteItem(
+            id: "\(idPrefix):\(context.id)",
+            title: displayName,
+            subtitle: subtitleParts.joined(separator: " • "),
+            symbolName: state.isFavorite(context) ? "star.fill" : (contextDisplayIconName(for: context) ?? "network"),
+            action: .context(context)
+        )
+    }
+
     private func savedWorkspaceCommandItems(query: String) -> [CommandPaletteItem] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return Array(
             savedWorkspaces
                 .filter { workspace in
-                    trimmed.isEmpty || matches("\(workspace.name) \(savedWorkspaceSubtitle(workspace))", query: trimmed)
+                    trimmed.isEmpty || matches(savedWorkspaceSearchText(workspace), query: trimmed)
                 }
                 .sorted { lhs, rhs in
                     if lhs.isFavorite != rhs.isFavorite {
@@ -11798,7 +12197,7 @@ public final class RuneAppViewModel: ObservableObject {
         return Array(
             savedWorkspaces
                 .filter { workspace in
-                    trimmed.isEmpty || matches("\(workspace.name) \(savedWorkspaceSubtitle(workspace))", query: trimmed)
+                    trimmed.isEmpty || matches(savedWorkspaceSearchText(workspace), query: trimmed)
                 }
                 .sorted { lhs, rhs in
                     if lhs.isFavorite != rhs.isFavorite {
@@ -11822,7 +12221,16 @@ public final class RuneAppViewModel: ObservableObject {
     private func savedWorkspaceSubtitle(_ workspace: SavedWorkspaceSnapshot) -> String {
         var parts = [workspace.isFavorite ? "Favorite workspace" : "Workspace"]
         if let contextName = workspace.contextName, !contextName.isEmpty {
-            parts.append(contextName)
+            let context = KubeContext(name: contextName)
+            let displayName = contextDisplayName(for: context)
+            if displayName == contextName {
+                parts.append(contextName)
+            } else {
+                parts.append("\(displayName) (\(contextName))")
+            }
+            if let secondary = contextSecondaryDisplayText(for: context) {
+                parts.append(secondary)
+            }
         }
         parts.append(workspace.namespace)
         parts.append(workspace.section.title)
@@ -11832,6 +12240,14 @@ public final class RuneAppViewModel: ObservableObject {
             parts.append(workspace.workloadKind.title)
         }
         return parts.joined(separator: " • ")
+    }
+
+    private func savedWorkspaceSearchText(_ workspace: SavedWorkspaceSnapshot) -> String {
+        var parts = [workspace.name, savedWorkspaceSubtitle(workspace)]
+        if let contextName = workspace.contextName, !contextName.isEmpty {
+            parts.append(contentsOf: contextSearchTokens(for: KubeContext(name: contextName)))
+        }
+        return parts.joined(separator: " ")
     }
 
     private func saveWorkspaceCommandItem(name rawName: String, alias: String) -> CommandPaletteItem {
@@ -11967,15 +12383,11 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ctx", "context", "contexts":
             let rows = visibleContexts
-                .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                .filter { context in
+                    remainder.isEmpty || contextSearchTokens(for: context).contains { matches($0, query: remainder) }
+                }
                 .map { context in
-                    CommandPaletteItem(
-                        id: "cmd:context:\(context.id)",
-                        title: context.name,
-                        subtitle: "Contexts • `:ctx`",
-                        symbolName: state.isFavorite(context) ? "star.fill" : "network",
-                        action: .context(context)
-                    )
+                    commandPaletteContextItem(context, idPrefix: "cmd:context", subtitlePrefix: "Contexts • `:ctx`")
                 }
             let navigate = CommandPaletteItem(
                 id: "nav:ctx",
