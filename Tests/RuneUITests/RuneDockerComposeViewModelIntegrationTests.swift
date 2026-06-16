@@ -233,7 +233,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 && !harness.state.isLoadingLogs
         }
 
-        let requestCountAfterLogLoad = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        let requestCountAfterLogLoad = try await stableRequestCount(in: harness)
 
         logTabs.reconcile(availablePods: harness.state.pods, fallbackPod: shellPod)
 
@@ -271,6 +271,64 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         harness.viewModel.toggleFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name)
         XCTAssertFalse(harness.viewModel.isFavoriteResource(kind: .pod, namespace: logPod.namespace, name: logPod.name))
         XCTAssertTrue(harness.viewModel.isFavoriteResource(kind: .pod, namespace: shellPod.namespace, name: shellPod.name))
+        XCTAssertNil(harness.state.lastLogFetchError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testDockerComposeConfiguredLogExportsUseLogsLoadedFromFakeCluster() async throws {
+        let configuredExporter = RecordingConfiguredExporter()
+        let harness = try makeHarness(configuredExporter: configuredExporter)
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.pods.contains { $0.name.hasPrefix("orbit-lens-") }
+                && !harness.state.isLoading
+        }
+
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("orbit-lens-") })
+        harness.viewModel.selectPod(pod)
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.id == pod.id
+                && !harness.state.podLogs.isEmpty
+                && !harness.state.isLoadingLogs
+        }
+
+        let requestCountAfterLogLoad = try await stableRequestCount(in: harness)
+
+        harness.viewModel.saveCurrentLogsToExportFolder(openAfterSave: true)
+        harness.viewModel.saveVisibleLogsZipToExportFolder(
+            visibleText: "visible docker compose fake log\n",
+            openAfterSave: false
+        )
+
+        XCTAssertEqual(configuredExporter.saves.count, 2)
+
+        let currentLogsSave = configuredExporter.saves[0]
+        XCTAssertEqual(String(data: currentLogsSave.data, encoding: .utf8), harness.state.podLogs)
+        XCTAssertTrue(currentLogsSave.suggestedName.hasPrefix("pod-\(pod.name)-logs-"))
+        XCTAssertEqual(currentLogsSave.allowedFileTypes, ["log", "txt"])
+        XCTAssertEqual(currentLogsSave.kind, .plainText)
+        XCTAssertTrue(currentLogsSave.openAfterSave)
+
+        let visibleZipSave = configuredExporter.saves[1]
+        XCTAssertTrue(visibleZipSave.suggestedName.hasPrefix("pod-\(pod.name)-visible-logs-"))
+        XCTAssertEqual(visibleZipSave.allowedFileTypes, ["zip"])
+        XCTAssertEqual(visibleZipSave.kind, .archive)
+        XCTAssertFalse(visibleZipSave.openAfterSave)
+        XCTAssertGreaterThan(visibleZipSave.data.count, 0)
+
+        let requestCountAfterExport = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        XCTAssertEqual(requestCountAfterExport, requestCountAfterLogLoad)
         XCTAssertNil(harness.state.lastLogFetchError)
         XCTAssertNil(harness.state.lastError)
     }
@@ -732,7 +790,10 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let helmRunner: DockerComposeRecordingHelmCommandRunner
     }
 
-    private func makeHarness(exporter: FileExporting = NoopFileExporter()) throws -> Harness {
+    private func makeHarness(
+        exporter: FileExporting = NoopFileExporter(),
+        configuredExporter: ConfiguredExporting = NoopConfiguredExporter()
+    ) throws -> Harness {
         guard ProcessInfo.processInfo.environment["RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS"] == "1" else {
             throw XCTSkip("Set RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 to run Docker Compose fake-cluster UI integration tests.")
         }
@@ -758,6 +819,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             state: state,
             kubeClient: kubeClient,
             exporter: exporter,
+            configuredExporter: configuredExporter,
             helmCommandRunner: helmRunner,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -855,6 +917,36 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 return
             }
             try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    private func stableRequestCount(
+        in harness: Harness,
+        stableFor: TimeInterval = 0.25,
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> Int {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastCount = await harness.kubeClient.restRequestMetricsSummary().requestCount
+        var stableSince = Date()
+
+        while true {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            let currentCount = await harness.kubeClient.restRequestMetricsSummary().requestCount
+            if currentCount == lastCount {
+                if Date().timeIntervalSince(stableSince) >= stableFor {
+                    return currentCount
+                }
+            } else {
+                lastCount = currentCount
+                stableSince = Date()
+            }
+
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for REST request count to stabilize", file: file, line: line)
+                return lastCount
+            }
         }
     }
 
@@ -1147,6 +1239,19 @@ private final class NoopFileExporter: FileExporting {
     }
 }
 
+private final class NoopConfiguredExporter: ConfiguredExporting {
+    @MainActor
+    func save(
+        data: Data,
+        suggestedName: String,
+        allowedFileTypes: [String],
+        kind: ConfiguredExportFileKind,
+        openAfterSave: Bool
+    ) throws -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
 private final class RecordingFileExporter: FileExporting {
     struct Save {
         let data: Data
@@ -1159,6 +1264,36 @@ private final class RecordingFileExporter: FileExporting {
     @MainActor
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
         saves.append(Save(data: data, suggestedName: suggestedName, allowedFileTypes: allowedFileTypes))
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+@MainActor
+private final class RecordingConfiguredExporter: ConfiguredExporting {
+    struct Save {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+        let kind: ConfiguredExportFileKind
+        let openAfterSave: Bool
+    }
+
+    private(set) var saves: [Save] = []
+
+    func save(
+        data: Data,
+        suggestedName: String,
+        allowedFileTypes: [String],
+        kind: ConfiguredExportFileKind,
+        openAfterSave: Bool
+    ) throws -> URL {
+        saves.append(Save(
+            data: data,
+            suggestedName: suggestedName,
+            allowedFileTypes: allowedFileTypes,
+            kind: kind,
+            openAfterSave: openAfterSave
+        ))
         return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
     }
 }

@@ -247,47 +247,65 @@ struct ResourceLogsToolbar: View {
 
                 Divider()
 
-                Button(action: onSaveToExportFolder) {
-                    Label("Save to Export Folder", systemImage: "folder")
-                }
-                Button(action: onSaveAndOpen) {
-                    Label("Save and Open", systemImage: "arrow.up.right.square")
+                Menu {
+                    Button(action: onSaveToExportFolder) {
+                        Label("Save to Export Folder", systemImage: "folder")
+                    }
+                    Button(action: onSaveAndOpen) {
+                        Label("Save and Open", systemImage: "arrow.up.right.square")
+                    }
+                } label: {
+                    Label("Current Logs", systemImage: "doc.text")
                 }
 
                 Divider()
 
-                Button {
-                    onSaveVisibleZip(searchSummary?.displayedText ?? "")
+                Menu {
+                    Button {
+                        onSaveVisibleZip(searchSummary?.displayedText ?? "")
+                    } label: {
+                        Label("Save As...", systemImage: "doc.zipper")
+                    }
+                    Button {
+                        onSaveVisibleZipToExportFolder(searchSummary?.displayedText ?? "")
+                    } label: {
+                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                    }
+                    Button {
+                        onSaveVisibleZipAndOpen(searchSummary?.displayedText ?? "")
+                    } label: {
+                        Label("Save and Open", systemImage: "archivebox")
+                    }
                 } label: {
                     Label(t(.exportVisibleResultsZip), systemImage: "doc.zipper")
                 }
-                Button {
-                    onSaveVisibleZipToExportFolder(searchSummary?.displayedText ?? "")
+
+                Menu {
+                    Button(action: onSaveFullZip) {
+                        Label("Save As...", systemImage: "archivebox")
+                    }
+                    Button(action: onSaveFullZipToExportFolder) {
+                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                    }
+                    Button(action: onSaveFullZipAndOpen) {
+                        Label("Save and Open", systemImage: "archivebox")
+                    }
                 } label: {
-                    Label("Save Visible ZIP to Export Folder", systemImage: "folder.badge.plus")
-                }
-                Button {
-                    onSaveVisibleZipAndOpen(searchSummary?.displayedText ?? "")
-                } label: {
-                    Label("Save Visible ZIP and Open", systemImage: "archivebox")
-                }
-                Button(action: onSaveFullZip) {
                     Label(t(.exportFullUnfilteredZip), systemImage: "archivebox")
                 }
-                Button(action: onSaveFullZipToExportFolder) {
-                    Label("Save Full ZIP to Export Folder", systemImage: "folder.badge.plus")
-                }
-                Button(action: onSaveFullZipAndOpen) {
-                    Label("Save Full ZIP and Open", systemImage: "archivebox")
-                }
-                Button(action: onSaveAllPodsZip) {
+
+                Menu {
+                    Button(action: onSaveAllPodsZip) {
+                        Label("Save As...", systemImage: "shippingbox")
+                    }
+                    Button(action: onSaveAllPodsZipToExportFolder) {
+                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                    }
+                    Button(action: onSaveAllPodsZipAndOpen) {
+                        Label("Save and Open", systemImage: "archivebox")
+                    }
+                } label: {
                     Label(t(.exportAllPodsFullZip), systemImage: "shippingbox")
-                }
-                Button(action: onSaveAllPodsZipToExportFolder) {
-                    Label("Save All Pods ZIP to Export Folder", systemImage: "folder.badge.plus")
-                }
-                Button(action: onSaveAllPodsZipAndOpen) {
-                    Label("Save All Pods ZIP and Open", systemImage: "archivebox")
                 }
             } label: {
                 Label(t(.more), systemImage: "ellipsis.circle")

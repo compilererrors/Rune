@@ -298,6 +298,57 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testConfiguredLogExportsUseLogsLoadedFromFakeCluster() async throws {
+        let configuredExporter = RecordingConfiguredExporter()
+        let harness = try await makeHarness(configuredExporter: configuredExporter)
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.workloads)
+
+        try await waitUntil {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.name == "ember-gate-75c9f746b8-kq2wm"
+                && !harness.state.isLoading
+        }
+
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil {
+            !harness.state.isLoadingLogs
+                && harness.state.podLogs.contains("synthetic REST fake log")
+                && harness.state.lastLogFetchError == nil
+        }
+
+        harness.server.resetRequestLines()
+        harness.viewModel.saveCurrentLogsToExportFolder(openAfterSave: true)
+        harness.viewModel.saveVisibleLogsZipToExportFolder(
+            visibleText: "visible synthetic REST fake log\n",
+            openAfterSave: false
+        )
+
+        XCTAssertEqual(configuredExporter.saves.count, 2)
+
+        let currentLogsSave = configuredExporter.saves[0]
+        XCTAssertEqual(String(data: currentLogsSave.data, encoding: .utf8), harness.state.podLogs)
+        XCTAssertTrue(currentLogsSave.suggestedName.hasPrefix("pod-ember-gate-75c9f746b8-kq2wm-logs-"))
+        XCTAssertEqual(currentLogsSave.allowedFileTypes, ["log", "txt"])
+        XCTAssertEqual(currentLogsSave.kind, .plainText)
+        XCTAssertTrue(currentLogsSave.openAfterSave)
+
+        let visibleZipSave = configuredExporter.saves[1]
+        XCTAssertTrue(visibleZipSave.suggestedName.hasPrefix("pod-ember-gate-75c9f746b8-kq2wm-visible-logs-"))
+        XCTAssertEqual(visibleZipSave.allowedFileTypes, ["zip"])
+        XCTAssertEqual(visibleZipSave.kind, .archive)
+        XCTAssertFalse(visibleZipSave.openAfterSave)
+        XCTAssertGreaterThan(visibleZipSave.data.count, 0)
+
+        XCTAssertTrue(harness.server.requestLines().isEmpty)
+        XCTAssertNil(harness.state.lastLogFetchError)
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testFakeClusterLoadsUnifiedDeploymentAndServiceLogsThroughViewModel() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -1044,6 +1095,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         fixture: RuneFakeK8sFixture = RuneFakeK8sFixture(),
         kubeClient: KubernetesClient = KubernetesClient(),
         exporter: FileExporting = NoopFileExporter(),
+        configuredExporter: ConfiguredExporting = NoopConfiguredExporter(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = NoopOverviewSnapshotCacheStore()
     ) async throws -> Harness {
         let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
@@ -1054,6 +1106,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             state: state,
             kubeClient: kubeClient,
             exporter: exporter,
+            configuredExporter: configuredExporter,
             overviewSnapshotPersistence: overviewSnapshotPersistence,
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -1121,6 +1174,19 @@ private final class NoopFileExporter: FileExporting {
     }
 }
 
+private final class NoopConfiguredExporter: ConfiguredExporting {
+    @MainActor
+    func save(
+        data: Data,
+        suggestedName: String,
+        allowedFileTypes: [String],
+        kind: ConfiguredExportFileKind,
+        openAfterSave: Bool
+    ) throws -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
 private final class RecordingFileExporter: FileExporting {
     struct Save {
         let data: Data
@@ -1133,6 +1199,36 @@ private final class RecordingFileExporter: FileExporting {
     @MainActor
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
         saves.append(Save(data: data, suggestedName: suggestedName, allowedFileTypes: allowedFileTypes))
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+@MainActor
+private final class RecordingConfiguredExporter: ConfiguredExporting {
+    struct Save {
+        let data: Data
+        let suggestedName: String
+        let allowedFileTypes: [String]
+        let kind: ConfiguredExportFileKind
+        let openAfterSave: Bool
+    }
+
+    private(set) var saves: [Save] = []
+
+    func save(
+        data: Data,
+        suggestedName: String,
+        allowedFileTypes: [String],
+        kind: ConfiguredExportFileKind,
+        openAfterSave: Bool
+    ) throws -> URL {
+        saves.append(Save(
+            data: data,
+            suggestedName: suggestedName,
+            allowedFileTypes: allowedFileTypes,
+            kind: kind,
+            openAfterSave: openAfterSave
+        ))
         return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
     }
 }

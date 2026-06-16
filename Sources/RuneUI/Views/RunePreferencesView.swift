@@ -52,6 +52,15 @@ private struct ExportOpenerRecommendation {
     let appName: String
     let kind: ConfiguredExportFileKind
 
+    var detectedTitle: String {
+        switch kind {
+        case .plainText:
+            return "\(appName) text editor detected"
+        case .archive:
+            return "\(appName) archive utility detected"
+        }
+    }
+
     func detail(bundleIdentifier: String) -> String {
         switch kind {
         case .plainText:
@@ -1178,7 +1187,7 @@ public struct RunePreferencesView: View {
     private func exportOpenerRecommendationRow(_ recommendation: ExportOpenerRecommendation) -> some View {
         if let detected = detectedRecommendedExportOpener(recommendation) {
             settingsControlRow(
-                title: "\(detected.appName) detected",
+                title: recommendation.detectedTitle,
                 detail: detected.detail
             ) {
                 Button("Use \(detected.appName)") {
