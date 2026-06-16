@@ -103,7 +103,7 @@
   "settingsShowHoverTooltipsHelp": "Shows short native hover explanations for less obvious labels, tabs, and controls such as Cluster Signals. Turn this off if tooltips get in the way.",
   "settingsSimpleMode": "Simple mode",
   "settingsSimpleModeHelp": "Uses a lighter interface for fast navigation: advanced optional panels are skipped, Kubernetes managedFields stay hidden in read-only YAML and Describe output, and terminal logs stay closer to a compact k9s-style workflow.",
-  "settingsSimpleModeManagedFieldsNote": "Simple mode always hides managedFields in read-only YAML and Describe views.",
+  "settingsSimpleModeManagedFieldsNote": "Simple mode keeps the UI lean: managedFields stay hidden in read-only YAML and Describe views, and heavyweight troubleshooting panels are available again when Simple mode is off.",
   "settingsThemes": "Themes",
   "settingsThemesSubtitle": "Rune palettes and custom themes.",
   "startTailHelp": "Start live log refresh and append each read to the session cache.",

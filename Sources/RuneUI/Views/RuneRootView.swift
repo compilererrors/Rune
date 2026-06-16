@@ -462,6 +462,13 @@ private enum HelmBrowserTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var resourceListFamily: RuneResourceListFamily {
+        switch self {
+        case .releases: return .helmReleases
+        case .operatorResources: return .operatorResources
+        }
+    }
+
     var title: String {
         switch self {
         case .releases: return "Releases"
@@ -857,6 +864,8 @@ public struct RuneRootView: View {
             syncSavedWorkspaceInspectorState()
             if tab == .unifiedLogs {
                 viewModel.reloadLogsForSelection()
+            } else if tab == .rollout, simpleMode {
+                viewModel.refreshReplicaSetsForCurrentNamespace()
             }
         }
         .onChange(of: serviceInspectorTab) { _, tab in
@@ -1065,6 +1074,7 @@ public struct RuneRootView: View {
         DispatchQueue.main.async {
             switch request.action {
             case .authDoctor:
+                guard !simpleMode else { return }
                 isAuthDoctorPanelExpanded = true
                 viewModel.runAuthDoctor()
             case .commandPalette:
@@ -2267,6 +2277,7 @@ public struct RuneRootView: View {
                             )
                         },
                         onClear: viewModel.clearKubeConfigImportReviews,
+                        showsAuthDoctorAction: !simpleMode,
                         onRunAuthDoctor: {
                             addClusterPopoverPresented = false
                             viewModel.runAuthDoctor()
@@ -2561,13 +2572,15 @@ public struct RuneRootView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button {
-                    viewModel.runAuthDoctor()
-                } label: {
-                    Label("Auth Doctor", systemImage: "stethoscope")
+                if !simpleMode {
+                    Button {
+                        viewModel.runAuthDoctor()
+                    } label: {
+                        Label("Auth Doctor", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.state.isRunningAuthDoctor)
                 }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.isRunningAuthDoctor)
 
                 Spacer(minLength: 0)
 
@@ -2975,7 +2988,11 @@ public struct RuneRootView: View {
     }
 
     private var overviewCardModules: [OverviewModule] {
-        [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes, .events]
+        var modules: [OverviewModule] = [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes]
+        if !simpleMode {
+            modules.append(.events)
+        }
+        return modules
     }
 
     private func isOverviewCardKeyboardFocused(_ index: Int) -> Bool {
@@ -3036,6 +3053,7 @@ public struct RuneRootView: View {
                                     )
                                 },
                                 onClear: viewModel.clearKubeConfigImportReviews,
+                                showsAuthDoctorAction: !simpleMode,
                                 onRunAuthDoctor: viewModel.runAuthDoctor
                             )
                         }
@@ -3045,7 +3063,9 @@ public struct RuneRootView: View {
 
                 overviewStatusBanner
                 manualNamespaceBanner
-                authDoctorPanel
+                if !simpleMode {
+                    authDoctorPanel
+                }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
                     overviewStatCard(
@@ -3125,17 +3145,19 @@ public struct RuneRootView: View {
                         overviewCardSelectionIndex = 6
                         viewModel.openOverviewModule(.nodes)
                     }
-                    overviewStatCard(
-                        title: "Events",
-                        count: viewModel.state.overviewEvents.count,
-                        symbol: "bolt.badge.clock.fill",
-                        tint: .orange,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(7),
-                        help: overviewEventsCardHelp
-                    ) {
-                        overviewCardSelectionIndex = 7
-                        viewModel.openOverviewModule(.events)
+                    if !simpleMode {
+                        overviewStatCard(
+                            title: "Events",
+                            count: viewModel.state.overviewEvents.count,
+                            symbol: "bolt.badge.clock.fill",
+                            tint: .orange,
+                            isLoading: viewModel.state.isLoading,
+                            isKeyboardFocused: isOverviewCardKeyboardFocused(7),
+                            help: overviewEventsCardHelp
+                        ) {
+                            overviewCardSelectionIndex = 7
+                            viewModel.openOverviewModule(.events)
+                        }
                     }
                 }
 
@@ -3454,7 +3476,13 @@ public struct RuneRootView: View {
         VStack(alignment: .leading, spacing: 8) {
             RuneSegmentedPickerInScroll(
                 "Helm browser",
-                selection: $helmBrowserTab,
+                selection: Binding(
+                    get: { helmBrowserTab },
+                    set: { tab in
+                        helmBrowserTab = tab
+                        viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)
+                    }
+                ),
                 labelsHidden: true
             ) {
                 ForEach(HelmBrowserTab.allCases) { tab in
@@ -3711,20 +3739,22 @@ public struct RuneRootView: View {
                     viewModel.refreshCurrentView(debounced: false)
                 }
 
-                Menu {
-                    Button("Save Bundle") {
-                        viewModel.saveSupportBundle()
-                    }
+                if !simpleMode {
+                    Menu {
+                        Button("Save Bundle") {
+                            viewModel.saveSupportBundle()
+                        }
 
-                    Button("Save Bundle to Export Folder") {
-                        viewModel.saveSupportBundleToExportFolder(openAfterSave: false)
-                    }
+                        Button("Save Bundle to Export Folder") {
+                            viewModel.saveSupportBundleToExportFolder(openAfterSave: false)
+                        }
 
-                    Button("Save Bundle and Open") {
-                        viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
+                        Button("Save Bundle and Open") {
+                            viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
+                        }
+                    } label: {
+                        Label("Save Bundle", systemImage: "square.and.arrow.down")
                     }
-                } label: {
-                    Label("Save Bundle", systemImage: "square.and.arrow.down")
                 }
             }
 
@@ -4108,7 +4138,9 @@ public struct RuneRootView: View {
                 }
             }
 
-            RBACCanISimulatorPanel(viewModel: viewModel)
+            if !simpleMode {
+                RBACCanISimulatorPanel(viewModel: viewModel)
+            }
 
             Divider()
 
@@ -6999,6 +7031,7 @@ public struct RuneRootView: View {
     }
 
     private var shouldReserveAuthDoctorPanel: Bool {
+        guard !simpleMode else { return false }
         switch viewModel.state.selectedSection {
         case .overview:
             return true
@@ -7510,26 +7543,39 @@ public struct RuneRootView: View {
                 .opacity(0.45)
 
             let relatedReplicaSets = viewModel.selectedDeploymentRelatedReplicaSets
-            if !relatedReplicaSets.isEmpty {
+            let shouldOfferReplicaSetHistoryLoad = simpleMode && relatedReplicaSets.isEmpty
+            if !relatedReplicaSets.isEmpty || shouldOfferReplicaSetHistoryLoad {
                 let historicalReplicaSetCount = relatedReplicaSets.filter(isHistoricalDeploymentReplicaSet).count
                 let visibleReplicaSets = showsHistoricalDeploymentReplicaSets
                     ? relatedReplicaSets
                     : relatedReplicaSets.filter { !isHistoricalDeploymentReplicaSet($0) }
 
                 ResourceRelationshipSection(title: "Related ReplicaSets") {
-                    ForEach(visibleReplicaSets) { replicaSet in
-                        ResourceRelationshipLinkButton(
-                            title: replicaSet.name,
-                            subtitle: "\(replicaSet.namespace ?? deployment.namespace) · \(replicaSet.primaryText)",
-                            symbol: "rectangle.stack"
-                        ) {
-                            viewModel.openDeploymentRelatedReplicaSet(replicaSet)
+                    if shouldOfferReplicaSetHistoryLoad {
+                        ResourceRelationshipEmptyRow(
+                            title: "History not loaded",
+                            subtitle: "Simple mode loads ReplicaSets only when you ask for rollout history."
+                        )
+                    } else {
+                        ForEach(visibleReplicaSets) { replicaSet in
+                            ResourceRelationshipLinkButton(
+                                title: replicaSet.name,
+                                subtitle: "\(replicaSet.namespace ?? deployment.namespace) · \(replicaSet.primaryText)",
+                                symbol: "rectangle.stack"
+                            ) {
+                                viewModel.openDeploymentRelatedReplicaSet(replicaSet)
+                            }
                         }
                     }
 
-                    if historicalReplicaSetCount > 0 {
+                    if historicalReplicaSetCount > 0 || shouldOfferReplicaSetHistoryLoad {
                         Button {
-                            showsHistoricalDeploymentReplicaSets.toggle()
+                            if shouldOfferReplicaSetHistoryLoad {
+                                showsHistoricalDeploymentReplicaSets = true
+                                viewModel.refreshReplicaSetsForCurrentNamespace()
+                            } else {
+                                showsHistoricalDeploymentReplicaSets.toggle()
+                            }
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "clock.arrow.circlepath")
@@ -7537,9 +7583,11 @@ public struct RuneRootView: View {
                                     .foregroundStyle(.secondary)
                                 Text(showsHistoricalDeploymentReplicaSets ? "Hide history" : "Show history")
                                     .font(.caption.weight(.semibold))
-                                Text("(\(historicalReplicaSetCount))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                if historicalReplicaSetCount > 0 {
+                                    Text("(\(historicalReplicaSetCount))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer(minLength: 0)
                                 Image(systemName: showsHistoricalDeploymentReplicaSets ? "chevron.up" : "chevron.down")
                                     .font(.caption2.weight(.semibold))
@@ -7549,7 +7597,9 @@ public struct RuneRootView: View {
                         }
                         .buttonStyle(.plain)
                         .help(
-                            showsHistoricalDeploymentReplicaSets
+                            shouldOfferReplicaSetHistoryLoad
+                                ? "Load ReplicaSets for rollout history and debugging."
+                                : showsHistoricalDeploymentReplicaSets
                                 ? "Hide inactive ReplicaSets with 0/0 ready replicas."
                                 : "Show inactive ReplicaSets kept for rollout history and debugging."
                         )

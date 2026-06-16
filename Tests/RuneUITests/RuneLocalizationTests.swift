@@ -100,7 +100,7 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(source.contains("private func t(_ key: RuneLocalizedStringKey) -> String"))
         XCTAssertTrue(source.contains("RuneLocalizedStrings.shared.string(key, language: language)"))
         XCTAssertTrue(source.contains("Label(t(.saveLogs), systemImage: \"square.and.arrow.down\")"))
-        XCTAssertTrue(source.contains("Label(t(.previous), systemImage: \"clock.arrow.circlepath\")"))
+        XCTAssertTrue(source.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\""))
         XCTAssertTrue(source.contains("placeholder: t(.searchLogs)"))
         XCTAssertTrue(source.contains(".help(findHelp)"))
     }

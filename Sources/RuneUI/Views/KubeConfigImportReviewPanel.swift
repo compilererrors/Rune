@@ -7,7 +7,26 @@ struct KubeConfigImportReviewPanel: View {
     let metadataDrafts: [String: ContextDisplayMetadata]
     let onUpdateMetadata: (String, ContextDisplayMetadata) -> Void
     let onClear: () -> Void
+    let showsAuthDoctorAction: Bool
     let onRunAuthDoctor: () -> Void
+
+    init(
+        review: KubeConfigImportReview,
+        duplicateHandlingChoice: Binding<KubeConfigDuplicateHandlingChoice>,
+        metadataDrafts: [String: ContextDisplayMetadata],
+        onUpdateMetadata: @escaping (String, ContextDisplayMetadata) -> Void,
+        onClear: @escaping () -> Void,
+        showsAuthDoctorAction: Bool = true,
+        onRunAuthDoctor: @escaping () -> Void
+    ) {
+        self.review = review
+        _duplicateHandlingChoice = duplicateHandlingChoice
+        self.metadataDrafts = metadataDrafts
+        self.onUpdateMetadata = onUpdateMetadata
+        self.onClear = onClear
+        self.showsAuthDoctorAction = showsAuthDoctorAction
+        self.onRunAuthDoctor = onRunAuthDoctor
+    }
 
     private var statusColor: Color {
         review.isValid ? .green : .orange
@@ -29,7 +48,9 @@ struct KubeConfigImportReviewPanel: View {
             issueSummary
             duplicateNameGuidance
             fullReviewDisclosure
-            runAuthDoctorButton
+            if showsAuthDoctorAction {
+                runAuthDoctorButton
+            }
         }
         .padding(10)
         .background(RuneSurfaceBackground(kind: .inset))

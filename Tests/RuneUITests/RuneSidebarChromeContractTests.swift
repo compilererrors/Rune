@@ -1562,6 +1562,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
 
         XCTAssertTrue(settingsSource.contains("simpleMode"))
         XCTAssertTrue(settingsSource.contains("runeSimpleMode"))
@@ -1579,7 +1580,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    OverviewClusterSignalsPanelView("))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    OverviewRecentEventsPanelView("))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                        overviewStatCard(\n                            title: \"Events\""))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n            modules.append(.events)"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    authDoctorPanel"))
+        XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return false }"))
+        XCTAssertTrue(rootViewSource.contains("showsAuthDoctorAction: !simpleMode"))
+        XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return }"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    Menu {\n                        Button(\"Save Bundle\")"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    Button {\n                        viewModel.runAuthDoctor()"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                RBACCanISimulatorPanel(viewModel: viewModel)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
+        XCTAssertTrue(rootViewSource.contains("let shouldOfferReplicaSetHistoryLoad = simpleMode && relatedReplicaSets.isEmpty"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.refreshReplicaSetsForCurrentNamespace()"))
         XCTAssertTrue(rootViewSource.contains("if let context = viewModel.state.selectedContext, viewModel.state.selectedSection != .terminal"))
+        XCTAssertTrue(viewModelSource.contains("if !UserDefaults.standard.runeSimpleMode {\n                    self.runAuthDoctor()"))
+        XCTAssertTrue(viewModelSource.contains("static func forSelection(section: RuneSection, kind: KubeResourceKind, simpleMode: Bool = false)"))
+        XCTAssertTrue(viewModelSource.contains("if !simpleMode {\n                plan.events = true"))
+        XCTAssertTrue(viewModelSource.contains("if !simpleMode {\n                    plan.replicaSets = true"))
+        XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                switch kind"))
+        XCTAssertTrue(viewModelSource.contains("} else {\n                plan.rbacRoles = true"))
+        XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                cancellationFamilies.insert(helmBrowserResourceFamily)"))
+        XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                    try await loadSelectedHelmBrowserResource"))
+        XCTAssertTrue(viewModelSource.contains("} else {\n                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)\n                    await loadOperatorResources(context: context, namespace: state.selectedNamespace)"))
+        XCTAssertTrue(viewModelSource.contains("public func refreshReplicaSetsForCurrentNamespace()"))
     }
 
     func testPreferencesExposeHoverTooltipSetting() throws {
@@ -2208,6 +2231,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("viewModel.importManualTokenKubeConfig()"))
         XCTAssertTrue(rootViewSource.contains("KubeConfigImportReviewPanel"))
         XCTAssertTrue(rootViewSource.contains("viewModel.clearKubeConfigImportReviews"))
+        XCTAssertTrue(importReviewPanelSource.contains("showsAuthDoctorAction: Bool = true"))
+        XCTAssertTrue(importReviewPanelSource.contains("self.showsAuthDoctorAction = showsAuthDoctorAction"))
+        XCTAssertTrue(importReviewPanelSource.contains("if showsAuthDoctorAction {\n                runAuthDoctorButton"))
         XCTAssertTrue(rootViewSource.contains("metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setKubeConfigImportContextMetadata"))
         XCTAssertTrue(rootViewSource.contains("viewModel.contextDisplayName(for: context)"))
@@ -2329,6 +2355,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "@ViewBuilder\n    private var authDoctorSummaryChip",
             in: rootViewSource
         )
+        XCTAssertTrue(authDoctorVisibilityBlock.contains("guard !simpleMode else { return false }"))
         XCTAssertTrue(authDoctorVisibilityBlock.contains("case .overview"))
         XCTAssertFalse(authDoctorVisibilityBlock.contains("case .overview, .workloads"))
 
@@ -2409,7 +2436,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: viewModelSource
         )
 
-        XCTAssertTrue(rbacDetailsBlock.contains("RBACCanISimulatorPanel(viewModel: viewModel)"))
+        XCTAssertTrue(rbacDetailsBlock.contains("if !simpleMode {\n                RBACCanISimulatorPanel(viewModel: viewModel)"))
         XCTAssertTrue(rbacDetailsBlock.contains("ResourceRelationshipSection(title: \"Referenced Role\")"))
         XCTAssertTrue(rbacDetailsBlock.contains("viewModel.openRBACBindingReferencedRole(role)"))
         XCTAssertTrue(rbacDetailsBlock.contains("ResourceRelationshipSection(title: \"Related Bindings\")"))
@@ -2519,8 +2546,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let stateSource = try String(contentsOfFile: runeAppStatePath, encoding: .utf8)
 
         XCTAssertTrue(logsViewSource.contains("private var tailControl: some View"))
-        XCTAssertTrue(logsViewSource.contains("Label(t(.resume), systemImage: \"play.fill\")"))
-        XCTAssertTrue(logsViewSource.contains("Label(t(.pause), systemImage: \"pause.fill\")"))
+        XCTAssertTrue(logsViewSource.contains("toolbarIconLabel(t(.resume), systemImage: \"play.fill\""))
+        XCTAssertTrue(logsViewSource.contains("toolbarIconLabel(t(.pause), systemImage: \"pause.fill\""))
         XCTAssertTrue(logsViewSource.contains("Button(t(.stopTail))"))
         XCTAssertFalse(logsViewSource.contains("Toggle(\"Tail\""))
         XCTAssertFalse(logsViewSource.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
@@ -2591,7 +2618,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("actionColumnTrailingPadding: CGFloat = 18"))
         XCTAssertTrue(appKitPodTableSource.contains("columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding"))
         XCTAssertTrue(appKitPodTableSource.contains("static func updateRenderedTableWidth(on tableView: NSTableView?)"))
-        XCTAssertTrue(appKitPodTableSource.contains("headerView.setFrameSize(NSSize(width: tableWidth, height: headerView.frame.height))"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerView.setFrameSize(headerSize)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.headerView?.needsDisplay = true"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.needsLayout = true"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.layoutSubtreeIfNeeded()"))
@@ -2647,7 +2674,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("private enum HelmBrowserTab"))
         XCTAssertTrue(rootViewSource.contains("@State private var helmBrowserTab: HelmBrowserTab = .releases"))
         XCTAssertTrue(rootViewSource.contains("RuneSegmentedPickerInScroll("))
-        XCTAssertTrue(rootViewSource.contains("selection: $helmBrowserTab"))
+        XCTAssertTrue(rootViewSource.contains("get: { helmBrowserTab }"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
         XCTAssertTrue(rootViewSource.contains("case .releases:"))
         XCTAssertTrue(rootViewSource.contains("helmReleaseBrowser"))
         XCTAssertTrue(rootViewSource.contains("case .operatorResources:"))
@@ -2964,8 +2992,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("Mark as Production"))
         XCTAssertTrue(rootViewSource.contains("Unmark Production"))
         XCTAssertTrue(rootViewSource.contains("viewModel.isProductionContext(context)"))
-        XCTAssertTrue(rootViewSource.contains("Production context detected"))
-        XCTAssertTrue(rootViewSource.contains("Marked as production"))
+        XCTAssertTrue(rootViewSource.contains("Production context active"))
+        XCTAssertTrue(rootViewSource.contains("Non-production context"))
     }
 
     func testCustomResourceBrowserUsesPaginationAndPinnedColumns() throws {

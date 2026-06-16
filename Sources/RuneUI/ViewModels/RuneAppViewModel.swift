@@ -587,7 +587,7 @@ private struct SnapshotLoadPlan: Sendable {
         return families
     }
 
-    static func forSelection(section: RuneSection, kind: KubeResourceKind) -> SnapshotLoadPlan {
+    static func forSelection(section: RuneSection, kind: KubeResourceKind, simpleMode: Bool = false) -> SnapshotLoadPlan {
         var plan = SnapshotLoadPlan()
         switch section {
         case .overview:
@@ -598,7 +598,9 @@ private struct SnapshotLoadPlan: Sendable {
             plan.configMapsCount = true
             plan.cronJobsCount = true
             plan.nodesCount = true
-            plan.events = true
+            if !simpleMode {
+                plan.events = true
+            }
         case .workloads:
             switch kind {
             case .pod:
@@ -606,7 +608,9 @@ private struct SnapshotLoadPlan: Sendable {
             case .deployment:
                 plan.podStatuses = true
                 plan.deployments = true
-                plan.replicaSets = true
+                if !simpleMode {
+                    plan.replicaSets = true
+                }
             case .statefulSet:
                 plan.statefulSets = true
             case .daemonSet:
@@ -654,10 +658,25 @@ private struct SnapshotLoadPlan: Sendable {
         case .events:
             plan.events = true
         case .rbac:
-            plan.rbacRoles = true
-            plan.rbacRoleBindings = true
-            plan.rbacClusterRoles = true
-            plan.rbacClusterRoleBindings = true
+            if simpleMode {
+                switch kind {
+                case .role:
+                    plan.rbacRoles = true
+                case .roleBinding:
+                    plan.rbacRoleBindings = true
+                case .clusterRole:
+                    plan.rbacClusterRoles = true
+                case .clusterRoleBinding:
+                    plan.rbacClusterRoleBindings = true
+                default:
+                    plan.rbacRoles = true
+                }
+            } else {
+                plan.rbacRoles = true
+                plan.rbacRoleBindings = true
+                plan.rbacClusterRoles = true
+                plan.rbacClusterRoleBindings = true
+            }
         case .terminal:
             plan.pods = true
         case .helm:
@@ -679,6 +698,16 @@ private struct OverviewSnapshotCacheEntry: Sendable {
     let clusterCPUPercent: Int?
     let clusterMemoryPercent: Int?
     let events: [EventSummary]
+
+    var hasCoreData: Bool {
+        !pods.isEmpty
+            || deploymentsCount > 0
+            || servicesCount > 0
+            || ingressesCount > 0
+            || configMapsCount > 0
+            || cronJobsCount > 0
+            || nodesCount > 0
+    }
 }
 
 public enum RBACCanIScope: String, CaseIterable, Identifiable, Sendable {
@@ -959,6 +988,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var overviewPrefetchTask: Task<Void, Never>?
     /// Background task: warms overview cache for non-selected contexts; cancelled on context change.
     private var contextOverviewPrefetchTask: Task<Void, Never>?
+    private var helmBrowserResourceFamily: RuneResourceListFamily = .helmReleases
     private var recentNamespacesByContext: [String: [String]] = [:]
     /// Recently selected contexts (most-recent first); used with favorites when selecting prefetch targets.
     private var recentContextNames: [String] = []
@@ -2108,7 +2138,9 @@ public final class RuneAppViewModel: ObservableObject {
                 self.startKubeConfigSourceSync()
                 self.cloudKubeConfigImportStatus = "Imported \(request.provider.rawValue.uppercased()) kubeconfig context."
                 try await self.reloadContexts()
-                self.runAuthDoctor()
+                if !UserDefaults.standard.runeSimpleMode {
+                    self.runAuthDoctor()
+                }
             } catch {
                 self.cloudKubeConfigImportStatus = "Cloud import failed."
                 self.state.setAuthDoctorChecks([
@@ -2570,11 +2602,16 @@ public final class RuneAppViewModel: ObservableObject {
     private func performRefreshCurrentView(forceNamespaceMetadataRefresh: Bool) async {
         guard let context = state.selectedContext else { return }
         let namespace = state.selectedNamespace
+        let simpleMode = UserDefaults.standard.runeSimpleMode
         var cancellationFamilies = SnapshotLoadPlan
-            .forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind)
+            .forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind, simpleMode: simpleMode)
             .resourceListFamilies
         if state.selectedSection == .helm {
-            cancellationFamilies.formUnion([.helmReleases, .operatorResources])
+            if simpleMode {
+                cancellationFamilies.insert(helmBrowserResourceFamily)
+            } else {
+                cancellationFamilies.formUnion([.helmReleases, .operatorResources])
+            }
         }
         if context.name == demoContextName {
             applyDemoClusterSnapshot()
@@ -2600,8 +2637,12 @@ public final class RuneAppViewModel: ObservableObject {
                 forceNamespaceMetadataRefresh: forceNamespaceMetadataRefresh
             )
             if state.selectedSection == .helm {
-                try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
-                await loadOperatorResources(context: context, namespace: state.selectedNamespace)
+                if simpleMode {
+                    try await loadSelectedHelmBrowserResource(context: context, namespace: state.selectedNamespace)
+                } else {
+                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
+                    await loadOperatorResources(context: context, namespace: state.selectedNamespace)
+                }
             }
             let currentFreshness = state.snapshotFreshness
             state.setSnapshotFreshness(
@@ -2697,6 +2738,15 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func setWorkloadKind(_ kind: KubeResourceKind) {
         setWorkloadKind(kind, trackHistory: true, triggerReload: true)
+    }
+
+    public func setHelmBrowserResourceFamily(_ family: RuneResourceListFamily) {
+        guard family == .helmReleases || family == .operatorResources else { return }
+        guard helmBrowserResourceFamily != family else { return }
+        helmBrowserResourceFamily = family
+        guard UserDefaults.standard.runeSimpleMode,
+              state.selectedSection == .helm else { return }
+        refreshSelectedHelmBrowserResource()
     }
 
     private func setWorkloadKind(_ kind: KubeResourceKind, trackHistory: Bool, triggerReload: Bool) {
@@ -8161,7 +8211,11 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let cachedSnapshot = store.snapshot(context: context, namespace: effectiveNamespace)
-        let plan = SnapshotLoadPlan.forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind)
+        let plan = SnapshotLoadPlan.forSelection(
+            section: state.selectedSection,
+            kind: state.selectedWorkloadKind,
+            simpleMode: UserDefaults.standard.runeSimpleMode
+        )
         let plannedFreshnessFamilies = plan.resourceListFamilies
         state.markResourceListsRefreshing(
             plannedFreshnessFamilies,
@@ -8183,7 +8237,10 @@ public final class RuneAppViewModel: ObservableObject {
             warmOverview,
             ttl: overviewHeavyRequestCooldownTTL,
             reference: now
-        ) && !forceNamespaceMetadataRefresh && !bypassOverviewCooldown
+        )
+            && warmOverview?.hasCoreData == true
+            && !forceNamespaceMetadataRefresh
+            && !bypassOverviewCooldown
         try Task.checkCancellation()
 
         let preservedRBACRoles = state.rbacRoles
@@ -9761,6 +9818,75 @@ public final class RuneAppViewModel: ObservableObject {
             state.markResourceListsLive([.operatorResources], message: "Live for \(context.name) / \(namespace)")
         } else if let loadErrorMessage {
             state.markResourceListsFailed([.operatorResources], message: loadErrorMessage)
+        }
+    }
+
+    private func loadSelectedHelmBrowserResource(context: KubeContext, namespace: String) async throws {
+        switch helmBrowserResourceFamily {
+        case .operatorResources:
+            await loadOperatorResources(context: context, namespace: namespace)
+        default:
+            try await loadHelmReleases(context: context, namespace: namespace)
+        }
+    }
+
+    private func refreshSelectedHelmBrowserResource() {
+        guard let context = state.selectedContext else { return }
+        let namespace = state.selectedNamespace
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.loadSelectedHelmBrowserResource(context: context, namespace: namespace)
+            } catch {
+                if Self.isBenignCancellationError(error) { return }
+                self.state.setError(error)
+            }
+        }
+    }
+
+    public func refreshReplicaSetsForCurrentNamespace() {
+        guard let context = state.selectedContext else { return }
+        let namespace = state.selectedNamespace
+        let sources = state.kubeConfigSources
+        guard !namespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        state.markResourceListsRefreshing([.replicaSets], message: "Refreshing \(context.name) / \(namespace)")
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let replicaSets = try await self.kubeClient.listReplicaSets(
+                    from: sources,
+                    context: context,
+                    namespace: namespace
+                )
+                guard self.state.selectedContext == context,
+                      self.state.selectedNamespace == namespace else { return }
+                let cached = self.store.snapshot(context: context, namespace: namespace)
+                self.store.cacheSnapshot(
+                    context: context,
+                    namespace: namespace,
+                    pods: cached.pods,
+                    deployments: cached.deployments,
+                    statefulSets: cached.statefulSets,
+                    daemonSets: cached.daemonSets,
+                    jobs: cached.jobs,
+                    cronJobs: cached.cronJobs,
+                    replicaSets: replicaSets,
+                    persistentVolumeClaims: cached.persistentVolumeClaims,
+                    horizontalPodAutoscalers: cached.horizontalPodAutoscalers,
+                    networkPolicies: cached.networkPolicies,
+                    services: cached.services,
+                    ingresses: cached.ingresses,
+                    configMaps: cached.configMaps,
+                    secrets: cached.secrets,
+                    events: cached.events
+                )
+                self.state.setReplicaSets(replicaSets)
+                self.state.markResourceListsLive([.replicaSets], message: "Live for \(context.name) / \(namespace)")
+            } catch {
+                if Self.isBenignCancellationError(error) { return }
+                self.state.markResourceListsFailed([.replicaSets], message: error.localizedDescription)
+            }
         }
     }
 

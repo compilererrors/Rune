@@ -93,6 +93,97 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testSimpleModeOverviewStillLoadsCoreClusterSnapshot() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+
+        XCTAssertEqual(harness.state.selectedNamespace, "alpha-zone")
+        XCTAssertEqual(harness.state.overviewPods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertEqual(harness.state.deployments.count, 2)
+        XCTAssertEqual(harness.state.services.count, 2)
+        XCTAssertEqual(harness.state.overviewDeploymentsCount, 2)
+        XCTAssertEqual(harness.state.overviewServicesCount, 2)
+        XCTAssertEqual(harness.state.overviewIngressesCount, 1)
+        XCTAssertEqual(harness.state.overviewConfigMapsCount, 2)
+        XCTAssertEqual(harness.state.overviewCronJobsCount, 1)
+        XCTAssertEqual(harness.state.overviewNodesCount, 3)
+        XCTAssertTrue(harness.state.overviewEvents.isEmpty)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testOverviewIgnoresEmptyWarmSnapshotAndFetchesLiveCoreData() async throws {
+        let emptyWarmSnapshot = PersistedOverviewSnapshot(
+            contextName: RuneFakeK8sFixture.defaultContextName,
+            namespace: "alpha-zone",
+            fetchedAt: Date(),
+            lastAccessedAt: Date(),
+            pods: [],
+            deploymentsCount: 0,
+            servicesCount: 0,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 0,
+            events: []
+        )
+        let harness = try await makeHarness(
+            overviewSnapshotPersistence: SingleOverviewSnapshotCacheStore(snapshot: emptyWarmSnapshot)
+        )
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+
+        XCTAssertEqual(harness.state.overviewPods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertEqual(harness.state.overviewDeploymentsCount, 2)
+        XCTAssertEqual(harness.state.overviewServicesCount, 2)
+        XCTAssertEqual(harness.state.overviewNodesCount, 3)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testSimpleModeWorkloadsStillLoadsPodsAndDeployments() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .workloads
+        harness.state.selectedWorkloadKind = .pod
+
+        try await harness.viewModel.reloadContexts()
+
+        XCTAssertEqual(harness.state.pods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+
+        harness.viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntil {
+            harness.state.selectedWorkloadKind == .deployment
+                && harness.state.deployments.map(\.name) == ["ember-gate", "orbit-lens"]
+                && !harness.state.isLoading
+        }
+
+        XCTAssertEqual(harness.state.pods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testTerminalStartupLoadsPodsWithoutVisitingWorkloadsFirst() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -952,7 +1043,8 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     private func makeHarness(
         fixture: RuneFakeK8sFixture = RuneFakeK8sFixture(),
         kubeClient: KubernetesClient = KubernetesClient(),
-        exporter: FileExporting = NoopFileExporter()
+        exporter: FileExporting = NoopFileExporter(),
+        overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = NoopOverviewSnapshotCacheStore()
     ) async throws -> Harness {
         let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
@@ -962,10 +1054,28 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             state: state,
             kubeClient: kubeClient,
             exporter: exporter,
-            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            overviewSnapshotPersistence: overviewSnapshotPersistence,
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
         return Harness(server: server, kubeconfigURL: kubeconfig, state: state, viewModel: viewModel)
+    }
+
+    private actor SingleOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {
+        private let snapshot: PersistedOverviewSnapshot
+
+        init(snapshot: PersistedOverviewSnapshot) {
+            self.snapshot = snapshot
+        }
+
+        func loadSnapshot(contextName: String, namespace: String, maxAge: TimeInterval) async -> PersistedOverviewSnapshot? {
+            guard snapshot.contextName == contextName,
+                  snapshot.namespace == namespace else {
+                return nil
+            }
+            return snapshot
+        }
+
+        func saveSnapshot(_ snapshot: PersistedOverviewSnapshot) async {}
     }
 
     private func writeKubeconfig(_ contents: String) throws -> URL {
