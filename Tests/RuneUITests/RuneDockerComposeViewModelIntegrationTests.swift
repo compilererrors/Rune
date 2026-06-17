@@ -325,7 +325,11 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertEqual(visibleZipSave.allowedFileTypes, ["zip"])
         XCTAssertEqual(visibleZipSave.kind, .archive)
         XCTAssertFalse(visibleZipSave.openAfterSave)
-        XCTAssertGreaterThan(visibleZipSave.data.count, 0)
+        let visibleZipEntries = try ZipArchiveTestSupport.entries(from: visibleZipSave.data)
+        XCTAssertTrue(visibleZipEntries.keys.contains { $0.hasSuffix(".log") })
+        XCTAssertTrue(visibleZipEntries.values.contains {
+            String(data: $0, encoding: .utf8)?.contains("visible docker compose fake log") == true
+        })
 
         let requestCountAfterExport = await harness.kubeClient.restRequestMetricsSummary().requestCount
         XCTAssertEqual(requestCountAfterExport, requestCountAfterLogLoad)

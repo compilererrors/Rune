@@ -466,6 +466,14 @@ struct AppKitPodTableView: NSViewRepresentable {
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
         }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
+        }
         tableView.headerView = headerView
 
         for column in PodColumn.allCases {
@@ -988,6 +996,14 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
         }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
+        }
         tableView.headerView = headerView
 
         for column in DeploymentColumn.allCases {
@@ -1314,6 +1330,14 @@ struct AppKitServiceListView: NSViewRepresentable {
         headerView.resizableColumnIdentifiers = Set(ServiceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
+        }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
         }
         tableView.headerView = headerView
 
@@ -1651,6 +1675,14 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         headerView.resizableColumnIdentifiers = Set(GenericResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
+        }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
         }
         tableView.headerView = headerView
 
@@ -2012,6 +2044,14 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
         }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
+        }
         tableView.headerView = headerView
 
         for column in HelmReleaseColumn.allCases {
@@ -2327,6 +2367,14 @@ struct AppKitEventListView: NSViewRepresentable {
         headerView.resizableColumnIdentifiers = Set(EventColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
+        }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
         }
         tableView.headerView = headerView
 
@@ -2660,6 +2708,14 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         headerView.resizableColumnIdentifiers = Set(OperatorResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
         headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
             coordinator?.resetColumnWidth(columnID)
+        }
+        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
+            let notification = Notification(
+                name: NSTableView.columnDidResizeNotification,
+                object: tableView,
+                userInfo: ["NSTableColumn": tableColumn]
+            )
+            coordinator?.tableViewColumnDidResize(notification)
         }
         tableView.headerView = headerView
 
@@ -3166,11 +3222,16 @@ private func runeAppKitEventIsFavoriteToggle(_ event: NSEvent) -> Bool {
 private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
     var resizableColumnIdentifiers: Set<String> = []
     var onResetColumn: ((String) -> Void)?
+    var onColumnResizeCommitted: ((NSTableColumn) -> Void)?
     var horizontalInset: CGFloat = 0
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2, let columnID = resizableColumnIdentifier(near: event) {
             onResetColumn?(columnID)
+            return
+        }
+        if let column = resizableColumnResizeTarget(near: event) {
+            trackColumnResize(column, from: event)
             return
         }
         super.mouseDown(with: event)
@@ -3222,6 +3283,10 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
     }
 
     private func resizableColumnIdentifier(near event: NSEvent) -> String? {
+        resizableColumnResizeTarget(near: event)?.identifier.rawValue
+    }
+
+    private func resizableColumnResizeTarget(near event: NSEvent) -> NSTableColumn? {
         guard let tableView else { return nil }
         let point = convert(event.locationInWindow, from: nil)
         for columnIndex in 0..<tableView.tableColumns.count {
@@ -3229,10 +3294,46 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
             guard resizableColumnIdentifiers.contains(column.identifier.rawValue) else { continue }
             let dividerX = headerRect(ofColumn: columnIndex).maxX
             if abs(point.x - dividerX) <= 7 {
-                return column.identifier.rawValue
+                return column
             }
         }
         return nil
+    }
+
+    private func trackColumnResize(_ column: NSTableColumn, from event: NSEvent) {
+        guard let window, let tableView else { return }
+        let initialX = convert(event.locationInWindow, from: nil).x
+        let initialWidth = column.width
+        var didResize = false
+
+        func applyWidth(from nextEvent: NSEvent) {
+            let currentX = convert(nextEvent.locationInWindow, from: nil).x
+            let proposedWidth = initialWidth + currentX - initialX
+            let width = min(
+                max(proposedWidth.rounded(.toNearestOrAwayFromZero), column.minWidth),
+                column.maxWidth
+            )
+            guard abs(column.width - width) >= 1 else { return }
+            column.width = width
+            didResize = true
+            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
+        }
+
+        while true {
+            guard let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
+            switch nextEvent.type {
+            case .leftMouseDragged:
+                applyWidth(from: nextEvent)
+            case .leftMouseUp:
+                applyWidth(from: nextEvent)
+                if didResize {
+                    onColumnResizeCommitted?(column)
+                }
+                return
+            default:
+                break
+            }
+        }
     }
 
     private func drawColumnDivider(at x: CGFloat, isResizable: Bool) {

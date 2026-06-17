@@ -2,6 +2,7 @@ import XCTest
 @testable import RuneCore
 @testable import RuneDiagnostics
 @testable import RuneExport
+@testable import RuneFakeK8sSupport
 @testable import RuneKube
 @testable import RuneSecurity
 @testable import RuneStore
@@ -1111,6 +1112,116 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(review.contexts.first?.authType, "Token")
         XCTAssertFalse(review.redactedPreview.contains("synthetic-manual-token"))
         XCTAssertEqual(viewModel.manualKubeConfigToken, "")
+    }
+
+    @MainActor
+    func testMockedAddClusterCloudImportLoadsCoreFakeClusterDataInSimpleMode() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start(fixture: RuneFakeK8sFixture())
+        defer { server.stop() }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.mockedAddCluster.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("synthetic-cloud-kubeconfig.yaml")
+        let rawKubeconfig = server.kubeconfigYAML()
+        try rawKubeconfig.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(raw: rawKubeconfig, sourceName: kubeconfig.lastPathComponent)
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = MockCloudKubeConfigImporter(result: .success(CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [kubeconfig],
+            reviews: [review]
+        )))
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        ))
+
+        try await waitUntilForRuneAppState(timeout: 10) {
+            viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+                && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                && state.selectedNamespace == "alpha-zone"
+                && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                && state.deployments.contains { $0.name == "orbit-lens" }
+        }
+
+        XCTAssertEqual(viewModel.kubeConfigImportReviews.count, 1)
+        XCTAssertTrue(viewModel.kubeConfigImportReviews[0].isValid)
+        XCTAssertEqual(state.kubeConfigSources.map(\.url.standardizedFileURL.path), [kubeconfig.standardizedFileURL.path])
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testMockedAddClusterCloudImportFailureDoesNotLoadClusterData() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "gcloud",
+            arguments: ["container", "clusters", "get-credentials", "synthetic-gke"],
+            displayCommand: "gcloud container clusters get-credentials synthetic-gke"
+        )
+        let importer = MockCloudKubeConfigImporter(
+            preview: preview,
+            result: .failure(.commandFailed(
+                command: preview.displayCommand,
+                exitCode: 42,
+                message: "synthetic login required"
+            ))
+        )
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && state.lastError?.contains("Cloud import command failed") == true
+        }
+
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertTrue(state.pods.isEmpty)
+        XCTAssertTrue(state.authDoctorChecks.contains {
+            $0.id == "cloud-login-gke"
+                && $0.status == .failed
+                && !$0.message.contains("synthetic login required")
+        })
     }
 
     func testFileBackedContextPreferencesStoreRoundTripsVersionedPreferences() throws {
@@ -6185,7 +6296,9 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(exporter.saves.count, 1)
         XCTAssertEqual(exporter.saves.first?.allowedFileTypes, ["zip"])
         XCTAssertTrue(exporter.saves.first?.suggestedName.contains("visible-logs") == true)
-        XCTAssertGreaterThan(try XCTUnwrap(exporter.saves.first?.data.count), 0)
+        let entries = try ZipArchiveTestSupport.entries(from: try XCTUnwrap(exporter.saves.first?.data))
+        XCTAssertTrue(entries.keys.contains { $0.hasSuffix(".log") })
+        XCTAssertTrue(entries.values.contains { String(data: $0, encoding: .utf8) == "matched line\n" })
     }
 
     @MainActor
@@ -7376,6 +7489,31 @@ private struct FixedKubeConfigPicker: KubeConfigPicking {
 
     func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL? {
         urls.first
+    }
+}
+
+private struct MockCloudKubeConfigImporter: CloudKubeConfigImporting {
+    let preview: CloudKubeConfigCommandPreview
+    let result: Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>
+
+    init(
+        preview: CloudKubeConfigCommandPreview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig"],
+            displayCommand: "aws eks update-kubeconfig"
+        ),
+        result: Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>
+    ) {
+        self.preview = preview
+        self.result = result
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        preview
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        try result.get()
     }
 }
 

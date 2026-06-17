@@ -655,6 +655,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
     func testConfigAndWorkloadsRemainTopAligned() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
+            prepareLayoutTestViewModel(viewModel)
 
             if shellVariant == .appKitSplitView {
                 let workloadsSnapshot = try await hostAppKitSplitSnapshot(
@@ -762,6 +763,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
     func testSectionTransitionsDoNotDriftAfterLayoutSettles() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
+            prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 var previousSnapshot: AppKitSplitLaunchSnapshot?
                 for transition in [
@@ -960,6 +962,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.isLoading = true
 
             let viewModel = RuneAppViewModel(state: state)
+            prepareLayoutTestViewModel(viewModel)
             var snapshots: [RuneRootLayoutSnapshot] = []
 
             let host = NSHostingController(
@@ -1075,6 +1078,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.isLoading = true
 
         let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
         let host = NSHostingController(
             rootView: RuneRootView(
                 viewModel: viewModel,
@@ -1156,6 +1160,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.setSelectedEvent(event)
 
             let viewModel = RuneAppViewModel(state: state)
+            prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 let baseline = try await hostAppKitSplitSnapshot(
                     viewModel: viewModel,
@@ -1340,6 +1345,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.setSelectedEvent(selectedEvent)
 
             let viewModel = RuneAppViewModel(state: state)
+            prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 let eventsSnapshot = try await hostAppKitSplitSnapshot(
                     viewModel: viewModel,
@@ -1570,7 +1576,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
 
-        XCTFail("Timed out waiting for layout snapshot")
+        let capturedSnapshots = snapshots()
+        let lastSnapshot = capturedSnapshots.last.map { "\($0)" } ?? "<none>"
+        XCTFail("Timed out waiting for layout snapshot; captured=\(capturedSnapshots.count) last=\(lastSnapshot)")
         throw CancellationError()
     }
 
@@ -1722,7 +1730,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedService = service
         state.setResourceYAML(sampleYAML(named: service.name))
         state.setResourceDescribe(sampleDescribe(named: service.name))
-        return RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
+        return viewModel
     }
 
     private func makePodViewModel(pod: PodSummary) -> RuneAppViewModel {
@@ -1734,7 +1744,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedPod = pod
         state.setResourceYAML(sampleYAML(named: pod.name))
         state.setResourceDescribe(sampleDescribe(named: pod.name))
-        return RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
+        return viewModel
     }
 
     private func makeDeploymentViewModel(deployment: DeploymentSummary) -> RuneAppViewModel {
@@ -1746,7 +1758,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedDeployment = deployment
         state.setResourceYAML(sampleYAML(named: deployment.name))
         state.setResourceDescribe(sampleDescribe(named: deployment.name))
-        return RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
+        return viewModel
     }
 
     private func makeConfigViewModel(resource: ClusterResourceSummary) -> RuneAppViewModel {
@@ -1758,7 +1772,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedConfigMap = resource
         state.setResourceYAML(sampleYAML(named: resource.name))
         state.setResourceDescribe(sampleDescribe(named: resource.name))
-        return RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
+        return viewModel
     }
 
     private func makeRBACViewModel(resource: ClusterResourceSummary) -> RuneAppViewModel {
@@ -1775,7 +1791,14 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.setSelectedRBACResource(resource)
         state.setResourceYAML(sampleYAML(named: resource.name))
         state.setResourceDescribe(sampleDescribe(named: resource.name))
-        return RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state)
+        prepareLayoutTestViewModel(viewModel)
+        return viewModel
+    }
+
+    private func prepareLayoutTestViewModel(_ viewModel: RuneAppViewModel) {
+        viewModel.isSidebarVisible = true
+        viewModel.isDetailPaneVisible = true
     }
 
     private func hostSnapshot(
@@ -1787,6 +1810,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         detailWidth: Double = 440,
         settleNanoseconds: UInt64 = 0
     ) async throws -> RuneRootLayoutSnapshot {
+        prepareLayoutTestViewModel(viewModel)
         let defaults = UserDefaults.standard
         let sidebarKey = RuneSettingsKeys.layoutSidebarWidth
         let detailKey = RuneSettingsKeys.layoutDetailWidth
@@ -1871,6 +1895,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         initialPodInspectorTab: PodInspectorTab,
         settleNanoseconds: UInt64 = 500_000_000
     ) async throws -> ManifestTextViewportMetrics {
+        prepareLayoutTestViewModel(viewModel)
         let host = NSHostingController(
             rootView: RuneRootView(
                 viewModel: viewModel,
@@ -1951,6 +1976,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         windowSize: CGSize = CGSize(width: 1440, height: 900),
         settleNanoseconds: UInt64 = 0
     ) async throws -> AppKitSplitLaunchSnapshot {
+        prepareLayoutTestViewModel(viewModel)
         let host = NSHostingController(
             rootView: rootView(viewModel) { _ in }
         )

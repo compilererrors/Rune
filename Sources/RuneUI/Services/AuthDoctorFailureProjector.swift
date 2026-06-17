@@ -213,6 +213,10 @@ public enum AuthDoctorFailureProjector {
     }
 
     private static func sanitizedAPIEndpoint(in message: String) -> String? {
+        guard message.contains("/api") || message.contains("http://") || message.contains("https://") else {
+            return nil
+        }
+
         for rawToken in message.split(whereSeparator: \.isWhitespace) {
             let token = String(rawToken)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"'`()[]{}<>,."))

@@ -232,10 +232,47 @@ private final class ServerBox: @unchecked Sendable {
                 return
             }
             requestRecorder.append(String(line))
-            let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
-                .route(requestLine: String(line))
-            connection.sendHTTP(response)
+            let expectedBodyLength = Self.contentLength(in: request)
+            let currentBody = Self.body(in: request)
+
+            if expectedBodyLength > currentBody.utf8.count {
+                connection.receive(
+                    minimumIncompleteLength: expectedBodyLength - currentBody.utf8.count,
+                    maximumLength: max(1, expectedBodyLength - currentBody.utf8.count)
+                ) { moreData, _, _, _ in
+                    let more = moreData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    let body = Self.body(in: request + more)
+                    let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
+                        .route(requestLine: String(line), body: body.isEmpty ? nil : body)
+                    connection.sendHTTP(response)
+                }
+            } else {
+                let body = Self.body(in: request)
+                let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
+                    .route(requestLine: String(line), body: body.isEmpty ? nil : body)
+                connection.sendHTTP(response)
+            }
         }
+    }
+
+    private static func contentLength(in request: String) -> Int {
+        request
+            .components(separatedBy: "\r\n")
+            .first { $0.localizedCaseInsensitiveComparePrefix("Content-Length:") }
+            .flatMap { line in
+                line.split(separator: ":", maxSplits: 1).dropFirst().first
+            }
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+    }
+
+    private static func body(in request: String) -> String {
+        request.components(separatedBy: "\r\n\r\n").dropFirst().joined(separator: "\r\n\r\n")
+    }
+}
+
+private extension String {
+    func localizedCaseInsensitiveComparePrefix(_ prefix: String) -> Bool {
+        range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
     }
 }
 
@@ -244,7 +281,7 @@ private struct RuneFakeK8sRouter {
     let contextName: String
     let requestRecorder: RuneFakeK8sRequestRecorder
 
-    func route(requestLine: String) -> RuneFakeK8sHTTPResponse {
+    func route(requestLine: String, body: String? = nil) -> RuneFakeK8sHTTPResponse {
         let parts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else {
             return .json(status: 400, object: status(message: "Malformed HTTP request"))
@@ -269,6 +306,11 @@ private struct RuneFakeK8sRouter {
 
         if components.path == "/" || components.path == "/healthz" {
             return .json(status: 200, object: ["status": "ok"])
+        }
+
+        if method == "POST",
+           pathParts == ["apis", "authorization.k8s.io", "v1", "selfsubjectaccessreviews"] {
+            return routeSelfSubjectAccessReview(body: body)
         }
 
         do {
@@ -492,6 +534,9 @@ private struct RuneFakeK8sRouter {
             guard let pod = namespace.pods.first(where: { $0.name == pathParts[5] }) else {
                 return .json(status: 404, object: status(message: "Pod \(pathParts[5]) was not found."))
             }
+            if isDenied(namespace: namespace.name, verb: "get", resource: "pods", subresource: "log") {
+                return .json(status: 403, object: status(message: "pods/log is forbidden in namespace \(namespace.name)."))
+            }
             if namespace.failingLogPodNames.contains(pod.name) {
                 return .json(status: 500, object: status(message: "Synthetic forced pod log failure for \(pod.name)."))
             }
@@ -530,6 +575,65 @@ private struct RuneFakeK8sRouter {
         default:
             return .json(status: 404, object: status(message: "Unsupported core namespaced route."))
         }
+    }
+
+    private func routeSelfSubjectAccessReview(body: String?) -> RuneFakeK8sHTTPResponse {
+        guard let body,
+              let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let spec = object["spec"] as? [String: Any],
+              let attributes = spec["resourceAttributes"] as? [String: Any],
+              let verb = attributes["verb"] as? String,
+              let resource = attributes["resource"] as? String
+        else {
+            return .json(status: 400, object: status(message: "Malformed SelfSubjectAccessReview request."))
+        }
+
+        let namespace = normalized(attributes["namespace"] as? String)
+        let apiGroup = normalized(attributes["group"] as? String)
+        let subresource = normalized(attributes["subresource"] as? String)
+        let allowed = !isDenied(
+            namespace: namespace,
+            verb: verb,
+            resource: resource,
+            apiGroup: apiGroup,
+            subresource: subresource
+        )
+
+        return .json(status: 201, object: [
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectAccessReview",
+            "status": [
+                "allowed": allowed,
+                "reason": allowed ? "allowed by Rune fake RBAC" : "denied by Rune fake RBAC"
+            ]
+        ])
+    }
+
+    private func isDenied(
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String? = nil,
+        subresource: String? = nil
+    ) -> Bool {
+        let rule = RuneFakeK8sRBACRule(
+            namespace: normalized(namespace),
+            verb: verb,
+            resource: resource,
+            apiGroup: normalized(apiGroup),
+            subresource: normalized(subresource)
+        )
+        return fixture.selfSubjectAccessReviewDenials.contains(rule)
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private func routeAppsNamespaced(

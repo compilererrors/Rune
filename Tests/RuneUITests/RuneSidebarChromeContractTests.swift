@@ -1018,6 +1018,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("export RUNE_ALLOW_LIVE_CLOUD_TESTS=0"))
     }
 
+    func testLocalK8sIntegrationReportScriptKeepsDockerComposeOptInAndLocalOnly() throws {
+        let source = try String(contentsOfFile: localK8sIntegrationReportScriptPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("SKIP_DOCKER=\"${RUNE_SKIP_DOCKER_FAKE_K8S:-1}\""))
+        XCTAssertTrue(source.contains("if [[ \"$SKIP_DOCKER\" == \"1\" ]]"))
+        XCTAssertTrue(source.contains("Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."))
+        XCTAssertTrue(source.contains("Use \\`RUNE_SKIP_DOCKER_FAKE_K8S=0\\`"))
+        XCTAssertTrue(source.contains("safe_docker_kubeconfig_check"))
+        XCTAssertTrue(source.contains("grep -q 'name: fake-orbit-mesh'"))
+        XCTAssertTrue(source.contains("grep -q 'name: fake-lattice-spark'"))
+        XCTAssertTrue(source.contains("grep -q 'server: https://127.0.0.1:16443'"))
+        XCTAssertTrue(source.contains("grep -q 'server: https://127.0.0.1:17443'"))
+    }
+
     func testLocalK8sIntegrationReportWritesSectionedMarkdownWithoutTables() throws {
         let source = try String(contentsOfFile: localK8sIntegrationReportScriptPath, encoding: .utf8)
 

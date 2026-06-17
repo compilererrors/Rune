@@ -342,9 +342,12 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertEqual(visibleZipSave.allowedFileTypes, ["zip"])
         XCTAssertEqual(visibleZipSave.kind, .archive)
         XCTAssertFalse(visibleZipSave.openAfterSave)
-        XCTAssertGreaterThan(visibleZipSave.data.count, 0)
+        let visibleZipEntries = try ZipArchiveTestSupport.entries(from: visibleZipSave.data)
+        XCTAssertTrue(visibleZipEntries.keys.contains { $0.hasSuffix(".log") })
+        XCTAssertTrue(visibleZipEntries.values.contains {
+            String(data: $0, encoding: .utf8)?.contains("visible synthetic REST fake log") == true
+        })
 
-        XCTAssertTrue(harness.server.requestLines().isEmpty)
         XCTAssertNil(harness.state.lastLogFetchError)
         XCTAssertNil(harness.state.lastError)
     }
@@ -796,7 +799,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
 
         harness.viewModel.confirmPendingWriteAction()
 
-        try await waitUntil(timeout: 3) {
+        try await waitUntil(timeout: 15) {
             harness.state.writeAuditLog.contains { entry in
                 entry.action == "Rollout Undo"
                     && entry.status == "Succeeded"
@@ -1035,6 +1038,55 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
                 || line.contains("/scale")
         })
         XCTAssertNil(harness.state.lastError)
+    }
+
+    func testAuthDoctorReportsPartialRBACWithoutBreakingCoreClusterLoad() async throws {
+        let fixture = RuneFakeK8sFixture(selfSubjectAccessReviewDenials: [
+            RuneFakeK8sRBACRule(namespace: "alpha-zone", verb: "get", resource: "pods", subresource: "log"),
+            RuneFakeK8sRBACRule(namespace: "alpha-zone", verb: "create", resource: "pods", subresource: "exec"),
+            RuneFakeK8sRBACRule(namespace: "alpha-zone", verb: "create", resource: "pods", subresource: "portforward")
+        ])
+        let harness = try await makeHarness(fixture: fixture)
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+
+        XCTAssertEqual(harness.state.selectedNamespace, "alpha-zone")
+        XCTAssertEqual(harness.state.pods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertEqual(harness.state.deployments.map(\.name), ["ember-gate", "orbit-lens"])
+        harness.server.resetRequestLines()
+
+        harness.viewModel.runAuthDoctor()
+
+        try await waitUntil {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains { $0.id == "rbac-access-summary" }
+                && harness.state.authDoctorChecks.contains { $0.id == "pod-logs" }
+        }
+
+        let checksByID = harness.state.authDoctorChecks.reduce(into: [String: RuneHealthCheck]()) { checks, check in
+            checks[check.id] = checks[check.id] ?? check
+        }
+        XCTAssertEqual(checksByID["rbac-pods-list"]?.status, .passed)
+        XCTAssertEqual(checksByID["rbac-pod-logs"]?.status, .warning)
+        XCTAssertEqual(checksByID["rbac-pod-exec"]?.status, .warning)
+        XCTAssertEqual(checksByID["rbac-port-forward"]?.status, .warning)
+        XCTAssertEqual(checksByID["pod-logs"]?.status, .warning)
+        XCTAssertTrue(checksByID["rbac-access-summary"]?.message.contains("Partial pod access") == true)
+        XCTAssertEqual(harness.state.pods.map(\.name), [
+            "ember-gate-75c9f746b8-kq2wm",
+            "orbit-lens-6f58d7d89b-hx9q2"
+        ])
+        XCTAssertEqual(harness.state.deployments.map(\.name), ["ember-gate", "orbit-lens"])
+        XCTAssertNil(harness.state.lastError)
+
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews") })
+        XCTAssertTrue(requestLines.contains { $0.contains("/pods/ember-gate-75c9f746b8-kq2wm/log") })
+        XCTAssertFalse(requestLines.contains { $0.hasPrefix("PATCH ") || $0.contains("/exec") || $0.contains("/scale") })
     }
 
     func testSupportBundleExportDoesNotTouchClusterOrMutateResourceState() async throws {

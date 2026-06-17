@@ -4,15 +4,18 @@ public struct RuneFakeK8sFixture: Sendable {
     public let contexts: [RuneFakeK8sCluster]
     public let listKindsOmittingRemainingItemCount: Set<String>
     public let transientFailureTargets: Set<String>
+    public let selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule>
 
     public init(
         contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,
         listKindsOmittingRemainingItemCount: Set<String> = [],
-        transientFailureTargets: Set<String> = []
+        transientFailureTargets: Set<String> = [],
+        selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule> = []
     ) {
         self.contexts = contexts
         self.listKindsOmittingRemainingItemCount = listKindsOmittingRemainingItemCount
         self.transientFailureTargets = transientFailureTargets
+        self.selfSubjectAccessReviewDenials = selfSubjectAccessReviewDenials
     }
 
     public static let defaultContextName = "fake-orbit-mesh"
@@ -98,6 +101,28 @@ public struct RuneFakeK8sFixture: Sendable {
     public func cluster(named contextName: String?) -> RuneFakeK8sCluster? {
         let name = contextName?.isEmpty == false ? contextName! : Self.defaultContextName
         return contexts.first { $0.contextName == name } ?? contexts.first
+    }
+}
+
+public struct RuneFakeK8sRBACRule: Hashable, Sendable {
+    public let namespace: String?
+    public let verb: String
+    public let resource: String
+    public let apiGroup: String?
+    public let subresource: String?
+
+    public init(
+        namespace: String?,
+        verb: String,
+        resource: String,
+        apiGroup: String? = nil,
+        subresource: String? = nil
+    ) {
+        self.namespace = namespace
+        self.verb = verb
+        self.resource = resource
+        self.apiGroup = apiGroup
+        self.subresource = subresource
     }
 }
 

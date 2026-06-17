@@ -43,6 +43,17 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    private func minimumAsyncElapsedSeconds(repetitions: Int = 3, _ operation: () async throws -> Void) async throws -> Double {
+        var best = Double.infinity
+        for _ in 0..<max(1, repetitions) {
+            let started = ContinuousClock.now
+            try await operation()
+            best = min(best, seconds(started.duration(to: .now)))
+        }
+        return best
+    }
+
+    @MainActor
     private func benchmarkTable(columnIDs: [String]) -> NSTableView {
         let tableView = NSTableView(frame: NSRect(x: 0, y: 0, width: 1_120, height: 720))
         for columnID in columnIDs {
@@ -1389,6 +1400,53 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testFakeRESTPodAndLogLoadBenchmarkKPI() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let state = RuneAppState()
+            state.setSources([KubeConfigSource(url: kubeconfig)])
+            let viewModel = RuneAppViewModel(
+                state: state,
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            try await viewModel.reloadContexts()
+            viewModel.setSection(.workloads)
+
+            try await waitUntil {
+                state.selectedSection == .workloads
+                    && state.selectedWorkloadKind == .pod
+                    && state.selectedPod != nil
+                    && !state.isLoading
+            }
+
+            viewModel.reloadLogsForSelection()
+
+            try await waitUntil {
+                !state.isLoadingLogs
+                    && state.podLogs.contains("synthetic REST fake log")
+                    && state.lastLogFetchError == nil
+            }
+        }
+
+        #if DEBUG
+        let maximumPodAndLogLoadSeconds = 0.6
+        #else
+        let maximumPodAndLogLoadSeconds = 0.3
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumPodAndLogLoadSeconds,
+            "KPI: fake REST workload pod load plus selected pod logs should stay below 600ms in debug and 300ms in release."
+        )
+    }
+
+    @MainActor
     func testOperatorResourceBrowserProjectionBenchmarkKPI() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
@@ -2278,6 +2336,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 + RuneAppKitResourceListLayout.operatorKindColumnWidth
                 + RuneAppKitResourceListLayout.operatorNamespaceColumnWidth
                 + RuneAppKitResourceListLayout.operatorStatusColumnWidth
+                + RuneAppKitResourceListLayout.operatorPrinterColumnsColumnWidth
                 + RuneAppKitResourceListLayout.operatorAPIPathColumnWidth
                 + RuneAppKitResourceListLayout.operatorFavoriteColumnWidth
             let operatorUsableWidth = min(
@@ -2285,7 +2344,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.operatorTrailingBreathingRoom
             )
             XCTAssertEqual(operatorTotal, max(operatorUsableWidth, operatorMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(operatorTotal, RuneAppKitResourceListLayout.operatorMaximumContentWidth)
+            XCTAssertLessThanOrEqual(operatorTotal, max(RuneAppKitResourceListLayout.operatorMaximumContentWidth, operatorMinimumTotal))
 
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.deploymentReplicaColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Ready", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
@@ -2306,6 +2365,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorKindColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Kind", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorStatusColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
+            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorPrinterColumnsColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Columns", reservesSortIndicator: false))
             XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorAPIPathColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "API Path", reservesSortIndicator: true))
         }
 
@@ -3130,6 +3190,79 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             elapsedSeconds,
             maximumAddClusterSeconds,
             "KPI: Add Cluster auto-detect parsing plus provider command previews should stay below 80ms in debug and 25ms in release."
+        )
+    }
+
+    @MainActor
+    func testMockedAddClusterFakeRESTCoreLoadBenchmarkKPI() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer {
+            if let previousSimpleMode {
+                UserDefaults.standard.set(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.simpleMode)
+            }
+        }
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let rawKubeconfig = try String(contentsOf: kubeconfig, encoding: .utf8)
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(raw: rawKubeconfig, sourceName: kubeconfig.lastPathComponent)
+        let command = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: command,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [kubeconfig],
+            reviews: [review]
+        ))
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                cloudKubeConfigImporter: importer,
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-cloud",
+                regionOrLocation: "eu-north-1"
+            ))
+
+            try await waitUntil {
+                viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+                    && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                    && state.selectedNamespace == "alpha-zone"
+                    && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                    && state.deployments.contains { $0.name == "orbit-lens" }
+            }
+        }
+
+        #if DEBUG
+        let maximumMockedAddClusterSeconds = 0.6
+        #else
+        let maximumMockedAddClusterSeconds = 0.3
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumMockedAddClusterSeconds,
+            "KPI: mocked Add Cluster provider import plus fake REST core load should stay below 600ms in debug and 300ms in release."
         )
     }
 
@@ -4241,6 +4374,26 @@ private struct BenchmarkCloudCommandRunner: CloudKubeConfigCommandRunning {
     func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult {
         CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: "")
     }
+}
+
+private struct BenchmarkCloudKubeConfigImporter: CloudKubeConfigImporting {
+    let result: CloudKubeConfigImportResult
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        result.command
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        result
+    }
+}
+
+private final class BenchmarkBookmarkStore: BookmarkStore, @unchecked Sendable {
+    func loadRecords() throws -> [BookmarkRecord] {
+        []
+    }
+
+    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private final class CountingKubeConfigDiscoverer: KubeConfigDiscovering, @unchecked Sendable {

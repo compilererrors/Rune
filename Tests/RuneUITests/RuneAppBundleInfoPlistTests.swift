@@ -105,6 +105,56 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("Contents/Resources/rune_logo_main.png"))
     }
 
+    func testBuiltAppBundleLaunchSmokeWhenExplicitlyProvided() throws {
+        guard let bundlePath = ProcessInfo.processInfo.environment["RUNE_APP_BUNDLE_SMOKE_PATH"],
+              !bundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw XCTSkip("Set RUNE_APP_BUNDLE_SMOKE_PATH to a built Rune.app bundle to run the release launch smoke.")
+        }
+
+        let bundleURL = URL(fileURLWithPath: bundlePath)
+        let plistURL = bundleURL.appendingPathComponent("Contents/Info.plist")
+        let plistData = try Data(contentsOf: plistURL)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(
+            from: plistData,
+            options: [],
+            format: nil
+        ) as? [String: Any])
+        let executableName = try XCTUnwrap(plist["CFBundleExecutable"] as? String)
+        let executableURL = bundleURL.appendingPathComponent("Contents/MacOS/\(executableName)")
+
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: executableURL.path))
+        XCTAssertNotNil(plist["CFBundleShortVersionString"] as? String)
+        XCTAssertNotNil(plist["CFBundleVersion"] as? String)
+
+        let smokeHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-app-bundle-smoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: smokeHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: smokeHome) }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.environment = [
+            "HOME": smokeHome.path,
+            "RUNE_LOG_TO_STDERR": "1",
+            "RUNE_DIAGNOSTICS_LOGGING": "0",
+            "RUNE_VERBOSE_DEBUG_TRACE": "0"
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        try process.run()
+        Thread.sleep(forTimeInterval: 3)
+
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        } else {
+            process.waitUntilExit()
+            XCTFail("Rune app bundle exited during launch smoke with status \(process.terminationStatus).")
+        }
+    }
+
     func testAppRegistersDefaultsBeforeConstructingRootViewModel() throws {
         let app = repositoryRoot.appendingPathComponent("Sources/RuneApp/RuneApp.swift")
         let contents = try String(contentsOf: app, encoding: .utf8)

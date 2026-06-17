@@ -49,6 +49,39 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertFalse(denied)
     }
 
+    func testRESTFakeClusterAppliesSelfSubjectAccessReviewDenials() async throws {
+        let fixture = RuneFakeK8sFixture(selfSubjectAccessReviewDenials: [
+            RuneFakeK8sRBACRule(namespace: "alpha-zone", verb: "get", resource: "pods", subresource: "log")
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        let canListPods = try await client.canI(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            verb: "list",
+            resource: "pods"
+        )
+        let canReadPodLogs = try await client.canI(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            verb: "get",
+            resource: "pods",
+            subresource: "log"
+        )
+
+        XCTAssertTrue(canListPods)
+        XCTAssertFalse(canReadPodLogs)
+    }
+
     private func resourceAttributes(from body: String) throws -> [String: Any] {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
         let spec = try XCTUnwrap(object["spec"] as? [String: Any])
