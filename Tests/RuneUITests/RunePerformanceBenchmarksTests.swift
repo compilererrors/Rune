@@ -2223,6 +2223,152 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testAppKitResourceColumnResizePreviewBenchmarkKPI() {
+        let table = benchmarkTable(columnIDs: [
+            "selection", "name", "cpu", "memory", "restarts", "age", "status", "favorite",
+            "primary", "secondary", "namespace", "message", "apiPath"
+        ])
+        table.frame = NSRect(x: 0, y: 0, width: 1_320, height: 720)
+        table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 1_320, height: 24))
+        for column in table.tableColumns {
+            column.minWidth = column.identifier.rawValue == "name" ? 180 : 56
+            column.maxWidth = column.identifier.rawValue == "favorite" ? 80 : 720
+        }
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 980, height: 720))
+        scrollView.documentView = table
+
+        let resizableColumns = table.tableColumns.filter {
+            $0.identifier.rawValue != "selection" && $0.identifier.rawValue != "favorite"
+        }
+        let samples = stride(from: CGFloat(140), through: CGFloat(620), by: CGFloat(4)).map { $0 }
+
+        func runPreviewPasses() -> CGFloat {
+            var checksum: CGFloat = 0
+            for _ in 0..<2 {
+                for sample in samples {
+                    for column in resizableColumns {
+                        checksum += applySynchronizedResourceColumnResize(sample, for: column, in: table)
+                    }
+                }
+            }
+            return checksum
+        }
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            XCTAssertGreaterThan(runPreviewPasses(), 0)
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            _ = runPreviewPasses()
+        }
+
+        XCTAssertGreaterThanOrEqual(table.frame.width, table.tableColumns.reduce(CGFloat(0)) { $0 + $1.width })
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.180,
+            "KPI: live AppKit resource column resize preview should stay below 180ms for repeated drag samples without forcing visible cell text redraw."
+        )
+    }
+
+    @MainActor
+    func testAppKitResourceColumnResizePreviewKeepsHeaderAndVisibleCellsAligned() {
+        let table = NSTableView(frame: NSRect(x: 0, y: 0, width: 720, height: 240))
+        table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 720, height: 24))
+        table.rowHeight = 34
+        table.intercellSpacing = NSSize(width: 0, height: 4)
+        let dataSource = BenchmarkTableDataSource(rowCount: 8)
+        table.dataSource = dataSource
+        table.delegate = dataSource
+
+        for columnID in ["name", "cpu", "memory"] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(columnID))
+            column.width = columnID == "name" ? 260 : 120
+            column.minWidth = 80
+            column.maxWidth = 620
+            table.addTableColumn(column)
+        }
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
+        scrollView.documentView = table
+        table.noteNumberOfRowsChanged()
+        table.layoutSubtreeIfNeeded()
+
+        for row in 0..<dataSource.rowCount {
+            for column in 0..<table.numberOfColumns {
+                _ = table.view(atColumn: column, row: row, makeIfNecessary: true)
+            }
+        }
+        table.layoutSubtreeIfNeeded()
+
+        guard let nameColumn = table.tableColumns.first(where: { $0.identifier.rawValue == "name" }) else {
+            XCTFail("Missing name column")
+            return
+        }
+
+        for width in [CGFloat(420), CGFloat(180)] {
+            applySynchronizedResourceColumnResize(width, for: nameColumn, in: table)
+
+            let renderedColumnWidth = table.rect(ofColumn: 0).width
+            XCTAssertEqual(nameColumn.width, width, accuracy: 1.0)
+            XCTAssertEqual(table.headerView?.headerRect(ofColumn: 0).width ?? 0, renderedColumnWidth, accuracy: 1.0)
+            for row in 0..<dataSource.rowCount {
+                let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false)
+                XCTAssertEqual(cell?.frame.width ?? 0, width, accuracy: 1.0)
+            }
+        }
+    }
+
+    @MainActor
+    func testAppKitResourceColumnResizePreviewDoesNotForceVisibleCellRedraw() {
+        let table = NSTableView(frame: NSRect(x: 0, y: 0, width: 920, height: 360))
+        table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 920, height: 24))
+        table.rowHeight = 34
+        table.intercellSpacing = NSSize(width: 0, height: 4)
+        let dataSource = BenchmarkTableDataSource(rowCount: 14)
+        table.dataSource = dataSource
+        table.delegate = dataSource
+
+        for columnID in ["name", "cpu", "memory", "status", "favorite"] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(columnID))
+            column.width = columnID == "name" ? 300 : 120
+            column.minWidth = 80
+            column.maxWidth = 640
+            table.addTableColumn(column)
+        }
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        scrollView.documentView = table
+        table.noteNumberOfRowsChanged()
+        table.layoutSubtreeIfNeeded()
+
+        for row in 0..<dataSource.rowCount {
+            for column in 0..<table.numberOfColumns {
+                _ = table.view(atColumn: column, row: row, makeIfNecessary: true)
+            }
+        }
+        table.layoutSubtreeIfNeeded()
+
+        let visibleCells = (0..<dataSource.rowCount).flatMap { row in
+            (0..<table.numberOfColumns).compactMap { column in
+                table.view(atColumn: column, row: row, makeIfNecessary: false)
+            }
+        }
+        visibleCells.forEach { $0.needsDisplay = false }
+
+        guard let nameColumn = table.tableColumns.first(where: { $0.identifier.rawValue == "name" }) else {
+            XCTFail("Missing name column")
+            return
+        }
+
+        applySynchronizedResourceColumnResize(440, for: nameColumn, in: table)
+
+        XCTAssertTrue(
+            visibleCells.allSatisfy { !$0.needsDisplay },
+            "Live resize preview should relayout visible cells without forcing text redraw on every drag event."
+        )
+    }
+
     func testResourceListColumnLayoutBenchmarkKPI() {
         let visibleWidths = stride(from: CGFloat(240), through: CGFloat(1800), by: CGFloat(3)).map { $0 }
 

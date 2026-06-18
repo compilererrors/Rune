@@ -1900,6 +1900,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(appKitPodTableSource.contains("resizableColumnIdentifier: String?"))
     }
 
+    func testResourceColumnResizeUsesSingleSynchronizedDragPipeline() throws {
+        let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
+
+        XCTAssertTrue(appKitPodTableSource.contains("private func trackColumnResize(_ column: NSTableColumn, from event: NSEvent)"))
+        XCTAssertTrue(appKitPodTableSource.contains("applySynchronizedResourceColumnResize(proposedWidth, for: column, in: tableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView, updatesVisibleCellsImmediately: false)"))
+        XCTAssertTrue(appKitPodTableSource.contains("func latestResizeEvent(startingWith event: NSEvent) -> NSEvent"))
+        XCTAssertTrue(appKitPodTableSource.contains("onColumnResizeCommitted?(column)"))
+        XCTAssertFalse(appKitPodTableSource.contains("isPreviewingColumnResize"))
+        XCTAssertFalse(appKitPodTableSource.contains("resizePreviewRenderedWidth"))
+        XCTAssertFalse(appKitPodTableSource.contains("updateRenderedTableWidthPreview"))
+        XCTAssertFalse(appKitPodTableSource.contains("synchronizeVisibleResizePreviewGeometry"))
+        XCTAssertFalse(appKitPodTableSource.contains("applyImmediateResourceColumnResizePreviewIfNeeded"))
+    }
+
     func testSplitPaneVisibilityIsRestoredFromDefaults() throws {
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
         let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)

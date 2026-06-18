@@ -315,7 +315,7 @@ private enum RuneAppKitResourceTableStyle {
         columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding
     }
 
-    static func updateRenderedTableWidth(on tableView: NSTableView?) {
+    static func updateRenderedTableWidth(on tableView: NSTableView?, updatesVisibleCellsImmediately: Bool = true) {
         guard let tableView else { return }
         let tableWidth = renderedTableWidth(in: tableView)
         if abs(tableView.frame.width - tableWidth) >= 1 {
@@ -330,17 +330,19 @@ private enum RuneAppKitResourceTableStyle {
         }
         tableView.headerView?.needsDisplay = true
         tableView.needsLayout = true
-        tableView.needsDisplay = true
-        tableView.layoutSubtreeIfNeeded()
+        tableView.needsDisplay = updatesVisibleCellsImmediately
         tableView.headerView?.needsLayout = true
-        tableView.headerView?.layoutSubtreeIfNeeded()
         if let scrollView = tableView.enclosingScrollView {
-            scrollView.contentView.needsDisplay = true
             scrollView.contentView.needsLayout = true
-            scrollView.contentView.layoutSubtreeIfNeeded()
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-            scrollView.tile()
+            if updatesVisibleCellsImmediately {
+                scrollView.contentView.needsDisplay = true
+                scrollView.contentView.layoutSubtreeIfNeeded()
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                scrollView.tile()
+            }
         }
+        tableView.layoutSubtreeIfNeeded()
+        tableView.headerView?.layoutSubtreeIfNeeded()
         let visibleRows = tableView.rows(in: tableView.visibleRect)
         guard visibleRows.location != NSNotFound else { return }
         let upperBound = min(tableView.numberOfRows, visibleRows.location + visibleRows.length)
@@ -350,13 +352,21 @@ private enum RuneAppKitResourceTableStyle {
                 rowView.needsLayout = true
                 rowView.needsDisplay = true
                 rowView.layoutSubtreeIfNeeded()
+                if !updatesVisibleCellsImmediately {
+                    rowView.displayIfNeeded()
+                }
             }
+            guard updatesVisibleCellsImmediately else { continue }
             for column in 0..<tableView.numberOfColumns {
                 guard let cellView = tableView.view(atColumn: column, row: row, makeIfNecessary: false) else { continue }
                 cellView.needsLayout = true
                 cellView.needsDisplay = true
                 cellView.layoutSubtreeIfNeeded()
             }
+        }
+        guard updatesVisibleCellsImmediately else {
+            tableView.headerView?.displayIfNeeded()
+            return
         }
         tableView.displayIfNeeded()
         tableView.headerView?.displayIfNeeded()
@@ -370,6 +380,23 @@ private enum RuneAppKitResourceTableStyle {
             tableView.rowView(atRow: row, makeIfNecessary: false)?.needsDisplay = true
         }
     }
+}
+
+@MainActor
+@discardableResult
+func applySynchronizedResourceColumnResize(
+    _ proposedWidth: CGFloat,
+    for tableColumn: NSTableColumn,
+    in tableView: NSTableView
+) -> CGFloat {
+    let width = min(
+        max(proposedWidth.rounded(.toNearestOrAwayFromZero), tableColumn.minWidth),
+        tableColumn.maxWidth
+    )
+    guard abs(tableColumn.width - width) >= 1 else { return tableColumn.width }
+    tableColumn.width = width
+    RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView, updatesVisibleCellsImmediately: false)
+    return width
 }
 
 private struct RuneAppKitResourceTableTheme {
@@ -3309,23 +3336,34 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
         func applyWidth(from nextEvent: NSEvent) {
             let currentX = convert(nextEvent.locationInWindow, from: nil).x
             let proposedWidth = initialWidth + currentX - initialX
-            let width = min(
-                max(proposedWidth.rounded(.toNearestOrAwayFromZero), column.minWidth),
-                column.maxWidth
-            )
-            guard abs(column.width - width) >= 1 else { return }
-            column.width = width
-            didResize = true
-            RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
+            let width = applySynchronizedResourceColumnResize(proposedWidth, for: column, in: tableView)
+            if abs(width - initialWidth) >= 1 {
+                didResize = true
+            }
+        }
+
+        func latestResizeEvent(startingWith event: NSEvent) -> NSEvent {
+            var latestEvent = event
+            while latestEvent.type == .leftMouseDragged,
+                  let pendingEvent = window.nextEvent(
+                    matching: [.leftMouseDragged, .leftMouseUp],
+                    until: Date(),
+                    inMode: .eventTracking,
+                    dequeue: true
+                  ) {
+                latestEvent = pendingEvent
+            }
+            return latestEvent
         }
 
         while true {
             guard let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
-            switch nextEvent.type {
+            let resizeEvent = latestResizeEvent(startingWith: nextEvent)
+            switch resizeEvent.type {
             case .leftMouseDragged:
-                applyWidth(from: nextEvent)
+                applyWidth(from: resizeEvent)
             case .leftMouseUp:
-                applyWidth(from: nextEvent)
+                applyWidth(from: resizeEvent)
                 if didResize {
                     onColumnResizeCommitted?(column)
                 }
