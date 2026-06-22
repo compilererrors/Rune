@@ -31,6 +31,8 @@ assets/screenshot/ui/update260503/app-store-connect-2880x1800/
 !assets/screenshot/ui/260510/
 !assets/screenshot/ui/260510/*.png
 assets/screenshot/ui/260510/app-store-2880x1800/
+!assets/screenshot/ui/20260622T170110Z/
+!assets/screenshot/ui/20260622T170110Z/*.png
 
 # Local environment files.
 .env

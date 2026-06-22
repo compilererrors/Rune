@@ -249,6 +249,131 @@ final class YAMLLanguageServiceTests: XCTestCase {
         })
     }
 
+    func testDocumentModelParsesNestedKubernetesManifestWithoutDiagnostics() throws {
+        let source = """
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: checkout
+          labels:
+            app: checkout
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: checkout
+          template:
+            metadata:
+              labels:
+                app: checkout
+            spec:
+              containers:
+                - name: web
+                  image: registry.example.invalid/checkout:v1
+                  ports:
+                    - containerPort: 8080
+        """
+
+        let model = YAMLDocumentModel(source: source)
+
+        XCTAssertTrue(model.diagnostics.isEmpty, "Valid Kubernetes YAML should not produce syntax warnings or errors.")
+        XCTAssertTrue(model.tokens.contains { $0.kind == .key && nsSubstring(source, $0.range) == "apiVersion" })
+        XCTAssertTrue(model.tokens.contains { $0.kind == .string && nsSubstring(source, $0.range) == "apps/v1" })
+        XCTAssertTrue(model.tokens.contains { $0.kind == .number && nsSubstring(source, $0.range) == "2" })
+        XCTAssertTrue(model.tokens.contains { $0.kind == .number && nsSubstring(source, $0.range) == "8080" })
+
+        let containersLine = try XCTUnwrap(model.lines.first { $0.text.trimmingCharacters(in: .whitespaces) == "containers:" })
+        XCTAssertEqual(containersLine.indentationColumns, 6)
+        XCTAssertEqual(containersLine.shape, .mapping(opensBlock: true))
+
+        let containerNameLine = try XCTUnwrap(model.lines.first { $0.text.trimmingCharacters(in: .whitespaces) == "- name: web" })
+        XCTAssertEqual(containerNameLine.indentationColumns, 8)
+        XCTAssertEqual(containerNameLine.shape, .sequence(opensBlock: true))
+    }
+
+    func testAnalyzeHighlightsKubernetesScalarsWithoutRandomKeyOrDashBleed() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: checkout-5d79f6c8b9-vx4lp
+          labels:
+            app.kubernetes.io/name: checkout
+            status: CrashLoopBackOff
+        spec:
+          containers:
+            - name: checkout
+              image: registry.example.invalid/checkout:latest
+              imagePullPolicy: IfNotPresent
+              args:
+                - --listen=:8080
+                - --feature-gate=true
+              env:
+                - name: JVM_OPTS
+                  value: -javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertTrue(analysis.validationIssues.isEmpty)
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .key && nsSubstring(source, $0.range) == "apiVersion" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .key && nsSubstring(source, $0.range) == "app.kubernetes.io/name" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "CrashLoopBackOff" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "registry.example.invalid/checkout:latest" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "--listen=:8080" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "--feature-gate=true" })
+        XCTAssertTrue(analysis.highlights.contains {
+            $0.kind == .string
+                && nsSubstring(source, $0.range) == "-javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M"
+        })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "-" })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "apiVersion" })
+    }
+
+    func testAnalyzeReportsYAMLErrorsAndWarningsWithStableLocations() throws {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+           name: checkout
+        spec:
+        \tcontainers:
+            - name: app
+              env: [BROKEN
+              image: "registry.example.invalid/app:latest
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        let oddIndent = try XCTUnwrap(analysis.validationIssues.first {
+            $0.severity == .warning
+                && $0.message == "Indentation is not aligned to a two-space YAML level."
+                && $0.line == 4
+        })
+        XCTAssertEqual(nsSubstring(source, oddIndent.range?.nsRange), "   ")
+
+        let tabIssue = try XCTUnwrap(analysis.validationIssues.first {
+            $0.severity == .error
+                && $0.message == "Tabs are not allowed in YAML indentation."
+                && $0.line == 6
+        })
+        XCTAssertEqual(nsSubstring(source, tabIssue.range?.nsRange), "\t")
+
+        let flowIssue = try XCTUnwrap(analysis.validationIssues.first {
+            $0.severity == .error
+                && $0.message == "Unclosed '[' flow collection."
+                && $0.line == 8
+        })
+        XCTAssertEqual(nsSubstring(source, flowIssue.range?.nsRange), "[")
+
+        let quoteIssue = try XCTUnwrap(analysis.validationIssues.first {
+            $0.severity == .error
+                && $0.message == "Unclosed double-quoted string."
+                && $0.line == 9
+        })
+        XCTAssertEqual(quoteIssue.column, 14)
+    }
+
     func testAnalyzeReportsMessagesAndLineNumbersForQuotedStringErrors() {
         let source = "metadata:\n  name: \"Rune\n"
 

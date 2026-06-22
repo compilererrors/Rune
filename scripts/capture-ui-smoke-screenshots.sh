@@ -445,7 +445,7 @@ main() {
 
   local palette_index=$((scenario_index + ${#section_names[@]}))
   local palette_queries=(
-    "help:?"
+    "commands::"
     "pods::po"
     "deployments::deploy"
     "services::svc"

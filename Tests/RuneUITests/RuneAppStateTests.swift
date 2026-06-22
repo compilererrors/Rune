@@ -4290,6 +4290,20 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandPaletteColonShowsBuiltInCommandCheatSheet() {
+        let viewModel = RuneAppViewModel(state: RuneAppState())
+
+        let items = viewModel.commandPaletteItems(query: ":")
+
+        XCTAssertFalse(items.isEmpty)
+        XCTAssertTrue(items.allSatisfy { $0.id.hasPrefix("help:") })
+        XCTAssertTrue(items.contains { $0.title == ":po <name>" && $0.subtitle == "Pods" })
+        XCTAssertTrue(items.contains { $0.title == ":deploy <name>" && $0.subtitle == "Deployments" })
+        XCTAssertTrue(items.contains { $0.title == ":svc / :service <name>" && $0.subtitle == "Services" })
+        XCTAssertTrue(items.contains { $0.title == ":ns <namespace>" && $0.subtitle == "Switch namespace" })
+    }
+
+    @MainActor
     func testCommandPaletteServiceAccountCommandNavigatesWithoutStub() {
         let viewModel = RuneAppViewModel(state: RuneAppState())
         let items = viewModel.commandPaletteItems(query: ":sa")

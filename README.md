@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/ui/260522/app-store-2880x1800/overview.png)
+![Rune overview](assets/screenshot/ui/20260622T170110Z/01-overview.png)
 
 ## Why Rune
 
@@ -33,11 +33,15 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 [Jump to the full screenshot grid](#full-screenshot-grid).
 
 <p>
-  <img src="assets/screenshot/ui/260510/4deployyamledit.png" alt="Rune YAML editor with validation feedback" width="100%">
+  <img src="assets/screenshot/ui/20260622T170110Z/01-overview.png" alt="Rune overview with shortcuts, cluster signals, and Auth Doctor" width="100%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/260510/9terminal.png" alt="Rune terminal with pod shell and port-forwarding" width="100%">
+  <img src="assets/screenshot/ui/20260622T170110Z/29-terminal-logs.png" alt="Rune terminal and logs in split view" width="100%">
+</p>
+
+<p>
+  <img src="assets/screenshot/ui/20260622T170110Z/05-workloads-pod-yaml-quick-edit.png" alt="Rune YAML quick edit with validation feedback" width="100%">
 </p>
 
 ## Navigation
@@ -149,26 +153,26 @@ You can also support development through PayPal:
 ## Full Screenshot Grid
 
 <p>
-  <img src="assets/screenshot/ui/260522/app-store-2880x1800/overview.png" alt="Rune overview" width="49%">
-  <img src="assets/screenshot/ui/260510/2podlogs.png" alt="Rune pod logs" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/01-overview.png" alt="Rune overview" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/03-workloads-pod-logs.png" alt="Rune pod logs" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/260510/3deployyaml.png" alt="Rune deployment YAML" width="49%">
-  <img src="assets/screenshot/ui/260510/4deployyamledit.png" alt="Rune deployment YAML editing" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/05-workloads-pod-yaml-quick-edit.png" alt="Rune pod YAML quick edit" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/07-workloads-pod-describe.png" alt="Rune k9s-style pod describe output" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/260510/5deploydescribe.png" alt="Rune deployment describe output" width="49%">
-  <img src="assets/screenshot/ui/260510/6configdescribe.png" alt="Rune ConfigMap describe output" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/09-workloads-deployment-unified-logs.png" alt="Rune deployment unified logs" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/13-workloads-deployment-describe.png" alt="Rune deployment describe output" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/260510/7events.png" alt="Rune events" width="49%">
-  <img src="assets/screenshot/ui/260510/8helmhistory.png" alt="Rune Helm history" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/16-networking-service-port-forward.png" alt="Rune service port-forwarding" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/26-events-detail.png" alt="Rune event details" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/260510/9terminal.png" alt="Rune terminal" width="49%">
-  <img src="assets/screenshot/ui/260510/10commandpalette.png" alt="Rune command palette" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/29-terminal-logs.png" alt="Rune terminal and logs split view" width="49%">
+  <img src="assets/screenshot/ui/20260622T170110Z/40-command-palette-pods.png" alt="Rune command palette pod jump" width="49%">
 </p>
