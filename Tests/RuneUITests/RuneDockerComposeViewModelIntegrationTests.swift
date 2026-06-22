@@ -183,6 +183,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         try await assertKindLoads(.workloads, .horizontalPodAutoscaler, in: harness) { $0.state.horizontalPodAutoscalers.map(\.name).contains("orbit-lens") }
 
         try await assertKindLoads(.networking, .service, in: harness) { $0.state.services.map(\.name).contains("orbit-lens") }
+        try await assertKindLoads(.networking, .endpoint, in: harness) { $0.state.endpoints.map(\.name).contains("orbit-lens") }
         try await assertKindLoads(.networking, .ingress, in: harness) { $0.state.ingresses.map(\.name).contains("orbit-lens") }
         try await assertKindLoads(.networking, .networkPolicy, in: harness) { $0.state.networkPolicies.map(\.name).contains("alpha-default-deny") }
 
@@ -194,6 +195,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         try await assertKindLoads(.config, .configMap, in: harness) { $0.state.configMaps.map(\.name).contains("orbit-grid") }
         try await assertKindLoads(.config, .secret, in: harness) { $0.state.secrets.map(\.name).contains("orbit-seal") }
 
+        try await assertKindLoads(.rbac, .serviceAccount, in: harness) { $0.state.serviceAccounts.map(\.name).contains("default") }
         try await assertKindLoads(.rbac, .role, in: harness) { $0.state.rbacRoles.map(\.name).contains("alpha-reader") }
         try await assertKindLoads(.rbac, .roleBinding, in: harness) { $0.state.rbacRoleBindings.map(\.name).contains("alpha-reader-binding") }
         try await assertKindLoads(.rbac, .clusterRole, in: harness) { !$0.state.rbacClusterRoles.isEmpty }
@@ -217,8 +219,21 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             harness.state.selectedSection == .terminal
                 && harness.state.pods.contains { $0.name.hasPrefix("orbit-lens-") }
                 && harness.state.pods.contains { $0.name.hasPrefix("ember-gate-") }
+                && harness.state.pods.contains { $0.name == "alpha-log-matrix" }
                 && !harness.state.isLoading
         }
+
+        let multiContainerPod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-log-matrix" })
+        harness.viewModel.focusTerminalPodInspector(multiContainerPod, reloadLogs: true, loadDetails: false)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .terminal
+                && harness.state.selectedPod?.id == multiContainerPod.id
+                && harness.viewModel.selectedLogContainer == "main"
+                && harness.state.podLogs.contains("alpha-log-matrix main tick")
+                && !harness.state.isLoadingLogs
+        }
+        XCTAssertNil(harness.state.lastLogFetchError)
 
         let logPod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("orbit-lens-") })
         let shellPod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("ember-gate-") })
@@ -335,6 +350,196 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertEqual(requestCountAfterExport, requestCountAfterLogLoad)
         XCTAssertNil(harness.state.lastLogFetchError)
         XCTAssertNil(harness.state.lastError)
+    }
+
+    func testDockerComposeLogsCoverMultiContainerPreviousLogsAndOperatorResources() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.pods.contains { $0.name == "alpha-log-matrix" }
+                && harness.state.pods.contains { $0.name == "alpha-previous-log-probe" }
+                && !harness.state.isLoading
+        }
+
+        let multiContainerPod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-log-matrix" })
+        harness.viewModel.selectPod(multiContainerPod)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-log-matrix"
+                && harness.state.selectedPod?.containerNames.contains("main") == true
+                && harness.state.selectedPod?.containerNames.contains("sidecar") == true
+                && harness.state.resourceYAML.contains("initContainers")
+                && harness.state.resourceYAML.contains("sidecar")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.viewModel.selectedLogPreset = .recentLines
+        harness.viewModel.includePreviousLogs = false
+        harness.viewModel.selectedLogContainer = "sidecar"
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-log-matrix"
+                && harness.state.podLogs.contains("alpha-log-matrix sidecar tick")
+                && !harness.state.isLoadingLogs
+        }
+        XCTAssertFalse(harness.state.podLogs.contains("alpha-log-matrix main tick"))
+
+        harness.viewModel.selectedLogContainer = "main"
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-log-matrix"
+                && harness.state.podLogs.contains("alpha-log-matrix main tick")
+                && !harness.state.isLoadingLogs
+        }
+        XCTAssertFalse(harness.state.podLogs.contains("alpha-log-matrix sidecar tick"))
+        XCTAssertNil(harness.state.lastLogFetchError)
+
+        let previousLogPod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-previous-log-probe" })
+        let previousLogs = try await waitForPreviousPodLogs(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            podName: previousLogPod.name,
+            container: "crasher",
+            marker: "alpha-previous-log-probe previous marker"
+        )
+        XCTAssertTrue(previousLogs.contains("alpha-previous-log-probe previous marker"))
+
+        harness.viewModel.selectPod(previousLogPod)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-previous-log-probe"
+                && harness.state.selectedPod?.containerNames.contains("crasher") == true
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.viewModel.selectedLogContainer = "crasher"
+        harness.viewModel.includePreviousLogs = true
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-previous-log-probe"
+                && harness.state.podLogs.contains("alpha-previous-log-probe previous marker")
+                && !harness.state.isLoadingLogs
+        }
+        XCTAssertNil(harness.state.lastLogFetchError)
+
+        let operatorResources = try await harness.kubeClient.listOperatorResources(
+            from: sources,
+            context: context,
+            namespace: namespace
+        )
+        XCTAssertTrue(operatorResources.contains { $0.family == "cert-manager" && $0.name == "orbit-lens-tls" })
+        XCTAssertTrue(operatorResources.contains { $0.family == "Flux" && $0.name == "orbit-workloads" })
+        XCTAssertTrue(operatorResources.contains { $0.family == "ArgoCD" && $0.name == "orbit-control-plane" })
+
+        let certificate = try XCTUnwrap(operatorResources.first { $0.name == "orbit-lens-tls" })
+        let certificateYAML = try await harness.kubeClient.operatorResourceYAML(
+            from: sources,
+            context: context,
+            resource: certificate
+        )
+        let certificateDescribe = try await harness.kubeClient.operatorResourceDescribe(
+            from: sources,
+            context: context,
+            resource: certificate
+        )
+
+        XCTAssertTrue(certificateYAML.contains("orbit-lens-tls"))
+        XCTAssertTrue(certificateDescribe.contains("orbit-lens-tls"))
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testDockerComposeViewModelExecAndPortForwardUseLocalCluster() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.pods.contains { $0.name.hasPrefix("orbit-lens-") }
+                && !harness.state.isLoading
+        }
+
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name.hasPrefix("orbit-lens-") })
+        harness.viewModel.selectPod(pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.id == pod.id
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.viewModel.execCommandInput = "cat /usr/share/nginx/html/index.html"
+        harness.viewModel.requestExecInSelectedPod()
+        XCTAssertEqual(
+            harness.viewModel.pendingWriteAction,
+            .exec(podName: pod.name, command: ["cat", "/usr/share/nginx/html/index.html"])
+        )
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.lastExecResult?.podName == pod.name
+                && harness.state.lastExecResult?.exitCode == 0
+                && harness.state.lastExecResult?.stdout.contains("rune fake-orbit-mesh orbit-lens") == true
+        }
+        XCTAssertTrue(harness.state.writeAuditLog.contains { entry in
+            entry.action == "Exec"
+                && entry.resource.contains("pod/\(pod.name)")
+                && entry.status == "Succeeded"
+        })
+
+        let localPort = try await availableLocalPort()
+        harness.viewModel.portForwardAddressInput = "127.0.0.1"
+        harness.viewModel.portForwardLocalPortInput = String(localPort)
+        harness.viewModel.portForwardRemotePortInput = "8080"
+        harness.viewModel.startPortForwardForSelection()
+
+        let session = try await waitForPortForwardStatus(
+            .active,
+            in: harness,
+            targetName: pod.name,
+            localPort: localPort
+        )
+        defer {
+            harness.viewModel.stopPortForward(session)
+        }
+
+        let body = try await httpGET("http://127.0.0.1:\(localPort)/healthz")
+        XCTAssertTrue(body.contains("orbit-lens ok"), body)
+        XCTAssertEqual(session.contextName, "fake-orbit-mesh")
+        XCTAssertEqual(session.namespace, "alpha-zone")
+        XCTAssertEqual(session.targetKind, .pod)
+        XCTAssertNil(harness.state.lastError)
+
+        harness.viewModel.stopPortForward(session)
+        _ = try await waitForPortForwardStatus(
+            .stopped,
+            in: harness,
+            targetName: pod.name,
+            localPort: localPort
+        )
     }
 
     func testDockerComposeRollbackSafetyFlowAgainstFakeCluster() async throws {
@@ -1117,6 +1322,106 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             command: "wait for configmap deletion",
             message: "Timed out waiting for ConfigMap \(name) deletion. Last ConfigMaps: \(lastConfigMaps.joined(separator: ", "))"
         )
+    }
+
+    private func waitForPreviousPodLogs(
+        client: KubernetesClient,
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        container: String,
+        marker: String,
+        timeout: TimeInterval = 60
+    ) async throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastResult = ""
+
+        while Date() < deadline {
+            do {
+                let logs = try await client.podLogs(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    podName: podName,
+                    container: container,
+                    filter: PodLogPreset.recentLines.filter,
+                    previous: true
+                )
+                lastResult = logs
+                if logs.contains(marker) {
+                    return logs
+                }
+            } catch {
+                lastResult = error.localizedDescription
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        throw RuneError.commandFailed(
+            command: "wait for previous pod logs",
+            message: "Timed out waiting for previous logs on \(podName). Last result: \(lastResult)"
+        )
+    }
+
+    private func waitForPortForwardStatus(
+        _ status: PortForwardStatus,
+        in harness: Harness,
+        targetName: String,
+        localPort: Int,
+        timeout: TimeInterval = 15,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> PortForwardSession {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let session = harness.state.portForwardSessions.first(where: {
+                $0.status == status
+                    && $0.targetName == targetName
+                    && $0.localPort == localPort
+            }) {
+                return session
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        let seen = harness.state.portForwardSessions
+            .map { "\($0.targetName):\($0.localPort):\($0.status.rawValue):\($0.lastMessage)" }
+            .joined(separator: " | ")
+        XCTFail("Timed out waiting for port-forward \(status.rawValue). Seen: \(seen)", file: file, line: line)
+        throw RuneError.commandFailed(
+            command: "wait for port-forward",
+            message: "Timed out waiting for port-forward \(status.rawValue). Seen: \(seen)"
+        )
+    }
+
+    private func availableLocalPort() async throws -> Int {
+        for port in 20_000...45_000 {
+            if KubernetesRESTClient._testLocalPortConflictMessage(port: port, address: "127.0.0.1") == nil {
+                return port
+            }
+        }
+        throw RuneError.commandFailed(command: "find local port", message: "No free local port found in test range.")
+    }
+
+    private func httpGET(_ rawURL: String, timeout: TimeInterval = 10) async throws -> String {
+        guard let url = URL(string: rawURL) else {
+            throw RuneError.invalidInput(message: "Invalid URL \(rawURL)")
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error?
+        while Date() < deadline {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                return String(decoding: data, as: UTF8.self)
+            } catch {
+                lastError = error
+                try await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+
+        throw lastError ?? RuneError.commandFailed(command: "http get", message: "Timed out fetching \(rawURL)")
     }
 
     private func clusterSnapshot(

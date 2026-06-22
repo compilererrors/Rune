@@ -121,6 +121,15 @@ public struct AuthDoctorRBACPreflightTarget: Sendable {
             destination: .resource(section: .networking, kind: .service)
         ),
         .makeResource(
+            id: "rbac-endpoints-list",
+            title: "RBAC Endpoints",
+            resource: "endpoints",
+            actionTitle: "Open Endpoints",
+            systemImage: "point.3.connected.trianglepath.dotted",
+            help: "Open namespace-scoped Endpoints.",
+            destination: .resource(section: .networking, kind: .endpoint)
+        ),
+        .makeResource(
             id: "rbac-ingresses-list",
             title: "RBAC Ingresses",
             resource: "ingresses",
@@ -204,6 +213,15 @@ public struct AuthDoctorRBACPreflightTarget: Sendable {
             systemImage: "person.badge.key",
             help: "Open namespace-scoped Roles.",
             destination: .resource(section: .rbac, kind: .role)
+        ),
+        .makeResource(
+            id: "rbac-serviceaccounts-list",
+            title: "RBAC ServiceAccounts",
+            resource: "serviceaccounts",
+            actionTitle: "Open ServiceAccounts",
+            systemImage: "person.crop.circle.badge.checkmark",
+            help: "Open namespace-scoped ServiceAccounts.",
+            destination: .resource(section: .rbac, kind: .serviceAccount)
         ),
         .makeResource(
             id: "rbac-rolebindings-list",

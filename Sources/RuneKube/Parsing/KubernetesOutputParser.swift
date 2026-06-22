@@ -741,6 +741,25 @@ public struct KubernetesOutputParser {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    public func parseEndpoints(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeEndpointItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let ready = item.subsets?.reduce(0) { $0 + ($1.addresses?.count ?? 0) } ?? 0
+                let notReady = item.subsets?.reduce(0) { $0 + ($1.notReadyAddresses?.count ?? 0) } ?? 0
+                let ports = Self.endpointPortLine(from: item.subsets)
+                return ClusterResourceSummary(
+                    kind: .endpoint,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: "\(ready)/\(ready + notReady) ready",
+                    secondaryText: ports.isEmpty ? "No ports" : ports,
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     public func parseIngresses(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
         let decoded = try JSONDecoder().decode(KubeList<KubeIngressItem>.self, from: Data(raw.utf8))
         return decoded.items
@@ -760,6 +779,25 @@ public struct KubernetesOutputParser {
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: host,
                     secondaryText: secondaryText,
+                    ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func parseServiceAccounts(namespace: String, from raw: String) throws -> [ClusterResourceSummary] {
+        let decoded = try JSONDecoder().decode(KubeList<KubeServiceAccountItem>.self, from: Data(raw.utf8))
+        return decoded.items
+            .map { item in
+                let pullSecrets = item.imagePullSecrets?.count ?? 0
+                let secrets = item.secrets?.count ?? 0
+                let token = item.automountServiceAccountToken.map { $0 ? "auto token" : "no auto token" } ?? "token default"
+                return ClusterResourceSummary(
+                    kind: .serviceAccount,
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace ?? namespace,
+                    primaryText: "\(secrets) secrets",
+                    secondaryText: pullSecrets > 0 ? "\(pullSecrets) pull secrets, \(token)" : token,
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -1174,6 +1212,51 @@ public struct KubernetesOutputParser {
     private struct KubeServiceItem: Decodable {
         let metadata: KubeMetadata
         let spec: KubeServiceSpec
+    }
+
+    private struct KubeEndpointAddress: Decodable {}
+
+    private struct KubeEndpointPort: Decodable {
+        let name: String?
+        let port: Int?
+        let `protocol`: String?
+    }
+
+    private struct KubeEndpointSubset: Decodable {
+        let addresses: [KubeEndpointAddress]?
+        let notReadyAddresses: [KubeEndpointAddress]?
+        let ports: [KubeEndpointPort]?
+    }
+
+    private struct KubeEndpointItem: Decodable {
+        let metadata: KubeMetadata
+        let subsets: [KubeEndpointSubset]?
+    }
+
+    private struct KubeServiceAccountSecretReference: Decodable {
+        let name: String?
+    }
+
+    private struct KubeServiceAccountItem: Decodable {
+        let metadata: KubeMetadata
+        let secrets: [KubeServiceAccountSecretReference]?
+        let imagePullSecrets: [KubeServiceAccountSecretReference]?
+        let automountServiceAccountToken: Bool?
+    }
+
+    private static func endpointPortLine(from subsets: [KubeEndpointSubset]?) -> String {
+        var seen = Set<String>()
+        var ports: [String] = []
+        for port in subsets?.flatMap({ $0.ports ?? [] }) ?? [] {
+            guard let number = port.port else { continue }
+            let label = [port.name, String(number), port.protocol].compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }.joined(separator: "/")
+            guard !label.isEmpty, seen.insert(label).inserted else { continue }
+            ports.append(label)
+        }
+        return ports.prefix(4).joined(separator: ", ")
     }
 
     private static func ingressServiceNames(from item: KubeIngressItem) -> [String] {

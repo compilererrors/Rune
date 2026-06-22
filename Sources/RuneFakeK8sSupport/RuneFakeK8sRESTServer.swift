@@ -244,15 +244,21 @@ private final class ServerBox: @unchecked Sendable {
                     let body = Self.body(in: request + more)
                     let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
                         .route(requestLine: String(line), body: body.isEmpty ? nil : body)
-                    connection.sendHTTP(response)
+                    connection.sendHTTP(response, delayNanoseconds: Self.responseDelayNanoseconds(for: String(line), fixture: fixture))
                 }
             } else {
                 let body = Self.body(in: request)
                 let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
                     .route(requestLine: String(line), body: body.isEmpty ? nil : body)
-                connection.sendHTTP(response)
+                connection.sendHTTP(response, delayNanoseconds: Self.responseDelayNanoseconds(for: String(line), fixture: fixture))
             }
         }
+    }
+
+    private static func responseDelayNanoseconds(for requestLine: String, fixture: RuneFakeK8sFixture) -> UInt64 {
+        let parts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
+        guard parts.count >= 2 else { return 0 }
+        return fixture.delayedResponseTargets[parts[1]] ?? 0
     }
 
     private static func contentLength(in request: String) -> Int {
@@ -553,6 +559,30 @@ private struct RuneFakeK8sRouter {
                 return .json(status: 404, object: status(message: "Service \(pathParts[5]) was not found."))
             }
             return .json(status: 200, object: serviceObject(service, namespace: namespace.name))
+        case "endpoints" where pathParts.count == 5:
+            return .json(status: 200, object: listObject(
+                apiVersion: "v1",
+                kind: "EndpointsList",
+                items: endpointObjects(namespace),
+                query: query
+            ))
+        case "endpoints" where pathParts.count == 6:
+            guard let endpoint = endpointObjects(namespace).first(where: { metadataName($0) == pathParts[5] }) else {
+                return .json(status: 404, object: status(message: "Endpoints \(pathParts[5]) was not found."))
+            }
+            return .json(status: 200, object: endpoint)
+        case "serviceaccounts" where pathParts.count == 5:
+            return .json(status: 200, object: listObject(
+                apiVersion: "v1",
+                kind: "ServiceAccountList",
+                items: serviceAccountObjects(namespace),
+                query: query
+            ))
+        case "serviceaccounts" where pathParts.count == 6:
+            guard let serviceAccount = serviceAccountObjects(namespace).first(where: { metadataName($0) == pathParts[5] }) else {
+                return .json(status: 404, object: status(message: "ServiceAccount \(pathParts[5]) was not found."))
+            }
+            return .json(status: 200, object: serviceAccount)
         case "configmaps" where pathParts.count == 5:
             return .json(status: 200, object: listObject(
                 apiVersion: "v1",
@@ -1122,6 +1152,58 @@ private struct RuneFakeK8sRouter {
         }
     }
 
+    private func endpointObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        namespace.services.map { service in
+            let matchingPods = namespace.pods.filter { pod in
+                service.selector.allSatisfy { key, value in pod.labels[key] == value }
+            }
+            return [
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": [
+                    "name": service.name,
+                    "namespace": namespace.name,
+                    "creationTimestamp": "2026-04-25T10:00:00Z"
+                ],
+                "subsets": [[
+                    "addresses": matchingPods.map { pod in
+                        [
+                            "ip": pod.podIP ?? "0.0.0.0",
+                            "targetRef": [
+                                "kind": "Pod",
+                                "name": pod.name,
+                                "namespace": namespace.name
+                            ]
+                        ]
+                    },
+                    "ports": [[
+                        "name": "http",
+                        "port": 80,
+                        "protocol": "TCP"
+                    ]]
+                ]]
+            ]
+        }
+    }
+
+    private func serviceAccountObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
+        let names = ["default"] + namespace.deployments.map { "\($0.name)-runner" }
+        return names.map { name in
+            [
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": [
+                    "name": name,
+                    "namespace": namespace.name,
+                    "creationTimestamp": "2026-04-25T10:00:00Z"
+                ],
+                "secrets": [["name": "\(name)-token"]],
+                "imagePullSecrets": name == "default" ? [] : [["name": "\(name)-pull"]],
+                "automountServiceAccountToken": name == "default"
+            ]
+        }
+    }
+
     private func cronJobObjects(_ namespace: RuneFakeK8sNamespace) -> [[String: Any]] {
         guard let deployment = namespace.deployments.first else { return [] }
         return [[
@@ -1340,7 +1422,19 @@ private struct RuneFakeK8sHTTPResponse {
 }
 
 private extension NWConnection {
-    func sendHTTP(_ response: RuneFakeK8sHTTPResponse) {
+    func sendHTTP(_ response: RuneFakeK8sHTTPResponse, delayNanoseconds: UInt64 = 0) {
+        guard delayNanoseconds > 0 else {
+            sendHTTPNow(response)
+            return
+        }
+
+        let delay = DispatchTimeInterval.nanoseconds(min(Int(delayNanoseconds), Int(Int32.max)))
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.sendHTTPNow(response)
+        }
+    }
+
+    private func sendHTTPNow(_ response: RuneFakeK8sHTTPResponse) {
         let header = [
             "HTTP/1.1 \(response.status) \(reasonPhrase(response.status))",
             "Content-Type: \(response.contentType)",

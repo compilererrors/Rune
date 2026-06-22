@@ -84,7 +84,7 @@ public enum KubernetesRESTPath {
         }
 
         switch resource {
-        case "pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "events":
+        case "pods", "services", "endpoints", "serviceaccounts", "configmaps", "secrets", "persistentvolumeclaims", "events":
             return "/api/v1/\(resource)"
         case "deployments", "statefulsets", "daemonsets", "replicasets":
             return "/apis/apps/v1/\(resource)"
@@ -144,11 +144,13 @@ public enum KubernetesRESTPath {
         case .cronJob: return "cronjobs"
         case .replicaSet: return "replicasets"
         case .service: return "services"
+        case .endpoint: return "endpoints"
         case .ingress: return "ingresses"
         case .configMap: return "configmaps"
         case .secret: return "secrets"
         case .node: return "nodes"
         case .event: return "events"
+        case .serviceAccount: return "serviceaccounts"
         case .role: return "roles"
         case .roleBinding: return "rolebindings"
         case .clusterRole: return "clusterroles"

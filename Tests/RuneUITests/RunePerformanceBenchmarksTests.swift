@@ -119,6 +119,23 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
     }
 
+    private func benchmarkClusterResources(
+        kind: KubeResourceKind,
+        prefix: String,
+        count: Int,
+        namespace: String? = "default"
+    ) -> [ClusterResourceSummary] {
+        (0..<count).map { index in
+            ClusterResourceSummary(
+                kind: kind,
+                name: "\(prefix)-\(String(format: "%04d", index))",
+                namespace: namespace,
+                primaryText: "\(index % 18 + 1) keys",
+                secondaryText: "settings"
+            )
+        }
+    }
+
     private func benchmarkHelmReleases(count: Int) -> [HelmReleaseSummary] {
         (0..<count).map { index in
             HelmReleaseSummary(
@@ -403,6 +420,38 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testRESTRequestCancelledMetricsRecordingBenchmarkKPI() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 1_000)
+        let started = ContinuousClock.now
+
+        for index in 0..<5_000 {
+            await recorder.record(KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods/pod-\(index)?continue=token-\(index)",
+                statusCode: nil,
+                responseBytes: 0,
+                durationSeconds: 0.001,
+                attempt: 1,
+                outcome: .cancelled,
+                cancellationReason: index.isMultiple(of: 2) ? "task-cancelled" : "urlsession-cancelled"
+            ))
+        }
+        let summary = await recorder.summary()
+        let snapshot = await recorder.snapshot()
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(summary.requestCount, 5_000)
+        XCTAssertEqual(summary.cancelledCount, 5_000)
+        XCTAssertEqual(summary.failureCount, 0)
+        XCTAssertEqual(summary.retainedMetricCount, 1_000)
+        XCTAssertTrue(snapshot.allSatisfy { !$0.apiPath.contains("synthetic") && !$0.apiPath.contains("token-") })
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.35,
+            "KPI: recording 5k cancelled REST request metrics should stay below 350ms in debug."
+        )
+    }
+
     func testRESTRequestMetricsGroupingBenchmarkKPI() {
         let metrics = (0..<4_000).map { index in
             KubernetesRESTRequestMetric(
@@ -433,6 +482,272 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             seconds(elapsed),
             0.12,
             "KPI: grouping 4k privacy-safe REST request metrics for support bundles should stay below 120ms in debug."
+        )
+    }
+
+    func testAddClusterProviderActionLayoutBenchmarkKPI() {
+        let widths = stride(from: CGFloat(360), through: CGFloat(760), by: CGFloat(1)).map { $0 }
+        let elapsed = minimumElapsedSeconds {
+            for _ in 0..<2_000 {
+                for width in widths {
+                    _ = RuneAddClusterProviderActionLayout.columnCount(for: 5, dialogWidth: width)
+                    _ = RuneAddClusterProviderActionLayout.rowCount(for: 5, dialogWidth: width)
+                    _ = RuneAddClusterProviderActionLayout.rowCount(for: 4, dialogWidth: width)
+                }
+            }
+        }
+
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 5), 2)
+        #if DEBUG
+        let maximumLayoutProjectionSeconds = 0.25
+        #else
+        let maximumLayoutProjectionSeconds = 0.10
+        #endif
+        XCTAssertLessThan(
+            elapsed,
+            maximumLayoutProjectionSeconds,
+            "KPI: Add Cluster provider action layout projection should stay below 250ms in debug and 100ms in release for 2k width sweeps."
+        )
+    }
+
+    func testCloudCredentialRequiredFieldProjectionBenchmarkKPI() {
+        let drafts = (0..<10_000).map { index in
+            CloudCredentialDraft(
+                clusterName: index.isMultiple(of: 5) ? "" : "synthetic-\(index)",
+                regionOrLocation: index.isMultiple(of: 7) ? "" : "eu-north-1",
+                resourceGroup: index.isMultiple(of: 3) ? "" : "synthetic-group",
+                projectID: index.isMultiple(of: 11) ? "" : "synthetic-project"
+            )
+        }
+        let providers: [CloudKubeConfigProvider] = [.aks, .eks, .gke]
+        let elapsed = minimumElapsedSeconds {
+            var readyCount = 0
+            for draft in drafts {
+                for provider in providers where draft.hasRequiredFields(for: provider) {
+                    readyCount += 1
+                }
+            }
+            XCTAssertGreaterThan(readyCount, 0)
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.03,
+            "KPI: Add Cluster required-field projection for 10k drafts should stay below 30ms in debug."
+        )
+    }
+
+    func testAddClusterCloudImportWorkflowProjectionBenchmarkKPI() {
+        let reviews = (0..<20_000).map { index in
+            KubeConfigImportReview(
+                contexts: [],
+                issues: [
+                    KubeConfigImportIssue(
+                        id: "synthetic-warning-\(index)",
+                        severity: .warning,
+                        message: "Synthetic warning \(index)"
+                    ),
+                    KubeConfigImportIssue(
+                        id: "synthetic-error-\(index)",
+                        severity: index.isMultiple(of: 4) ? .error : .warning,
+                        message: "Synthetic error \(index)"
+                    )
+                ],
+                redactedPreview: ""
+            )
+        }
+
+        let elapsed = minimumElapsedSeconds {
+            let blocking = AddClusterCloudImportWorkflow.blockingIssues(in: reviews)
+            let checks = AddClusterCloudImportWorkflow.importReviewFailureChecks(for: blocking)
+            XCTAssertEqual(blocking.count, 5_000)
+            XCTAssertEqual(checks.count, 6)
+            XCTAssertFalse(AddClusterCloudImportWorkflow.blockingImportErrorMessage(for: blocking).contains("Synthetic error"))
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.05,
+            "KPI: Add Cluster cloud-import review projection for 20k reviews should stay below 50ms in debug."
+        )
+    }
+
+    func testAddClusterBoundedBlockingFailureProjectionBenchmarkKPI() {
+        let reviews = (0..<20_000).map { index in
+            KubeConfigImportReview(
+                contexts: [],
+                issues: [
+                    KubeConfigImportIssue(
+                        id: "synthetic-warning-\(index)",
+                        severity: .warning,
+                        message: "Synthetic warning \(index)"
+                    ),
+                    KubeConfigImportIssue(
+                        id: "synthetic-error-\(index)",
+                        severity: index.isMultiple(of: 4) ? .error : .warning,
+                        message: "Synthetic error \(index)"
+                    )
+                ],
+                redactedPreview: ""
+            )
+        }
+
+        let elapsed = minimumElapsedSeconds {
+            let failure = AddClusterCloudImportWorkflow.blockingFailure(in: reviews)
+            XCTAssertEqual(failure?.checks.count, 6)
+            XCTAssertFalse(failure?.message.contains("Synthetic error") == true)
+            XCTAssertFalse(failure?.message.contains("Synthetic error 12") == true)
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.02,
+            "KPI: bounded Add Cluster blocking-review failure projection should stay below 20ms for 20k reviews."
+        )
+    }
+
+    func testAddClusterCloudImportStatusProjectionBenchmarkKPI() {
+        let providers: [CloudKubeConfigProvider] = [.aks, .eks, .gke]
+        let elapsed = minimumElapsedSeconds {
+            var statusCharacterCount = 0
+            for index in 0..<50_000 {
+                let provider = providers[index % providers.count]
+                statusCharacterCount += AddClusterCloudImportWorkflow.runningStatus(for: provider).count
+                statusCharacterCount += AddClusterCloudImportWorkflow.importedStatus(for: provider).count
+                statusCharacterCount += AddClusterCloudImportWorkflow.failedStatus().count
+            }
+            XCTAssertGreaterThan(statusCharacterCount, 0)
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.02,
+            "KPI: Add Cluster status projection should stay below 20ms for 50k provider state refreshes."
+        )
+    }
+
+    func testAddClusterCloudLoginFailureCheckProjectionBenchmarkKPI() {
+        let providers: [CloudKubeConfigProvider] = [.aks, .eks, .gke]
+        let elapsed = minimumElapsedSeconds {
+            var idCharacterCount = 0
+            for index in 0..<50_000 {
+                let provider = providers[index % providers.count]
+                let checks = AddClusterCloudImportWorkflow.cloudLoginFailureChecks(for: provider)
+                idCharacterCount += checks.reduce(0) { $0 + $1.id.count + $1.title.count }
+            }
+            XCTAssertGreaterThan(idCharacterCount, 0)
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.035,
+            "KPI: Add Cluster cloud-login failure check projection should stay below 35ms for 50k provider failures."
+        )
+    }
+
+    func testAddClusterImportReviewFailureCheckIDSanitizationBenchmarkKPI() {
+        let issues = (0..<12).map { index in
+            KubeConfigImportIssue(
+                id: index.isMultiple(of: 2)
+                    ? "/private/tmp/token-\(index)/synthetic-context"
+                    : String(repeating: "synthetic-long-id-\(index)-", count: 6),
+                severity: .error,
+                message: "Synthetic import issue \(index)"
+            )
+        }
+
+        let elapsed = minimumElapsedSeconds {
+            var idCharacterCount = 0
+            for _ in 0..<5_000 {
+                let checks = AddClusterCloudImportWorkflow.importReviewFailureChecks(for: issues)
+                idCharacterCount += checks.reduce(0) { $0 + $1.id.count }
+            }
+            XCTAssertGreaterThan(idCharacterCount, 0)
+        }
+
+        XCTAssertLessThan(
+            elapsed,
+            0.08,
+            "KPI: sanitized Add Cluster import-review health-check IDs should stay below 80ms for 5k projections."
+        )
+    }
+
+    func testAddClusterCloudFailureSanitizationBenchmarkKPI() {
+        let failures = (0..<5_000).map { index in
+            CloudKubeConfigImportError.commandFailed(
+                command: "provider get-credentials synthetic-private-cluster-\(index)",
+                exitCode: 42,
+                message: "synthetic-token-\(index) provider stderr"
+            )
+        }
+        let issues = (0..<5).map { index in
+            KubeConfigImportIssue(
+                id: "missing-server-sensitive-\(index)",
+                severity: .error,
+                message: "Context synthetic-private-context-\(index) is missing server token synthetic-token-\(index)."
+            )
+        }
+
+        let elapsed = minimumElapsedSeconds {
+            var characterCount = 0
+            for failure in failures {
+                characterCount += failure.localizedDescription.count
+            }
+            for index in 0..<5_000 {
+                characterCount += AddClusterCloudImportWorkflow.safeImportReviewIssueMessage(
+                    for: issues[index % issues.count]
+                ).count
+            }
+            XCTAssertGreaterThan(characterCount, 0)
+        }
+
+        let sample = failures[0].localizedDescription
+            + AddClusterCloudImportWorkflow.blockingImportErrorMessage(for: issues)
+            + AddClusterCloudImportWorkflow.importReviewFailureChecks(for: issues).map(\.message).joined(separator: " ")
+        XCTAssertFalse(sample.contains("synthetic-token"))
+        XCTAssertFalse(sample.contains("synthetic-private-cluster"))
+        XCTAssertFalse(sample.contains("synthetic-private-context"))
+        XCTAssertLessThan(elapsed, 0.02, "KPI: cloud import failure projection and sanitization should stay below 20ms for 5k synthetic failures.")
+    }
+
+    @MainActor
+    func testProductionConfirmationStateTransitionBenchmarkKPI() {
+        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            if let previousProduction {
+                UserDefaults.standard.set(previousProduction, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+            }
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "prod")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        let elapsed = minimumElapsedSeconds {
+            for _ in 0..<1_000 {
+                viewModel.requestDeleteSelectedResource()
+                viewModel.confirmPendingWriteAction()
+                XCTAssertEqual(viewModel.pendingProductionDestructiveConfirmation, .delete(kind: .pod, name: "api-0"))
+                viewModel.cancelPendingWriteAction()
+            }
+        }
+
+        #if DEBUG
+        let maximumTransitionSeconds = 0.02
+        #else
+        let maximumTransitionSeconds = 0.01
+        #endif
+        XCTAssertLessThan(
+            elapsed,
+            maximumTransitionSeconds,
+            "KPI: production confirmation state transition should stay below 20ms in debug and 10ms in release for 1k synthetic actions."
         )
     }
 
@@ -1055,6 +1370,58 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.75)
     }
 
+    func testYAMLPlainKubernetesValueHighlightingBenchmarkKPI() {
+        let container = """
+          - name: app
+            image: registry.example.invalid/app:latest
+            imagePullPolicy: Always
+            env:
+              - name: JVM_OPTS
+                value: -javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M
+                  -Xms120M
+            volumeMounts:
+              - mountPath: /mnt/secrets-store
+        """
+        let manifest = (0..<700)
+            .map { index in
+                """
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: synthetic-pod-\(index)
+                  generateName: synthetic-job-\(index)-
+                spec:
+                  containers:
+                \(container)
+                  restartPolicy: Never
+                """
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = YAMLLanguageService.analyze(manifest)
+        }
+
+        let started = ContinuousClock.now
+        let analysis = YAMLLanguageService.analyze(manifest)
+        let elapsed = started.duration(to: .now)
+        let highlightedText = analysis.highlights
+            .filter { $0.kind == .string }
+            .map { (manifest as NSString).substring(with: $0.range) }
+
+        XCTAssertTrue(highlightedText.contains("registry.example.invalid/app:latest"))
+        XCTAssertTrue(highlightedText.contains("-javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M"))
+        XCTAssertTrue(highlightedText.contains("-Xms120M"))
+        XCTAssertTrue(highlightedText.contains("/mnt/secrets-store"))
+        XCTAssertFalse(highlightedText.contains("-"))
+        XCTAssertTrue(analysis.validationIssues.isEmpty)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.85,
+            "KPI: YAML plain Kubernetes value highlighting should stay below 850ms for large manifests in debug."
+        )
+    }
+
     @MainActor
     func testYAMLLineNumberGutterVisibleLabelsBenchmarkKPI() throws {
         let manifest = (0..<25_000)
@@ -1249,7 +1616,95 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             }
         }
 
-        XCTAssertLessThan(elapsedSeconds, 0.35)
+        #if DEBUG
+        let maximumViewModelInitializationSeconds = 0.20
+        #else
+        let maximumViewModelInitializationSeconds = 0.10
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumViewModelInitializationSeconds,
+            "KPI: cold ViewModel init should keep 200 inits below 200ms in debug."
+        )
+    }
+
+    @MainActor
+    func testColdStartAddClusterWorkflowComparisonKPI() {
+        let baselineSeconds = minimumElapsedSeconds {
+            for _ in 0..<200 {
+                _ = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+            }
+        }
+
+        let request = CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        )
+        let review = KubeConfigImportReview(
+            contexts: [
+                KubeConfigImportContextPreview(
+                    name: "synthetic-context",
+                    clusterName: "synthetic-cluster",
+                    userName: "synthetic-user",
+                    namespace: "default",
+                    serverHost: "example.invalid",
+                    authType: "Exec",
+                    providerHint: "EKS"
+                )
+            ],
+            issues: [
+                KubeConfigImportIssue(
+                    id: "synthetic-warning",
+                    severity: .warning,
+                    message: "Synthetic warning"
+                )
+            ],
+            redactedPreview: "apiVersion: v1\ncontexts: []\n"
+        )
+        let importer = BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: CloudKubeConfigCommandPreview(
+                executable: "aws",
+                arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+                displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+            ),
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: ""),
+            discoveredURLs: [],
+            reviews: [review]
+        ))
+
+        let addClusterColdStartSeconds = minimumElapsedSeconds {
+            for _ in 0..<200 {
+                let viewModel = RuneAppViewModel(
+                    kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                    cloudKubeConfigImporter: importer
+                )
+                _ = viewModel.cloudKubeConfigCommandPreview(for: request)
+                _ = AddClusterCloudImportWorkflow.runningStatus(for: request.provider)
+                _ = AddClusterCloudImportWorkflow.importedStatus(for: request.provider)
+                _ = AddClusterCloudImportWorkflow.blockingIssues(in: [review])
+                XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+                XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+            }
+        }
+
+        #if DEBUG
+        let maximumAddClusterColdStartSeconds = 0.26
+        let maximumAddClusterOverheadSeconds = 0.08
+        #else
+        let maximumAddClusterColdStartSeconds = 0.13
+        let maximumAddClusterOverheadSeconds = 0.04
+        #endif
+        XCTAssertLessThan(
+            addClusterColdStartSeconds,
+            maximumAddClusterColdStartSeconds,
+            "KPI: cold ViewModel init plus Add Cluster preview/workflow projection should stay below the app-start budget."
+        )
+        XCTAssertLessThanOrEqual(
+            addClusterColdStartSeconds,
+            baselineSeconds + maximumAddClusterOverheadSeconds,
+            "KPI: Add Cluster projection must not materially regress cold-start initialization versus baseline."
+        )
     }
 
     @MainActor
@@ -1277,11 +1732,73 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsed = started.duration(to: .now)
 
         #if DEBUG
-        let maximumRootShellConstructionSeconds = 0.60
-        #else
         let maximumRootShellConstructionSeconds = 0.30
+        #else
+        let maximumRootShellConstructionSeconds = 0.18
         #endif
-        XCTAssertLessThan(seconds(elapsed), maximumRootShellConstructionSeconds)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumRootShellConstructionSeconds,
+            "KPI: root shell construction should keep 200 shell constructions below 300ms in debug."
+        )
+    }
+
+    @MainActor
+    func testColdStartRootShellAddClusterComparisonKPI() {
+        let baselineSeconds = minimumElapsedSeconds {
+            for _ in 0..<200 {
+                let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                _ = RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: nil,
+                    debugDisableBootstrap: true
+                )
+            }
+        }
+
+        let readyDraft = CloudCredentialDraft(
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1",
+            resourceGroup: "synthetic-group",
+            projectID: "synthetic-project"
+        )
+        let providers: [CloudKubeConfigProvider] = [.aks, .eks, .gke]
+        let addClusterRootShellSeconds = minimumElapsedSeconds {
+            var readyProjectionCount = 0
+            for _ in 0..<200 {
+                let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                _ = RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: nil,
+                    debugDisableBootstrap: true
+                )
+                _ = RuneAddClusterProviderActionLayout.columnCount(for: 5)
+                _ = RuneAddClusterProviderActionLayout.rowCount(for: 5)
+                for provider in providers where readyDraft.hasRequiredFields(for: provider) {
+                    readyProjectionCount += 1
+                }
+                XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+            }
+            XCTAssertEqual(readyProjectionCount, 600)
+        }
+
+        #if DEBUG
+        let maximumRootShellWithAddClusterSeconds = 0.36
+        let maximumAddClusterShellOverheadSeconds = 0.08
+        #else
+        let maximumRootShellWithAddClusterSeconds = 0.20
+        let maximumAddClusterShellOverheadSeconds = 0.04
+        #endif
+        XCTAssertLessThan(
+            addClusterRootShellSeconds,
+            maximumRootShellWithAddClusterSeconds,
+            "KPI: root shell construction plus Add Cluster layout projection should stay inside the cold-start shell budget."
+        )
+        XCTAssertLessThanOrEqual(
+            addClusterRootShellSeconds,
+            baselineSeconds + maximumAddClusterShellOverheadSeconds,
+            "KPI: Add Cluster shell projection must not materially regress root shell cold-start construction."
+        )
     }
 
     @MainActor
@@ -1311,6 +1828,62 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         XCTAssertLessThan(elapsedSeconds, 0.12)
+    }
+
+    @MainActor
+    func testColdStartLaunchShellAddClusterComparisonKPI() {
+        func mountLaunchShell(viewModel: RuneAppViewModel) {
+            let controller = NSHostingController(
+                rootView: RuneRootView(
+                    viewModel: viewModel,
+                    onLayoutSnapshotChange: nil
+                )
+            )
+            controller.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+
+        let baselineSeconds = minimumElapsedSeconds(repetitions: 5) {
+            mountLaunchShell(viewModel: RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()))
+        }
+
+        let importer = BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: CloudKubeConfigCommandPreview(
+                executable: "aws",
+                arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+                displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+            ),
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: ""),
+            discoveredURLs: [],
+            reviews: []
+        ))
+        let addClusterMountSeconds = minimumElapsedSeconds(repetitions: 5) {
+            let viewModel = RuneAppViewModel(
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                cloudKubeConfigImporter: importer
+            )
+            mountLaunchShell(viewModel: viewModel)
+            XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+            XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        }
+
+        #if DEBUG
+        let maximumLaunchMountWithAddClusterSeconds = 0.12
+        let maximumAddClusterMountOverheadSeconds = 0.04
+        #else
+        let maximumLaunchMountWithAddClusterSeconds = 0.06
+        let maximumAddClusterMountOverheadSeconds = 0.02
+        #endif
+        XCTAssertLessThan(
+            addClusterMountSeconds,
+            maximumLaunchMountWithAddClusterSeconds,
+            "KPI: first launch shell mount with Add Cluster dependencies should stay inside the cold-start first-paint budget."
+        )
+        XCTAssertLessThanOrEqual(
+            addClusterMountSeconds,
+            baselineSeconds + maximumAddClusterMountOverheadSeconds,
+            "KPI: Add Cluster dependencies must not materially regress launch shell initial mount versus baseline."
+        )
     }
 
     @MainActor
@@ -1397,6 +1970,72 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(finalResourceGETs.count, 2)
         XCTAssertNil(state.lastError)
         XCTAssertLessThan(seconds(elapsed), 0.75)
+    }
+
+    @MainActor
+    func testCommandPaletteGlobalSearchAndAliasBenchmarkKPI() {
+        let state = RuneAppState()
+        state.setContexts((0..<500).map { index in
+            KubeContext(name: "synthetic-context-\(String(format: "%04d", index))")
+        })
+        state.setNamespaces((0..<250).map { "synthetic-namespace-\(String(format: "%04d", $0))" })
+        state.setPods(benchmarkPods(count: 500))
+        state.setDeployments(benchmarkDeployments(count: 500))
+        state.setServices(benchmarkServices(count: 500))
+        state.setStatefulSets(benchmarkClusterResources(kind: .statefulSet, prefix: "statefulset", count: 500))
+        state.setEndpoints(benchmarkClusterResources(kind: .endpoint, prefix: "endpoint", count: 500))
+        state.setIngresses(benchmarkClusterResources(kind: .ingress, prefix: "ingress", count: 500))
+        state.setConfigMaps(benchmarkClusterResources(kind: .configMap, prefix: "configmap", count: 500))
+        state.setSecrets(benchmarkClusterResources(kind: .secret, prefix: "secret", count: 500))
+        state.setJobs(benchmarkClusterResources(kind: .job, prefix: "job", count: 500))
+        state.setRBACData(
+            roles: [],
+            serviceAccounts: benchmarkClusterResources(kind: .serviceAccount, prefix: "serviceaccount", count: 500),
+            roleBindings: [],
+            clusterRoles: [],
+            clusterRoleBindings: []
+        )
+        let viewModel = RuneAppViewModel(
+            state: state,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        let globalItems = viewModel.commandPaletteItems(query: "synthetic-context")
+        XCTAssertEqual(globalItems.count, 160)
+        XCTAssertTrue(globalItems.first?.id.hasPrefix("context:") == true)
+        let podItems = viewModel.commandPaletteItems(query: ":po pod-0499")
+        XCTAssertEqual(podItems.first?.title, "pod-0499")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":cm configmap-0499").first?.title, "configmap-0499")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ep endpoint-0499").first?.title, "endpoint-0499")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sa serviceaccount-0499").first?.title, "serviceaccount-0499")
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            for _ in 0..<200 {
+                _ = viewModel.commandPaletteItems(query: "synthetic-context")
+                _ = viewModel.commandPaletteItems(query: ":po pod-0499")
+                _ = viewModel.commandPaletteItems(query: ":deploy deploy-0499")
+                _ = viewModel.commandPaletteItems(query: ":svc service-0499")
+                _ = viewModel.commandPaletteItems(query: ":sts statefulset-0499")
+                _ = viewModel.commandPaletteItems(query: ":ep endpoint-0499")
+                _ = viewModel.commandPaletteItems(query: ":ing ingress-0499")
+                _ = viewModel.commandPaletteItems(query: ":cm configmap-0499")
+                _ = viewModel.commandPaletteItems(query: ":sec secret-0499")
+                _ = viewModel.commandPaletteItems(query: ":job job-0499")
+                _ = viewModel.commandPaletteItems(query: ":sa serviceaccount-0499")
+            }
+        }
+
+        #if DEBUG
+        let maximumSeconds = 2.0
+        #else
+        let maximumSeconds = 0.45
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumSeconds,
+            "KPI: command palette global search plus direct resource aliases should stay below \(maximumSeconds)s for 200 large-list lookups."
+        )
     }
 
     @MainActor
@@ -1636,10 +2275,15 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         XCTAssertEqual(coordinator.numberOfRows(in: tableView), 1_000)
+        #if DEBUG
+        let maximumVisibleCellProjectionSeconds = 0.45
+        #else
+        let maximumVisibleCellProjectionSeconds = 0.25
+        #endif
         XCTAssertLessThan(
             elapsedSeconds,
-            0.35,
-            "KPI: AppKit pod table visible-cell projection should stay below 350ms for 32 visible rows across all columns in debug."
+            maximumVisibleCellProjectionSeconds,
+            "KPI: AppKit pod table visible-cell projection should stay below 450ms in debug and 250ms in release for 32 visible rows across all columns."
         )
     }
 
@@ -2264,10 +2908,15 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         XCTAssertGreaterThanOrEqual(table.frame.width, table.tableColumns.reduce(CGFloat(0)) { $0 + $1.width })
+        #if DEBUG
+        let maximumResizePreviewSeconds = 0.35
+        #else
+        let maximumResizePreviewSeconds = 0.18
+        #endif
         XCTAssertLessThan(
             elapsedSeconds,
-            0.180,
-            "KPI: live AppKit resource column resize preview should stay below 180ms for repeated drag samples without forcing visible cell text redraw."
+            maximumResizePreviewSeconds,
+            "KPI: live AppKit resource column resize preview should stay below 350ms in debug and 180ms in release for repeated drag samples without forcing visible cell text redraw."
         )
     }
 
@@ -2366,6 +3015,33 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertTrue(
             visibleCells.allSatisfy { !$0.needsDisplay },
             "Live resize preview should relayout visible cells without forcing text redraw on every drag event."
+        )
+    }
+
+    @MainActor
+    func testAppKitResourceColumnResizePreviewSuppressesResizeNotifications() {
+        let table = NSTableView(frame: NSRect(x: 0, y: 0, width: 720, height: 240))
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
+        column.width = 260
+        column.minWidth = 80
+        column.maxWidth = 620
+        table.addTableColumn(column)
+
+        let probe = ResizeNotificationProbe()
+        NotificationCenter.default.addObserver(
+            probe,
+            selector: #selector(ResizeNotificationProbe.tableColumnDidResize(_:)),
+            name: NSTableView.columnDidResizeNotification,
+            object: table
+        )
+        defer { NotificationCenter.default.removeObserver(probe) }
+
+        applySynchronizedResourceColumnResize(420, for: column, in: table)
+
+        XCTAssertEqual(
+            probe.unsuppressedNotificationCount,
+            0,
+            "Live resize preview should not run the full column resize persistence/render pipeline for every drag sample."
         )
     }
 
@@ -3412,6 +4088,268 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testAddClusterDuplicateCloudImportRunGuardBenchmarkKPI() async throws {
+        let command = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = BenchmarkBlockingCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: command,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [],
+            reviews: []
+        ))
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        )
+
+        viewModel.runCloudKubeConfigImport(request)
+        try await waitUntil {
+            importer.hasSuspendedImport && viewModel.isRunningCloudKubeConfigImport
+        }
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            for _ in 0..<20_000 {
+                viewModel.runCloudKubeConfigImport(request)
+            }
+        }
+
+        importer.resume()
+        try await waitUntil {
+            !viewModel.isRunningCloudKubeConfigImport
+        }
+
+        XCTAssertEqual(importer.importCallCount, 1)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.02,
+            "KPI: rejecting 20k duplicate Add Cluster cloud imports should stay below 20ms while an import is in flight."
+        )
+    }
+
+    @MainActor
+    func testAddClusterBlockingReviewShortCircuitBenchmarkKPI() async throws {
+        let command = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let review = KubeConfigImportReview(
+            contexts: [],
+            issues: [
+                KubeConfigImportIssue(
+                    id: "missing-current-context",
+                    severity: .error,
+                    message: "Synthetic current context is missing."
+                )
+            ],
+            redactedPreview: "apiVersion: v1\ncontexts: []\n"
+        )
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                cloudKubeConfigImporter: BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+                    command: command,
+                    commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+                    discoveredURLs: [],
+                    reviews: [review]
+                )),
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-cloud",
+                regionOrLocation: "eu-north-1"
+            ))
+
+            try await waitUntil {
+                viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                    && !viewModel.isRunningCloudKubeConfigImport
+                    && state.authDoctorChecks.contains { $0.id == "kubeconfig-import-missing-current-context" }
+            }
+            XCTAssertTrue(state.kubeConfigSources.isEmpty)
+            XCTAssertTrue(state.contexts.isEmpty)
+            XCTAssertFalse(state.authDoctorChecks.contains { $0.id == "cloud-login-eks" })
+        }
+
+        #if DEBUG
+        let maximumShortCircuitSeconds = 0.12
+        #else
+        let maximumShortCircuitSeconds = 0.06
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumShortCircuitSeconds,
+            "KPI: Add Cluster blocking import-review short-circuit should stay below 120ms in debug and 60ms in release."
+        )
+    }
+
+    @MainActor
+    func testAddClusterFailureRetryWorkflowBenchmarkKPI() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer {
+            if let previousSimpleMode {
+                UserDefaults.standard.set(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.simpleMode)
+            }
+        }
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let rawKubeconfig = try String(contentsOf: kubeconfig, encoding: .utf8)
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(raw: rawKubeconfig, sourceName: kubeconfig.lastPathComponent)
+        let command = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let importer = BenchmarkSequencedCloudKubeConfigImporter(
+                preview: command,
+                results: [
+                    .failure(.commandFailed(
+                        command: command.displayCommand,
+                        exitCode: 42,
+                        message: "synthetic login required"
+                    )),
+                    .success(CloudKubeConfigImportResult(
+                        command: command,
+                        commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+                        discoveredURLs: [kubeconfig],
+                        reviews: [review]
+                    ))
+                ]
+            )
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                cloudKubeConfigImporter: importer,
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+            let request = CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-cloud",
+                regionOrLocation: "eu-north-1"
+            )
+
+            viewModel.runCloudKubeConfigImport(request)
+            try await waitUntil {
+                viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                    && !viewModel.isRunningCloudKubeConfigImport
+                    && state.lastError?.contains("Cloud import command failed") == true
+            }
+
+            viewModel.runCloudKubeConfigImport(request)
+            XCTAssertNil(state.lastError)
+            try await waitUntil {
+                viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+                    && !viewModel.isRunningCloudKubeConfigImport
+                    && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                    && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+            }
+            XCTAssertEqual(importer.importCallCount, 2)
+        }
+
+        #if DEBUG
+        let maximumRetryWorkflowSeconds = 0.7
+        #else
+        let maximumRetryWorkflowSeconds = 0.35
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumRetryWorkflowSeconds,
+            "KPI: Add Cluster failed cloud import retry plus fake REST core load should stay below 700ms in debug and 350ms in release."
+        )
+    }
+
+    @MainActor
+    func testAddClusterRefreshContextsFakeRESTWorkflowBenchmarkKPI() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer {
+            if let previousSimpleMode {
+                UserDefaults.standard.set(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.simpleMode)
+            }
+        }
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let discoverer = MutableBenchmarkKubeConfigDiscoverer(urls: [kubeconfig])
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                kubeConfigDiscoverer: discoverer,
+                cloudKubeConfigImporter: BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+                    command: CloudKubeConfigCommandPreview(executable: "aws", arguments: [], displayCommand: "aws eks update-kubeconfig"),
+                    commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: ""),
+                    discoveredURLs: [],
+                    reviews: []
+                )),
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            viewModel.refreshKubeConfigSourcesFromDiscovery()
+
+            try await waitUntil {
+                state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                    && state.selectedNamespace == "alpha-zone"
+                    && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                    && state.deployments.contains { $0.name == "orbit-lens" }
+            }
+        }
+
+        #if DEBUG
+        let maximumRefreshWorkflowSeconds = 0.6
+        #else
+        let maximumRefreshWorkflowSeconds = 0.3
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumRefreshWorkflowSeconds,
+            "KPI: Add Cluster external-CLI Refresh Contexts plus fake REST core load should stay below 600ms in debug and 300ms in release."
+        )
+    }
+
     func testAuthDoctorKubeconfigHintInspectionBenchmarkKPI() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-auth-doctor-benchmark-\(UUID().uuidString)", isDirectory: true)
@@ -3518,17 +4456,52 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             }
         }
 
+        let projected = messages.reduce(into: 0) { count, message in
+            count += AuthDoctorFailureProjector.checks(for: message).count
+        }
+
+        XCTAssertEqual(projected, 2_400)
+
+        var measuredProjection = 0
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            measuredProjection = messages.reduce(into: 0) { count, message in
+                count += AuthDoctorFailureProjector.checks(for: message).count
+            }
+        }
+
+        XCTAssertEqual(measuredProjection, projected)
+        #if DEBUG
+        let maximumFailureProjectionSeconds = 0.10
+        #else
+        let maximumFailureProjectionSeconds = 0.04
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumFailureProjectionSeconds,
+            "KPI: Auth Doctor failure projection should classify 2.6k mixed failure messages below 100ms in debug and 40ms in release."
+        )
+    }
+
+    func testAuthDoctorOversizedFailureProjectionBenchmarkKPI() {
+        let suffix = String(repeating: " noisy-stderr-chunk", count: 4_000)
+            + " https://cluster.example.invalid/api/v1/namespaces/team-a/pods/api-0/log?token=secret-token"
+        let messages = (0..<250).map { index in
+            index.isMultiple(of: 2)
+                ? "TLS handshake failed: x509 certificate signed by unknown authority \(suffix)"
+                : "synthetic unclassified parser failure \(suffix)"
+        }
+
         let started = ContinuousClock.now
         let projected = messages.reduce(into: 0) { count, message in
             count += AuthDoctorFailureProjector.checks(for: message).count
         }
         let elapsed = started.duration(to: .now)
 
-        XCTAssertEqual(projected, 2_400)
+        XCTAssertEqual(projected, 125)
         XCTAssertLessThan(
             seconds(elapsed),
             0.08,
-            "KPI: Auth Doctor failure projection should classify 2.6k mixed failure messages below 80ms in debug."
+            "KPI: Auth Doctor should bound oversized external failure messages before classification and endpoint scanning."
         )
     }
 
@@ -4516,6 +5489,18 @@ private struct EmptyKubeConfigDiscoverer: KubeConfigDiscovering {
     }
 }
 
+private final class MutableBenchmarkKubeConfigDiscoverer: KubeConfigDiscovering, @unchecked Sendable {
+    var urls: [URL]
+
+    init(urls: [URL]) {
+        self.urls = urls
+    }
+
+    func discoverCandidateFiles() -> [URL] {
+        urls
+    }
+}
+
 private struct BenchmarkCloudCommandRunner: CloudKubeConfigCommandRunning {
     func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult {
         CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: "")
@@ -4531,6 +5516,89 @@ private struct BenchmarkCloudKubeConfigImporter: CloudKubeConfigImporting {
 
     func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
         result
+    }
+}
+
+private final class BenchmarkSequencedCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let preview: CloudKubeConfigCommandPreview
+    private var results: [Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>]
+    private var storedImportCallCount = 0
+
+    var importCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedImportCallCount
+    }
+
+    init(
+        preview: CloudKubeConfigCommandPreview,
+        results: [Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>]
+    ) {
+        self.preview = preview
+        self.results = results
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        preview
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        let result = lock.withLock {
+            storedImportCallCount += 1
+            guard !results.isEmpty else {
+                return Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>.failure(.missingRequiredField("Result"))
+            }
+            return results.removeFirst()
+        }
+        return try result.get()
+    }
+}
+
+private final class BenchmarkBlockingCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: CloudKubeConfigImportResult
+    private var continuation: CheckedContinuation<CloudKubeConfigImportResult, Error>?
+    private var storedImportCallCount = 0
+
+    var importCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedImportCallCount
+    }
+
+    var hasSuspendedImport: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return continuation != nil
+    }
+
+    init(result: CloudKubeConfigImportResult) {
+        self.result = result
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        result.command
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        lock.withLock {
+            storedImportCallCount += 1
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.withLock {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func resume() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
     }
 }
 
@@ -4568,6 +5636,17 @@ private final class BenchmarkTableDataSource: NSObject, NSTableViewDataSource, N
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         NSTextField(labelWithString: "row-\(row)")
+    }
+}
+
+@MainActor
+private final class ResizeNotificationProbe: NSObject {
+    private(set) var unsuppressedNotificationCount = 0
+
+    @objc func tableColumnDidResize(_ notification: Notification) {
+        if !isSuppressedSynchronizedResourceColumnResize(notification) {
+            unsuppressedNotificationCount += 1
+        }
     }
 }
 

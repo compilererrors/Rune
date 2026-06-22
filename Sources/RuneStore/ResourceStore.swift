@@ -20,9 +20,11 @@ public final class ResourceStore {
         public var horizontalPodAutoscalers: [ClusterResourceSummary]
         public var networkPolicies: [ClusterResourceSummary]
         public var services: [ServiceSummary]
+        public var endpoints: [ClusterResourceSummary]
         public var ingresses: [ClusterResourceSummary]
         public var configMaps: [ClusterResourceSummary]
         public var secrets: [ClusterResourceSummary]
+        public var serviceAccounts: [ClusterResourceSummary]
         public var events: [EventSummary]
 
         public static let empty = NamespacedSnapshot(
@@ -37,9 +39,11 @@ public final class ResourceStore {
             horizontalPodAutoscalers: [],
             networkPolicies: [],
             services: [],
+            endpoints: [],
             ingresses: [],
             configMaps: [],
             secrets: [],
+            serviceAccounts: [],
             events: []
         )
     }
@@ -68,9 +72,11 @@ public final class ResourceStore {
         horizontalPodAutoscalers: [ClusterResourceSummary],
         networkPolicies: [ClusterResourceSummary],
         services: [ServiceSummary],
+        endpoints: [ClusterResourceSummary],
         ingresses: [ClusterResourceSummary],
         configMaps: [ClusterResourceSummary],
         secrets: [ClusterResourceSummary],
+        serviceAccounts: [ClusterResourceSummary],
         events: [EventSummary]
     ) {
         let cacheKey = key(context: context, namespace: namespace)
@@ -86,9 +92,11 @@ public final class ResourceStore {
             horizontalPodAutoscalers: horizontalPodAutoscalers,
             networkPolicies: networkPolicies,
             services: services,
+            endpoints: endpoints,
             ingresses: ingresses,
             configMaps: configMaps,
             secrets: secrets,
+            serviceAccounts: serviceAccounts,
             events: events
         )
         touchSnapshotKey(cacheKey, contextName: context.name)

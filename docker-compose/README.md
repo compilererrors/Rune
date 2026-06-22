@@ -6,7 +6,13 @@ The stack starts:
 - `fake-orbit-mesh` on `https://127.0.0.1:16443`
 - `fake-lattice-spark` on `https://127.0.0.1:17443`
 
-Each cluster is seeded with synthetic namespaces, deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Services, Ingresses, ConfigMaps, Secrets, RBAC objects, NetworkPolicies, PVC-backed workloads, and HPAs.
+Each cluster is seeded with synthetic namespaces, deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Services, Ingresses, ConfigMaps, Secrets, RBAC objects, NetworkPolicies, PVC-backed workloads, HPAs, Helm release ConfigMaps, and common operator resources.
+
+The `fake-orbit-mesh` cluster also includes local-only diagnostics workloads for release verification:
+
+- `alpha-log-matrix` covers init-container YAML/describe output plus explicit multi-container log selection.
+- `alpha-previous-log-probe` covers `previous=true` pod log reads after a container restart.
+- Flux, ArgoCD, and cert-manager custom resources cover operator resource discovery, YAML, and describe paths.
 
 ## Start
 
@@ -68,6 +74,32 @@ Useful switches:
 ```bash
 RUNE_SKIP_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh
 RUNE_RESET_DOCKER_FAKE_K8S=0 scripts/run-local-k8s-integration-report.sh
+```
+
+## Local Cluster Test Commands
+
+Start or refresh the local fake clusters:
+
+```bash
+scripts/rune-compose-fake-k8s.sh reset
+```
+
+Run only the Docker Compose local-cluster ViewModel workflow tests:
+
+```bash
+RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter RuneDockerComposeViewModelIntegrationTests
+```
+
+Run only the multi-container, previous-log, and operator-resource coverage:
+
+```bash
+RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeLogsCoverMultiContainerPreviousLogsAndOperatorResources
+```
+
+Run the local integration report, including Docker Compose setup:
+
+```bash
+RUNE_RESET_DOCKER_FAKE_K8S=1 RUNE_SKIP_DOCKER_FAKE_K8S=0 scripts/run-local-k8s-integration-report.sh
 ```
 
 ## Stop and clean up

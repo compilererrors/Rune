@@ -93,6 +93,50 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testK9sServiceAccountAndEndpointCommandsLoadRealResourceLists() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+
+        harness.viewModel.setSection(.networking)
+        harness.viewModel.setWorkloadKind(.endpoint)
+        try await waitUntil {
+            harness.state.selectedSection == .networking
+                && harness.state.selectedWorkloadKind == .endpoint
+                && harness.state.endpoints.map(\.name).contains("orbit-lens")
+                && !harness.state.isLoading
+        }
+
+        let endpointItem = try XCTUnwrap(harness.viewModel.commandPaletteItems(query: ":ep orbit").first)
+        XCTAssertEqual(endpointItem.title, "orbit-lens")
+        harness.state.isCommandPalettePresented = true
+        harness.viewModel.executeCommandPaletteQuery(":ep orbit")
+        XCTAssertFalse(harness.state.isCommandPalettePresented)
+        XCTAssertEqual(harness.state.selectedEndpoint?.name, "orbit-lens")
+
+        harness.viewModel.setSection(.rbac)
+        harness.viewModel.setWorkloadKind(.serviceAccount)
+        try await waitUntil {
+            harness.state.selectedSection == .rbac
+                && harness.state.selectedWorkloadKind == .serviceAccount
+                && harness.state.serviceAccounts.map(\.name).contains("orbit-lens-runner")
+                && !harness.state.isLoading
+        }
+
+        let serviceAccountItem = try XCTUnwrap(harness.viewModel.commandPaletteItems(query: ":sa orbit").first)
+        XCTAssertEqual(serviceAccountItem.title, "orbit-lens-runner")
+        harness.state.isCommandPalettePresented = true
+        harness.viewModel.executeCommandPaletteQuery(":sa orbit")
+        XCTAssertFalse(harness.state.isCommandPalettePresented)
+        XCTAssertEqual(harness.state.selectedRBACResource?.name, "orbit-lens-runner")
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testSimpleModeOverviewStillLoadsCoreClusterSnapshot() async throws {
         let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true

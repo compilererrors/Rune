@@ -82,6 +82,7 @@ public enum RuneResourceListFamily: String, CaseIterable, Hashable, Codable, Sen
     case horizontalPodAutoscalers
     case networkPolicies
     case services
+    case endpoints
     case ingresses
     case configMaps
     case secrets
@@ -90,6 +91,7 @@ public enum RuneResourceListFamily: String, CaseIterable, Hashable, Codable, Sen
     case helmReleases
     case operatorResources
     case rbacRoles
+    case serviceAccounts
     case rbacRoleBindings
     case rbacClusterRoles
     case rbacClusterRoleBindings
@@ -122,6 +124,8 @@ public enum RuneResourceListFamily: String, CaseIterable, Hashable, Codable, Sen
             self = .networkPolicies
         case "services", "services-count":
             self = .services
+        case "endpoints":
+            self = .endpoints
         case "ingresses", "ingresses-count":
             self = .ingresses
         case "configmaps", "configmaps-count":
@@ -138,6 +142,8 @@ public enum RuneResourceListFamily: String, CaseIterable, Hashable, Codable, Sen
             self = .operatorResources
         case "roles":
             self = .rbacRoles
+        case "serviceaccounts":
+            self = .serviceAccounts
         case "rolebindings":
             self = .rbacRoleBindings
         case "clusterroles":
@@ -196,11 +202,13 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
     case cronJob
     case replicaSet
     case service
+    case endpoint
     case ingress
     case configMap
     case secret
     case node
     case event
+    case serviceAccount
     case role
     case roleBinding
     case clusterRole
@@ -223,11 +231,13 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .cronJob: return "CronJobs"
         case .replicaSet: return "ReplicaSets"
         case .service: return "Services"
+        case .endpoint: return "Endpoints"
         case .ingress: return "Ingresses"
         case .configMap: return "ConfigMaps"
         case .secret: return "Secrets"
         case .node: return "Nodes"
         case .event: return "Events"
+        case .serviceAccount: return "ServiceAccounts"
         case .role: return "Roles"
         case .roleBinding: return "RoleBindings"
         case .clusterRole: return "ClusterRoles"
@@ -251,11 +261,13 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .cronJob: return "CronJob"
         case .replicaSet: return "ReplicaSet"
         case .service: return "Service"
+        case .endpoint: return "Endpoints"
         case .ingress: return "Ingress"
         case .configMap: return "ConfigMap"
         case .secret: return "Secret"
         case .node: return "Node"
         case .event: return "Event"
+        case .serviceAccount: return "ServiceAccount"
         case .role: return "Role"
         case .roleBinding: return "RoleBinding"
         case .clusterRole: return "ClusterRole"
@@ -278,11 +290,13 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
         case .cronJob: return "cronjob"
         case .replicaSet: return "replicaset"
         case .service: return "service"
+        case .endpoint: return "endpoints"
         case .ingress: return "ingress"
         case .configMap: return "configmap"
         case .secret: return "secret"
         case .node: return "node"
         case .event: return "event"
+        case .serviceAccount: return "serviceaccount"
         case .role: return "role"
         case .roleBinding: return "rolebinding"
         case .clusterRole: return "clusterrole"
@@ -318,7 +332,7 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
             return "storage.k8s.io"
         case .horizontalPodAutoscaler:
             return "autoscaling"
-        case .pod, .service, .configMap, .secret, .node, .event, .persistentVolumeClaim, .persistentVolume:
+        case .pod, .service, .endpoint, .configMap, .secret, .node, .event, .serviceAccount, .persistentVolumeClaim, .persistentVolume:
             return nil
         }
     }

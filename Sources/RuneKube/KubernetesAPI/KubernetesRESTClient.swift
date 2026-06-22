@@ -1320,7 +1320,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 (data, response) = try await restSession.session.data(for: request)
             } catch {
                 let retryDecision = KubernetesRequestRetryPolicy.classifyNetworkError(error)
-                let errorMessage = networkErrorMessage(error, resolved: resolved, tlsFailure: restSession.delegate.lastTLSFailure())
+                let tlsFailure = restSession.delegate.lastTLSFailure()
+                let errorMessage = networkErrorMessage(error, resolved: resolved, tlsFailure: tlsFailure)
+                let cancellationReason = requestCancellationReason(error)
+                let isTrustChallengeCancellation = tlsFailure != nil && !(error is CancellationError && Task.isCancelled)
+                let effectiveCancellationReason = isTrustChallengeCancellation ? nil : cancellationReason
+                let outcome = effectiveCancellationReason == nil ? KubernetesRESTRequestMetricOutcome.networkError : .cancelled
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
                     await recordRequestMetric(
                         method: method,
@@ -1328,8 +1333,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
                         statusCode: nil,
                         responseBytes: 0,
                         attempt: attempt,
-                        outcome: requestCancellationOutcome(error),
-                        cancellationReason: requestCancellationReason(error),
+                        outcome: outcome,
+                        cancellationReason: effectiveCancellationReason,
                         started: attemptStarted
                     )
                     try await sleepBeforeKubernetesRetry(
@@ -1352,10 +1357,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     statusCode: nil,
                     responseBytes: 0,
                     attempt: attempt,
-                    outcome: requestCancellationOutcome(error),
-                    cancellationReason: requestCancellationReason(error),
+                    outcome: outcome,
+                    cancellationReason: effectiveCancellationReason,
                     started: attemptStarted
                 )
+                if effectiveCancellationReason != nil {
+                    throw CancellationError()
+                }
                 throw RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
                     message: retryAnnotatedErrorMessage(errorMessage, decision: retryDecision)
@@ -1454,10 +1462,6 @@ final class KubernetesRESTClient: @unchecked Sendable {
             outcome: outcome,
             cancellationReason: cancellationReason
         ))
-    }
-
-    private func requestCancellationOutcome(_ error: Error) -> KubernetesRESTRequestMetricOutcome {
-        requestCancellationReason(error) == nil ? .networkError : .cancelled
     }
 
     private func requestCancellationReason(_ error: Error) -> String? {
@@ -2656,11 +2660,13 @@ private extension KubeResourceKind {
         case "cronjob": self = .cronJob
         case "replicaset": self = .replicaSet
         case "service": self = .service
+        case "endpoints": self = .endpoint
         case "ingress": self = .ingress
         case "configmap": self = .configMap
         case "secret": self = .secret
         case "node": self = .node
         case "event": self = .event
+        case "serviceaccount": self = .serviceAccount
         case "role": self = .role
         case "rolebinding": self = .roleBinding
         case "clusterrole": self = .clusterRole

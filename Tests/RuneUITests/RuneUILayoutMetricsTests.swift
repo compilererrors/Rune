@@ -1,5 +1,6 @@
 import XCTest
 @testable import RuneCore
+@testable import RuneSecurity
 @testable import RuneUI
 
 final class RuneUILayoutMetricsTests: XCTestCase {
@@ -65,5 +66,92 @@ final class RuneUILayoutMetricsTests: XCTestCase {
                 + RuneUILayoutMetrics.splitContentColumnMinWidth
                 + RuneUILayoutMetrics.splitDetailColumnMinWidth
         )
+    }
+
+    func testAddClusterProviderActionLayoutWrapsCloudActionsInsteadOfCompressingLabels() {
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.dialogWidth, 560)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.minimumButtonWidth, 116)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.columnCount(for: 5), 4)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 5), 2)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 4), 1)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 0), 0)
+    }
+
+    func testAddClusterProviderActionLayoutKeepsButtonsAboveMinimumReadableWidth() {
+        let actionCounts = [3, 4, 5]
+
+        for actionCount in actionCounts {
+            let columns = RuneAddClusterProviderActionLayout.columnCount(for: actionCount)
+            let contentWidth = RuneAddClusterProviderActionLayout.contentWidth()
+            let spacing = RuneAddClusterProviderActionLayout.columnSpacing * CGFloat(max(0, columns - 1))
+            let buttonWidth = (contentWidth - spacing) / CGFloat(columns)
+
+            XCTAssertGreaterThanOrEqual(
+                buttonWidth,
+                RuneAddClusterProviderActionLayout.minimumButtonWidth,
+                "Add Cluster action count \(actionCount) should wrap before labels are compressed below the readable width."
+            )
+        }
+    }
+
+    func testCloudCredentialDraftRequiredFieldsGateProviderRunAction() {
+        XCTAssertFalse(CloudCredentialDraft().hasRequiredFields(for: .aks))
+        XCTAssertFalse(CloudCredentialDraft(clusterName: "synthetic-aks").hasRequiredFields(for: .aks))
+        XCTAssertTrue(CloudCredentialDraft(clusterName: "synthetic-aks", resourceGroup: "synthetic-group").hasRequiredFields(for: .aks))
+        XCTAssertFalse(CloudCredentialDraft(clusterName: "  ", resourceGroup: "\n").hasRequiredFields(for: .aks))
+
+        XCTAssertFalse(CloudCredentialDraft(clusterName: "synthetic-eks").hasRequiredFields(for: .eks))
+        XCTAssertTrue(CloudCredentialDraft(clusterName: "synthetic-eks", regionOrLocation: "eu-north-1").hasRequiredFields(for: .eks))
+        XCTAssertFalse(CloudCredentialDraft(clusterName: "\t", regionOrLocation: "  ").hasRequiredFields(for: .eks))
+
+        XCTAssertFalse(CloudCredentialDraft(clusterName: "synthetic-gke", regionOrLocation: "europe-north1").hasRequiredFields(for: .gke))
+        XCTAssertFalse(CloudCredentialDraft(
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "  "
+        ).hasRequiredFields(for: .gke))
+        XCTAssertTrue(CloudCredentialDraft(
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project"
+        ).hasRequiredFields(for: .gke))
+    }
+
+    func testCloudCredentialDraftBuildsTrimmedProviderRequest() {
+        let request = CloudCredentialDraft(
+            clusterName: " synthetic-cluster ",
+            regionOrLocation: "\teu-north-1\n",
+            resourceGroup: " synthetic-group ",
+            projectID: " synthetic-project ",
+            profileOrSubscription: " synthetic-profile ",
+            roleARN: " synthetic-role "
+        ).request(provider: .eks)
+
+        XCTAssertEqual(request.clusterName, "synthetic-cluster")
+        XCTAssertEqual(request.regionOrLocation, "eu-north-1")
+        XCTAssertEqual(request.resourceGroup, "synthetic-group")
+        XCTAssertEqual(request.projectID, "synthetic-project")
+        XCTAssertEqual(request.profileOrSubscription, "synthetic-profile")
+        XCTAssertEqual(request.roleARN, "synthetic-role")
+    }
+
+    func testCloudCredentialDraftSummarizesMissingRequiredFields() {
+        XCTAssertEqual(
+            CloudCredentialDraft().missingRequiredFieldSummary(for: .aks),
+            "cluster name, resource group"
+        )
+        XCTAssertEqual(
+            CloudCredentialDraft(clusterName: "synthetic-eks").missingRequiredFieldSummary(for: .eks),
+            "region"
+        )
+        XCTAssertEqual(
+            CloudCredentialDraft(clusterName: "synthetic-gke", regionOrLocation: "  ").missingRequiredFieldSummary(for: .gke),
+            "location, project ID"
+        )
+        XCTAssertNil(CloudCredentialDraft(
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project"
+        ).missingRequiredFieldSummary(for: .gke))
     }
 }

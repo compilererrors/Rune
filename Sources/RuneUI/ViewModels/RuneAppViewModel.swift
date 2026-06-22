@@ -325,6 +325,7 @@ public struct CommandPaletteItem: Identifiable {
         case reload
         case readOnly(Bool)
         case saveLogs
+        case deleteSelectedResource
         case savedWorkspace(SavedWorkspaceSnapshot)
         case saveWorkspace(String)
         case toggleSavedWorkspaceFavorite(SavedWorkspaceSnapshot)
@@ -349,7 +350,7 @@ private extension CommandPaletteItem.Action {
         switch self {
         case .pod, .deployment, .service, .event, .helmRelease, .resourceKind, .clusterResource:
             return true
-        case .section, .context, .namespace, .importKubeConfig, .reload, .readOnly, .saveLogs, .savedWorkspace, .saveWorkspace, .toggleSavedWorkspaceFavorite:
+        case .section, .context, .namespace, .importKubeConfig, .reload, .readOnly, .saveLogs, .deleteSelectedResource, .savedWorkspace, .saveWorkspace, .toggleSavedWorkspaceFavorite:
             return false
         }
     }
@@ -458,6 +459,7 @@ private struct NavigationCheckpoint: Equatable, Sendable {
     let selectedStorageClassName: String?
     let selectedHorizontalPodAutoscalerName: String?
     let selectedNetworkPolicyName: String?
+    let selectedEndpointName: String?
     let selectedIngressName: String?
     let selectedConfigMapName: String?
     let selectedSecretName: String?
@@ -546,6 +548,7 @@ private struct SnapshotLoadPlan: Sendable {
     var networkPolicies = false
     var services = false
     var servicesCount = false
+    var endpoints = false
     var ingresses = false
     var ingressesCount = false
     var configMaps = false
@@ -556,6 +559,7 @@ private struct SnapshotLoadPlan: Sendable {
     var nodesCount = false
     var events = false
     var rbacRoles = false
+    var serviceAccounts = false
     var rbacRoleBindings = false
     var rbacClusterRoles = false
     var rbacClusterRoleBindings = false
@@ -575,12 +579,14 @@ private struct SnapshotLoadPlan: Sendable {
         if horizontalPodAutoscalers { families.insert(.horizontalPodAutoscalers) }
         if networkPolicies { families.insert(.networkPolicies) }
         if services || servicesCount { families.insert(.services) }
+        if endpoints { families.insert(.endpoints) }
         if ingresses || ingressesCount { families.insert(.ingresses) }
         if configMaps || configMapsCount { families.insert(.configMaps) }
         if secrets { families.insert(.secrets) }
         if nodes || nodesCount { families.insert(.nodes) }
         if events { families.insert(.events) }
         if rbacRoles { families.insert(.rbacRoles) }
+        if serviceAccounts { families.insert(.serviceAccounts) }
         if rbacRoleBindings { families.insert(.rbacRoleBindings) }
         if rbacClusterRoles { families.insert(.rbacClusterRoles) }
         if rbacClusterRoleBindings { families.insert(.rbacClusterRoleBindings) }
@@ -632,6 +638,8 @@ private struct SnapshotLoadPlan: Sendable {
                 plan.ingresses = true
             case .networkPolicy:
                 plan.networkPolicies = true
+            case .endpoint:
+                plan.endpoints = true
             default:
                 plan.services = true
             }
@@ -660,6 +668,8 @@ private struct SnapshotLoadPlan: Sendable {
         case .rbac:
             if simpleMode {
                 switch kind {
+                case .serviceAccount:
+                    plan.serviceAccounts = true
                 case .role:
                     plan.rbacRoles = true
                 case .roleBinding:
@@ -672,6 +682,7 @@ private struct SnapshotLoadPlan: Sendable {
                     plan.rbacRoles = true
                 }
             } else {
+                plan.serviceAccounts = true
                 plan.rbacRoles = true
                 plan.rbacRoleBindings = true
                 plan.rbacClusterRoles = true
@@ -818,6 +829,8 @@ public struct HPAScaleTargetReference: Identifiable, Equatable, Sendable {
 
 @MainActor
 public final class RuneAppViewModel: ObservableObject {
+    private static let productionContextNameMarkers = ["prod", "production", "live", "critical"]
+
     @Published public private(set) var state: RuneAppState
     @Published public var selectedLogPreset: PodLogPreset = .recentLines
     @Published public var includePreviousLogs: Bool = false
@@ -874,6 +887,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var manualKubeConfigNamespace: String = "default"
     @Published public var manualKubeConfigToken: String = ""
     @Published public private(set) var cloudKubeConfigImportStatus: String?
+    @Published public private(set) var cloudKubeConfigImportDiagnostic: AddClusterCloudImportDiagnostic?
+    @Published public private(set) var isRunningCloudKubeConfigImport = false
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
             if pendingWriteAction != oldValue {
@@ -1132,7 +1147,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var networkingKinds: [KubeResourceKind] {
-        [.service, .ingress, .networkPolicy]
+        [.service, .endpoint, .ingress, .networkPolicy]
     }
 
     public var configKinds: [KubeResourceKind] {
@@ -1144,12 +1159,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var rbacKinds: [KubeResourceKind] {
-        [.role, .roleBinding, .clusterRole, .clusterRoleBinding]
+        [.serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding]
     }
 
     public var visibleRBACResources: [ClusterResourceSummary] {
         let list: [ClusterResourceSummary] = {
             switch state.selectedWorkloadKind {
+            case .serviceAccount: return state.serviceAccounts
             case .role: return state.rbacRoles
             case .roleBinding: return state.rbacRoleBindings
             case .clusterRole: return state.rbacClusterRoles
@@ -1257,13 +1273,14 @@ public final class RuneAppViewModel: ObservableObject {
         case .horizontalPodAutoscaler: return visibleHorizontalPodAutoscalers
         case .ingress: return visibleIngresses
         case .networkPolicy: return visibleNetworkPolicies
+        case .endpoint: return visibleEndpoints
         case .configMap: return visibleConfigMaps
         case .secret: return visibleSecrets
         case .persistentVolumeClaim: return visiblePersistentVolumeClaims
         case .persistentVolume: return visiblePersistentVolumes
         case .storageClass: return visibleStorageClasses
         case .node: return visibleNodes
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding: return visibleRBACResources
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding: return visibleRBACResources
         case .pod, .deployment, .service, .event:
             return []
         }
@@ -1678,6 +1695,10 @@ public final class RuneAppViewModel: ObservableObject {
         genericResourceSorted(filtered(state.networkPolicies) { summaryText(for: $0) })
     }
 
+    public var visibleEndpoints: [ClusterResourceSummary] {
+        genericResourceSorted(filtered(state.endpoints) { summaryText(for: $0) })
+    }
+
     public var visibleIngresses: [ClusterResourceSummary] {
         genericResourceSorted(filtered(state.ingresses) { summaryText(for: $0) })
     }
@@ -1954,9 +1975,11 @@ public final class RuneAppViewModel: ObservableObject {
             || !state.horizontalPodAutoscalers.isEmpty
             || !state.networkPolicies.isEmpty
             || !state.services.isEmpty
+            || !state.endpoints.isEmpty
             || !state.ingresses.isEmpty
             || !state.configMaps.isEmpty
             || !state.secrets.isEmpty
+            || !state.serviceAccounts.isEmpty
             || !state.nodes.isEmpty
             || !state.events.isEmpty
             || !state.overviewPods.isEmpty
@@ -1984,9 +2007,11 @@ public final class RuneAppViewModel: ObservableObject {
             state.setHorizontalPodAutoscalers([])
             state.setNetworkPolicies([])
             state.setServices([])
+            state.setEndpoints([])
             state.setIngresses([])
             state.setConfigMaps([])
             state.setSecrets([])
+            state.setRBACData(roles: [], serviceAccounts: [], roleBindings: [], clusterRoles: [], clusterRoleBindings: [])
             state.setNodes([])
             state.setEvents([])
             state.clearResourceListFreshness()
@@ -2120,41 +2145,53 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func runCloudKubeConfigImport(_ request: CloudKubeConfigImportRequest) {
-        cloudKubeConfigImportStatus = "Running \(request.provider.rawValue.uppercased()) import..."
+        guard !isRunningCloudKubeConfigImport else { return }
+        isRunningCloudKubeConfigImport = true
+        cloudKubeConfigImportDiagnostic = nil
+        if state.lastError != nil {
+            state.clearError()
+        }
+        cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.runningStatus(for: request.provider)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.isRunningCloudKubeConfigImport = false }
             do {
                 let result = try await self.cloudKubeConfigImporter.importCluster(request)
                 self.kubeConfigImportReviews = result.reviews
-                let blockingIssues = self.blockingKubeConfigImportIssues(in: result.reviews)
-                guard blockingIssues.isEmpty else {
-                    self.setKubeConfigImportFailureAuthDoctorChecks(for: blockingIssues)
-                    throw RuneError.invalidInput(message: self.kubeConfigImportErrorMessage(for: blockingIssues))
+                if let failure = AddClusterCloudImportWorkflow.blockingFailure(in: result.reviews) {
+                    self.state.setAuthDoctorChecks(failure.checks)
+                    let error = RuneError.invalidInput(message: failure.message)
+                    self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
+                    self.cloudKubeConfigImportDiagnostic = nil
+                    self.diagnostics.log("cloud kubeconfig import blocked by review: \(error.localizedDescription)")
+                    self.state.setError(error)
+                    return
                 }
 
                 let sources = try self.resolvedKubeConfigSources(fallbackURLs: result.discoveredURLs)
                 self.state.setSources(sources)
                 self.latestKubeConfigSourceFingerprint = self.kubeConfigSourceFingerprint(for: sources)
                 self.startKubeConfigSourceSync()
-                self.cloudKubeConfigImportStatus = "Imported \(request.provider.rawValue.uppercased()) kubeconfig context."
+                self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.importedStatus(for: request.provider)
+                self.cloudKubeConfigImportDiagnostic = nil
                 try await self.reloadContexts()
                 if !UserDefaults.standard.runeSimpleMode {
                     self.runAuthDoctor()
                 }
             } catch {
-                self.cloudKubeConfigImportStatus = "Cloud import failed."
-                self.state.setAuthDoctorChecks([
-                    RuneHealthCheck(
-                        id: "cloud-login-\(request.provider.rawValue)",
-                        title: "\(request.provider.rawValue.uppercased()) cloud login",
-                        status: .failed,
-                        message: "Cloud kubeconfig import did not complete. Check the provider CLI login and required fields, then run Auth Doctor again."
-                    )
-                ])
+                self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
+                self.cloudKubeConfigImportDiagnostic = AddClusterCloudImportWorkflow.diagnostic(for: error, provider: request.provider)
+                self.state.setAuthDoctorChecks(AddClusterCloudImportWorkflow.cloudLoginFailureChecks(for: request.provider))
                 self.diagnostics.log("cloud kubeconfig import failed: \(error.localizedDescription)")
                 self.state.setError(error)
             }
         }
+    }
+
+    public func clearCloudKubeConfigImportStatus() {
+        guard !isRunningCloudKubeConfigImport else { return }
+        cloudKubeConfigImportStatus = nil
+        cloudKubeConfigImportDiagnostic = nil
     }
 
     private func kubeConfigFiles(in folder: URL) throws -> [URL] {
@@ -2187,10 +2224,9 @@ public final class RuneAppViewModel: ObservableObject {
         kubeConfigImportReviews = reviews
         syncKubeConfigImportContextMetadataDrafts(from: reviews)
 
-        let blockingIssues = blockingKubeConfigImportIssues(in: reviews)
-        guard blockingIssues.isEmpty else {
-            setKubeConfigImportFailureAuthDoctorChecks(for: blockingIssues)
-            throw RuneError.invalidInput(message: kubeConfigImportErrorMessage(for: blockingIssues))
+        if let failure = AddClusterCloudImportWorkflow.blockingFailure(in: reviews) {
+            state.setAuthDoctorChecks(failure.checks)
+            throw RuneError.invalidInput(message: failure.message)
         }
 
         persistKubeConfigImportContextPreferences(from: reviews)
@@ -2285,36 +2321,6 @@ public final class RuneAppViewModel: ObservableObject {
     private static func isLocalClusterProvider(_ provider: String) -> Bool {
         ["minikube", "kind", "k3d", "docker desktop", "orbstack"]
             .contains { $0.localizedCaseInsensitiveCompare(provider) == .orderedSame }
-    }
-
-    private func blockingKubeConfigImportIssues(in reviews: [KubeConfigImportReview]) -> [KubeConfigImportIssue] {
-        reviews
-            .flatMap(\.issues)
-            .filter { $0.severity == .error }
-    }
-
-    private func kubeConfigImportErrorMessage(for issues: [KubeConfigImportIssue]) -> String {
-        issues.prefix(3).map(\.message).joined(separator: " ")
-    }
-
-    private func setKubeConfigImportFailureAuthDoctorChecks(for issues: [KubeConfigImportIssue]) {
-        var checks = [
-            RuneHealthCheck(
-                id: "kubeconfig-import",
-                title: "Kubeconfig import",
-                status: .failed,
-                message: "Import was stopped before saving access because the kubeconfig review found blocking issues."
-            )
-        ]
-        checks.append(contentsOf: issues.prefix(5).map { issue in
-            RuneHealthCheck(
-                id: "kubeconfig-import-\(issue.id)",
-                title: "Import review",
-                status: .failed,
-                message: issue.message
-            )
-        })
-        state.setAuthDoctorChecks(checks)
     }
 
     public func addDefaultKubeConfig() {
@@ -4029,8 +4035,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let normalized = context.name.lowercased()
-        let markers = ["prod", "production", "live", "critical"]
-        return markers.contains { normalized.contains($0) }
+        return Self.productionContextNameMarkers.contains { normalized.contains($0) }
     }
 
     public func toggleFavoriteResource(kind: KubeResourceKind, namespace: String?, name: String) {
@@ -4089,13 +4094,17 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func focusTerminalPodInspector(_ pod: PodSummary, reloadLogs: Bool = false, loadDetails: Bool = false) {
-        selectedLogContainer = ""
+        selectedLogContainer = reloadLogs ? defaultLogContainerName(for: pod) : ""
         selectPod(pod, trackHistory: false)
         if loadDetails {
             loadResourceDetailsForCurrentSelection()
         } else if reloadLogs {
             reloadLogsForSelection()
         }
+    }
+
+    private func defaultLogContainerName(for pod: PodSummary) -> String {
+        pod.containerNames.first ?? ""
     }
 
     private func selectPod(_ pod: PodSummary?, trackHistory: Bool) {
@@ -4320,6 +4329,20 @@ public final class RuneAppViewModel: ObservableObject {
         prepareNavigationMutation(trackHistory: trackHistory)
         state.setSelectedNetworkPolicy(resource)
         state.selectedWorkloadKind = .networkPolicy
+        loadResourceDetailsForCurrentSelectionIfNeeded()
+        if trackHistory {
+            recordNavigationCheckpoint()
+        }
+    }
+
+    public func selectEndpoint(_ resource: ClusterResourceSummary?) {
+        selectEndpoint(resource, trackHistory: true)
+    }
+
+    private func selectEndpoint(_ resource: ClusterResourceSummary?, trackHistory: Bool) {
+        prepareNavigationMutation(trackHistory: trackHistory)
+        state.setSelectedEndpoint(resource)
+        state.selectedWorkloadKind = .endpoint
         loadResourceDetailsForCurrentSelectionIfNeeded()
         if trackHistory {
             recordNavigationCheckpoint()
@@ -4599,7 +4622,7 @@ public final class RuneAppViewModel: ObservableObject {
                         resourceName: deployment.name
                     )
                     self.scheduleNextTailLogsReload()
-                case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+                case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     return
                 }
             } catch {
@@ -4676,7 +4699,7 @@ public final class RuneAppViewModel: ObservableObject {
                 suggestedName: "deployment-\(deployment.name)-unified-logs-\(timestamp).log",
                 allowedFileTypes: ["log", "txt"]
             )
-        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return nil
         }
     }
@@ -4945,7 +4968,7 @@ public final class RuneAppViewModel: ObservableObject {
                 suggestedName: "deployment-\(deployment.name)-visible-logs-\(timestamp).zip",
                 allowedFileTypes: ["zip"]
             )
-        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return nil
         }
     }
@@ -5088,7 +5111,7 @@ public final class RuneAppViewModel: ObservableObject {
                         ),
                         configuredOpenAfterSave: configuredOpenAfterSave
                     )
-                case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+                case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                     return
                 }
             } catch {
@@ -5440,7 +5463,7 @@ public final class RuneAppViewModel: ObservableObject {
             logs = state.podLogs
         case .service, .deployment:
             logs = state.unifiedServiceLogs
-        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return
         }
         guard !logs.isEmpty else { return }
@@ -6252,6 +6275,7 @@ public final class RuneAppViewModel: ObservableObject {
         state.setNodes(nodes)
         state.setRBACData(
             roles: roles,
+            serviceAccounts: [],
             roleBindings: roleBindings,
             clusterRoles: clusterRoles,
             clusterRoleBindings: clusterRoleBindings
@@ -6328,6 +6352,8 @@ public final class RuneAppViewModel: ObservableObject {
             return state.selectedHorizontalPodAutoscaler.map { ($0.kind, $0.name, $0.namespace) }
         case .networkPolicy:
             return state.selectedNetworkPolicy.map { ($0.kind, $0.name, $0.namespace) }
+        case .endpoint:
+            return state.selectedEndpoint.map { ($0.kind, $0.name, $0.namespace) }
         case .ingress:
             return state.selectedIngress.map { ($0.kind, $0.name, $0.namespace) }
         case .configMap:
@@ -6336,7 +6362,7 @@ public final class RuneAppViewModel: ObservableObject {
             return state.selectedSecret.map { ($0.kind, $0.name, $0.namespace) }
         case .node:
             return state.selectedNode.map { ($0.kind, $0.name, $0.namespace) }
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return state.selectedRBACResource.map { ($0.kind, $0.name, $0.namespace) }
         case .event:
             return nil
@@ -6934,7 +6960,7 @@ public final class RuneAppViewModel: ObservableObject {
         case .service:
             guard let service = state.selectedService else { return }
             target = (.service, service.name)
-        case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             state.setError(RuneError.invalidInput(message: "Port-forward is only supported for Pod or Service right now."))
             return
         }
@@ -7095,10 +7121,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func cancelPendingWriteAction() {
-        pendingProductionDestructiveConfirmation = nil
-        pendingWriteAction = nil
+        if pendingWriteAction == nil {
+            pendingProductionDestructiveConfirmation = nil
+            pendingRollbackPlan = nil
+        } else {
+            pendingWriteAction = nil
+        }
         pendingWriteDryRunStatus = nil
-        pendingRollbackPlan = nil
     }
 
     public func confirmPendingWriteAction() {
@@ -7119,9 +7148,7 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
         pendingWriteAction = nil
-        pendingProductionDestructiveConfirmation = nil
         pendingWriteDryRunStatus = nil
-        pendingRollbackPlan = nil
 
         Task {
             do {
@@ -7683,129 +7710,11 @@ public final class RuneAppViewModel: ObservableObject {
             return commandItems
         }
 
-        let sections = RuneSection.allCases.map { section in
-            CommandPaletteItem(
-                id: "section:\(section.rawValue)",
-                title: section.title,
-                subtitle: "Switch section",
-                symbolName: section.symbolName,
-                action: .section(section)
-            )
-        }
-
-        let contexts = visibleContexts.map { context in
-            commandPaletteContextItem(context, idPrefix: "context", subtitlePrefix: "Switch context")
-        }
-
-        let namespaces = namespaceOptions
-            .map { namespace in
-                CommandPaletteItem(
-                    id: "namespace:\(namespace)",
-                    title: namespace,
-                    subtitle: "Switch namespace",
-                    symbolName: "square.3.layers.3d",
-                    action: .namespace(namespace)
-                )
-            }
-
-        let workspaces = savedWorkspaceCommandItems(query: "")
-        let pods = visiblePods.prefix(40).map { pod in
-            CommandPaletteItem(
-                id: "pod:\(pod.id)",
-                title: pod.name,
-                subtitle: "Open pod",
-                symbolName: "cube.box",
-                action: .pod(pod)
-            )
-        }
-
-        let deployments = visibleDeployments.prefix(40).map { deployment in
-            CommandPaletteItem(
-                id: "deployment:\(deployment.id)",
-                title: deployment.name,
-                subtitle: "Open deployment",
-                symbolName: "shippingbox",
-                action: .deployment(deployment)
-            )
-        }
-
-        let services = visibleServices.prefix(40).map { service in
-            CommandPaletteItem(
-                id: "service:\(service.id)",
-                title: service.name,
-                subtitle: "Open service",
-                symbolName: "point.3.connected.trianglepath.dotted",
-                action: .service(service)
-            )
-        }
-
-        let events = visibleEvents.prefix(40).map { event in
-            CommandPaletteItem(
-                id: "event:\(event.id)",
-                title: "\(event.reason) (\(event.type))",
-                subtitle: event.objectName,
-                symbolName: "bolt.badge.clock",
-                action: .event(event)
-            )
-        }
-
-        let helmReleases = visibleHelmReleases.prefix(40).map { release in
-            CommandPaletteItem(
-                id: "helm:\(release.id)",
-                title: release.name,
-                subtitle: "Open Helm release • \(release.namespace)",
-                symbolName: "ferry",
-                action: .helmRelease(release)
-            )
-        }
-
-        let commands: [CommandPaletteItem] = [
-            CommandPaletteItem(
-                id: "command:import",
-                title: "Import kubeconfig…",
-                subtitle: "Open a native file picker and add kubeconfig files",
-                symbolName: "square.and.arrow.down",
-                action: .importKubeConfig
-            ),
-            CommandPaletteItem(
-                id: "command:reload",
-                title: "Reload cluster data",
-                subtitle: "Refresh the current context and section",
-                symbolName: "arrow.clockwise",
-                action: .reload
-            ),
-            CommandPaletteItem(
-                id: "command:save-logs",
-                title: "Save Logs",
-                subtitle: "Save the current pod logs or unified logs",
-                symbolName: "square.and.arrow.down",
-                action: .saveLogs
-            ),
-            CommandPaletteItem(
-                id: "command:readonly:on",
-                title: "Enable read-only mode",
-                subtitle: "Block write actions across the app",
-                symbolName: "lock",
-                action: .readOnly(true)
-            ),
-            CommandPaletteItem(
-                id: "command:readonly:off",
-                title: "Disable read-only mode",
-                subtitle: "Allow write actions again",
-                symbolName: "lock.open",
-                action: .readOnly(false)
-            )
-        ]
-
-        let allItems = commands + workspaces + sections + contexts + namespaces + pods + deployments + services + helmReleases + events
-
         guard !trimmedQuery.isEmpty else {
-            return Array(allItems.prefix(160))
+            return commandPaletteGlobalItems(query: nil)
         }
 
-        return allItems.filter { item in
-            matches("\(item.title) \(item.subtitle)", query: trimmedQuery)
-        }
+        return commandPaletteGlobalItems(query: trimmedQuery)
     }
 
     public func executeCommandPaletteItem(_ item: CommandPaletteItem) {
@@ -7829,6 +7738,9 @@ public final class RuneAppViewModel: ObservableObject {
             refreshCurrentView()
         case .saveLogs:
             saveCurrentLogs()
+        case .deleteSelectedResource:
+            guard UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette else { return }
+            requestDeleteSelectedResource()
         case let .savedWorkspace(workspace):
             openSavedWorkspace(workspace)
         case let .saveWorkspace(name):
@@ -7895,6 +7807,10 @@ public final class RuneAppViewModel: ObservableObject {
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.ingress, trackHistory: false, triggerReload: false)
                 selectIngress(resource, trackHistory: false)
+            case .endpoint:
+                setSection(.networking, trackHistory: false, triggerReload: false)
+                setWorkloadKind(.endpoint, trackHistory: false, triggerReload: false)
+                selectEndpoint(resource, trackHistory: false)
             case .configMap:
                 setSection(.config, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.configMap, trackHistory: false, triggerReload: false)
@@ -7927,7 +7843,7 @@ public final class RuneAppViewModel: ObservableObject {
                 setSection(.networking, trackHistory: false, triggerReload: false)
                 setWorkloadKind(.networkPolicy, trackHistory: false, triggerReload: false)
                 selectNetworkPolicy(resource, trackHistory: false)
-            case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 setSection(.rbac, trackHistory: false, triggerReload: false)
                 setWorkloadKind(resource.kind, trackHistory: false, triggerReload: false)
                 selectRBACResource(resource, trackHistory: false)
@@ -7944,44 +7860,38 @@ public final class RuneAppViewModel: ObservableObject {
     public func executeCommandPaletteQuery(_ query: String) {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if normalized.hasPrefix(":") {
-            let tokens = normalized.dropFirst().split(whereSeparator: \.isWhitespace).map(String.init)
-            if let command = tokens.first?.lowercased() {
-                let remainder = tokens.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !remainder.isEmpty {
-                    switch command {
-                    case "ns", "namespace", "namespaces":
-                        if let exactNamespace = namespaceOptions.first(where: {
-                            $0.compare(remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-                        }) {
-                            diagnostics.log(
-                                "commandPalette query direct namespace context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) query=\(remainder) matched=\(exactNamespace)"
-                            )
-                            setNamespace(exactNamespace)
-                            dismissCommandPalette()
-                            return
-                        }
-                        diagnostics.log(
-                            "commandPalette query manual namespace context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) query=\(remainder)"
-                        )
-                        setNamespace(remainder)
-                        dismissCommandPalette()
-                        return
-                    case "ctx", "context", "contexts":
-                        if let exactContext = visibleContexts.first(where: {
-                            $0.name.compare(remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-                        }) {
-                            diagnostics.log(
-                                "commandPalette query direct context from=\(state.selectedContext?.name ?? "none") query=\(remainder) matched=\(exactContext.name)"
-                            )
-                            setContext(exactContext)
-                            dismissCommandPalette()
-                            return
-                        }
-                    default:
-                        break
-                    }
+        if let parsedCommand = commandPaletteCommandQuery(query: normalized), !parsedCommand.remainder.isEmpty {
+            switch parsedCommand.command {
+            case "ns", "namespace", "namespaces":
+                if let exactNamespace = namespaceOptions.first(where: {
+                    $0.compare(parsedCommand.remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                }) {
+                    diagnostics.log(
+                        "commandPalette query direct namespace context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) query=\(parsedCommand.remainder) matched=\(exactNamespace)"
+                    )
+                    setNamespace(exactNamespace)
+                    dismissCommandPalette()
+                    return
                 }
+                diagnostics.log(
+                    "commandPalette query manual namespace context=\(state.selectedContext?.name ?? "none") from=\(state.selectedNamespace) query=\(parsedCommand.remainder)"
+                )
+                setNamespace(parsedCommand.remainder)
+                dismissCommandPalette()
+                return
+            case "ctx", "context", "contexts":
+                if let exactContext = visibleContexts.first(where: {
+                    $0.name.compare(parsedCommand.remainder, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                }) {
+                    diagnostics.log(
+                        "commandPalette query direct context from=\(state.selectedContext?.name ?? "none") query=\(parsedCommand.remainder) matched=\(exactContext.name)"
+                    )
+                    setContext(exactContext)
+                    dismissCommandPalette()
+                    return
+                }
+            default:
+                break
             }
         }
 
@@ -8244,6 +8154,7 @@ public final class RuneAppViewModel: ObservableObject {
         try Task.checkCancellation()
 
         let preservedRBACRoles = state.rbacRoles
+        let preservedServiceAccounts = state.serviceAccounts
         let preservedRBACRoleBindings = state.rbacRoleBindings
         let preservedRBACClusterRoles = state.rbacClusterRoles
         let preservedRBACClusterRoleBindings = state.rbacClusterRoleBindings
@@ -8379,6 +8290,10 @@ public final class RuneAppViewModel: ObservableObject {
         async let serviceResult: Result<[ServiceSummary], Error> = captureSnapshotRead {
             guard plan.services || shouldHydrateServicesForOverview else { return cachedSnapshot.services }
             return try await kubeClient.listServices(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
+        }
+        async let endpointResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
+            guard plan.endpoints else { return cachedSnapshot.endpoints }
+            return try await kubeClient.listEndpoints(from: kubeConfigSources, context: context, namespace: effectiveNamespace)
         }
         async let serviceCountResult: Result<Int, Error> = captureSnapshotRead {
             guard plan.servicesCount, !shouldHydrateServicesForOverview else {
@@ -8530,6 +8445,14 @@ public final class RuneAppViewModel: ObservableObject {
                 namespace: effectiveNamespace
             )
         }
+        async let serviceAccountResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
+            guard plan.serviceAccounts else { return preservedServiceAccounts }
+            return try await kubeClient.listServiceAccounts(
+                from: kubeConfigSources,
+                context: context,
+                namespace: effectiveNamespace
+            )
+        }
         async let rbacRoleBindingsResult: Result<[ClusterResourceSummary], Error> = captureSnapshotRead {
             guard plan.rbacRoleBindings else { return preservedRBACRoleBindings }
             return try await kubeClient.listRoleBindings(
@@ -8565,6 +8488,7 @@ public final class RuneAppViewModel: ObservableObject {
             warnings: &warnings
         )
         let loadedServices = unwrap(await serviceResult, label: "services", fallback: cachedSnapshot.services, warnings: &warnings)
+        let loadedEndpoints = unwrap(await endpointResult, label: "endpoints", fallback: cachedSnapshot.endpoints, warnings: &warnings)
         let loadedIngresses = unwrap(await ingressResult, label: "ingresses", fallback: cachedSnapshot.ingresses, warnings: &warnings)
         let loadedConfigMaps = unwrap(await configMapResult, label: "configmaps", fallback: cachedSnapshot.configMaps, warnings: &warnings)
         let loadedSecrets = unwrap(await secretResult, label: "secrets", fallback: cachedSnapshot.secrets, warnings: &warnings)
@@ -8598,6 +8522,12 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let loadedRBACRoles = unwrap(await rbacRolesResult, label: "roles", fallback: preservedRBACRoles, warnings: &warnings)
+        let loadedServiceAccounts = unwrap(
+            await serviceAccountResult,
+            label: "serviceaccounts",
+            fallback: preservedServiceAccounts,
+            warnings: &warnings
+        )
         let loadedRBACRoleBindings = unwrap(
             await rbacRoleBindingsResult,
             label: "rolebindings",
@@ -8644,14 +8574,16 @@ public final class RuneAppViewModel: ObservableObject {
             horizontalPodAutoscalers: loadedHPAs,
             networkPolicies: loadedNetworkPolicies,
             services: loadedServices,
+            endpoints: loadedEndpoints,
             ingresses: loadedIngresses,
             configMaps: loadedConfigMaps,
             secrets: loadedSecrets,
+            serviceAccounts: loadedServiceAccounts,
             events: loadedEvents
         )
 
         state.setPods(loadedPods)
-        if plan.pods, !loadedPods.isEmpty {
+        if plan.pods, Self.podListNeedsJSONEnrichment(loadedPods) {
             Task { [weak self] in
                 await self?.applyPodsJSONEnrichmentIfCurrent(
                     requestID: requestID,
@@ -8673,14 +8605,16 @@ public final class RuneAppViewModel: ObservableObject {
         state.setHorizontalPodAutoscalers(loadedHPAs)
         state.setNetworkPolicies(loadedNetworkPolicies)
         state.setServices(loadedServices)
+        state.setEndpoints(loadedEndpoints)
         state.setIngresses(loadedIngresses)
         state.setConfigMaps(loadedConfigMaps)
         state.setSecrets(loadedSecrets)
         state.setNodes(loadedNodes)
         state.setEvents(loadedEvents)
-        if plan.rbacRoles {
+        if plan.serviceAccounts || plan.rbacRoles || plan.rbacRoleBindings || plan.rbacClusterRoles || plan.rbacClusterRoleBindings {
             state.setRBACData(
                 roles: loadedRBACRoles,
+                serviceAccounts: loadedServiceAccounts,
                 roleBindings: loadedRBACRoleBindings,
                 clusterRoles: loadedRBACClusterRoles,
                 clusterRoleBindings: loadedRBACClusterRoleBindings
@@ -8799,6 +8733,21 @@ public final class RuneAppViewModel: ObservableObject {
         diagnostics.trace("snapshot", "loadResourceSnapshot done context=\(context.name) namespace=\(effectiveNamespace)")
     }
 
+    nonisolated static func podListNeedsJSONEnrichment(_ pods: [PodSummary]) -> Bool {
+        guard !pods.isEmpty else { return false }
+        return pods.contains { pod in
+            pod.podIP == nil
+                && pod.hostIP == nil
+                && pod.nodeName == nil
+                && pod.qosClass == nil
+                && pod.containersReady == nil
+                && pod.containerNamesLine == nil
+                && pod.labels.isEmpty
+                && pod.containerImagesLine == nil
+                && pod.ownerReferencesLine == nil
+        }
+    }
+
     /// Second snapshot pass: merge full pod JSON so the inspector shows IP, node, QoS, and readiness while keeping CPU/mem from the first pass.
     private func applyPodsJSONEnrichmentIfCurrent(
         requestID: UUID,
@@ -8833,9 +8782,11 @@ public final class RuneAppViewModel: ObservableObject {
                 horizontalPodAutoscalers: snap.horizontalPodAutoscalers,
                 networkPolicies: snap.networkPolicies,
                 services: snap.services,
+                endpoints: snap.endpoints,
                 ingresses: snap.ingresses,
                 configMaps: snap.configMaps,
                 secrets: snap.secrets,
+                serviceAccounts: snap.serviceAccounts,
                 events: snap.events
             )
             state.setOverviewSnapshot(
@@ -9063,6 +9014,8 @@ public final class RuneAppViewModel: ObservableObject {
             return state.selectedHorizontalPodAutoscaler != nil
         case .networkPolicy:
             return state.selectedNetworkPolicy != nil
+        case .endpoint:
+            return state.selectedEndpoint != nil
         case .ingress:
             return state.selectedIngress != nil
         case .configMap:
@@ -9071,7 +9024,7 @@ public final class RuneAppViewModel: ObservableObject {
             return state.selectedSecret != nil
         case .node:
             return state.selectedNode != nil
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return state.selectedRBACResource != nil
         case .event:
             return false
@@ -9739,7 +9692,27 @@ public final class RuneAppViewModel: ObservableObject {
                 state.setPodLogs("")
                 state.clearUnifiedServiceLogs()
 
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .endpoint:
+                guard let resource = state.selectedEndpoint else {
+                    if isCurrentResourceDetailsRequest(requestID) {
+                        state.clearResourceDetails()
+                    }
+                    return
+                }
+
+                let pair = await fetchYAMLAndDescribe(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    kind: .endpoint,
+                    name: resource.name
+                )
+
+                applyResourceManifestResults(pair, kind: .endpoint, name: resource.name, requestID: requestID)
+                guard isCurrentResourceDetailsRequest(requestID) else { return }
+                state.setPodLogs("")
+                state.clearUnifiedServiceLogs()
+
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 guard let resource = state.selectedRBACResource else {
                     if isCurrentResourceDetailsRequest(requestID) {
                         state.clearResourceDetails()
@@ -9876,9 +9849,11 @@ public final class RuneAppViewModel: ObservableObject {
                     horizontalPodAutoscalers: cached.horizontalPodAutoscalers,
                     networkPolicies: cached.networkPolicies,
                     services: cached.services,
+                    endpoints: cached.endpoints,
                     ingresses: cached.ingresses,
                     configMaps: cached.configMaps,
                     secrets: cached.secrets,
+                    serviceAccounts: cached.serviceAccounts,
                     events: cached.events
                 )
                 self.state.setReplicaSets(replicaSets)
@@ -10136,7 +10111,10 @@ public final class RuneAppViewModel: ObservableObject {
         case .networkPolicy:
             guard let resource = state.selectedNetworkPolicy else { return nil }
             return (.networkPolicy, resource.name)
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .endpoint:
+            guard let resource = state.selectedEndpoint else { return nil }
+            return (.endpoint, resource.name)
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             guard let resource = state.selectedRBACResource else { return nil }
             return (resource.kind, resource.name)
         case .event:
@@ -10210,7 +10188,9 @@ public final class RuneAppViewModel: ObservableObject {
             return state.selectedHorizontalPodAutoscaler.map { ($0.kind, $0.name, $0.namespace) }
         case .networkPolicy:
             return state.selectedNetworkPolicy.map { ($0.kind, $0.name, $0.namespace) }
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .endpoint:
+            return state.selectedEndpoint.map { ($0.kind, $0.name, $0.namespace) }
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return state.selectedRBACResource.map { ($0.kind, $0.name, $0.namespace) }
         case .event:
             return nil
@@ -10325,6 +10305,8 @@ public final class RuneAppViewModel: ObservableObject {
             return state.replicaSets.isEmpty
         case (.networking, .service):
             return state.services.isEmpty
+        case (.networking, .endpoint):
+            return state.endpoints.isEmpty
         case (.networking, .ingress):
             return state.ingresses.isEmpty
         case (.config, .configMap):
@@ -10343,6 +10325,8 @@ public final class RuneAppViewModel: ObservableObject {
             return state.horizontalPodAutoscalers.isEmpty
         case (.networking, .networkPolicy):
             return state.networkPolicies.isEmpty
+        case (.rbac, .serviceAccount):
+            return state.serviceAccounts.isEmpty
         case (.rbac, .role):
             return state.rbacRoles.isEmpty
         case (.rbac, .roleBinding):
@@ -10376,6 +10360,7 @@ public final class RuneAppViewModel: ObservableObject {
             selectedStorageClassName: state.selectedStorageClass?.name,
             selectedHorizontalPodAutoscalerName: state.selectedHorizontalPodAutoscaler?.name,
             selectedNetworkPolicyName: state.selectedNetworkPolicy?.name,
+            selectedEndpointName: state.selectedEndpoint?.name,
             selectedIngressName: state.selectedIngress?.name,
             selectedConfigMapName: state.selectedConfigMap?.name,
             selectedSecretName: state.selectedSecret?.name,
@@ -10467,6 +10452,8 @@ public final class RuneAppViewModel: ObservableObject {
             selectReplicaSet(state.replicaSets.first(where: { $0.name == checkpoint.selectedReplicaSetName }), trackHistory: false)
         case .ingress:
             selectIngress(state.ingresses.first(where: { $0.name == checkpoint.selectedIngressName }), trackHistory: false)
+        case .endpoint:
+            selectEndpoint(state.endpoints.first(where: { $0.name == checkpoint.selectedEndpointName }), trackHistory: false)
         case .configMap:
             selectConfigMap(state.configMaps.first(where: { $0.name == checkpoint.selectedConfigMapName }), trackHistory: false)
         case .secret:
@@ -10500,8 +10487,8 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .event:
             selectEvent(state.events.first(where: { $0.id == checkpoint.selectedEventID }), trackHistory: false)
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
-            let lists = state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            let lists = state.serviceAccounts + state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
             let match = lists.first(where: { $0.id == checkpoint.selectedRBACResourceID })
             selectRBACResource(match, trackHistory: false)
         }
@@ -11370,9 +11357,11 @@ public final class RuneAppViewModel: ObservableObject {
             state.setHorizontalPodAutoscalers([])
             state.setNetworkPolicies([])
             state.setServices([])
+            state.setEndpoints([])
             state.setIngresses([])
             state.setConfigMaps([])
             state.setSecrets([])
+            state.setRBACData(roles: [], serviceAccounts: [], roleBindings: [], clusterRoles: [], clusterRoleBindings: [])
             state.setEvents([])
             state.setOverviewSnapshot(
                 pods: [],
@@ -11403,9 +11392,17 @@ public final class RuneAppViewModel: ObservableObject {
         state.setPersistentVolumes(store.persistentVolumes(context: context))
         state.setStorageClasses(store.storageClasses(context: context))
         state.setServices(cached.services)
+        state.setEndpoints(cached.endpoints)
         state.setIngresses(cached.ingresses)
         state.setConfigMaps(cached.configMaps)
         state.setSecrets(cached.secrets)
+        state.setRBACData(
+            roles: state.rbacRoles,
+            serviceAccounts: cached.serviceAccounts,
+            roleBindings: state.rbacRoleBindings,
+            clusterRoles: state.rbacClusterRoles,
+            clusterRoleBindings: state.rbacClusterRoleBindings
+        )
         state.setEvents(cached.events)
 
         let reference = Date()
@@ -12253,9 +12250,192 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func matches(_ text: String, query: String) -> Bool {
+        matches(text, tokens: commandPaletteMatchTokens(for: query))
+    }
+
+    private func commandPaletteMatchTokens(for query: String) -> [String] {
+        query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    private func matches(_ text: String, tokens: [String]) -> Bool {
+        guard !tokens.isEmpty else { return true }
         let normalizedText = text.lowercased()
-        let tokens = query.lowercased().split(whereSeparator: \.isWhitespace)
         return tokens.allSatisfy { normalizedText.contains($0) }
+    }
+
+    private func commandPaletteBaseCommandItems() -> [CommandPaletteItem] {
+        var items = [
+            CommandPaletteItem(
+                id: "command:import",
+                title: "Import kubeconfig…",
+                subtitle: "Open a native file picker and add kubeconfig files",
+                symbolName: "square.and.arrow.down",
+                action: .importKubeConfig
+            ),
+            CommandPaletteItem(
+                id: "command:reload",
+                title: "Reload cluster data",
+                subtitle: "Refresh the current context and section",
+                symbolName: "arrow.clockwise",
+                action: .reload
+            ),
+            CommandPaletteItem(
+                id: "command:save-logs",
+                title: "Save Logs",
+                subtitle: "Save the current pod logs or unified logs",
+                symbolName: "square.and.arrow.down",
+                action: .saveLogs
+            ),
+            CommandPaletteItem(
+                id: "command:readonly:on",
+                title: "Enable read-only mode",
+                subtitle: "Block write actions across the app",
+                symbolName: "lock",
+                action: .readOnly(true)
+            ),
+            CommandPaletteItem(
+                id: "command:readonly:off",
+                title: "Disable read-only mode",
+                subtitle: "Allow write actions again",
+                symbolName: "lock.open",
+                action: .readOnly(false)
+            )
+        ]
+        if let deleteItem = commandPaletteDeleteSelectedItem(alias: ":delete") {
+            items.append(deleteItem)
+        }
+        return items
+    }
+
+    private func commandPaletteGlobalItems(query: String?) -> [CommandPaletteItem] {
+        let limit = 160
+        let queryTokens = query.map(commandPaletteMatchTokens(for:))
+        var items: [CommandPaletteItem] = []
+        items.reserveCapacity(limit)
+
+        func append(_ item: CommandPaletteItem) {
+            guard items.count < limit else { return }
+            if let queryTokens, !matches("\(item.title) \(item.subtitle)", tokens: queryTokens) {
+                return
+            }
+            items.append(item)
+        }
+
+        func append(contentsOf candidates: [CommandPaletteItem]) {
+            for item in candidates {
+                guard items.count < limit else { return }
+                append(item)
+            }
+        }
+
+        append(contentsOf: commandPaletteBaseCommandItems())
+        append(contentsOf: savedWorkspaceCommandItems(query: ""))
+
+        for section in RuneSection.allCases {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "section:\(section.rawValue)",
+                title: section.title,
+                subtitle: "Switch section",
+                symbolName: section.symbolName,
+                action: .section(section)
+            ))
+        }
+
+        for context in contextsIncludingEnabledDemo(state.contexts) {
+            guard items.count < limit else { return items }
+            append(commandPaletteContextItem(context, idPrefix: "context", subtitlePrefix: "Switch context"))
+        }
+
+        for namespace in state.namespaces {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "namespace:\(namespace)",
+                title: namespace,
+                subtitle: "Switch namespace",
+                symbolName: "square.3.layers.3d",
+                action: .namespace(namespace)
+            ))
+        }
+
+        for pod in state.pods.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "pod:\(pod.id)",
+                title: pod.name,
+                subtitle: "Open pod",
+                symbolName: "cube.box",
+                action: .pod(pod)
+            ))
+        }
+
+        for deployment in state.deployments.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "deployment:\(deployment.id)",
+                title: deployment.name,
+                subtitle: "Open deployment",
+                symbolName: "shippingbox",
+                action: .deployment(deployment)
+            ))
+        }
+
+        for service in state.services.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "service:\(service.id)",
+                title: service.name,
+                subtitle: "Open service",
+                symbolName: "point.3.connected.trianglepath.dotted",
+                action: .service(service)
+            ))
+        }
+
+        for endpoint in state.endpoints.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "endpoint:\(endpoint.id)",
+                title: endpoint.name,
+                subtitle: "Open endpoints",
+                symbolName: "point.3.connected.trianglepath.dotted",
+                action: .clusterResource(endpoint)
+            ))
+        }
+
+        for serviceAccount in state.serviceAccounts.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "serviceaccount:\(serviceAccount.id)",
+                title: serviceAccount.name,
+                subtitle: "Open service account",
+                symbolName: "person.crop.circle.badge.checkmark",
+                action: .clusterResource(serviceAccount)
+            ))
+        }
+
+        for release in state.helmReleases.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "helm:\(release.id)",
+                title: release.name,
+                subtitle: "Open Helm release • \(release.namespace)",
+                symbolName: "ferry",
+                action: .helmRelease(release)
+            ))
+        }
+
+        for event in state.events.prefix(40) {
+            guard items.count < limit else { return items }
+            append(CommandPaletteItem(
+                id: "event:\(event.id)",
+                title: "\(event.reason) (\(event.type))",
+                subtitle: event.objectName,
+                symbolName: "bolt.badge.clock",
+                action: .event(event)
+            ))
+        }
+
+        return items
     }
 
     private func summaryText(for resource: ClusterResourceSummary) -> String {
@@ -12276,8 +12456,13 @@ public final class RuneAppViewModel: ObservableObject {
         idPrefix: String,
         subtitlePrefix: String
     ) -> CommandPaletteItem {
-        let displayName = contextDisplayName(for: context)
-        let secondary = contextSecondaryDisplayText(for: context)
+        let metadata = contextPreferences.loadContextDisplayMetadata(for: context.name)
+        let displayName = metadata?.alias ?? context.name
+        let secondaryParts = [
+            metadata?.group,
+            metadata?.tags.isEmpty == false ? metadata?.tags.joined(separator: ", ") : nil
+        ].compactMap { $0 }
+        let secondary = secondaryParts.isEmpty ? nil : secondaryParts.joined(separator: " • ")
         let subtitleParts = [
             subtitlePrefix,
             displayName == context.name ? nil : context.name,
@@ -12287,7 +12472,7 @@ public final class RuneAppViewModel: ObservableObject {
             id: "\(idPrefix):\(context.id)",
             title: displayName,
             subtitle: subtitleParts.joined(separator: " • "),
-            symbolName: state.isFavorite(context) ? "star.fill" : (contextDisplayIconName(for: context) ?? "network"),
+            symbolName: state.isFavorite(context) ? "star.fill" : (metadata?.iconName ?? "network"),
             action: .context(context)
         )
     }
@@ -12415,33 +12600,121 @@ public final class RuneAppViewModel: ObservableObject {
         )
     }
 
-    private func commandPaletteCommandItems(query: String) -> [CommandPaletteItem]? {
-        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.hasPrefix(":") else { return nil }
+    private func commandPaletteDeleteSelectedItem(alias: String) -> CommandPaletteItem? {
+        guard UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette else { return nil }
+        guard let (kind, name) = currentDeletableResource() else { return nil }
+        return CommandPaletteItem(
+            id: "cmd:delete-selected:\(kind.rawValue):\(name)",
+            title: "Delete \(kind.singularTypeName): \(name)",
+            subtitle: "Destructive • opens confirmation only • `\(alias)`",
+            symbolName: "trash",
+            action: .deleteSelectedResource
+        )
+    }
 
-        let tokens = normalized.dropFirst().split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let command = tokens.first?.lowercased() else {
+    private struct CommandPaletteCommandQuery {
+        let command: String
+        let remainder: String
+        let alias: String
+    }
+
+    private func commandPaletteCommandQuery(query: String) -> CommandPaletteCommandQuery? {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let hasColonPrefix = normalized.hasPrefix(":")
+        let commandText = hasColonPrefix ? String(normalized.dropFirst()) : normalized
+        let tokens = commandText.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let rawCommand = tokens.first else {
+            return hasColonPrefix ? CommandPaletteCommandQuery(command: "", remainder: "", alias: ":") : nil
+        }
+
+        let command = rawCommand.lowercased()
+        guard hasColonPrefix || isCommandPaletteBareCommandAlias(command) else { return nil }
+
+        let remainder = tokens.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let alias = hasColonPrefix ? ":\(command)" : command
+        return CommandPaletteCommandQuery(command: command, remainder: remainder, alias: alias)
+    }
+
+    private func isCommandPaletteBareCommandAlias(_ command: String) -> Bool {
+        switch command {
+        case "ws", "workspace", "workspaces",
+             "savews", "save-workspace", "saveworkspace",
+             "favws", "favoritews", "favorite-workspace", "unfavws", "unfavoritews", "unfavorite-workspace",
+             "sl", "save-log", "save-logs", "savelog", "savelogs",
+             "delete", "del", "rm",
+             "po", "pod", "pods",
+             "dp", "deploy", "deployment", "deployments",
+             "svc", "service", "services",
+             "ep", "endpoint", "endpoints",
+             "ctx", "context", "contexts",
+             "ns", "namespace", "namespaces",
+             "ov", "overview", "home",
+             "ev", "event", "events",
+             "helm", "hr",
+             "workloads", "wl",
+             "network", "net",
+             "config", "cfg",
+             "storage", "sto",
+             "sts", "statefulset", "statefulsets",
+             "ds", "daemonset", "daemonsets",
+             "rs", "replicaset", "replicasets",
+             "ing", "ingress", "ingresses",
+             "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims",
+             "pv", "pvs", "persistentvolume", "persistentvolumes",
+             "sc", "storageclass", "storageclasses",
+             "hpa", "horizontalpodautoscaler", "horizontalpodautoscalers",
+             "np", "netpol", "networkpolicy", "networkpolicies",
+             "cm", "configmap", "configmaps",
+             "sec", "secret", "secrets",
+             "rbac",
+             "sa", "serviceaccount", "serviceaccounts",
+             "role", "roles",
+             "rb", "rolebinding", "rolebindings",
+             "cr", "clusterrole", "clusterroles",
+             "crb", "clusterrolebinding", "clusterrolebindings",
+             "no", "node", "nodes",
+             "cronjob", "cronjobs", "cj",
+             "job", "jobs", "jo",
+             "reload",
+             "import",
+             "ro", "readonly":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func commandPaletteCommandItems(query: String) -> [CommandPaletteItem]? {
+        guard let parsedCommand = commandPaletteCommandQuery(query: query) else { return nil }
+        guard !parsedCommand.command.isEmpty else {
             return commandPaletteCheatSheet()
         }
 
-        let remainder = tokens.dropFirst().joined(separator: " ")
+        let command = parsedCommand.command
+        let remainder = parsedCommand.remainder
+        let remainderTokens = commandPaletteMatchTokens(for: remainder)
 
         switch command {
         case "ws", "workspace", "workspaces":
             return savedWorkspaceCommandItems(query: remainder)
         case "savews", "save-workspace", "saveworkspace":
-            return [saveWorkspaceCommandItem(name: remainder, alias: ":\(command)")]
+            return [saveWorkspaceCommandItem(name: remainder, alias: parsedCommand.alias)]
         case "favws", "favoritews", "favorite-workspace", "unfavws", "unfavoritews", "unfavorite-workspace":
             return savedWorkspaceFavoriteCommandItems(query: remainder)
         case "sl", "save-log", "save-logs", "savelog", "savelogs":
-            return [commandPaletteSaveLogsItem(alias: ":\(command)")]
+            return [commandPaletteSaveLogsItem(alias: parsedCommand.alias)]
+        case "delete", "del", "rm":
+            guard let item = commandPaletteDeleteSelectedItem(alias: parsedCommand.alias) else { return [] }
+            return [item]
         case "po", "pod", "pods":
             if ["sl", "log", "logs", "save", "save logs", "save-logs"].contains(remainder.lowercased()) {
-                return [commandPaletteSaveLogsItem(alias: ":\(command) \(remainder)")]
+                return [commandPaletteSaveLogsItem(alias: "\(parsedCommand.alias) \(remainder)")]
             }
             let rows = Array(
-                visiblePods
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.pods
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { pod in
                         CommandPaletteItem(
@@ -12463,8 +12736,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "dp", "deploy", "deployment", "deployments":
             let rows = Array(
-                visibleDeployments
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.deployments
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { deployment in
                         CommandPaletteItem(
@@ -12486,8 +12759,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "svc", "service", "services":
             let rows = Array(
-                visibleServices
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.services
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { service in
                         CommandPaletteItem(
@@ -12507,10 +12780,33 @@ public final class RuneAppViewModel: ObservableObject {
                 action: .resourceKind(section: .networking, kind: .service)
             )
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
+        case "ep", "endpoint", "endpoints":
+            let rows = Array(
+                state.endpoints
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:ep:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "Endpoints • `:ep`",
+                            symbolName: "point.3.connected.trianglepath.dotted",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:ep",
+                title: "Endpoints",
+                subtitle: "Open Networking → Endpoints",
+                symbolName: "point.3.connected.trianglepath.dotted",
+                action: .resourceKind(section: .networking, kind: .endpoint)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ctx", "context", "contexts":
             let rows = visibleContexts
                 .filter { context in
-                    remainder.isEmpty || contextSearchTokens(for: context).contains { matches($0, query: remainder) }
+                    remainderTokens.isEmpty || contextSearchTokens(for: context).contains { matches($0, tokens: remainderTokens) }
                 }
                 .map { context in
                     commandPaletteContextItem(context, idPrefix: "cmd:context", subtitlePrefix: "Contexts • `:ctx`")
@@ -12525,7 +12821,7 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ns", "namespace", "namespaces":
             let rows = namespaceOptions
-                .filter { remainder.isEmpty || matches($0, query: remainder) }
+                .filter { remainderTokens.isEmpty || matches($0, tokens: remainderTokens) }
                 .map { namespace in
                     CommandPaletteItem(
                         id: "cmd:namespace:\(namespace)",
@@ -12555,8 +12851,8 @@ public final class RuneAppViewModel: ObservableObject {
             ]
         case "ev", "event", "events":
             let rows = Array(
-                visibleEvents
-                    .filter { remainder.isEmpty || matches("\($0.reason) \($0.objectName) \($0.message)", query: remainder) }
+                state.events
+                    .filter { remainderTokens.isEmpty || matches("\($0.reason) \($0.objectName) \($0.message)", tokens: remainderTokens) }
                     .prefix(40)
                     .map { event in
                         CommandPaletteItem(
@@ -12578,8 +12874,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "helm", "hr":
             let rows = Array(
-                visibleHelmReleases
-                    .filter { remainder.isEmpty || matches("\($0.name) \($0.namespace) \($0.chart)", query: remainder) }
+                state.helmReleases
+                    .filter { remainderTokens.isEmpty || matches("\($0.name) \($0.namespace) \($0.chart)", tokens: remainderTokens) }
                     .prefix(40)
                     .map { release in
                         CommandPaletteItem(
@@ -12641,8 +12937,8 @@ public final class RuneAppViewModel: ObservableObject {
             }
         case "sts", "statefulset", "statefulsets":
             let rows = Array(
-                visibleStatefulSets
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.statefulSets
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12664,8 +12960,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ds", "daemonset", "daemonsets":
             let rows = Array(
-                visibleDaemonSets
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.daemonSets
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12687,8 +12983,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "rs", "replicaset", "replicasets":
             let rows = Array(
-                visibleReplicaSets
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.replicaSets
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12710,8 +13006,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "ing", "ingress", "ingresses":
             let rows = Array(
-                visibleIngresses
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.ingresses
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12733,8 +13029,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
             let rows = Array(
-                visiblePersistentVolumeClaims
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.persistentVolumeClaims
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12756,8 +13052,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "pv", "pvs", "persistentvolume", "persistentvolumes":
             let rows = Array(
-                visiblePersistentVolumes
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.persistentVolumes
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12779,8 +13075,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "sc", "storageclass", "storageclasses":
             let rows = Array(
-                visibleStorageClasses
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.storageClasses
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12802,8 +13098,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "hpa", "horizontalpodautoscaler", "horizontalpodautoscalers":
             let rows = Array(
-                visibleHorizontalPodAutoscalers
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.horizontalPodAutoscalers
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12825,8 +13121,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "np", "netpol", "networkpolicy", "networkpolicies":
             let rows = Array(
-                visibleNetworkPolicies
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.networkPolicies
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12848,8 +13144,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cm", "configmap", "configmaps":
             let rows = Array(
-                visibleConfigMaps
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.configMaps
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12871,8 +13167,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "sec", "secret", "secrets":
             let rows = Array(
-                visibleSecrets
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.secrets
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12902,10 +13198,33 @@ public final class RuneAppViewModel: ObservableObject {
                     action: .resourceKind(section: .rbac, kind: kind)
                 )
             }
+        case "sa", "serviceaccount", "serviceaccounts":
+            let rows = Array(
+                state.serviceAccounts
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
+                    .prefix(40)
+                    .map { resource in
+                        CommandPaletteItem(
+                            id: "cmd:sa:\(resource.id)",
+                            title: resource.name,
+                            subtitle: "ServiceAccounts • `:sa`",
+                            symbolName: "person.crop.circle.badge.checkmark",
+                            action: .clusterResource(resource)
+                        )
+                    }
+            )
+            let navigate = CommandPaletteItem(
+                id: "nav:sa",
+                title: "ServiceAccounts",
+                subtitle: "Open RBAC → ServiceAccounts",
+                symbolName: "person.crop.circle.badge.checkmark",
+                action: .resourceKind(section: .rbac, kind: .serviceAccount)
+            )
+            return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "role", "roles":
             let rows = Array(
                 state.rbacRoles
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12928,7 +13247,7 @@ public final class RuneAppViewModel: ObservableObject {
         case "rb", "rolebinding", "rolebindings":
             let rows = Array(
                 state.rbacRoleBindings
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12951,7 +13270,7 @@ public final class RuneAppViewModel: ObservableObject {
         case "cr", "clusterrole", "clusterroles":
             let rows = Array(
                 state.rbacClusterRoles
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12974,7 +13293,7 @@ public final class RuneAppViewModel: ObservableObject {
         case "crb", "clusterrolebinding", "clusterrolebindings":
             let rows = Array(
                 state.rbacClusterRoleBindings
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -12996,8 +13315,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "no", "node", "nodes":
             let rows = Array(
-                visibleNodes
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.nodes
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -13019,8 +13338,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "cronjob", "cronjobs", "cj":
             let rows = Array(
-                visibleCronJobs
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.cronJobs
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -13042,8 +13361,8 @@ public final class RuneAppViewModel: ObservableObject {
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
         case "job", "jobs", "jo":
             let rows = Array(
-                visibleJobs
-                    .filter { remainder.isEmpty || matches($0.name, query: remainder) }
+                state.jobs
+                    .filter { remainderTokens.isEmpty || matches($0.name, tokens: remainderTokens) }
                     .prefix(40)
                     .map { resource in
                         CommandPaletteItem(
@@ -13063,26 +13382,6 @@ public final class RuneAppViewModel: ObservableObject {
                 action: .resourceKind(section: .workloads, kind: .job)
             )
             return commandPaletteResourceRowsOrNavigate(rows: rows, navigate: navigate)
-        case "sa", "serviceaccount", "serviceaccounts":
-            return [
-                CommandPaletteItem(
-                    id: "stub:sa",
-                    title: "ServiceAccounts",
-                    subtitle: "Not in Rune yet — opened RBAC",
-                    symbolName: "person.crop.circle",
-                    action: .resourceKind(section: .rbac, kind: .role)
-                )
-            ]
-        case "ep", "endpoint", "endpoints":
-            return [
-                CommandPaletteItem(
-                    id: "stub:ep",
-                    title: "Endpoints",
-                    subtitle: "Not in Rune yet — opened Networking (Services)",
-                    symbolName: "link",
-                    action: .resourceKind(section: .networking, kind: .service)
-                )
-            ]
         case "reload":
             return [
                 CommandPaletteItem(
@@ -13132,6 +13431,7 @@ public final class RuneAppViewModel: ObservableObject {
             CommandPaletteItem(id: "help:sts", title: ":sts <name>", subtitle: "StatefulSets", symbolName: "shippingbox", action: .resourceKind(section: .workloads, kind: .statefulSet)),
             CommandPaletteItem(id: "help:ds", title: ":ds <name>", subtitle: "DaemonSets", symbolName: "shippingbox", action: .resourceKind(section: .workloads, kind: .daemonSet)),
             CommandPaletteItem(id: "help:svc", title: ":svc / :service <name>", subtitle: "Services", symbolName: "point.3.connected.trianglepath.dotted", action: .resourceKind(section: .networking, kind: .service)),
+            CommandPaletteItem(id: "help:ep", title: ":ep <name>", subtitle: "Endpoints", symbolName: "point.3.connected.trianglepath.dotted", action: .resourceKind(section: .networking, kind: .endpoint)),
             CommandPaletteItem(id: "help:ing", title: ":ing <name>", subtitle: "Ingresses", symbolName: "network", action: .resourceKind(section: .networking, kind: .ingress)),
             CommandPaletteItem(id: "help:cm", title: ":cm <name>", subtitle: "ConfigMaps", symbolName: "doc.text", action: .resourceKind(section: .config, kind: .configMap)),
             CommandPaletteItem(id: "help:sec", title: ":sec <name>", subtitle: "Secrets", symbolName: "key", action: .resourceKind(section: .config, kind: .secret)),
@@ -13143,6 +13443,7 @@ public final class RuneAppViewModel: ObservableObject {
             CommandPaletteItem(id: "help:ws", title: ":ws <workspace>", subtitle: "Open saved workspace", symbolName: "rectangle.stack.badge.play", action: .section(.overview)),
             CommandPaletteItem(id: "help:savews", title: ":savews <name>", subtitle: "Save current workspace", symbolName: "rectangle.stack.badge.plus", action: .section(.overview)),
             CommandPaletteItem(id: "help:favws", title: ":favws <workspace>", subtitle: "Toggle workspace favorite", symbolName: "star", action: .section(.overview)),
+            CommandPaletteItem(id: "help:sa", title: ":sa <name>", subtitle: "ServiceAccounts", symbolName: "person.crop.circle.badge.checkmark", action: .resourceKind(section: .rbac, kind: .serviceAccount)),
             CommandPaletteItem(id: "help:rbac", title: ":rbac", subtitle: "RBAC kinds", symbolName: "person.2.badge.gearshape", action: .resourceKind(section: .rbac, kind: .role)),
             CommandPaletteItem(id: "help:helm", title: ":helm <release>", subtitle: "Helm releases", symbolName: "ferry", action: .section(.helm)),
             CommandPaletteItem(id: "help:cj", title: ":cj <name>", subtitle: "CronJobs", symbolName: "calendar.badge.clock", action: .resourceKind(section: .workloads, kind: .cronJob)),
@@ -13162,11 +13463,13 @@ public final class RuneAppViewModel: ObservableObject {
             "cronjobs": state.cronJobs.count,
             "replicasets": state.replicaSets.count,
             "services": state.services.count,
+            "endpoints": state.endpoints.count,
             "ingresses": state.ingresses.count,
             "configmaps": state.configMaps.count,
             "secrets": state.secrets.count,
             "nodes": state.nodes.count,
             "events": state.events.count,
+            "serviceAccounts": state.serviceAccounts.count,
             "roles": state.rbacRoles.count,
             "roleBindings": state.rbacRoleBindings.count,
             "clusterRoles": state.rbacClusterRoles.count,
@@ -13225,6 +13528,7 @@ public final class RuneAppViewModel: ObservableObject {
         case .networking:
             switch state.selectedWorkloadKind {
             case .service: return state.selectedService?.namespace
+            case .endpoint: return state.selectedEndpoint?.namespace
             case .ingress: return state.selectedIngress?.namespace
             case .networkPolicy: return state.selectedNetworkPolicy?.namespace
             default: return nil
@@ -13316,6 +13620,8 @@ public final class RuneAppViewModel: ObservableObject {
             selectHorizontalPodAutoscaler(state.horizontalPodAutoscalers.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
         case .networkPolicy:
             selectNetworkPolicy(state.networkPolicies.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        case .endpoint:
+            selectEndpoint(state.endpoints.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
         case .ingress:
             selectIngress(state.ingresses.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
         case .configMap:
@@ -13324,13 +13630,13 @@ public final class RuneAppViewModel: ObservableObject {
             selectSecret(state.secrets.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
         case .node:
             selectNode(state.nodes.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
-        case .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             break
         }
     }
 
     private func restoreSavedWorkspaceRBACResource(_ workspace: SavedWorkspaceSnapshot) {
-        let lists = state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
+        let lists = state.serviceAccounts + state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
         selectRBACResource(lists.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
     }
 

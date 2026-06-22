@@ -339,6 +339,9 @@ private struct ParsedKubeConfig {
             return
         }
 
+        let yamlReferences = Self.referenceIndex(for: raw)
+        syntaxIssues.append(contentsOf: yamlReferences.issues)
+
         enum Section {
             case clusters
             case contexts
@@ -351,6 +354,48 @@ private struct ParsedKubeConfig {
         var clusterNameCounts: [String: Int] = [:]
         var contextNameCounts: [String: Int] = [:]
         var userNameCounts: [String: Int] = [:]
+        var reportedUnresolvedAliases = Set<String>()
+
+        func unresolvedAlias(_ alias: String) {
+            guard reportedUnresolvedAliases.insert(alias).inserted else { return }
+            syntaxIssues.append(.init(
+                id: "unresolved-yaml-alias-\(alias)",
+                severity: .error,
+                message: "Kubeconfig references YAML alias \(alias), but no matching anchor was found."
+            ))
+        }
+
+        func resolvedScalar(_ rawValue: String) -> String? {
+            let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("\"") || trimmed.hasPrefix("'") {
+                return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+            let value = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if value.hasPrefix("*") {
+                let alias = String(value.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let resolved = yamlReferences.scalarAnchors[alias] else {
+                    unresolvedAlias(alias)
+                    return nil
+                }
+                return resolved
+            }
+            if value.hasPrefix("&") {
+                let parts = value.dropFirst().split(maxSplits: 1, whereSeparator: \.isWhitespace)
+                guard parts.count == 2 else { return nil }
+                return String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+            return value
+        }
+
+        func scalarValue(_ line: String, key: String) -> String? {
+            guard let value = Self.rawScalarValue(line, key: key) else { return nil }
+            return resolvedScalar(value)
+        }
+
+        func anyScalarValue(_ line: String) -> String? {
+            guard let value = Self.rawAnyScalarValue(line) else { return nil }
+            return resolvedScalar(value)
+        }
 
         func finishCluster(_ cluster: inout Cluster?) {
             if let value = cluster {
@@ -407,20 +452,114 @@ private struct ParsedKubeConfig {
         var currentContextEntry: Context?
         var currentUser: User?
 
+        func mappingValue(_ mapping: [String: String], keys: [String]) -> String? {
+            for key in keys {
+                if let value = mapping[key], let resolved = resolvedScalar(value) {
+                    return resolved
+                }
+            }
+            return nil
+        }
+
+        func applyUserMapping(_ mapping: [String: String], to user: inout User) {
+            if mappingValue(mapping, keys: ["user.token", "token"]) != nil ||
+                mappingValue(mapping, keys: ["user.id-token", "id-token"]) != nil ||
+                mappingValue(mapping, keys: ["user.access-token", "access-token"]) != nil {
+                user.hasToken = true
+            }
+            if mappingValue(mapping, keys: ["user.tokenFile", "tokenFile", "user.token-file", "token-file"]) != nil {
+                user.hasTokenFile = true
+            }
+            if mappingValue(mapping, keys: ["user.username", "username"]) != nil ||
+                mappingValue(mapping, keys: ["user.password", "password"]) != nil {
+                user.hasBasicAuth = true
+            }
+            if mappingValue(mapping, keys: ["user.client-certificate-data", "client-certificate-data"]) != nil ||
+                mappingValue(mapping, keys: ["user.client-certificate", "client-certificate"]) != nil ||
+                mappingValue(mapping, keys: ["user.client-key-data", "client-key-data"]) != nil ||
+                mappingValue(mapping, keys: ["user.client-key", "client-key"]) != nil {
+                user.hasClientCertificate = true
+            }
+            if let value = mappingValue(mapping, keys: ["user.exec.command", "exec.command"]) {
+                user.execCommand = value
+            }
+            if let value = mappingValue(mapping, keys: ["user.auth-provider.name", "auth-provider.name"]) {
+                user.authProviderName = value
+            }
+            for key in mapping.keys where key.hasPrefix("user.auth-provider.config.") || key.hasPrefix("auth-provider.config.") {
+                if let value = mappingValue(mapping, keys: [key]) {
+                    user.authProviderConfigValues.append(value)
+                }
+            }
+        }
+
+        func applyMappingAlias(_ alias: String, section: Section?, nestedKey: String?) {
+            guard let mapping = yamlReferences.mappingAnchors[alias] else {
+                unresolvedAlias(alias)
+                return
+            }
+
+            switch (section, nestedKey) {
+            case (.clusters?, "cluster"):
+                if let value = mappingValue(mapping, keys: ["cluster.server", "server"]) {
+                    currentCluster?.serverHost = Self.serverHost(from: value)
+                }
+            case (.contexts?, "context"):
+                if let value = mappingValue(mapping, keys: ["context.cluster", "cluster"]) {
+                    currentContextEntry?.clusterName = value
+                }
+                if let value = mappingValue(mapping, keys: ["context.user", "user"]) {
+                    currentContextEntry?.userName = value
+                }
+                if let value = mappingValue(mapping, keys: ["context.namespace", "namespace"]) {
+                    currentContextEntry?.namespace = value
+                }
+            case (.users?, "user"):
+                if var user = currentUser {
+                    applyUserMapping(mapping, to: &user)
+                    currentUser = user
+                }
+            default:
+                break
+            }
+        }
+
+        func appendAliasListItem(_ alias: String, section: Section?) {
+            guard let mapping = yamlReferences.mappingAnchors[alias] else {
+                unresolvedAlias(alias)
+                return
+            }
+
+            switch section {
+            case .clusters:
+                finishCluster(&currentCluster)
+                currentCluster = Cluster(
+                    name: mappingValue(mapping, keys: ["name"]) ?? "",
+                    serverHost: mappingValue(mapping, keys: ["cluster.server", "server"]).flatMap(Self.serverHost(from:))
+                )
+            case .contexts:
+                finishContext(&currentContextEntry)
+                currentContextEntry = Context(
+                    name: mappingValue(mapping, keys: ["name"]) ?? "",
+                    clusterName: mappingValue(mapping, keys: ["context.cluster", "cluster"]),
+                    userName: mappingValue(mapping, keys: ["context.user", "user"]),
+                    namespace: mappingValue(mapping, keys: ["context.namespace", "namespace"])
+                )
+            case .users:
+                finishUser(&currentUser)
+                var user = User(name: mappingValue(mapping, keys: ["name"]) ?? "")
+                applyUserMapping(mapping, to: &user)
+                currentUser = user
+            case nil:
+                syntaxIssues.append(.init(id: "list-without-section", severity: .error, message: "Kubeconfig contains a list item outside clusters, contexts, or users."))
+            }
+        }
+
         for line in raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
             let line = Self.removingInlineComment(from: line)
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
             let indent = line.prefix { $0 == " " }.count
-
-            if let message = Self.unsupportedYAMLFeatureMessage(in: trimmed) {
-                syntaxIssues.append(.init(
-                    id: "unsupported-yaml-feature",
-                    severity: .error,
-                    message: message
-                ))
-                continue
-            }
 
             if trimmed == "---" {
                 syntaxIssues.append(.init(
@@ -433,7 +572,7 @@ private struct ParsedKubeConfig {
 
             if !line.hasPrefix(" "), !line.hasPrefix("-") {
                 nestedKey = nil
-                if let value = Self.scalarValue(trimmed, key: "current-context") {
+                if let value = scalarValue(trimmed, key: "current-context") {
                     currentContext = value
                     continue
                 }
@@ -461,8 +600,14 @@ private struct ParsedKubeConfig {
                 }
             }
 
+            if let alias = Self.listAliasName(from: trimmed), indent <= 2 {
+                appendAliasListItem(alias, section: section)
+                nestedKey = nil
+                continue
+            }
+
             if trimmed.hasPrefix("- name:"), indent <= 2 {
-                let name = Self.scalarValue(trimmed, key: "- name") ?? ""
+                let name = scalarValue(trimmed, key: "- name") ?? ""
                 switch section {
                 case .clusters:
                     finishCluster(&currentCluster)
@@ -508,6 +653,13 @@ private struct ParsedKubeConfig {
                 continue
             }
 
+            if let aliases = Self.mergeAliasNames(from: trimmed) {
+                for alias in aliases {
+                    applyMappingAlias(alias, section: section, nestedKey: nestedKey)
+                }
+                continue
+            }
+
             if Self.isAnchorOnlyListItem(trimmed), indent <= 2 {
                 switch section {
                 case .clusters:
@@ -543,7 +695,7 @@ private struct ParsedKubeConfig {
                 continue
             }
 
-            if indent <= 2, let value = Self.scalarValue(trimmed, key: "name") {
+            if indent <= 2, let value = scalarValue(trimmed, key: "name") {
                 switch section {
                 case .clusters:
                     if currentCluster == nil {
@@ -571,61 +723,61 @@ private struct ParsedKubeConfig {
 
             switch (section, nestedKey) {
             case (.clusters?, "cluster"):
-                if let value = Self.scalarValue(trimmed, key: "server") {
+                if let value = scalarValue(trimmed, key: "server") {
                     currentCluster?.serverHost = Self.serverHost(from: value)
-                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                } else if let value = scalarValue(trimmed, key: "name") {
                     currentCluster?.name = value
                 }
             case (.contexts?, "context"):
-                if let value = Self.scalarValue(trimmed, key: "cluster") {
+                if let value = scalarValue(trimmed, key: "cluster") {
                     currentContextEntry?.clusterName = value
-                } else if let value = Self.scalarValue(trimmed, key: "user") {
+                } else if let value = scalarValue(trimmed, key: "user") {
                     currentContextEntry?.userName = value
-                } else if let value = Self.scalarValue(trimmed, key: "namespace") {
+                } else if let value = scalarValue(trimmed, key: "namespace") {
                     currentContextEntry?.namespace = value
-                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                } else if let value = scalarValue(trimmed, key: "name") {
                     currentContextEntry?.name = value
                 }
             case (.users?, "user"):
-                if Self.scalarValue(trimmed, key: "token") != nil {
+                if scalarValue(trimmed, key: "token") != nil {
                     currentUser?.hasToken = true
-                } else if Self.scalarValue(trimmed, key: "id-token") != nil {
+                } else if scalarValue(trimmed, key: "id-token") != nil {
                     currentUser?.hasToken = true
-                } else if Self.scalarValue(trimmed, key: "access-token") != nil {
+                } else if scalarValue(trimmed, key: "access-token") != nil {
                     currentUser?.hasToken = true
-                } else if Self.scalarValue(trimmed, key: "tokenFile") != nil {
+                } else if scalarValue(trimmed, key: "tokenFile") != nil {
                     currentUser?.hasTokenFile = true
-                } else if Self.scalarValue(trimmed, key: "token-file") != nil {
+                } else if scalarValue(trimmed, key: "token-file") != nil {
                     currentUser?.hasTokenFile = true
-                } else if Self.scalarValue(trimmed, key: "username") != nil {
+                } else if scalarValue(trimmed, key: "username") != nil {
                     currentUser?.hasBasicAuth = true
-                } else if Self.scalarValue(trimmed, key: "password") != nil {
+                } else if scalarValue(trimmed, key: "password") != nil {
                     currentUser?.hasBasicAuth = true
-                } else if Self.scalarValue(trimmed, key: "client-certificate-data") != nil {
+                } else if scalarValue(trimmed, key: "client-certificate-data") != nil {
                     currentUser?.hasClientCertificate = true
-                } else if Self.scalarValue(trimmed, key: "client-certificate") != nil {
+                } else if scalarValue(trimmed, key: "client-certificate") != nil {
                     currentUser?.hasClientCertificate = true
-                } else if Self.scalarValue(trimmed, key: "client-key-data") != nil {
+                } else if scalarValue(trimmed, key: "client-key-data") != nil {
                     currentUser?.hasClientCertificate = true
-                } else if Self.scalarValue(trimmed, key: "client-key") != nil {
+                } else if scalarValue(trimmed, key: "client-key") != nil {
                     currentUser?.hasClientCertificate = true
                 } else if trimmed == "auth-provider:" {
                     nestedKey = "auth-provider"
                     authProviderConfigKey = nil
-                } else if let value = Self.scalarValue(trimmed, key: "name") {
+                } else if let value = scalarValue(trimmed, key: "name") {
                     currentUser?.name = value
                 }
             case (.users?, "exec"):
-                if let value = Self.scalarValue(trimmed, key: "command") {
+                if let value = scalarValue(trimmed, key: "command") {
                     currentUser?.execCommand = value
                 }
             case (.users?, "auth-provider"):
-                if let value = Self.scalarValue(trimmed, key: "name") {
+                if let value = scalarValue(trimmed, key: "name") {
                     currentUser?.authProviderName = value
                 } else if trimmed == "config:" {
                     authProviderConfigKey = "config"
                 } else if authProviderConfigKey == "config",
-                          let value = Self.anyScalarValue(trimmed) {
+                          let value = anyScalarValue(trimmed) {
                     currentUser?.authProviderConfigValues.append(value)
                 }
             default:
@@ -650,20 +802,144 @@ private struct ParsedKubeConfig {
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    private static func scalarValue(_ line: String, key: String) -> String? {
+    private struct YAMLReferenceIndex {
+        var scalarAnchors: [String: String] = [:]
+        var mappingAnchors: [String: [String: String]] = [:]
+        var issues: [KubeConfigImportIssue] = []
+    }
+
+    private static func referenceIndex(for raw: String) -> YAMLReferenceIndex {
+        var index = YAMLReferenceIndex()
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        for (lineIndex, rawLine) in lines.enumerated() {
+            let line = removingInlineComment(from: rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+
+            if let scalar = scalarAnchor(in: trimmed) {
+                index.scalarAnchors[scalar.name] = scalar.value
+            }
+
+            if let anchor = mappingAnchorName(in: trimmed) {
+                let indent = line.prefix { $0 == " " }.count
+                let mapping = collectMappingAnchor(lines: lines, startingAfter: lineIndex, baseIndent: indent)
+                if !mapping.isEmpty {
+                    index.mappingAnchors[anchor] = mapping
+                }
+            }
+        }
+
+        return index
+    }
+
+    private static func scalarAnchor(in trimmed: String) -> (name: String, value: String)? {
+        guard let value = rawAnyScalarValue(trimmed)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.hasPrefix("&") else { return nil }
+        let parts = value.dropFirst().split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        guard parts.count == 2 else { return nil }
+        let name = String(parts[0])
+        let scalar = String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard !name.isEmpty, !scalar.isEmpty else { return nil }
+        return (name, scalar)
+    }
+
+    private static func mappingAnchorName(in trimmed: String) -> String? {
+        if isAnchorOnlyListItem(trimmed) {
+            return String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let value = rawAnyScalarValue(trimmed)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.hasPrefix("&") else { return nil }
+        let parts = value.dropFirst().split(whereSeparator: \.isWhitespace)
+        guard parts.count == 1 else { return nil }
+        return String(parts[0])
+    }
+
+    private static func collectMappingAnchor(lines: [String], startingAfter lineIndex: Int, baseIndent: Int) -> [String: String] {
+        var mapping: [String: String] = [:]
+        var stack: [(indent: Int, key: String)] = []
+        guard lineIndex + 1 < lines.count else { return mapping }
+
+        for rawLine in lines[(lineIndex + 1)...] {
+            let line = removingInlineComment(from: rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+
+            let indent = line.prefix { $0 == " " }.count
+            guard indent > baseIndent else { break }
+
+            while let last = stack.last, last.indent >= indent {
+                stack.removeLast()
+            }
+
+            guard let pair = keyValue(from: trimmed) else { continue }
+            if pair.value.isEmpty || mappingAnchorName(in: trimmed) != nil {
+                stack.append((indent: indent, key: pair.key))
+                continue
+            }
+
+            let pathParts = stack.map(\.key) + [pair.key]
+            let path = pathParts.joined(separator: ".")
+            mapping[path] = pair.value
+            if stack.isEmpty {
+                mapping[pair.key] = pair.value
+            }
+        }
+
+        return mapping
+    }
+
+    private static func keyValue(from trimmed: String) -> (key: String, value: String)? {
+        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
+        var key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.hasPrefix("-") {
+            key = String(key.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !key.isEmpty else { return nil }
+        let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (key, value)
+    }
+
+    private static func mergeAliasNames(from trimmed: String) -> [String]? {
+        guard let value = rawScalarValue(trimmed, key: "<<")?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.hasPrefix("*") || (value.hasPrefix("[") && value.hasSuffix("]")) else { return nil }
+        if value.hasPrefix("[") {
+            let aliases = value
+                .dropFirst()
+                .dropLast()
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.hasPrefix("*") }
+                .map { String($0.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return aliases.isEmpty ? nil : aliases
+        }
+        return [String(value.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    private static func listAliasName(from trimmed: String) -> String? {
+        guard trimmed.hasPrefix("- *") else { return nil }
+        let alias = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return alias.isEmpty ? nil : alias
+    }
+
+    private static func rawScalarValue(_ line: String, key: String) -> String? {
         let prefix = "\(key):"
         guard line.hasPrefix(prefix) else { return nil }
         return String(line.dropFirst(prefix.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
     }
 
-    private static func anyScalarValue(_ line: String) -> String? {
+    private static func rawAnyScalarValue(_ line: String) -> String? {
         guard let colon = line.firstIndex(of: ":") else { return nil }
         let value = String(line[line.index(after: colon)...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         return value.isEmpty ? nil : value
+    }
+
+    private static func scalarValue(_ line: String, key: String) -> String? {
+        rawScalarValue(line, key: key)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
     }
 
     private static func normalized(_ raw: String) -> String {
@@ -701,41 +977,21 @@ private struct ParsedKubeConfig {
     }
 
     private static func typedListItemKey(from trimmed: String) -> String? {
-        switch trimmed {
-        case "- cluster:":
-            return "cluster"
-        case "- context:":
-            return "context"
-        case "- user:":
-            return "user"
-        default:
-            return nil
+        for key in ["cluster", "context", "user"] {
+            let prefix = "- \(key):"
+            guard trimmed.hasPrefix(prefix) else { continue }
+            let value = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty || value.hasPrefix("&") {
+                return key
+            }
         }
+        return nil
     }
 
     private static func isAnchorOnlyListItem(_ trimmed: String) -> Bool {
         guard trimmed.hasPrefix("- &") else { return false }
         let rest = trimmed.dropFirst(2)
         return !rest.isEmpty && !rest.contains(" ") && !rest.contains(":")
-    }
-
-    private static func unsupportedYAMLFeatureMessage(in trimmed: String) -> String? {
-        if trimmed.hasPrefix("- *") {
-            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig importer."
-        }
-        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
-        let key = trimmed[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
-        if key == "<<" {
-            return "Kubeconfig uses YAML merge keys, which are not supported by Rune's safe kubeconfig importer."
-        }
-        if value.hasPrefix("*") {
-            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig importer."
-        }
-        if value.hasPrefix("&") {
-            return "Kubeconfig uses anchored scalar values, which are not supported by Rune's safe kubeconfig importer."
-        }
-        return nil
     }
 
     private static func trimmingTrailingWhitespace(_ value: String) -> String {

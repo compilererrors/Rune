@@ -629,7 +629,13 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: kubeconfig) }
 
-        let client = KubernetesClient(commandTimeout: 3)
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 3,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
         do {
             _ = try await client.listNamespaces(
                 from: [KubeConfigSource(url: kubeconfig)],
@@ -645,6 +651,15 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
                 "Unexpected error: \(message)"
             )
         }
+
+        let metrics = await recorder.snapshot()
+        let summary = await recorder.summary()
+        let metric = try XCTUnwrap(metrics.first { $0.apiPath.contains("/api/v1/namespaces") })
+
+        XCTAssertEqual(metric.outcome, .networkError)
+        XCTAssertNil(metric.cancellationReason)
+        XCTAssertEqual(summary.cancelledCount, 0)
+        XCTAssertEqual(summary.failureCount, 1)
     }
 
     func testExecClientCertificateDataUsesPEMData() async throws {

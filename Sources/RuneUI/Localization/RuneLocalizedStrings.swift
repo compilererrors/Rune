@@ -47,6 +47,7 @@ public enum RuneLocalizedStringKey: String, CaseIterable, Sendable {
     case done
     case draft
     case edit
+    case endpoints
     case events
     case exec
     case exportAllPodsFullZip
@@ -99,6 +100,7 @@ public enum RuneLocalizedStringKey: String, CaseIterable, Sendable {
     case saveLogs
     case searchLogs
     case secrets
+    case serviceAccounts
     case services
     case settingsAppearance
     case settingsCache

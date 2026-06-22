@@ -3,8 +3,10 @@ import RuneCore
 import RuneKube
 
 public enum AuthDoctorFailureProjector {
+    private static let maximumDiagnosticCharacters = 192
+
     public static func checks(for errorMessage: String) -> [RuneHealthCheck] {
-        let trimmed = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = boundedTrimmedErrorMessage(errorMessage)
         guard !trimmed.isEmpty else { return [] }
         let lower = trimmed.lowercased()
 
@@ -88,8 +90,27 @@ public enum AuthDoctorFailureProjector {
         return withEndpointDiagnostic(trimmed, checks: [])
     }
 
+    private static func boundedTrimmedErrorMessage(_ message: String) -> String {
+        let bounded: String
+        if let limit = message.index(
+            message.startIndex,
+            offsetBy: maximumDiagnosticCharacters,
+            limitedBy: message.endIndex
+        ) {
+            bounded = String(message[..<limit])
+        } else {
+            bounded = message
+        }
+        guard let first = bounded.first, let last = bounded.last else { return "" }
+        guard first.isWhitespace || last.isWhitespace else { return bounded }
+        return bounded.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func isExecAuthFailure(_ lower: String) -> Bool {
-        lower.contains("execcredential")
+        guard lower.contains("exec") || lower.contains("credential plugin") else {
+            return false
+        }
+        return lower.contains("execcredential")
             || lower.contains("exec credential")
             || lower.contains("exec auth")
             || lower.contains("credential plugin")
@@ -148,15 +169,15 @@ public enum AuthDoctorFailureProjector {
     }
 
     private static func isClientCertificateAuthFailure(_ lower: String) -> Bool {
-        (lower.contains("client certificate") || lower.contains("client-certificate"))
-            && (
-                lower.contains("client certificate and key")
-                    || lower.contains("client-certificate challenge")
-                    || lower.contains("client tls")
-                    || lower.contains("tls identity")
-                    || lower.contains("no-client-identity")
-                    || lower.contains("mtls")
-            )
+        guard lower.contains("client certificate") || lower.contains("client-certificate") else {
+            return false
+        }
+        return lower.contains("client certificate and key")
+            || lower.contains("client-certificate challenge")
+            || lower.contains("client tls")
+            || lower.contains("tls identity")
+            || lower.contains("no-client-identity")
+            || lower.contains("mtls")
     }
 
     private static func isAuthorizationFailure(_ lower: String) -> Bool {

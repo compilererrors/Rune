@@ -436,7 +436,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "private func selectPod",
             in: viewModelSource
         )
-        XCTAssertTrue(terminalFocusBlock.contains("selectedLogContainer = \"\""))
+        XCTAssertTrue(terminalFocusBlock.contains("selectedLogContainer = reloadLogs ? defaultLogContainerName(for: pod) : \"\""))
+        XCTAssertTrue(viewModelSource.contains("private func defaultLogContainerName(for pod: PodSummary) -> String"))
+        XCTAssertTrue(viewModelSource.contains("pod.containerNames.first ?? \"\""))
     }
 
     func testPodLogsInspectorPodPickerShowsAllNamespacePods() async throws {
@@ -1032,6 +1034,45 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("grep -q 'server: https://127.0.0.1:17443'"))
     }
 
+    func testScreenshotCaptureScriptCoversFakeClusterReleaseViews() throws {
+        let source = try String(contentsOfFile: uiSmokeScreenshotScriptPath, encoding: .utf8)
+        let wrapper = try String(contentsOfFile: appAssetsScreenshotScriptPath, encoding: .utf8)
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(wrapper.contains("assets/screenshot/ui"))
+        XCTAssertTrue(wrapper.contains("capture-ui-smoke-screenshots.sh"))
+        XCTAssertTrue(source.contains("exec > >(tee \"$RUN_DIR/run.log\") 2>&1"))
+        XCTAssertTrue(source.contains("cp \"$APP_LOG\" \"$RUN_DIR/app.log\""))
+        XCTAssertTrue(source.contains("safe_docker_kubeconfig_check"))
+        XCTAssertTrue(source.contains("assert_only_local_fake_kubectl_contexts"))
+        XCTAssertTrue(source.contains("RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY=1"))
+        XCTAssertTrue(source.contains("RUNE_DISABLE_BOOKMARKED_KUBECONFIGS=1"))
+        XCTAssertTrue(source.contains("RUNE_DEBUG_LAYOUT_LIVE_SCENARIO=1"))
+        XCTAssertTrue(source.contains("workloadPodLogs:workloads-pod-logs"))
+        XCTAssertTrue(source.contains("workloadPodYAMLReadOnly:workloads-pod-yaml-readonly"))
+        XCTAssertTrue(source.contains("workloadDeploymentUnifiedLogs:workloads-deployment-unified-logs"))
+        XCTAssertTrue(source.contains("terminal:terminal"))
+        XCTAssertTrue(source.contains("terminalLogs:terminal-logs"))
+        XCTAssertFalse(source.contains("workloadPodExec:workloads-pod-exec"))
+        XCTAssertFalse(source.contains("workloadPodPortForward:workloads-pod-port-forward"))
+        XCTAssertTrue(source.contains("Coverage: all primary sections, pod logs, pod YAML, deployment unified logs, service unified logs, terminal, terminal logs"))
+        XCTAssertTrue(source.contains("Workload exec and port-forward tabs are intentionally skipped for release screenshots."))
+        XCTAssertTrue(rootViewSource.contains("FileHandle.standardError.write(data)"))
+        XCTAssertTrue(rootViewSource.contains("[Rune] scenario step=\\(step.rawValue) status=\\(status)"))
+    }
+
+    func testDockerComposeLogMatrixPodEmitsFastDeterministicLogs() throws {
+        let source = try String(contentsOfFile: dockerComposeOrbitBootstrapManifestPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("name: alpha-log-matrix"))
+        XCTAssertTrue(source.contains("kubectl.kubernetes.io/default-container: main"))
+        XCTAssertTrue(source.contains("echo \"alpha-log-matrix main tick index=${index}\""))
+        XCTAssertTrue(source.contains("echo \"alpha-log-matrix sidecar tick index=${index}\""))
+        XCTAssertTrue(source.contains("sleep 2"))
+        XCTAssertFalse(source.contains("echo \"alpha-log-matrix main tick\"\n            sleep 20"))
+        XCTAssertFalse(source.contains("echo \"alpha-log-matrix sidecar tick\"\n            sleep 20"))
+    }
+
     func testLocalK8sIntegrationReportWritesSectionedMarkdownWithoutTables() throws {
         let source = try String(contentsOfFile: localK8sIntegrationReportScriptPath, encoding: .utf8)
 
@@ -1255,6 +1296,28 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 address: "127.0.0.1"
             ),
             "kubectl --context dev --namespace default port-forward --address 127.0.0.1 'pod/api;debug' 8080:80"
+        )
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.exec(
+                contextName: " prod west ",
+                namespace: " team alpha ",
+                podName: "api;debug",
+                containerName: "side car",
+                command: "printf 'hello'; env | sort"
+            ),
+            "kubectl --context 'prod west' --namespace 'team alpha' exec -it 'api;debug' --container 'side car' -- sh -lc 'printf '\\''hello'\\''; env | sort'"
+        )
+        XCTAssertEqual(
+            TerminalKubectlCommandBuilder.portForward(
+                contextName: nil,
+                namespace: " ",
+                targetKind: .service,
+                targetName: "api service",
+                localPort: "127.0.0.1:18080",
+                remotePort: "http",
+                address: "::1"
+            ),
+            "kubectl port-forward --address ::1 'service/api service' 127.0.0.1:18080:http"
         )
     }
 
@@ -1540,12 +1603,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("writeSafetyRequireCopyableCommand"))
         XCTAssertTrue(settingsSource.contains("writeSafetyRequirePostActionVerification"))
         XCTAssertTrue(settingsSource.contains("writeSafetyRequireProductionSecondConfirmation"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyShowDestructiveCommandsInCommandPalette"))
+        XCTAssertTrue(settingsSource.contains("writeSafetyShowDestructiveCommandsInCommandPalette: false"))
         XCTAssertTrue(preferencesSource.contains("case safety"))
         XCTAssertTrue(preferencesSource.contains("settingsSection(\"Write safety\")"))
         XCTAssertTrue(preferencesSource.contains("settingsSection(\"Rollback safety\")"))
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.writeSafetyRequireApplyDryRun)"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)"))
+        XCTAssertTrue(preferencesSource.contains("Palette destructive commands"))
+        XCTAssertTrue(preferencesSource.contains("opens Rune's write confirmation; it never writes directly"))
         XCTAssertTrue(rootViewSource.contains("if !viewModel.pendingWriteActionKubectlCommand.isEmpty"))
         XCTAssertTrue(viewModelSource.contains("runeWriteSafetyRequireRolloutDryRun"))
+        XCTAssertTrue(viewModelSource.contains("case deleteSelectedResource"))
+        XCTAssertTrue(viewModelSource.contains("guard UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette else { return }"))
+        XCTAssertTrue(viewModelSource.contains("requestDeleteSelectedResource()"))
         XCTAssertTrue(viewModelSource.contains("pendingRollbackPlan"))
         XCTAssertTrue(viewModelSource.contains("requestHelmRollback(revision:"))
         XCTAssertTrue(viewModelSource.contains("helmCommandRunner.rollback"))
@@ -1612,7 +1683,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("if !simpleMode {\n                plan.events = true"))
         XCTAssertTrue(viewModelSource.contains("if !simpleMode {\n                    plan.replicaSets = true"))
         XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                switch kind"))
-        XCTAssertTrue(viewModelSource.contains("} else {\n                plan.rbacRoles = true"))
+        XCTAssertTrue(viewModelSource.contains("} else {\n                plan.serviceAccounts = true\n                plan.rbacRoles = true"))
         XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                cancellationFamilies.insert(helmBrowserResourceFamily)"))
         XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                    try await loadSelectedHelmBrowserResource"))
         XCTAssertTrue(viewModelSource.contains("} else {\n                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)\n                    await loadOperatorResources(context: context, namespace: state.selectedNamespace)"))
@@ -1906,6 +1977,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("private func trackColumnResize(_ column: NSTableColumn, from event: NSEvent)"))
         XCTAssertTrue(appKitPodTableSource.contains("applySynchronizedResourceColumnResize(proposedWidth, for: column, in: tableView)"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView, updatesVisibleCellsImmediately: false)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("if isSuppressedSynchronizedResourceColumnResize(notification) { return }"))
+        XCTAssertTrue(appKitPodTableSource.contains("static func synchronizeVisibleResizeFrames(on tableView: NSTableView)"))
         XCTAssertTrue(appKitPodTableSource.contains("func latestResizeEvent(startingWith event: NSEvent) -> NSEvent"))
         XCTAssertTrue(appKitPodTableSource.contains("onColumnResizeCommitted?(column)"))
         XCTAssertFalse(appKitPodTableSource.contains("isPreviewingColumnResize"))
@@ -1982,7 +2056,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(layout.contains("clampedNameColumnWidth"))
         XCTAssertTrue(layout.contains("width.rounded(.toNearestOrAwayFromZero)"))
         XCTAssertTrue(layout.contains("min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, pixelAlignedWidth))"))
-        XCTAssertTrue(layout.contains("restartsWidth: CGFloat = 82"))
+        XCTAssertTrue(layout.contains("nameColumnDefaultWidth: CGFloat = 260"))
+        XCTAssertTrue(layout.contains("nameColumnMinimumWidth: CGFloat = 104"))
+        XCTAssertTrue(layout.contains("cpuWidth: CGFloat = 58"))
+        XCTAssertTrue(layout.contains("memoryWidth: CGFloat = 64"))
+        XCTAssertTrue(layout.contains("restartsWidth: CGFloat = 72"))
+        XCTAssertTrue(layout.contains("ageWidth: CGFloat = 54"))
+        XCTAssertTrue(layout.contains("statusTextWidth: CGFloat = 94"))
         XCTAssertTrue(layout.contains("favoriteColumnWidth: CGFloat = 34"))
         XCTAssertTrue(layout.contains("defaultAppKitTableWidth"))
         XCTAssertTrue(layout.contains("+ nameColumnDefaultWidth"))
@@ -2027,6 +2107,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("case .status: return PodTableLayout.statusTotalWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .favorite: return PodTableLayout.favoriteColumnWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("return statusCell(for: pod)"))
+        XCTAssertTrue(appKitPodTableSource.contains("container.layer?.masksToBounds = true"))
+        XCTAssertTrue(appKitPodTableSource.contains("let maxPillWidth = pill.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -8)"))
+        XCTAssertTrue(appKitPodTableSource.contains("maxPillWidth.priority = .defaultHigh"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .cpu: return 42"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .memory: return 48"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .restarts: return 54"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .age: return 40"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .status: return 56"))
         XCTAssertTrue(appKitPodTableSource.contains("return favoriteCell(isFavorite: parent.isFavorite(pod), row: row)"))
         XCTAssertTrue(appKitPodTableSource.contains("@objc private func toggleFavoriteButton"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 4"))
@@ -2307,12 +2395,51 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("aws eks update-kubeconfig"))
         XCTAssertTrue(rootViewSource.contains("gcloud container clusters get-credentials"))
         XCTAssertTrue(rootViewSource.contains("--location <location>"))
-        XCTAssertTrue(rootViewSource.contains("Refresh Contexts"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Refresh\", systemImage: \"arrow.clockwise\")"))
         XCTAssertTrue(rootViewSource.contains("viewModel.refreshKubeConfigSourcesFromDiscovery()"))
-        XCTAssertTrue(rootViewSource.contains("Run & Connect"))
+        XCTAssertTrue(rootViewSource.contains("Text(viewModel.isRunningCloudKubeConfigImport ? \"Running\" : \"Run\")"))
+        XCTAssertTrue(rootViewSource.contains("Image(systemName: \"icloud.and.arrow.down\")"))
+        XCTAssertTrue(rootViewSource.contains("let canRunCredentialImport = canRunProviderCredentialImport(provider)"))
+        XCTAssertTrue(rootViewSource.contains("let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)"))
+        XCTAssertTrue(rootViewSource.contains("let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)"))
+        XCTAssertTrue(rootViewSource.contains(".disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)"))
+        XCTAssertTrue(rootViewSource.contains(".help(runHelp)"))
+        XCTAssertTrue(rootViewSource.contains("return \"Provider import is already running.\""))
+        XCTAssertTrue(rootViewSource.contains("return \"Enter \\(missingFields) to run provider import.\""))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Copy\", systemImage: \"doc.on.doc\")"))
+        XCTAssertTrue(rootViewSource.contains("copyToPasteboard(credentialCommand)"))
+        XCTAssertTrue(rootViewSource.contains(".help(\"Copy the provider CLI command.\")"))
+        XCTAssertTrue(rootViewSource.contains("if provider != .local {"))
+        XCTAssertTrue(rootViewSource.contains(".help(\"Refresh contexts after running or editing kubeconfig outside Rune.\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Doctor\", systemImage: \"stethoscope\")"))
+        XCTAssertTrue(rootViewSource.contains(".help(\"Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.\")"))
+        XCTAssertTrue(rootViewSource.contains("LazyVGrid(columns: addClusterProviderActionColumns, spacing: 8)"))
+        XCTAssertTrue(rootViewSource.contains(".adaptive(minimum: RuneAddClusterProviderActionLayout.minimumButtonWidth)"))
+        XCTAssertTrue(rootViewSource.contains("spacing: RuneAddClusterProviderActionLayout.columnSpacing"))
+        XCTAssertTrue(rootViewSource.contains(".frame(width: RuneAddClusterProviderActionLayout.dialogWidth)"))
         XCTAssertTrue(rootViewSource.contains("viewModel.runCloudKubeConfigImport"))
-        XCTAssertTrue(rootViewSource.contains("Label(\"Auth Doctor\", systemImage: \"stethoscope\")"))
+        XCTAssertTrue(rootViewSource.contains("openAddClusterProviderSheet(provider)"))
+        XCTAssertTrue(rootViewSource.contains("private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider)"))
+        XCTAssertTrue(rootViewSource.contains("if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus"))
+        XCTAssertTrue(rootViewSource.contains("if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic"))
+        XCTAssertTrue(rootViewSource.contains("addClusterCloudImportDiagnosticView(diagnostic)"))
+        XCTAssertTrue(rootViewSource.contains("private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View"))
+        XCTAssertTrue(rootViewSource.contains("Text(diagnostic.commandShape)"))
+        XCTAssertTrue(rootViewSource.contains("Link(destination: diagnostic.documentationURL)"))
+        XCTAssertTrue(rootViewSource.contains("closeAddClusterProviderSheet(showPopover: true)"))
+        XCTAssertTrue(rootViewSource.contains("Image(systemName: \"chevron.left\")"))
+        XCTAssertTrue(rootViewSource.contains(".help(\"Back to Add Cluster\")"))
+        XCTAssertTrue(rootViewSource.contains("Image(systemName: \"xmark\")"))
+        XCTAssertTrue(rootViewSource.contains(".keyboardShortcut(.cancelAction)"))
+        XCTAssertTrue(rootViewSource.contains(".help(\"Close Add Cluster\")"))
+        XCTAssertTrue(rootViewSource.contains("private func resetAddClusterProviderSheetStateIfIdle()"))
+        XCTAssertTrue(rootViewSource.contains("guard !viewModel.isRunningCloudKubeConfigImport else { return }"))
+        XCTAssertTrue(rootViewSource.contains("cloudCredentialDraft = CloudCredentialDraft()"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.clearCloudKubeConfigImportStatus()"))
         XCTAssertTrue(rootViewSource.contains("Command Details"))
+        XCTAssertTrue(rootViewSource.contains("private func providerCredentialCommand(_ provider: RuneAddClusterProvider, canRunCredentialImport: Bool) -> String"))
+        XCTAssertTrue(rootViewSource.contains("guard canRunCredentialImport, let cloudProvider = provider.cloudProvider else {"))
+        XCTAssertTrue(rootViewSource.contains("private func canRunProviderCredentialImport(_ provider: RuneAddClusterProvider) -> Bool"))
         XCTAssertTrue(rootViewSource.contains("TextField(\"Cluster name\""))
         XCTAssertTrue(rootViewSource.contains("Role ARN (optional)"))
         XCTAssertTrue(rootViewSource.contains("Subscription ID or name (optional)"))
@@ -2327,8 +2454,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("func addDefaultKubeConfig()"))
         XCTAssertTrue(viewModelSource.contains("func syncKubeConfigSourcesFromDiscovery(reason: String)"))
         XCTAssertTrue(viewModelSource.contains("func runCloudKubeConfigImport"))
+        XCTAssertTrue(viewModelSource.contains("func clearCloudKubeConfigImportStatus()"))
+        XCTAssertTrue(viewModelSource.contains("isRunningCloudKubeConfigImport"))
+        XCTAssertTrue(viewModelSource.contains("guard !isRunningCloudKubeConfigImport else { return }"))
+        XCTAssertTrue(viewModelSource.contains("cloudKubeConfigImportDiagnostic"))
+        XCTAssertTrue(viewModelSource.contains("AddClusterCloudImportWorkflow.diagnostic(for: error, provider: request.provider)"))
+        XCTAssertTrue(viewModelSource.contains("state.clearError()"))
+        XCTAssertTrue(viewModelSource.contains("AddClusterCloudImportWorkflow.blockingFailure"))
+        XCTAssertTrue(viewModelSource.contains("state.setAuthDoctorChecks(failure.checks)"))
+        XCTAssertTrue(viewModelSource.contains("AddClusterCloudImportWorkflow.cloudLoginFailureChecks"))
         XCTAssertTrue(viewModelSource.contains("self.runAuthDoctor()"))
-        XCTAssertTrue(viewModelSource.contains("cloud-login-\\(request.provider.rawValue)"))
         XCTAssertTrue(viewModelSource.contains("CloudKubeConfigImporting"))
         XCTAssertTrue(viewModelSource.contains("kubeConfigSourceSyncNanoseconds"))
         XCTAssertTrue(viewModelSource.contains("state.resourceYAMLHasUnsavedEdits"))
@@ -2342,6 +2477,33 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(kubernetesClientSource.contains("access.retainAccess(to: url)"))
     }
 
+    func testAddClusterProviderSheetDefaultsToPrimaryActionInsteadOfClose() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let sheetBlock = try functionBlock(
+            named: "private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View",
+            endingBefore: "private var addClusterProviderActionColumns",
+            in: rootViewSource
+        )
+        let closeBlock = try functionBlock(
+            named: "Button(\"Close\")",
+            endingBefore: "if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus",
+            in: sheetBlock
+        )
+
+        XCTAssertTrue(
+            sheetBlock.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")\n                    }\n                    .buttonStyle(.borderedProminent)\n                    .keyboardShortcut(.defaultAction)"),
+            "Local Add Cluster should default Return to the primary Import action, not Close."
+        )
+        XCTAssertTrue(
+            sheetBlock.contains("Image(systemName: \"icloud.and.arrow.down\")\n                        }\n                        .frame(maxWidth: .infinity)\n                    }\n                    .buttonStyle(.borderedProminent)\n                    .keyboardShortcut(.defaultAction)"),
+            "Cloud Add Cluster should default Return to the primary Run action once required fields are valid."
+        )
+        XCTAssertFalse(
+            closeBlock.contains(".keyboardShortcut(.defaultAction)"),
+            "Close must not be the default Add Cluster provider-sheet action."
+        )
+    }
+
     func testAuthDoctorPanelExposesSupportBundleQuickAction() throws {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let authDoctorBlock = try functionBlock(
@@ -2352,6 +2514,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(authDoctorBlock.contains("Label(\"Auth Doctor\", systemImage: \"stethoscope\")"))
         XCTAssertTrue(authDoctorBlock.contains("isAuthDoctorPanelExpanded.toggle()"))
+        XCTAssertTrue(authDoctorBlock.contains("private func authDoctorHeader(runLabel: String) -> some View"))
+        XCTAssertTrue(authDoctorBlock.contains("ScrollView(.horizontal, showsIndicators: false)"))
+        XCTAssertTrue(authDoctorBlock.contains(".frame(maxWidth: .infinity, minHeight: 32, alignment: .trailing)"))
+        XCTAssertTrue(authDoctorBlock.contains("private var authDoctorDisclosureButton: some View"))
+        XCTAssertTrue(authDoctorBlock.contains(".frame(minWidth: 154, minHeight: 30, alignment: .leading)"))
+        XCTAssertTrue(authDoctorBlock.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(authDoctorBlock.contains("private func authDoctorActions(runLabel: String) -> some View"))
+        XCTAssertTrue(authDoctorBlock.contains(".buttonStyle(.bordered)"))
+        XCTAssertTrue(authDoctorBlock.contains(".controlSize(.small)"))
+        XCTAssertTrue(authDoctorBlock.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(authDoctorBlock.contains("authDoctorSummaryChip"))
         XCTAssertTrue(authDoctorBlock.contains("requestMetricsSummaryRow"))
         XCTAssertTrue(authDoctorBlock.contains("viewModel.refreshKubernetesRequestMetricsSummary()"))
@@ -2653,7 +2825,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("static func renderedTableWidth(in tableView: NSTableView) -> CGFloat"))
         XCTAssertTrue(appKitPodTableSource.contains("actionColumnTrailingPadding: CGFloat = 18"))
         XCTAssertTrue(appKitPodTableSource.contains("columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding"))
-        XCTAssertTrue(appKitPodTableSource.contains("static func updateRenderedTableWidth(on tableView: NSTableView?)"))
+        XCTAssertTrue(appKitPodTableSource.contains("static func updateRenderedTableWidth(on tableView: NSTableView?, updatesVisibleCellsImmediately: Bool = true)"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.setFrameSize(headerSize)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.headerView?.needsDisplay = true"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.needsLayout = true"))
@@ -2829,6 +3001,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
         XCTAssertTrue(rootViewSource.contains("configuredActionBaseKey(for event: NSEvent)"))
+        XCTAssertTrue(rootViewSource.contains("configuredActionShiftedSymbolKey(for event: NSEvent)"))
+        XCTAssertTrue(rootViewSource.contains("symbolModifiers.remove(.shift)"))
         XCTAssertTrue(rootViewSource.contains("case 123:"))
         XCTAssertTrue(rootViewSource.contains("return \"left\""))
         XCTAssertTrue(rootViewSource.contains("case 124:"))
@@ -2880,7 +3054,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let preferencesPath = root.appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift").path
         let preferencesSource = try String(contentsOfFile: preferencesPath, encoding: .utf8)
 
-        XCTAssertTrue(preferencesSource.contains("[\"[\", \"]\", \"/\", \":\", \"?\", \"left\", \"right\"]"))
+        XCTAssertTrue(preferencesSource.contains("[\"[\", \"]\", \"/\", \".\", \":\", \"?\", \"left\", \"right\"]"))
     }
 
     func testPreferencesExposeSupportedK9sStyleActionBindings() throws {
@@ -2897,6 +3071,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(preferencesSource.contains("Button(\"Reset to default\")"))
         XCTAssertFalse(preferencesSource.contains("Reset to k9s-style defaults"))
+        XCTAssertTrue(preferencesSource.contains("Swedish keyboards can also bind Command Palette to `Shift-.`"))
         XCTAssertTrue(preferencesSource.contains("Toggle(\"⌃\""))
         XCTAssertTrue(keyBindingsSource.contains("case commandPalette"))
         XCTAssertTrue(keyBindingsSource.contains("case filterResources"))
@@ -3012,6 +3187,28 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(confirmBlock.contains("runeWriteSafetyRequireProductionSecondConfirmation"))
         XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation != action"))
         XCTAssertTrue(confirmBlock.contains("pendingProductionDestructiveConfirmation = action"))
+    }
+
+    func testPendingWriteDialogDismissDoesNotCancelProductionReviewStep() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let bindingBlock = try functionBlock(
+            named: "private var pendingWriteActionPresentedBinding",
+            endingBefore: "private func confirmPendingWriteActionFromDialog",
+            in: rootViewSource
+        )
+        let confirmBlock = try functionBlock(
+            named: "private func confirmPendingWriteActionFromDialog()",
+            endingBefore: "private func cancelPendingWriteActionFromDialog",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(rootViewSource.contains("@State private var isConfirmingPendingWriteActionFromDialog = false"))
+        XCTAssertTrue(bindingBlock.contains("get: { viewModel.pendingWriteAction != nil }"))
+        XCTAssertTrue(bindingBlock.contains("guard !isConfirmingPendingWriteActionFromDialog else { return }"))
+        XCTAssertTrue(confirmBlock.contains("isConfirmingPendingWriteActionFromDialog = true"))
+        XCTAssertTrue(confirmBlock.contains("viewModel.confirmPendingWriteAction()"))
+        XCTAssertTrue(confirmBlock.contains("isConfirmingPendingWriteActionFromDialog = false"))
+        XCTAssertTrue(rootViewSource.contains("private func cancelPendingWriteActionFromDialog()"))
     }
 
     func testContextMenuExposesManualProductionMarking() throws {
@@ -3497,5 +3694,32 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("scripts/run-local-k8s-integration-report.sh").path
+    }
+
+    private var uiSmokeScreenshotScriptPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("scripts/capture-ui-smoke-screenshots.sh").path
+    }
+
+    private var appAssetsScreenshotScriptPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("scripts/capture-app-assets-screenshots.sh").path
+    }
+
+    private var dockerComposeOrbitBootstrapManifestPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("docker-compose/manifests/orbit/bootstrap.yaml").path
     }
 }

@@ -109,6 +109,7 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(pods.map(\.name), ["ember-gate-75c9f746b8-kq2wm", "orbit-lens-6f58d7d89b-hx9q2"])
         XCTAssertEqual(pods.first(where: { $0.name.hasPrefix("orbit-lens") })?.cpuUsage, "42m")
         XCTAssertEqual(pods.first(where: { $0.name.hasPrefix("orbit-lens") })?.memoryUsage, "96Mi")
+        XCTAssertTrue(pods.contains { $0.containerNamesLine != nil || !$0.labels.isEmpty || $0.nodeName != nil })
 
         let deployments = try await client.listDeployments(from: sources, context: context, namespace: "alpha-zone")
         XCTAssertEqual(deployments.map(\.name), ["ember-gate", "orbit-lens"])
@@ -117,6 +118,14 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         let services = try await client.listServices(from: sources, context: context, namespace: "alpha-zone")
         XCTAssertEqual(services.map(\.name), ["ember-gate", "orbit-lens"])
         XCTAssertEqual(services.first(where: { $0.name == "orbit-lens" })?.selector, ["app": "orbit-lens"])
+
+        let endpoints = try await client.listEndpoints(from: sources, context: context, namespace: "alpha-zone")
+        XCTAssertEqual(endpoints.map(\.name), ["ember-gate", "orbit-lens"])
+        XCTAssertEqual(endpoints.first(where: { $0.name == "orbit-lens" })?.primaryText, "1/1 ready")
+
+        let serviceAccounts = try await client.listServiceAccounts(from: sources, context: context, namespace: "alpha-zone")
+        XCTAssertTrue(serviceAccounts.map(\.name).contains("default"))
+        XCTAssertTrue(serviceAccounts.map(\.name).contains("orbit-lens-runner"))
 
         let count = try await client.countNamespacedResources(
             from: sources,
@@ -253,6 +262,56 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(podMetrics.map(\.attempt), [1, 2])
         XCTAssertEqual(podMetrics.map(\.outcome), [.httpError, .success])
         XCTAssertEqual(podMetrics.map(\.statusCode), [503, 200])
+        XCTAssertTrue(podMetrics.allSatisfy { !$0.apiPath.contains("alpha-zone") })
+    }
+
+    func testNativeClientPreservesCancellationAndRecordsCancelledRESTMetric() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let target = "/api/v1/namespaces/alpha-zone/pods"
+        let fixture = RuneFakeK8sFixture(delayedResponseTargets: [target: 500_000_000])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
+        let task = Task {
+            try await client.listPodStatuses(
+                from: [KubeConfigSource(url: kubeconfig)],
+                context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+                namespace: "alpha-zone"
+            )
+        }
+
+        for _ in 0..<100 where server.requestLines().isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(server.requestLines().isEmpty)
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancelled pod list read to throw CancellationError.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error).")
+        }
+
+        let podMetrics = await recorder.snapshot()
+            .filter { $0.apiPath == "/api/v1/namespaces/<namespace>/pods" }
+        let summary = await recorder.summary()
+        let cancelledMetric = try XCTUnwrap(podMetrics.first)
+
+        XCTAssertEqual(cancelledMetric.outcome, .cancelled)
+        XCTAssertEqual(cancelledMetric.cancellationReason, "task-cancelled")
+        XCTAssertNil(cancelledMetric.statusCode)
+        XCTAssertEqual(cancelledMetric.responseBytes, 0)
+        XCTAssertEqual(summary.cancelledCount, 1)
         XCTAssertTrue(podMetrics.allSatisfy { !$0.apiPath.contains("alpha-zone") })
     }
 

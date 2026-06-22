@@ -14,6 +14,8 @@ final class AuthDoctorRBACProjectorTests: XCTestCase {
         XCTAssertEqual(targets["rbac-replicasets-list"]?.apiGroup, "apps")
         XCTAssertEqual(targets["rbac-hpas-list"]?.apiGroup, "autoscaling")
         XCTAssertEqual(targets["rbac-services-list"]?.apiGroup, nil)
+        XCTAssertEqual(targets["rbac-endpoints-list"]?.apiGroup, nil)
+        XCTAssertEqual(targets["rbac-endpoints-list"]?.destination, .resource(section: .networking, kind: .endpoint))
         XCTAssertEqual(targets["rbac-ingresses-list"]?.apiGroup, "networking.k8s.io")
         XCTAssertEqual(targets["rbac-networkpolicies-list"]?.apiGroup, "networking.k8s.io")
         XCTAssertEqual(targets["rbac-configmaps-list"]?.apiGroup, nil)
@@ -24,6 +26,8 @@ final class AuthDoctorRBACProjectorTests: XCTestCase {
         XCTAssertEqual(targets["rbac-pvs-list"]?.scope, .cluster)
         XCTAssertEqual(targets["rbac-storageclasses-list"]?.apiGroup, "storage.k8s.io")
         XCTAssertEqual(targets["rbac-storageclasses-list"]?.scope, .cluster)
+        XCTAssertEqual(targets["rbac-serviceaccounts-list"]?.apiGroup, nil)
+        XCTAssertEqual(targets["rbac-serviceaccounts-list"]?.destination, .resource(section: .rbac, kind: .serviceAccount))
         XCTAssertEqual(targets["rbac-roles-list"]?.apiGroup, "rbac.authorization.k8s.io")
         XCTAssertEqual(targets["rbac-roles-list"]?.namespace(activeNamespace: "synthetic"), "synthetic")
         XCTAssertEqual(targets["rbac-rolebindings-list"]?.apiGroup, "rbac.authorization.k8s.io")
@@ -32,7 +36,7 @@ final class AuthDoctorRBACProjectorTests: XCTestCase {
         XCTAssertEqual(targets["rbac-clusterrolebindings-list"]?.apiGroup, "rbac.authorization.k8s.io")
         XCTAssertEqual(targets["rbac-clusterrolebindings-list"]?.scope, .cluster)
         XCTAssertEqual(targets["rbac-events-list"]?.destination, .section(.events))
-        XCTAssertEqual(targets.count, 21)
+        XCTAssertEqual(targets.count, 23)
     }
 
     func testProjectsCanIMatrixChecks() {

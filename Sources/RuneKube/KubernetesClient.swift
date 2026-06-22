@@ -611,6 +611,38 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    public func listEndpoints(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "endpoints",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseEndpoints(namespace: namespace, from: raw) }
+        )
+    }
+
+    public func listServiceAccounts(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String
+    ) async throws -> [ClusterResourceSummary] {
+        let env = try kubeconfigEnvironment(from: sources)
+        return try await listViaREST(
+            environment: env,
+            context: context,
+            resource: "serviceaccounts",
+            namespace: namespace,
+            timeout: slowNamespacedJSONListTimeout,
+            parse: { raw in try self.parser.parseServiceAccounts(namespace: namespace, from: raw) }
+        )
+    }
+
     public func listConfigMaps(
         from sources: [KubeConfigSource],
         context: KubeContext,

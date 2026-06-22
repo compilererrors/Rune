@@ -85,6 +85,7 @@ private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case eventsDetail
     case rbacRole
     case terminal
+    case terminalLogs
 
     var presentsYAMLEditorSheet: Bool {
         switch self {
@@ -184,6 +185,12 @@ private enum RuneRootLayoutDebug {
         RuneLoggers.layout.debug(
             "scenario step=\(step.rawValue, privacy: .public) status=\(status, privacy: .public) detail=\(detail, privacy: .private)"
         )
+        if liveScenarioEnabled {
+            let line = "[Rune] scenario step=\(step.rawValue) status=\(status) detail=\(detail)\n"
+            if let data = line.data(using: .utf8) {
+                FileHandle.standardError.write(data)
+            }
+        }
     }
 
 }
@@ -308,6 +315,30 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
     }
 }
 
+enum RuneAddClusterProviderActionLayout {
+    static let dialogWidth: CGFloat = 560
+    static let horizontalPadding: CGFloat = 40
+    static let columnSpacing: CGFloat = 8
+    static let minimumButtonWidth: CGFloat = 116
+
+    static func contentWidth(dialogWidth: CGFloat = Self.dialogWidth) -> CGFloat {
+        max(0, dialogWidth - horizontalPadding)
+    }
+
+    static func columnCount(for actionCount: Int, dialogWidth: CGFloat = Self.dialogWidth) -> Int {
+        guard actionCount > 0 else { return 0 }
+        let availableWidth = contentWidth(dialogWidth: dialogWidth)
+        let fitted = Int((availableWidth + columnSpacing) / (minimumButtonWidth + columnSpacing))
+        return min(actionCount, max(1, fitted))
+    }
+
+    static func rowCount(for actionCount: Int, dialogWidth: CGFloat = Self.dialogWidth) -> Int {
+        let columns = columnCount(for: actionCount, dialogWidth: dialogWidth)
+        guard columns > 0 else { return 0 }
+        return Int(ceil(Double(actionCount) / Double(columns)))
+    }
+}
+
 private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
     case aks
     case eks
@@ -417,7 +448,9 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
     }
 }
 
-private struct CloudCredentialDraft {
+struct CloudCredentialDraft {
+    private static let fieldWhitespace = CharacterSet.whitespacesAndNewlines
+
     var clusterName = ""
     var regionOrLocation = ""
     var resourceGroup = ""
@@ -428,13 +461,64 @@ private struct CloudCredentialDraft {
     func request(provider: CloudKubeConfigProvider) -> CloudKubeConfigImportRequest {
         CloudKubeConfigImportRequest(
             provider: provider,
-            clusterName: clusterName,
-            regionOrLocation: regionOrLocation,
-            resourceGroup: resourceGroup,
-            projectID: projectID,
-            profileOrSubscription: profileOrSubscription,
-            roleARN: roleARN
+            clusterName: trimmed(clusterName),
+            regionOrLocation: trimmed(regionOrLocation),
+            resourceGroup: trimmed(resourceGroup),
+            projectID: trimmed(projectID),
+            profileOrSubscription: trimmed(profileOrSubscription),
+            roleARN: trimmed(roleARN)
         )
+    }
+
+    func hasRequiredFields(for provider: CloudKubeConfigProvider) -> Bool {
+        switch provider {
+        case .aks:
+            return hasValue(clusterName) && hasValue(resourceGroup)
+        case .eks:
+            return hasValue(clusterName) && hasValue(regionOrLocation)
+        case .gke:
+            return hasValue(clusterName) && hasValue(regionOrLocation) && hasValue(projectID)
+        }
+    }
+
+    func missingRequiredFieldSummary(for provider: CloudKubeConfigProvider) -> String? {
+        var summary = ""
+        func appendMissing(_ label: String) {
+            if !summary.isEmpty {
+                summary.append(", ")
+            }
+            summary.append(label)
+        }
+
+        if !hasValue(clusterName) {
+            appendMissing("cluster name")
+        }
+        switch provider {
+        case .aks:
+            if !hasValue(resourceGroup) {
+                appendMissing("resource group")
+            }
+        case .eks:
+            if !hasValue(regionOrLocation) {
+                appendMissing("region")
+            }
+        case .gke:
+            if !hasValue(regionOrLocation) {
+                appendMissing("location")
+            }
+            if !hasValue(projectID) {
+                appendMissing("project ID")
+            }
+        }
+        return summary.isEmpty ? nil : summary
+    }
+
+    private func hasValue(_ value: String) -> Bool {
+        value.unicodeScalars.contains { !Self.fieldWhitespace.contains($0) }
+    }
+
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: Self.fieldWhitespace)
     }
 }
 
@@ -504,11 +588,13 @@ private extension KubeResourceKind {
         case .cronJob: return string(.cronJobs)
         case .replicaSet: return string(.replicaSets)
         case .service: return string(.services)
+        case .endpoint: return string(.endpoints)
         case .ingress: return string(.ingresses)
         case .configMap: return string(.configMaps)
         case .secret: return string(.secrets)
         case .node: return string(.nodes)
         case .event: return string(.events)
+        case .serviceAccount: return string(.serviceAccounts)
         case .role: return string(.roles)
         case .roleBinding: return string(.roleBindings)
         case .clusterRole: return string(.clusterRoles)
@@ -603,15 +689,15 @@ enum PodTableLayout {
     static let rowHorizontalPadding: CGFloat = 10
     static let rowVerticalPadding: CGFloat = 5
     static let listRowEdgeInset: CGFloat = 4
-    static let nameColumnDefaultWidth: CGFloat = 280
-    static let nameColumnMinimumWidth: CGFloat = 160
+    static let nameColumnDefaultWidth: CGFloat = 260
+    static let nameColumnMinimumWidth: CGFloat = 104
     static let nameColumnMaximumWidth: CGFloat = 820
     static let nameColumnResizeHandleWidth: CGFloat = 14
-    static let cpuWidth: CGFloat = 66
-    static let memoryWidth: CGFloat = 72
-    static let restartsWidth: CGFloat = 82
-    static let ageWidth: CGFloat = 60
-    static let statusTextWidth: CGFloat = 120
+    static let cpuWidth: CGFloat = 58
+    static let memoryWidth: CGFloat = 64
+    static let restartsWidth: CGFloat = 72
+    static let ageWidth: CGFloat = 54
+    static let statusTextWidth: CGFloat = 94
     static let statusHorizontalPadding: CGFloat = 8
     static let statusTotalWidth: CGFloat = statusTextWidth + (statusHorizontalPadding * 2)
     static let headerHorizontalInset: CGFloat = rowHorizontalPadding
@@ -745,6 +831,7 @@ public struct RuneRootView: View {
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
     @State private var isAuthDoctorPanelExpanded = false
+    @State private var isConfirmingPendingWriteActionFromDialog = false
     @FocusState private var textInputFocus: RuneRootTextInputFocus?
 
     private var interfaceLanguage: RuneLanguage {
@@ -1330,16 +1417,16 @@ public struct RuneRootView: View {
                     ) {
                         if viewModel.pendingWriteActionIsDestructive {
                             Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                                viewModel.confirmPendingWriteAction()
+                                confirmPendingWriteActionFromDialog()
                             }
                         } else {
                             Button(viewModel.pendingWriteActionConfirmLabel) {
-                                viewModel.confirmPendingWriteAction()
+                                confirmPendingWriteActionFromDialog()
                             }
                         }
 
                         Button("Cancel", role: .cancel) {
-                            viewModel.cancelPendingWriteAction()
+                            cancelPendingWriteActionFromDialog()
                         }
 
                         if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
@@ -1364,16 +1451,16 @@ public struct RuneRootView: View {
             ) {
                 if viewModel.pendingWriteActionIsDestructive {
                     Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                        viewModel.confirmPendingWriteAction()
+                        confirmPendingWriteActionFromDialog()
                     }
                 } else {
                     Button(viewModel.pendingWriteActionConfirmLabel) {
-                        viewModel.confirmPendingWriteAction()
+                        confirmPendingWriteActionFromDialog()
                     }
                 }
 
                 Button("Cancel", role: .cancel) {
-                    viewModel.cancelPendingWriteAction()
+                    cancelPendingWriteActionFromDialog()
                 }
 
                 if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
@@ -1401,7 +1488,7 @@ public struct RuneRootView: View {
     }
 
     private var manualNamespaceSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 14) {
             Text("Enter Namespace")
                 .font(.title3.weight(.semibold))
             Text("Use this when RBAC does not allow listing namespaces, or when the namespace is not in the cached menu yet.")
@@ -1542,7 +1629,7 @@ public struct RuneRootView: View {
 
     private func isLiveDebugScenarioStepSettled(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
         switch step {
-        case .workloadPodLogs, .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs:
+        case .workloadPodLogs, .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs, .terminalLogs:
             return !viewModel.state.isLoading && !viewModel.state.isLoadingLogs
         case .workloadPodYAMLReadOnly,
              .workloadPodYAMLQuickEdit,
@@ -1859,7 +1946,16 @@ public struct RuneRootView: View {
             return true
         case .terminal:
             viewModel.setSection(.terminal)
+            terminalInspectorTab = .commands
             yamlManifestIsEditing = false
+            return true
+        case .terminalLogs:
+            viewModel.setSection(.terminal)
+            terminalInspectorTab = .logs
+            yamlManifestIsEditing = false
+            guard let pod = terminalLogActivePod ?? terminalInitialLogPod else { return false }
+            ensureTerminalLogTabs(for: pod)
+            viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
             return true
         }
     }
@@ -2446,8 +2542,7 @@ public struct RuneRootView: View {
 
     private func providerTileButton(_ provider: RuneAddClusterProvider) -> some View {
         Button {
-            addClusterPopoverPresented = false
-            selectedAddClusterProvider = provider
+            openAddClusterProviderSheet(provider)
         } label: {
             HStack(alignment: .center, spacing: 9) {
                 Image(systemName: provider.symbolName)
@@ -2515,8 +2610,21 @@ public struct RuneRootView: View {
     }
 
     private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let canRunCredentialImport = canRunProviderCredentialImport(provider)
+        let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
+        let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
+
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
+                Button {
+                    closeAddClusterProviderSheet(showPopover: true)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+                .help("Back to Add Cluster")
+                .accessibilityLabel("Back to Add Cluster")
+
                 Image(systemName: provider.symbolName)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(provider.accent)
@@ -2530,6 +2638,16 @@ public struct RuneRootView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+
+                Button {
+                    closeAddClusterProviderSheet()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+                .help("Close Add Cluster")
+                .accessibilityLabel("Close Add Cluster")
             }
 
             if provider != .local {
@@ -2542,64 +2660,93 @@ public struct RuneRootView: View {
                         selectedAddClusterProvider = nil
                         viewModel.importKubeConfig()
                     } label: {
-                        Label("Import Kubeconfig…", systemImage: "doc.badge.plus")
+                        Label("Import…", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .help("Import kubeconfig from a file.")
 
                     Button {
                         viewModel.refreshKubeConfigSourcesFromDiscovery()
                     } label: {
-                        Label("Refresh Contexts", systemImage: "arrow.clockwise")
+                        Label("Refresh", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
+                    .help("Refresh detected contexts after your local cluster tool writes kubeconfig.")
                 }
             }
 
-            HStack(spacing: 8) {
+            LazyVGrid(columns: addClusterProviderActionColumns, spacing: 8) {
                 if let cloudProvider = provider.cloudProvider {
                     Button {
                         viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
                     } label: {
-                        Label("Run & Connect", systemImage: "icloud.and.arrow.down")
+                        Label {
+                            Text(viewModel.isRunningCloudKubeConfigImport ? "Running" : "Run")
+                        } icon: {
+                            Image(systemName: "icloud.and.arrow.down")
+                        }
+                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
+                    .help(runHelp)
                 }
 
                 Button {
-                    copyToPasteboard(providerCredentialCommand(provider))
+                    copyToPasteboard(credentialCommand)
                 } label: {
-                    Label("Copy Command", systemImage: "doc.on.doc")
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+                .help("Copy the provider CLI command.")
+
+                if provider != .local {
+                    Button {
+                        viewModel.refreshKubeConfigSourcesFromDiscovery()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Refresh contexts after running or editing kubeconfig outside Rune.")
+                }
 
                 if !simpleMode {
                     Button {
                         viewModel.runAuthDoctor()
                     } label: {
-                        Label("Auth Doctor", systemImage: "stethoscope")
+                        Label("Doctor", systemImage: "stethoscope")
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .disabled(viewModel.state.isRunningAuthDoctor)
+                    .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
                 }
 
-                Spacer(minLength: 0)
-
-                Button("Done") {
-                    selectedAddClusterProvider = nil
+                Button("Close") {
+                    closeAddClusterProviderSheet()
                 }
+                .frame(maxWidth: .infinity)
                 .buttonStyle(.bordered)
-                .keyboardShortcut(.defaultAction)
             }
+            .controlSize(.small)
 
-            if let status = viewModel.cloudKubeConfigImportStatus {
+            if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
+            if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                addClusterCloudImportDiagnosticView(diagnostic)
+            }
+
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(providerCredentialCommand(provider))
+                    Text(credentialCommand)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .padding(10)
@@ -2636,7 +2783,79 @@ public struct RuneRootView: View {
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
+    }
+
+    private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text(diagnostic.title)
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Text(diagnostic.classification)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(diagnostic.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(diagnostic.commandShape)
+                .font(.system(.caption2, design: .monospaced))
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            HStack(spacing: 8) {
+                Label(diagnostic.nextAction, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Spacer(minLength: 0)
+
+                Link(destination: diagnostic.documentationURL) {
+                    Label(diagnostic.documentationTitle, systemImage: "book")
+                }
+                .font(.caption2.weight(.semibold))
+            }
+        }
+        .padding(10)
+        .background(RuneSurfaceBackground(kind: .inset))
+    }
+
+    private var addClusterProviderActionColumns: [GridItem] {
+        [GridItem(
+            .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumButtonWidth),
+            spacing: RuneAddClusterProviderActionLayout.columnSpacing
+        )]
+    }
+
+    private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider) {
+        if !viewModel.isRunningCloudKubeConfigImport {
+            viewModel.clearCloudKubeConfigImportStatus()
+        }
+        addClusterPopoverPresented = false
+        selectedAddClusterProvider = provider
+    }
+
+    private func closeAddClusterProviderSheet(showPopover: Bool = false) {
+        selectedAddClusterProvider = nil
+        if !showPopover {
+            resetAddClusterProviderSheetStateIfIdle()
+        }
+        guard showPopover else { return }
+        DispatchQueue.main.async {
+            addClusterPopoverPresented = true
+        }
+    }
+
+    private func resetAddClusterProviderSheetStateIfIdle() {
+        guard !viewModel.isRunningCloudKubeConfigImport else { return }
+        cloudCredentialDraft = CloudCredentialDraft()
+        viewModel.clearCloudKubeConfigImportStatus()
     }
 
     @ViewBuilder
@@ -2669,11 +2888,35 @@ public struct RuneRootView: View {
         }
     }
 
-    private func providerCredentialCommand(_ provider: RuneAddClusterProvider) -> String {
-        guard let cloudProvider = provider.cloudProvider else {
+    private func providerCredentialCommand(_ provider: RuneAddClusterProvider, canRunCredentialImport: Bool) -> String {
+        guard canRunCredentialImport, let cloudProvider = provider.cloudProvider else {
             return provider.command
         }
         return viewModel.cloudKubeConfigCommandPreview(for: cloudCredentialDraft.request(provider: cloudProvider))
+    }
+
+    private func canRunProviderCredentialImport(_ provider: RuneAddClusterProvider) -> Bool {
+        guard let cloudProvider = provider.cloudProvider else { return false }
+        return cloudCredentialDraft.hasRequiredFields(for: cloudProvider)
+    }
+
+    private func providerCredentialRunHelp(
+        _ provider: RuneAddClusterProvider,
+        canRunCredentialImport: Bool
+    ) -> String {
+        guard let cloudProvider = provider.cloudProvider else {
+            return "Run the provider CLI locally, validate kubeconfig, and refresh contexts."
+        }
+        if viewModel.isRunningCloudKubeConfigImport {
+            return "Provider import is already running."
+        }
+        if canRunCredentialImport {
+            return "Run the provider CLI locally, validate kubeconfig, and refresh contexts."
+        }
+        if let missingFields = cloudCredentialDraft.missingRequiredFieldSummary(for: cloudProvider) {
+            return "Enter \(missingFields) to run provider import."
+        }
+        return "Run the provider CLI locally, validate kubeconfig, and refresh contexts."
     }
 
     private func copyToPasteboard(_ value: String) {
@@ -3332,7 +3575,7 @@ public struct RuneRootView: View {
                 action: viewModel.selectHorizontalPodAutoscaler
             )
 
-        case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .service, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             EmptyView()
 
         case .event:
@@ -3387,6 +3630,9 @@ public struct RuneRootView: View {
 
             case .ingress:
                 genericResourceList(viewModel.visibleIngresses, selection: viewModel.state.selectedIngress, action: viewModel.selectIngress)
+
+            case .endpoint:
+                genericResourceList(viewModel.visibleEndpoints, selection: viewModel.state.selectedEndpoint, action: viewModel.selectEndpoint)
 
             case .networkPolicy:
                 genericResourceList(
@@ -3458,7 +3704,7 @@ public struct RuneRootView: View {
     private var rbacPane: some View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
-            case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 genericResourceList(
                     viewModel.visibleRBACResources,
                     selection: viewModel.state.selectedRBACResource,
@@ -3847,7 +4093,7 @@ public struct RuneRootView: View {
                 replicaSetDetails
             case .horizontalPodAutoscaler:
                 horizontalPodAutoscalerDetails
-            case .service, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .service, .endpoint, .ingress, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .networkPolicy, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             case .event:
                 EmptyView()
@@ -3996,9 +4242,11 @@ public struct RuneRootView: View {
                 serviceDetails
             case .ingress:
                 ingressDetails
+            case .endpoint:
+                genericResourceDetails(resource: viewModel.state.selectedEndpoint)
             case .networkPolicy:
                 genericResourceDetails(resource: viewModel.state.selectedNetworkPolicy)
-            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .configMap, .secret, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             }
         }
@@ -4033,7 +4281,7 @@ public struct RuneRootView: View {
                 genericResourceDetails(resource: viewModel.state.selectedConfigMap)
             case .secret:
                 genericResourceDetails(resource: viewModel.state.selectedSecret)
-            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .service, .ingress, .networkPolicy, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            case .pod, .deployment, .statefulSet, .daemonSet, .job, .cronJob, .replicaSet, .horizontalPodAutoscaler, .service, .endpoint, .ingress, .networkPolicy, .node, .persistentVolumeClaim, .persistentVolume, .storageClass, .event, .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
                 EmptyView()
             }
         }
@@ -4824,6 +5072,8 @@ public struct RuneRootView: View {
             return viewModel.state.selectedReplicaSet.map { "replicaset \($0.name)" } ?? "the selected replicaset"
         case .ingress:
             return viewModel.state.selectedIngress.map { "ingress \($0.name)" } ?? "the selected ingress"
+        case .endpoint:
+            return viewModel.state.selectedEndpoint.map { "endpoints \($0.name)" } ?? "the selected endpoints"
         case .configMap:
             return viewModel.state.selectedConfigMap.map { "configmap \($0.name)" } ?? "the selected configmap"
         case .secret:
@@ -4840,7 +5090,7 @@ public struct RuneRootView: View {
             return viewModel.state.selectedHorizontalPodAutoscaler.map { "hpa \($0.name)" } ?? "the selected HPA"
         case .networkPolicy:
             return viewModel.state.selectedNetworkPolicy.map { "networkpolicy \($0.name)" } ?? "the selected NetworkPolicy"
-        case .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return viewModel.state.selectedRBACResource.map { "\($0.kind.kubernetesResourceName) \($0.name)" } ?? "the selected RBAC resource"
         case .event:
             return "the selected event"
@@ -4867,6 +5117,7 @@ public struct RuneRootView: View {
             case .replicaSet: return viewModel.visibleReplicaSets.count
             case .horizontalPodAutoscaler: return viewModel.visibleHorizontalPodAutoscalers.count
             case .ingress: return viewModel.visibleIngresses.count
+            case .endpoint: return viewModel.visibleEndpoints.count
             case .networkPolicy: return viewModel.visibleNetworkPolicies.count
             case .persistentVolumeClaim: return viewModel.visiblePersistentVolumeClaims.count
             case .persistentVolume: return viewModel.visiblePersistentVolumes.count
@@ -4874,7 +5125,7 @@ public struct RuneRootView: View {
             case .configMap: return viewModel.visibleConfigMaps.count
             case .secret: return viewModel.visibleSecrets.count
             case .node: return viewModel.visibleNodes.count
-            case .role, .roleBinding, .clusterRole, .clusterRoleBinding: return viewModel.visibleRBACResources.count
+            case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding: return viewModel.visibleRBACResources.count
             default: return 0
             }
         }()
@@ -5852,6 +6103,10 @@ public struct RuneRootView: View {
                 if let next = steppedItem(items: viewModel.visibleIngresses, currentID: viewModel.state.selectedIngress?.id, direction: direction) {
                     viewModel.selectIngress(next)
                 }
+            case .endpoint:
+                if let next = steppedItem(items: viewModel.visibleEndpoints, currentID: viewModel.state.selectedEndpoint?.id, direction: direction) {
+                    viewModel.selectEndpoint(next)
+                }
             case .networkPolicy:
                 if let next = steppedItem(items: viewModel.visibleNetworkPolicies, currentID: viewModel.state.selectedNetworkPolicy?.id, direction: direction) {
                     viewModel.selectNetworkPolicy(next)
@@ -6036,10 +6291,28 @@ public struct RuneRootView: View {
         let resolver = RuneKeyBindingResolver { action in
             UserDefaults.standard.runeKeyBindingShortcut(for: action)
         }
-        return resolver.action(
+        let modifiers = runeKeyBindingModifiers(for: event)
+        if let action = resolver.action(
             for: RuneKeyBindingInput(
                 baseKey: baseKey,
-                modifiers: runeKeyBindingModifiers(for: event),
+                modifiers: modifiers,
+                isTextInputFocused: textInputFocus != nil,
+                isNavigationSuspended: keyboardNavigationSuspended
+            )
+        ) {
+            return action
+        }
+
+        guard modifiers.contains(.shift),
+              let shiftedSymbol = configuredActionShiftedSymbolKey(for: event) else {
+            return nil
+        }
+        var symbolModifiers = modifiers
+        symbolModifiers.remove(.shift)
+        return resolver.action(
+            for: RuneKeyBindingInput(
+                baseKey: shiftedSymbol,
+                modifiers: symbolModifiers,
                 isTextInputFocused: textInputFocus != nil,
                 isNavigationSuspended: keyboardNavigationSuspended
             )
@@ -6078,6 +6351,12 @@ public struct RuneRootView: View {
             }
             return baseKey
         }
+    }
+
+    private func configuredActionShiftedSymbolKey(for event: NSEvent) -> String? {
+        guard let key = event.characters?.lowercased(), key.count == 1 else { return nil }
+        guard ["[", "]", "/", ":", "?"].contains(key) else { return nil }
+        return key
     }
 
     private func removeLocalKeyboardMonitor() {
@@ -6414,6 +6693,8 @@ public struct RuneRootView: View {
             }
         case .networking:
             switch viewModel.state.selectedWorkloadKind {
+            case .endpoint:
+                return viewModel.state.selectedEndpoint != nil
             case .ingress:
                 return viewModel.state.selectedIngress != nil
             case .networkPolicy:
@@ -6513,6 +6794,9 @@ public struct RuneRootView: View {
                 serviceInspectorTab = advancedTab(current: serviceInspectorTab, direction: direction)
             case .ingress:
                 guard viewModel.state.selectedIngress != nil else { return }
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .endpoint:
+                guard viewModel.state.selectedEndpoint != nil else { return }
                 genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
             case .networkPolicy:
                 guard viewModel.state.selectedNetworkPolicy != nil else { return }
@@ -6770,10 +7054,24 @@ public struct RuneRootView: View {
             get: { viewModel.pendingWriteAction != nil },
             set: { value in
                 if !value {
+                    guard !isConfirmingPendingWriteActionFromDialog else { return }
                     viewModel.cancelPendingWriteAction()
                 }
             }
         )
+    }
+
+    private func confirmPendingWriteActionFromDialog() {
+        isConfirmingPendingWriteActionFromDialog = true
+        viewModel.confirmPendingWriteAction()
+        DispatchQueue.main.async {
+            isConfirmingPendingWriteActionFromDialog = false
+        }
+    }
+
+    private func cancelPendingWriteActionFromDialog() {
+        isConfirmingPendingWriteActionFromDialog = false
+        viewModel.cancelPendingWriteAction()
     }
 
     private var overviewStatusBanner: some View {
@@ -6837,57 +7135,7 @@ public struct RuneRootView: View {
                 : (hasChecks ? "Run Again" : "Run Auth Doctor")
 
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Button {
-                        withAnimation(.snappy(duration: 0.16)) {
-                            isAuthDoctorPanelExpanded.toggle()
-                        }
-                    } label: {
-                        Label("Auth Doctor", systemImage: "stethoscope")
-                            .font(.subheadline.weight(.semibold))
-                        Image(systemName: isAuthDoctorPanelExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(isAuthDoctorPanelExpanded ? "Collapse Auth Doctor output" : "Expand Auth Doctor output")
-
-                    authDoctorSummaryChip
-
-                    Spacer()
-                    Button(runLabel) {
-                        isAuthDoctorPanelExpanded = true
-                        viewModel.runAuthDoctor()
-                    }
-                    .disabled(viewModel.state.isRunningAuthDoctor)
-                    .buttonStyle(.bordered)
-                    Menu {
-                        Button("Save Bundle") {
-                            viewModel.saveSupportBundle()
-                        }
-
-                        Button("Save Bundle to Export Folder") {
-                            viewModel.saveSupportBundleToExportFolder(openAfterSave: false)
-                        }
-
-                        Button("Save Bundle and Open") {
-                            viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
-                        }
-                    } label: {
-                        Label("Save Bundle", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.bordered)
-                    Button {
-                        withAnimation(.snappy(duration: 0.16)) {
-                            viewModel.clearAuthDoctorOutput()
-                            isAuthDoctorPanelExpanded = false
-                        }
-                    } label: {
-                        Label("Clear", systemImage: "xmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.isRunningAuthDoctor || viewModel.state.authDoctorChecks.isEmpty)
-                }
+                authDoctorHeader(runLabel: runLabel)
 
                 if isAuthDoctorPanelExpanded {
                     requestMetricsSummaryRow
@@ -6915,6 +7163,86 @@ public struct RuneRootView: View {
                 viewModel.refreshKubernetesRequestMetricsSummary()
             }
         }
+    }
+
+    private func authDoctorHeader(runLabel: String) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            authDoctorDisclosureButton
+            authDoctorSummaryChip
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                authDoctorActions(runLabel: runLabel)
+            }
+            .scrollClipDisabled()
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .trailing)
+        }
+    }
+
+    private var authDoctorDisclosureButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.16)) {
+                isAuthDoctorPanelExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isAuthDoctorPanelExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 10, alignment: .center)
+
+                Label("Auth Doctor", systemImage: "stethoscope")
+                    .font(.subheadline.weight(.semibold))
+                    .labelStyle(.titleAndIcon)
+            }
+            .frame(minWidth: 154, minHeight: 30, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isAuthDoctorPanelExpanded ? "Collapse Auth Doctor output" : "Expand Auth Doctor output")
+    }
+
+    private func authDoctorActions(runLabel: String) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            Button {
+                isAuthDoctorPanelExpanded = true
+                viewModel.runAuthDoctor()
+            } label: {
+                Label(runLabel, systemImage: "stethoscope")
+            }
+            .disabled(viewModel.state.isRunningAuthDoctor)
+            .help("Run kubeconfig, auth, RBAC, logs, exec, and port-forward checks.")
+
+            Menu {
+                Button("Save Bundle") {
+                    viewModel.saveSupportBundle()
+                }
+
+                Button("Save Bundle to Export Folder") {
+                    viewModel.saveSupportBundleToExportFolder(openAfterSave: false)
+                }
+
+                Button("Save Bundle and Open") {
+                    viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
+                }
+            } label: {
+                Label("Save Bundle", systemImage: "square.and.arrow.down")
+            }
+            .help("Save Auth Doctor diagnostics and support data.")
+
+            Button {
+                withAnimation(.snappy(duration: 0.16)) {
+                    viewModel.clearAuthDoctorOutput()
+                    isAuthDoctorPanelExpanded = false
+                }
+            } label: {
+                Label("Clear", systemImage: "xmark.circle")
+            }
+            .disabled(viewModel.state.isRunningAuthDoctor || viewModel.state.authDoctorChecks.isEmpty)
+            .help("Clear Auth Doctor results.")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var requestMetricsSummaryRow: some View {
@@ -7126,6 +7454,7 @@ public struct RuneRootView: View {
             }
         case .networking:
             switch viewModel.state.selectedWorkloadKind {
+            case .endpoint: return .endpoints
             case .ingress: return .ingresses
             case .networkPolicy: return .networkPolicies
             default: return .services
@@ -7141,6 +7470,7 @@ public struct RuneRootView: View {
             return viewModel.state.selectedWorkloadKind == .secret ? .secrets : .configMaps
         case .rbac:
             switch viewModel.state.selectedWorkloadKind {
+            case .serviceAccount: return .serviceAccounts
             case .roleBinding: return .rbacRoleBindings
             case .clusterRole: return .rbacClusterRoles
             case .clusterRoleBinding: return .rbacClusterRoleBindings

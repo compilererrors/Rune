@@ -83,6 +83,9 @@ launch_rune_app() {
 }
 
 cleanup() {
+  if [[ -f "$APP_LOG" && -d "$RUN_DIR" ]]; then
+    cp "$APP_LOG" "$RUN_DIR/app.log" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" >/dev/null 2>&1; then
     kill "$APP_PID" >/dev/null 2>&1 || true
     wait "$APP_PID" >/dev/null 2>&1 || true
@@ -275,8 +278,11 @@ write_manifest_header() {
 - Output: \`assets/screenshot/ui/$RUN_ID\`
 - Isolated app state: \`$APP_STATE_DIR\`
 - App log: \`$APP_LOG\`
+- Copied app log: \`app.log\`
+- Script log: \`run.log\`
 - Capture mode: \`Rune window only via screencapture -l\`
 - Safety: \`fake local kubeconfig only; timeout fallback=$ALLOW_TIMEOUT_FALLBACK\`
+- Coverage: all primary sections, pod logs, pod YAML, deployment unified logs, service unified logs, terminal, terminal logs, command palette queries. Workload exec and port-forward tabs are intentionally skipped for release screenshots.
 
 ## Screenshots
 
@@ -324,6 +330,7 @@ main() {
   require_command pgrep
 
   prepare_run_dir
+  exec > >(tee "$RUN_DIR/run.log") 2>&1
   write_manifest_header
 
   cd "$ROOT_DIR"
@@ -379,8 +386,6 @@ main() {
     "overview:overview"
     "workloadPodOverview:workloads-pod-overview"
     "workloadPodLogs:workloads-pod-logs"
-    "workloadPodExec:workloads-pod-exec"
-    "workloadPodPortForward:workloads-pod-port-forward"
     "workloadPodYAMLReadOnly:workloads-pod-yaml-readonly"
     "workloadPodYAMLQuickEdit:workloads-pod-yaml-quick-edit"
     "workloadPodYAMLEditorSheet:workloads-pod-yaml-editor-sheet"
@@ -406,6 +411,7 @@ main() {
     "eventsDetail:events-detail"
     "rbacRole:rbac-role-describe"
     "terminal:terminal"
+    "terminalLogs:terminal-logs"
   )
   local scenario_index=1
   local scenario_entry

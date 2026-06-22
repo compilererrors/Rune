@@ -332,14 +332,17 @@ private enum RuneAppKitResourceTableStyle {
         tableView.needsLayout = true
         tableView.needsDisplay = updatesVisibleCellsImmediately
         tableView.headerView?.needsLayout = true
+        guard updatesVisibleCellsImmediately else {
+            synchronizeVisibleResizeFrames(on: tableView)
+            tableView.headerView?.displayIfNeeded()
+            return
+        }
         if let scrollView = tableView.enclosingScrollView {
             scrollView.contentView.needsLayout = true
-            if updatesVisibleCellsImmediately {
-                scrollView.contentView.needsDisplay = true
-                scrollView.contentView.layoutSubtreeIfNeeded()
-                scrollView.reflectScrolledClipView(scrollView.contentView)
-                scrollView.tile()
-            }
+            scrollView.contentView.needsDisplay = true
+            scrollView.contentView.layoutSubtreeIfNeeded()
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            scrollView.tile()
         }
         tableView.layoutSubtreeIfNeeded()
         tableView.headerView?.layoutSubtreeIfNeeded()
@@ -352,11 +355,7 @@ private enum RuneAppKitResourceTableStyle {
                 rowView.needsLayout = true
                 rowView.needsDisplay = true
                 rowView.layoutSubtreeIfNeeded()
-                if !updatesVisibleCellsImmediately {
-                    rowView.displayIfNeeded()
-                }
             }
-            guard updatesVisibleCellsImmediately else { continue }
             for column in 0..<tableView.numberOfColumns {
                 guard let cellView = tableView.view(atColumn: column, row: row, makeIfNecessary: false) else { continue }
                 cellView.needsLayout = true
@@ -364,12 +363,39 @@ private enum RuneAppKitResourceTableStyle {
                 cellView.layoutSubtreeIfNeeded()
             }
         }
-        guard updatesVisibleCellsImmediately else {
-            tableView.headerView?.displayIfNeeded()
-            return
-        }
         tableView.displayIfNeeded()
         tableView.headerView?.displayIfNeeded()
+    }
+
+    static func synchronizeVisibleResizeFrames(on tableView: NSTableView) {
+        tableView.enclosingScrollView?.contentView.needsLayout = true
+        let visibleRows = tableView.rows(in: tableView.visibleRect)
+        guard visibleRows.location != NSNotFound else { return }
+        let upperBound = min(tableView.numberOfRows, visibleRows.location + visibleRows.length)
+        guard visibleRows.location < upperBound else { return }
+
+        for row in visibleRows.location..<upperBound {
+            if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) {
+                let rowFrame = tableView.rect(ofRow: row)
+                if abs(rowView.frame.minX - rowFrame.minX) >= 1
+                    || abs(rowView.frame.width - rowFrame.width) >= 1 {
+                    rowView.frame = rowFrame
+                }
+                rowView.needsDisplay = true
+                rowView.displayIfNeeded()
+            }
+            for column in 0..<tableView.numberOfColumns {
+                guard let cellView = tableView.view(atColumn: column, row: row, makeIfNecessary: false) else { continue }
+                let cellFrame = tableView.frameOfCell(atColumn: column, row: row)
+                let targetFrame = cellView.superview.map { superview in
+                    superview === tableView ? cellFrame : superview.convert(cellFrame, from: tableView)
+                } ?? cellFrame
+                if abs(cellView.frame.minX - targetFrame.minX) >= 1
+                    || abs(cellView.frame.width - targetFrame.width) >= 1 {
+                    cellView.frame = targetFrame
+                }
+            }
+        }
     }
 
     static func invalidateTheme(in scrollView: NSScrollView) {
@@ -380,6 +406,35 @@ private enum RuneAppKitResourceTableStyle {
             tableView.rowView(atRow: row, makeIfNecessary: false)?.needsDisplay = true
         }
     }
+}
+
+@MainActor
+private enum RuneAppKitResourceColumnResizeNotificationGate {
+    private static var suppressionDepthByTableID: [ObjectIdentifier: Int] = [:]
+
+    static func withSuppressedNotifications<T>(for tableView: NSTableView, _ work: () throws -> T) rethrows -> T {
+        let tableID = ObjectIdentifier(tableView)
+        suppressionDepthByTableID[tableID, default: 0] += 1
+        defer {
+            let nextDepth = (suppressionDepthByTableID[tableID] ?? 1) - 1
+            if nextDepth > 0 {
+                suppressionDepthByTableID[tableID] = nextDepth
+            } else {
+                suppressionDepthByTableID.removeValue(forKey: tableID)
+            }
+        }
+        return try work()
+    }
+
+    static func isSuppressed(_ notification: Notification) -> Bool {
+        guard let tableView = notification.object as? NSTableView else { return false }
+        return (suppressionDepthByTableID[ObjectIdentifier(tableView)] ?? 0) > 0
+    }
+}
+
+@MainActor
+func isSuppressedSynchronizedResourceColumnResize(_ notification: Notification) -> Bool {
+    RuneAppKitResourceColumnResizeNotificationGate.isSuppressed(notification)
 }
 
 @MainActor
@@ -394,7 +449,9 @@ func applySynchronizedResourceColumnResize(
         tableColumn.maxWidth
     )
     guard abs(tableColumn.width - width) >= 1 else { return tableColumn.width }
-    tableColumn.width = width
+    RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+        tableColumn.width = width
+    }
     RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView, updatesVisibleCellsImmediately: false)
     return width
 }
@@ -649,6 +706,7 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = PodColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -913,13 +971,20 @@ struct AppKitPodTableView: NSViewRepresentable {
 
         private func statusCell(for pod: PodSummary) -> NSView {
             let container = NSView()
+            container.wantsLayer = true
+            container.layer?.masksToBounds = true
 
             let pill = RuneAppKitResourceStatusPillView(text: pod.status, color: statusColor(for: pod.status))
-            pill.toolTip = "Pod phase from the cluster"
+            pill.toolTip = "\(pod.status) - pod status from the cluster"
             pill.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(pill)
+            let maxPillWidth = pill.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -8)
+            maxPillWidth.priority = .defaultHigh
 
             NSLayoutConstraint.activate([
+                pill.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 4),
+                pill.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -4),
+                maxPillWidth,
                 pill.centerXAnchor.constraint(equalTo: container.centerXAnchor),
                 pill.centerYAnchor.constraint(equalTo: container.centerYAnchor)
             ])
@@ -1151,6 +1216,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -1488,6 +1554,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -1850,6 +1917,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -2218,6 +2286,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -2546,6 +2615,7 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = EventColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -2905,6 +2975,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func tableViewColumnDidResize(_ notification: Notification) {
+            if isSuppressedSynchronizedResourceColumnResize(notification) { return }
             guard let tableColumn = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue),
                   column.isUserResizable else { return }
@@ -3667,12 +3738,14 @@ private final class RuneAppKitResourceStatusPillView: NSView {
         self.label = NSTextField(labelWithString: text)
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.masksToBounds = true
         translatesAutoresizingMaskIntoConstraints = false
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         label.textColor = color
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -4352,8 +4425,11 @@ private enum PodColumn: String, CaseIterable {
     private var minWidth: CGFloat {
         switch self {
         case .name: return PodTableLayout.nameColumnMinimumWidth
-        case .cpu, .memory, .restarts, .age, .status:
-            return RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+        case .cpu: return 42
+        case .memory: return 48
+        case .restarts: return 54
+        case .age: return 40
+        case .status: return 56
         case .selection, .favorite:
             return width(nameColumnWidth: PodTableLayout.nameColumnDefaultWidth)
         }

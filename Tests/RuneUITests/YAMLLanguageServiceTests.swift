@@ -34,6 +34,63 @@ final class YAMLLanguageServiceTests: XCTestCase {
         XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "\"Rune\"" })
     }
 
+    func testAnalyzeHighlightsPlainKubernetesValuesConsistently() {
+        let source = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          creationTimestamp: "2026-06-21T02:00:00Z"
+          generateName: synthetic-job-
+          name: synthetic-pod
+        spec:
+          containers:
+            - name: app
+              image: registry.example.invalid/app:latest
+              imagePullPolicy: Always
+              env:
+                - name: JVM_OPTS
+                  value: -javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M
+                    -Xms120M
+              volumeMounts:
+                - mountPath: /mnt/secrets-store
+          restartPolicy: Never
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .key && nsSubstring(source, $0.range) == "apiVersion" })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "apiVersion" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "v1" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "Pod" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "synthetic-job-" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "synthetic-pod" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "registry.example.invalid/app:latest" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "Always" })
+        XCTAssertTrue(analysis.highlights.contains {
+            $0.kind == .string
+                && nsSubstring(source, $0.range) == "-javaagent:agent.jar -XX:+UseContainerSupport -Xmx300M"
+        })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "-Xms120M" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "/mnt/secrets-store" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "Never" })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "-" })
+    }
+
+    func testAnalyzeDoesNotLetStringTokensOverrideQuotedKeysOrDirectives() {
+        let source = """
+        ---
+        "display-name": "Rune"
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .directive && nsSubstring(source, $0.range) == "---" })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "---" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .key && nsSubstring(source, $0.range) == "\"display-name\"" })
+        XCTAssertFalse(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "\"display-name\"" })
+        XCTAssertTrue(analysis.highlights.contains { $0.kind == .string && nsSubstring(source, $0.range) == "\"Rune\"" })
+    }
+
     func testAnalyzeReportsTabAndFlowDelimiterDiagnostics() {
         let source = "metadata:\n\tname: api\nitems: [1, 2\n"
 

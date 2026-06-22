@@ -88,6 +88,7 @@ public enum RuneSettingsKeys {
     public static let writeSafetyRequireCopyableCommand = "rune.settings.writeSafety.requireCopyableCommand"
     public static let writeSafetyRequirePostActionVerification = "rune.settings.writeSafety.requirePostActionVerification"
     public static let writeSafetyRequireProductionSecondConfirmation = "rune.settings.writeSafety.requireProductionSecondConfirmation"
+    public static let writeSafetyShowDestructiveCommandsInCommandPalette = "rune.settings.writeSafety.showDestructiveCommandsInCommandPalette"
 
     public static func clampedTerminalFontSize(_ value: Double) -> Double {
         min(terminalFontSizeMaximum, max(terminalFontSizeMinimum, value))
@@ -176,7 +177,8 @@ public enum RuneSettingsKeys {
             writeSafetyShowRollbackPlan: true,
             writeSafetyRequireCopyableCommand: true,
             writeSafetyRequirePostActionVerification: true,
-            writeSafetyRequireProductionSecondConfirmation: true
+            writeSafetyRequireProductionSecondConfirmation: true,
+            writeSafetyShowDestructiveCommandsInCommandPalette: false
         ])
     }
 }
@@ -465,6 +467,11 @@ public extension UserDefaults {
     var runeWriteSafetyRequireProductionSecondConfirmation: Bool {
         get { (object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) }
+    }
+
+    var runeWriteSafetyShowDestructiveCommandsInCommandPalette: Bool {
+        get { (object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette) }
     }
 
     func runeCustomLogPresetConfig(slot: RuneCustomLogPresetSlot) -> RuneCustomLogPresetConfig {

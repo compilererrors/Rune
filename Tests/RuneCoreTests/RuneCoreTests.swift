@@ -382,6 +382,22 @@ final class RuneCoreTests: XCTestCase {
         ) ?? true)
     }
 
+    func testRuneKeyboardShortcutParsesShiftPeriodForSwedishColonKey() {
+        let shortcut = RuneKeyboardShortcut(storageValue: "shift-.")
+
+        XCTAssertEqual(shortcut?.key, ".")
+        XCTAssertEqual(shortcut?.storageValue, "shift-.")
+        XCTAssertEqual(shortcut?.displayValue, "⇧.")
+        XCTAssertTrue(shortcut?.matches(
+            baseKey: ".",
+            requiresShift: true
+        ) ?? false)
+        XCTAssertFalse(shortcut?.matches(
+            baseKey: ":",
+            requiresShift: false
+        ) ?? true)
+    }
+
     func testRuneKeyboardShortcutRejectsUnsupportedValues() {
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "shift--"))
         XCTAssertNil(RuneKeyboardShortcut(storageValue: "describe"))
@@ -407,6 +423,23 @@ final class RuneCoreTests: XCTestCase {
             defaults.runeKeyBindingShortcut(for: .historyBack),
             RuneKeyboardShortcut(key: "left", requiresShift: false, requiresCommand: true, requiresOption: true)
         )
+    }
+
+    func testUserDefaultsCommandPaletteShortcutCanPersistShiftPeriodWorkflow() {
+        let suiteName = "RuneCoreTests.commandPaletteShortcut.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let custom = RuneKeyboardShortcut(key: ".", requiresShift: true)!
+        defaults.setRuneKeyBindingShortcut(custom, for: .commandPalette)
+        let persisted = defaults.runeKeyBindingShortcut(for: .commandPalette)
+        let resolver = RuneKeyBindingResolver { action in
+            action == .commandPalette ? persisted : action.defaultShortcut
+        }
+
+        XCTAssertEqual(persisted, custom)
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: ".", modifiers: [.shift])), .commandPalette)
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: ":", modifiers: [])))
     }
 
     func testHoverTooltipSettingDefaultsOnAndPersists() {
@@ -465,6 +498,18 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: "d", modifiers: [])))
     }
 
+    func testRuneKeyBindingResolverCanMapCommandPaletteToShiftPeriod() {
+        let resolver = RuneKeyBindingResolver { action in
+            if action == .commandPalette {
+                return RuneKeyboardShortcut(key: ".", requiresShift: true)!
+            }
+            return action.defaultShortcut
+        }
+
+        XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: ".", modifiers: [.shift])), .commandPalette)
+        XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: ":", modifiers: [])))
+    }
+
     func testDefaultRuneKeyBindingsHaveUniqueShortcuts() {
         let grouped = Dictionary(grouping: RuneKeyBindingAction.allCases) { action in
             action.defaultShortcut.storageValue
@@ -482,6 +527,29 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertTrue(directories.contains("/usr/bin"))
         XCTAssertTrue(directories.contains("/opt/homebrew/bin"))
         XCTAssertTrue(directories.contains("/usr/local/bin"))
+    }
+
+    func testShellCommandFormattingQuotesUnsafeArgumentsWithoutChangingSafeOnes() {
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted("kubectl"), "kubectl")
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted("pod/api:8080"), "pod/api:8080")
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted(""), "''")
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted("api service"), "'api service'")
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted("api;rm"), "'api;rm'")
+        XCTAssertEqual(ShellCommandFormatting.shellQuoted("printf 'hello'"), "'printf '\\''hello'\\'''")
+        XCTAssertEqual(
+            ShellCommandFormatting.shellCommand([
+                "kubectl",
+                "--context",
+                "prod west",
+                "exec",
+                "api;debug",
+                "--",
+                "sh",
+                "-lc",
+                "printf 'hello'"
+            ]),
+            "kubectl --context 'prod west' exec 'api;debug' -- sh -lc 'printf '\\''hello'\\'''"
+        )
     }
 
     func testLogTimeFilterUsesSinceTimeOnlyForAbsoluteDate() {

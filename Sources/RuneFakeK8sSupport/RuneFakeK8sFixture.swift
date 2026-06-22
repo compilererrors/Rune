@@ -4,17 +4,20 @@ public struct RuneFakeK8sFixture: Sendable {
     public let contexts: [RuneFakeK8sCluster]
     public let listKindsOmittingRemainingItemCount: Set<String>
     public let transientFailureTargets: Set<String>
+    public let delayedResponseTargets: [String: UInt64]
     public let selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule>
 
     public init(
         contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,
         listKindsOmittingRemainingItemCount: Set<String> = [],
         transientFailureTargets: Set<String> = [],
+        delayedResponseTargets: [String: UInt64] = [:],
         selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule> = []
     ) {
         self.contexts = contexts
         self.listKindsOmittingRemainingItemCount = listKindsOmittingRemainingItemCount
         self.transientFailureTargets = transientFailureTargets
+        self.delayedResponseTargets = delayedResponseTargets
         self.selfSubjectAccessReviewDenials = selfSubjectAccessReviewDenials
     }
 

@@ -95,6 +95,20 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertFalse(endpoint.message.contains("cluster.example.invalid"))
     }
 
+    func testBoundsOversizedFailureMessagesBeforeEndpointScanning() throws {
+        let secretSuffix = String(repeating: "x", count: 8_000)
+            + " https://cluster.example.invalid/api/v1/namespaces/team-a/pods/api-0/log?token=secret-token"
+        let checks = AuthDoctorFailureProjector.checks(
+            for: "TLS handshake failed: x509 certificate signed by unknown authority \(secretSuffix)"
+        )
+
+        let check = try XCTUnwrap(checks.first)
+        XCTAssertEqual(check.id, "transport")
+        XCTAssertFalse(checks.contains { $0.id == "api-request-endpoint" })
+        XCTAssertFalse(checks.map(\.message).joined(separator: " ").contains("secret-token"))
+        XCTAssertFalse(checks.map(\.message).joined(separator: " ").contains("team-a"))
+    }
+
     func testClassifiesTLSProxyAndConnectivityFailures() throws {
         let tls = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "TLS handshake failed: x509 certificate signed by unknown authority"

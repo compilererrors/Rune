@@ -305,12 +305,28 @@ private struct YAMLDocumentParser {
         var tokens: [YAMLSyntaxToken] = []
         var diagnostics: [YAMLValidationIssue] = []
 
-        if let directive = directiveRange(in: line, contentEnd: contentEnd) {
+        let directiveRange = directiveRange(in: line, contentEnd: contentEnd)
+        if let directive = directiveRange {
             tokens.append(YAMLSyntaxToken(range: shifted(directive, by: absoluteLocation), kind: .directive))
         }
 
-        if let keyRange = mappingKeyRange(in: line, contentEnd: contentEnd) {
+        let keyRange = mappingKeyRange(in: line, contentEnd: contentEnd)
+        if let keyRange {
             tokens.append(YAMLSyntaxToken(range: shifted(keyRange, by: absoluteLocation), kind: .key))
+        }
+
+        let plainValueRange = plainScalarValueRangeAfterMappingSeparator(in: line, contentEnd: contentEnd)
+        if let plainValueRange {
+            let value = line.substring(with: plainValueRange)
+            let kind: YAMLSyntaxTokenKind
+            if isBooleanScalar(value) {
+                kind = .boolean
+            } else if isNumberScalar(value) {
+                kind = .number
+            } else {
+                kind = .string
+            }
+            tokens.append(YAMLSyntaxToken(range: shifted(plainValueRange, by: absoluteLocation), kind: kind))
         }
 
         var index = 0
@@ -319,7 +335,9 @@ private struct YAMLDocumentParser {
 
             if character == YAMLCharacter.doubleQuote {
                 let consumed = consumeDoubleQuotedString(in: line, from: index, end: contentEnd)
-                tokens.append(YAMLSyntaxToken(range: shifted(consumed.range, by: absoluteLocation), kind: .string))
+                if !range(consumed.range, intersects: keyRange), !range(consumed.range, intersects: directiveRange) {
+                    tokens.append(YAMLSyntaxToken(range: shifted(consumed.range, by: absoluteLocation), kind: .string))
+                }
                 if !consumed.closed {
                     diagnostics.append(
                         YAMLValidationIssue(
@@ -341,7 +359,9 @@ private struct YAMLDocumentParser {
 
             if character == YAMLCharacter.singleQuote {
                 let consumed = consumeSingleQuotedString(in: line, from: index, end: contentEnd)
-                tokens.append(YAMLSyntaxToken(range: shifted(consumed.range, by: absoluteLocation), kind: .string))
+                if !range(consumed.range, intersects: keyRange), !range(consumed.range, intersects: directiveRange) {
+                    tokens.append(YAMLSyntaxToken(range: shifted(consumed.range, by: absoluteLocation), kind: .string))
+                }
                 if !consumed.closed {
                     diagnostics.append(
                         YAMLValidationIssue(
@@ -378,12 +398,21 @@ private struct YAMLDocumentParser {
 
             if isScalarStart(character),
                hasScalarBoundary(before: line, at: index) {
-                let scalarRange = consumePlainScalar(in: line, from: index, end: contentEnd)
+                let scalarRange = isPlainScalarValueStart(in: line, at: index)
+                    ? consumePlainValueScalar(in: line, from: index, end: contentEnd)
+                    : consumePlainScalar(in: line, from: index, end: contentEnd)
                 let scalar = line.substring(with: scalarRange)
-                if isBooleanScalar(scalar) {
+                if range(scalarRange, intersects: keyRange)
+                    || range(scalarRange, intersects: directiveRange)
+                    || range(scalarRange, intersects: plainValueRange) {
+                    index = scalarRange.location + scalarRange.length
+                    continue
+                } else if isBooleanScalar(scalar) {
                     tokens.append(YAMLSyntaxToken(range: shifted(scalarRange, by: absoluteLocation), kind: .boolean))
                 } else if isNumberScalar(scalar) {
                     tokens.append(YAMLSyntaxToken(range: shifted(scalarRange, by: absoluteLocation), kind: .number))
+                } else if isPlainStringValue(in: line, range: scalarRange, contentEnd: contentEnd) {
+                    tokens.append(YAMLSyntaxToken(range: shifted(scalarRange, by: absoluteLocation), kind: .string))
                 }
                 index = scalarRange.location + scalarRange.length
                 continue
@@ -393,6 +422,114 @@ private struct YAMLDocumentParser {
         }
 
         return (tokens, diagnostics)
+    }
+
+    private func plainScalarValueRangeAfterMappingSeparator(in line: NSString, contentEnd: Int) -> NSRange? {
+        var inSingleQuotes = false
+        var inDoubleQuotes = false
+        var escaped = false
+        var index = 0
+
+        while index < contentEnd {
+            let character = line.character(at: index)
+
+            if escaped {
+                escaped = false
+                index += 1
+                continue
+            }
+
+            if character == YAMLCharacter.backslash && inDoubleQuotes {
+                escaped = true
+                index += 1
+                continue
+            }
+
+            if character == YAMLCharacter.singleQuote && !inDoubleQuotes {
+                if inSingleQuotes, index + 1 < contentEnd, line.character(at: index + 1) == YAMLCharacter.singleQuote {
+                    index += 2
+                    continue
+                }
+                inSingleQuotes.toggle()
+            } else if character == YAMLCharacter.doubleQuote && !inSingleQuotes {
+                inDoubleQuotes.toggle()
+            } else if character == YAMLCharacter.colon && !inSingleQuotes && !inDoubleQuotes {
+                let next = index + 1
+                guard next >= contentEnd || isWhitespace(line.character(at: next)) else {
+                    index += 1
+                    continue
+                }
+
+                let start = firstNonWhitespace(in: line, from: next, to: contentEnd)
+                guard start < contentEnd else { return nil }
+
+                let firstValueCharacter = line.character(at: start)
+                if firstValueCharacter == YAMLCharacter.doubleQuote
+                    || firstValueCharacter == YAMLCharacter.singleQuote
+                    || firstValueCharacter == YAMLCharacter.ampersand
+                    || firstValueCharacter == YAMLCharacter.asterisk
+                    || firstValueCharacter == YAMLCharacter.leftBracket
+                    || firstValueCharacter == YAMLCharacter.leftBrace
+                    || firstValueCharacter == YAMLCharacter.verticalBar
+                    || firstValueCharacter == YAMLCharacter.greaterThan
+                    || isSequenceMarker(in: line, at: start, end: contentEnd) {
+                    return nil
+                }
+
+                var end = contentEnd
+                while end > start, isWhitespace(line.character(at: end - 1)) {
+                    end -= 1
+                }
+                guard end > start else { return nil }
+                return NSRange(location: start, length: end - start)
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    private func range(_ range: NSRange, intersects other: NSRange?) -> Bool {
+        guard let other else { return false }
+        return NSIntersectionRange(range, other).length > 0
+    }
+
+    private func isPlainStringValue(in line: NSString, range: NSRange, contentEnd: Int) -> Bool {
+        let start = range.location
+        guard start < contentEnd else { return false }
+
+        if isPlainScalarValueStart(in: line, at: start) {
+            return true
+        }
+
+        let first = firstNonWhitespace(in: line, from: 0, to: contentEnd)
+        return first == start && !isSequenceMarker(in: line, at: start, end: contentEnd)
+    }
+
+    private func isPlainScalarValueStart(in line: NSString, at start: Int) -> Bool {
+        var previous = start - 1
+        while previous >= 0, isWhitespace(line.character(at: previous)) {
+            previous -= 1
+        }
+
+        if previous >= 0, line.character(at: previous) == YAMLCharacter.colon {
+            return true
+        }
+
+        if previous >= 0, line.character(at: previous) == YAMLCharacter.hyphen {
+            if previous == 0 || isWhitespace(line.character(at: previous - 1)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func isSequenceMarker(in line: NSString, at index: Int, end: Int) -> Bool {
+        guard index < end, line.character(at: index) == YAMLCharacter.hyphen else { return false }
+        let next = index + 1
+        return next >= end || isWhitespace(line.character(at: next))
     }
 
     private func directiveRange(in line: NSString, contentEnd: Int) -> NSRange? {
@@ -623,6 +760,21 @@ private struct YAMLDocumentParser {
         return NSRange(location: start, length: index - start)
     }
 
+    private func consumePlainValueScalar(in line: NSString, from start: Int, end: Int) -> NSRange {
+        var index = start
+        while index < end {
+            let character = line.character(at: index)
+            if isPlainValueScalarTerminator(character) {
+                break
+            }
+            index += 1
+        }
+        while index > start, isWhitespace(line.character(at: index - 1)) {
+            index -= 1
+        }
+        return NSRange(location: start, length: index - start)
+    }
+
     private func firstNonWhitespace(in line: NSString, from start: Int, to end: Int) -> Int {
         var index = start
         while index < end, isWhitespace(line.character(at: index)) {
@@ -663,6 +815,15 @@ private struct YAMLDocumentParser {
     private func isPlainScalarTerminator(_ character: unichar) -> Bool {
         character == YAMLCharacter.hash
             || character == YAMLCharacter.colon
+            || character == YAMLCharacter.comma
+            || character == YAMLCharacter.leftBracket
+            || character == YAMLCharacter.rightBracket
+            || character == YAMLCharacter.leftBrace
+            || character == YAMLCharacter.rightBrace
+    }
+
+    private func isPlainValueScalarTerminator(_ character: unichar) -> Bool {
+        character == YAMLCharacter.hash
             || character == YAMLCharacter.comma
             || character == YAMLCharacter.leftBracket
             || character == YAMLCharacter.rightBracket
@@ -735,6 +896,8 @@ private enum YAMLCharacter {
     static let plus: unichar = 43
     static let period: unichar = 46
     static let underscore: unichar = 95
+    static let greaterThan: unichar = 62
+    static let verticalBar: unichar = 124
     static let ampersand: unichar = 38
     static let asterisk: unichar = 42
     static let leftBracket: unichar = 91

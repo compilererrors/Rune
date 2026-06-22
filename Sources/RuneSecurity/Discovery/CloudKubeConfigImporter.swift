@@ -91,13 +91,12 @@ public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatab
         switch self {
         case .missingRequiredField(let name):
             return "\(name) is required."
-        case .commandFailed(let command, let exitCode, let message):
-            return "Cloud import command failed with exit code \(exitCode): \(command). \(message)"
-        case .commandTimedOut(let command, let timeoutSeconds, let message):
-            let suffix = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " \(message)"
-            return "Cloud import command timed out after \(timeoutSeconds) seconds: \(command).\(suffix)"
-        case .noKubeconfigDiscovered(let command):
-            return "Cloud import command completed, but Rune could not find a kubeconfig to review: \(command)."
+        case .commandFailed(_, let exitCode, _):
+            return "Cloud import command failed with exit code \(exitCode). Check provider login, required fields, and provider CLI access, then run Auth Doctor again."
+        case .commandTimedOut(_, let timeoutSeconds, _):
+            return "Cloud import command timed out after \(timeoutSeconds) seconds. Check provider login, network access, and provider CLI access, then run Auth Doctor again."
+        case .noKubeconfigDiscovered:
+            return "Cloud import command completed, but Rune could not find a kubeconfig to review. Refresh contexts after confirming the provider CLI wrote kubeconfig."
         }
     }
 }

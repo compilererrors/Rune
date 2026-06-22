@@ -81,6 +81,10 @@ Run **Rune > Run Auth Doctor** to check the active kubeconfig path, context list
 
 Run **Rune > Load Demo Cluster** to explore Rune with a small in-memory cluster. It does not start a background server or contact a Kubernetes API. The action can be disabled in Settings.
 
+## Kubeconfig Import
+
+Rune supports common kubeconfig YAML references, including anchors, aliases, and merge keys for cluster, context, and user entries. Imported kubeconfigs are reviewed before they are saved, and sensitive tokens, certificates, keys, and local credential paths are redacted in the preview.
+
 ## Privacy
 
 Rune requires no account, installs no cloud agent, and does not collect personal data or usage data. It does not use analytics, tracking, advertising, or telemetry, and it does not send your cluster data to a Rune backend.

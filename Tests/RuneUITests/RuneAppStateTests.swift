@@ -1,3 +1,5 @@
+import Combine
+import SwiftUI
 import XCTest
 @testable import RuneCore
 @testable import RuneDiagnostics
@@ -9,6 +11,92 @@ import XCTest
 @testable import RuneUI
 
 final class RuneAppStateTests: XCTestCase {
+    @MainActor
+    func testResourceSettersDoNotPublishWhenValuesAreUnchanged() {
+        let state = RuneAppState()
+        let pod = PodSummary(
+            name: "api-0",
+            namespace: "default",
+            status: "Running",
+            containersReady: "1/1",
+            containerNamesLine: "app"
+        )
+        let deployment = DeploymentSummary(
+            name: "api",
+            namespace: "default",
+            readyReplicas: 1,
+            desiredReplicas: 1,
+            selector: ["app": "api"]
+        )
+
+        state.setPods([pod])
+        state.setDeployments([deployment])
+        state.setOverviewSnapshot(
+            pods: [pod],
+            deploymentsCount: 1,
+            servicesCount: 1,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 1,
+            clusterCPUPercent: 20,
+            clusterMemoryPercent: 30,
+            events: []
+        )
+
+        var publishCount = 0
+        let cancellable = state.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        state.setPods([pod])
+        state.setDeployments([deployment])
+        state.setOverviewSnapshot(
+            pods: [pod],
+            deploymentsCount: 1,
+            servicesCount: 1,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 1,
+            clusterCPUPercent: 20,
+            clusterMemoryPercent: 30,
+            events: []
+        )
+
+        XCTAssertEqual(publishCount, 0)
+    }
+
+    func testPodJSONEnrichmentIsSkippedWhenPodListAlreadyHasJSONDetails() {
+        let detailedPods = [
+            PodSummary(
+                name: "api-0",
+                namespace: "default",
+                status: "Running",
+                podIP: "10.0.0.12",
+                nodeName: "node-a",
+                qosClass: "Burstable",
+                containersReady: "1/1",
+                containerNamesLine: "app",
+                labels: ["app": "api"],
+                containerImagesLine: "example.invalid/app:v1",
+                ownerReferencesLine: "ReplicaSet/api-123"
+            )
+        ]
+
+        XCTAssertFalse(RuneAppViewModel.podListNeedsJSONEnrichment(detailedPods))
+    }
+
+    func testPodJSONEnrichmentStillRunsForSparsePodRows() {
+        let sparsePods = [
+            PodSummary(name: "api-0", namespace: "default", status: "Running")
+        ]
+
+        XCTAssertTrue(RuneAppViewModel.podListNeedsJSONEnrichment(sparsePods))
+        XCTAssertFalse(RuneAppViewModel.podListNeedsJSONEnrichment([]))
+    }
+
     func testKubeConfigDiscovererUsesKUBECONFIGAndDefaultPathWithoutWritingFiles() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.kubeconfigDiscovery.\(UUID().uuidString)", isDirectory: true)
@@ -410,6 +498,61 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(review.contexts.first?.serverHost, "example.invalid")
     }
 
+    func testKubeConfigImportValidatorHandlesQuotedScalarsInlineCommentsAndMultipleContexts() {
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(
+            raw:
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: "context-beta" # selected by user
+            clusters:
+            - name: "cluster-alpha"
+              cluster:
+                server: "https://alpha.example.invalid:6443" # generated comment
+            - name: 'cluster-beta'
+              cluster:
+                server: 'https://beta.example.invalid'
+            contexts:
+            - name: "context-beta"
+              context:
+                cluster: "cluster-beta"
+                user: "user-beta"
+                namespace: "team-beta"
+            - name: 'context-alpha'
+              context:
+                cluster: 'cluster-alpha'
+                user: 'user-alpha'
+                namespace: 'team-alpha'
+            users:
+            - name: "user-alpha"
+              user:
+                tokenFile: "/synthetic/private/token-alpha.txt"
+            - name: "user-beta"
+              user:
+                auth-provider:
+                  name: oidc
+                  config:
+                    id-token: "synthetic-id-token-with#hash"
+                    client-id: "synthetic-client-id"
+            """
+        )
+
+        XCTAssertTrue(review.isValid)
+        XCTAssertEqual(review.contexts.map(\.name), ["context-alpha", "context-beta"])
+        XCTAssertEqual(review.contexts.map(\.namespace), ["team-alpha", "team-beta"])
+        XCTAssertEqual(review.contexts.map(\.serverHost), ["alpha.example.invalid", "beta.example.invalid"])
+        XCTAssertEqual(review.contexts.map(\.authType), ["Token file", "OIDC"])
+        XCTAssertEqual(review.contexts.last?.providerHint, "OIDC")
+        XCTAssertFalse(review.issues.contains { $0.severity == .error })
+        XCTAssertFalse(review.redactedPreview.contains("/synthetic/private/token-alpha.txt"))
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-id-token-with#hash"))
+        XCTAssertTrue(review.redactedPreview.contains("tokenFile: <redacted>"))
+        XCTAssertTrue(review.redactedPreview.contains("id-token: <redacted>"))
+    }
+
     func testKubeConfigImportValidatorReportsMissingDelayedNames() {
         let review = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]).validate(
             raw:
@@ -463,8 +606,8 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(review.issues.contains { $0.id == "missing-current-context-reference" && $0.severity == .error })
     }
 
-    func testKubeConfigImportValidatorRejectsUnsupportedYAMLAliasAndMergeFeatures() {
-        let aliasReview = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]).validate(
+    func testKubeConfigImportValidatorResolvesYAMLAnchorsAliasesAndMergeKeys() {
+        let scalarAliasReview = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]).validate(
             raw:
             """
             apiVersion: v1
@@ -492,28 +635,75 @@ final class RuneAppStateTests: XCTestCase {
             """
             apiVersion: v1
             kind: Config
+            x-cluster-base: &clusterBase
+              server: https://merged.example.invalid
+            x-context-base: &contextBase
+              cluster: cluster-alpha
+              user: user-alpha
+              namespace: merged-namespace
+            x-user-base: &userBase
+              token: merged-token
             current-context: context-alpha
             clusters:
             - cluster:
-                <<: *base
-                server: https://example.invalid
+                <<: *clusterBase
               name: cluster-alpha
             contexts:
             - name: context-alpha
               context:
-                cluster: cluster-alpha
-                user: user-alpha
+                <<: [*contextBase]
             users:
             - name: user-alpha
               user:
-                token: test-token
+                <<: *userBase
             """
         )
 
-        XCTAssertFalse(aliasReview.isValid)
-        XCTAssertTrue(aliasReview.issues.contains { $0.id == "unsupported-yaml-feature" && $0.severity == .error })
-        XCTAssertFalse(mergeReview.isValid)
-        XCTAssertTrue(mergeReview.issues.contains { $0.id == "unsupported-yaml-feature" && $0.severity == .error })
+        let listAliasReview = KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]).validate(
+            raw:
+            """
+            apiVersion: v1
+            kind: Config
+            x-cluster-entry: &clusterEntry
+              name: cluster-alpha
+              cluster:
+                server: https://list-alias.example.invalid
+            x-context-entry: &contextEntry
+              name: context-alpha
+              context:
+                cluster: cluster-alpha
+                user: user-alpha
+                namespace: alias-namespace
+            x-user-entry: &userEntry
+              name: user-alpha
+              user:
+                exec:
+                  command: synthetic-auth
+            current-context: context-alpha
+            clusters:
+            - *clusterEntry
+            contexts:
+            - *contextEntry
+            users:
+            - *userEntry
+            """
+        )
+
+        XCTAssertTrue(scalarAliasReview.isValid)
+        XCTAssertEqual(scalarAliasReview.contexts.first?.serverHost, "example.invalid")
+        XCTAssertFalse(scalarAliasReview.issues.contains { $0.id == "unsupported-yaml-feature" })
+
+        XCTAssertTrue(mergeReview.isValid)
+        XCTAssertEqual(mergeReview.contexts.first?.serverHost, "merged.example.invalid")
+        XCTAssertEqual(mergeReview.contexts.first?.namespace, "merged-namespace")
+        XCTAssertEqual(mergeReview.contexts.first?.authType, "Token")
+        XCTAssertFalse(mergeReview.redactedPreview.contains("merged-token"))
+
+        XCTAssertTrue(listAliasReview.isValid)
+        XCTAssertEqual(listAliasReview.contexts.first?.namespace, "alias-namespace")
+        XCTAssertEqual(listAliasReview.contexts.first?.serverHost, "list-alias.example.invalid")
+        XCTAssertEqual(listAliasReview.contexts.first?.authType, "Exec plugin")
+        XCTAssertFalse(listAliasReview.issues.contains { $0.id == "unsupported-yaml-feature" })
     }
 
     func testKubeConfigImportValidatorRecognizesSupportedProviderKubeconfigShapes() {
@@ -1178,6 +1368,205 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testMockedAddClusterCloudImportLoadsFakeClusterForEveryRunnableProvider() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start(fixture: RuneFakeK8sFixture())
+        defer { server.stop() }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.mockedAddClusterAllProviders.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("synthetic-cloud-kubeconfig.yaml")
+        let rawKubeconfig = server.kubeconfigYAML()
+        try rawKubeconfig.write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(raw: rawKubeconfig, sourceName: kubeconfig.lastPathComponent)
+
+        let cases: [(CloudKubeConfigImportRequest, CloudKubeConfigCommandPreview, String)] = [
+            (
+                CloudKubeConfigImportRequest(
+                    provider: .aks,
+                    clusterName: "synthetic-aks",
+                    resourceGroup: "synthetic-group"
+                ),
+                CloudKubeConfigCommandPreview(
+                    executable: "az",
+                    arguments: ["aks", "get-credentials", "--resource-group", "synthetic-group", "--name", "synthetic-aks"],
+                    displayCommand: "az aks get-credentials --resource-group synthetic-group --name synthetic-aks"
+                ),
+                "Imported AKS kubeconfig context."
+            ),
+            (
+                CloudKubeConfigImportRequest(
+                    provider: .eks,
+                    clusterName: "synthetic-eks",
+                    regionOrLocation: "eu-north-1"
+                ),
+                CloudKubeConfigCommandPreview(
+                    executable: "aws",
+                    arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-eks"],
+                    displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-eks"
+                ),
+                "Imported EKS kubeconfig context."
+            ),
+            (
+                CloudKubeConfigImportRequest(
+                    provider: .gke,
+                    clusterName: "synthetic-gke",
+                    regionOrLocation: "europe-north1",
+                    projectID: "synthetic-project"
+                ),
+                CloudKubeConfigCommandPreview(
+                    executable: "gcloud",
+                    arguments: [
+                        "container", "clusters", "get-credentials",
+                        "synthetic-gke",
+                        "--location", "europe-north1",
+                        "--project", "synthetic-project"
+                    ],
+                    displayCommand: "gcloud container clusters get-credentials synthetic-gke --location europe-north1 --project synthetic-project"
+                ),
+                "Imported GKE kubeconfig context."
+            )
+        ]
+
+        for (request, preview, expectedStatus) in cases {
+            let importer = MockCloudKubeConfigImporter(
+                preview: preview,
+                result: .success(CloudKubeConfigImportResult(
+                    command: preview,
+                    commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+                    discoveredURLs: [kubeconfig],
+                    reviews: [review]
+                ))
+            )
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                cloudKubeConfigImporter: importer,
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            viewModel.runCloudKubeConfigImport(request)
+
+            try await waitUntilForRuneAppState(timeout: 10) {
+                viewModel.cloudKubeConfigImportStatus == expectedStatus
+                    && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                    && state.selectedNamespace == "alpha-zone"
+                    && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                    && state.deployments.contains { $0.name == "orbit-lens" }
+            }
+
+            XCTAssertEqual(state.kubeConfigSources.map(\.url.standardizedFileURL.path), [kubeconfig.standardizedFileURL.path])
+            XCTAssertNil(state.lastError)
+            XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
+        }
+    }
+
+    @MainActor
+    func testColdStartLeavesAddClusterCloudImportIdleUntilUserRunsProvider() {
+        let importer = CountingCloudKubeConfigImporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+        XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertEqual(importer.previewCallCount, 0)
+        XCTAssertEqual(importer.importCallCount, 0)
+
+        let command = viewModel.cloudKubeConfigCommandPreview(for: CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        ))
+
+        XCTAssertEqual(command, "aws eks update-kubeconfig")
+        XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+        XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertEqual(importer.previewCallCount, 1)
+        XCTAssertEqual(importer.importCallCount, 0)
+    }
+
+    @MainActor
+    func testColdStartRootShellDoesNotPreviewOrRunAddClusterProvider() {
+        let importer = CountingCloudKubeConfigImporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        _ = RuneRootView(
+            viewModel: viewModel,
+            onLayoutSnapshotChange: nil,
+            debugDisableBootstrap: true
+        )
+
+        XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+        XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertEqual(importer.previewCallCount, 0)
+        XCTAssertEqual(importer.importCallCount, 0)
+    }
+
+    @MainActor
+    func testColdStartLaunchShellInitialMountDoesNotPreviewOrRunAddClusterProvider() {
+        let importer = CountingCloudKubeConfigImporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let controller = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true
+            )
+        )
+
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        controller.view.layoutSubtreeIfNeeded()
+
+        XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
+        XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertEqual(importer.previewCallCount, 0)
+        XCTAssertEqual(importer.importCallCount, 0)
+    }
+
+    @MainActor
     func testMockedAddClusterCloudImportFailureDoesNotLoadClusterData() async throws {
         let preview = CloudKubeConfigCommandPreview(
             executable: "gcloud",
@@ -1222,6 +1611,462 @@ final class RuneAppStateTests: XCTestCase {
                 && $0.status == .failed
                 && !$0.message.contains("synthetic login required")
         })
+        XCTAssertFalse(state.lastError?.contains("synthetic login required") == true)
+        XCTAssertFalse(state.lastError?.contains(preview.displayCommand) == true)
+        XCTAssertFalse(state.activeNotice?.message.contains("synthetic login required") == true)
+        XCTAssertFalse(state.activeNotice?.message.contains(preview.displayCommand) == true)
+    }
+
+    @MainActor
+    func testAddClusterCloudImportFailureKeepsUserFacingStatusAndChecksGeneric() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let sensitiveProviderOutput = "synthetic-token-from-provider stderr"
+        let importer = MockCloudKubeConfigImporter(
+            preview: preview,
+            result: .failure(.commandFailed(
+                command: preview.displayCommand,
+                exitCode: 42,
+                message: sensitiveProviderOutput
+            ))
+        )
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && state.authDoctorChecks.contains { $0.id == "cloud-login-eks" && $0.status == .failed }
+        }
+
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Cloud import failed.")
+        let diagnostic = try XCTUnwrap(viewModel.cloudKubeConfigImportDiagnostic)
+        let diagnosticText = [
+            diagnostic.title,
+            diagnostic.classification,
+            diagnostic.message,
+            diagnostic.commandShape,
+            diagnostic.nextAction,
+            diagnostic.documentationTitle,
+            diagnostic.documentationURL.absoluteString
+        ].joined(separator: "\n")
+        XCTAssertEqual(diagnostic.title, "Provider CLI failed")
+        XCTAssertEqual(diagnostic.classification, "Exit code 42")
+        XCTAssertTrue(diagnostic.commandShape.contains("<cluster-name>"))
+        XCTAssertTrue(diagnostic.commandShape.contains("<region>"))
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertFalse(state.authDoctorChecks.map(\.message).joined(separator: "\n").contains(sensitiveProviderOutput))
+        XCTAssertFalse(viewModel.cloudKubeConfigImportStatus?.contains(sensitiveProviderOutput) == true)
+        XCTAssertFalse(state.lastError?.contains(sensitiveProviderOutput) == true)
+        XCTAssertFalse(state.lastError?.contains(preview.displayCommand) == true)
+        XCTAssertFalse(state.activeNotice?.message.contains(sensitiveProviderOutput) == true)
+        XCTAssertFalse(state.activeNotice?.message.contains(preview.displayCommand) == true)
+        XCTAssertFalse(diagnosticText.contains(sensitiveProviderOutput))
+        XCTAssertFalse(diagnosticText.contains(preview.displayCommand))
+        XCTAssertFalse(diagnosticText.contains("synthetic-cloud"))
+        XCTAssertFalse(diagnosticText.contains("eu-north-1"))
+
+        let supportBundle = SupportBundleRequest.snapshot(
+            state: state,
+            generatedAt: "2026-06-21T00:00:00Z",
+            resourceCounts: [:],
+            selectedResourceKind: nil,
+            selectedResourceName: nil
+        )
+        let data = try JSONSupportBundleBuilder().buildBundle(from: supportBundle)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(json.contains(sensitiveProviderOutput))
+        XCTAssertFalse(json.contains(preview.displayCommand))
+    }
+
+    @MainActor
+    func testAddClusterCloudImportBlockingReviewKeepsImportReviewAuthDoctorChecks() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let review = KubeConfigImportReview(
+            contexts: [],
+            issues: [
+                KubeConfigImportIssue(
+                    id: "missing-current-context",
+                    severity: .error,
+                    message: "Synthetic current context is missing."
+                )
+            ],
+            redactedPreview: "apiVersion: v1\ncontexts: []\n"
+        )
+        let importer = MockCloudKubeConfigImporter(result: .success(CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [],
+            reviews: [review]
+        )))
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && !viewModel.isRunningCloudKubeConfigImport
+                && state.lastError?.contains("Kubeconfig is missing current-context.") == true
+        }
+
+        XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+        XCTAssertTrue(state.authDoctorChecks.contains {
+            $0.id == "kubeconfig-import-missing-current-context"
+                && $0.status == .failed
+                && $0.message == "Kubeconfig is missing current-context."
+        })
+        XCTAssertFalse(state.authDoctorChecks.contains { $0.id == "cloud-login-eks" })
+    }
+
+    @MainActor
+    func testAddClusterCloudImportBlockingReviewDoesNotReplaceExistingKubeconfigSources() async throws {
+        let existingSource = KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-existing-synthetic-kubeconfig"))
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "az",
+            arguments: ["aks", "get-credentials", "--resource-group", "synthetic-group", "--name", "synthetic-aks"],
+            displayCommand: "az aks get-credentials --resource-group synthetic-group --name synthetic-aks"
+        )
+        let review = KubeConfigImportReview(
+            contexts: [],
+            issues: [
+                KubeConfigImportIssue(
+                    id: "missing-current-context",
+                    severity: .error,
+                    message: "Synthetic current context is missing."
+                )
+            ],
+            redactedPreview: "apiVersion: v1\ncontexts: []\n"
+        )
+        let importer = MockCloudKubeConfigImporter(result: .success(CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [],
+            reviews: [review]
+        )))
+        let state = RuneAppState()
+        state.setSources([existingSource])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .aks,
+            clusterName: "synthetic-aks",
+            resourceGroup: "synthetic-group"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && state.lastError?.contains("Kubeconfig is missing current-context.") == true
+        }
+
+        XCTAssertEqual(state.kubeConfigSources, [existingSource])
+        XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
+        XCTAssertTrue(state.authDoctorChecks.contains {
+            $0.id == "kubeconfig-import-missing-current-context"
+                && $0.status == .failed
+        })
+    }
+
+    @MainActor
+    func testAddClusterCloudImportIgnoresDuplicateRunWhileImportIsInFlight() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = BlockingCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [],
+            reviews: []
+        ))
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        )
+
+        viewModel.runCloudKubeConfigImport(request)
+        viewModel.runCloudKubeConfigImport(request)
+
+        try await waitUntilForRuneAppState {
+            importer.importCallCount == 1
+                && importer.hasSuspendedImport
+                && viewModel.isRunningCloudKubeConfigImport
+        }
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Running EKS import...")
+
+        importer.resume()
+
+        try await waitUntilForRuneAppState {
+            !viewModel.isRunningCloudKubeConfigImport
+        }
+        XCTAssertEqual(importer.importCallCount, 1)
+    }
+
+    @MainActor
+    func testAddClusterCloudImportStatusCanBeClearedAfterFailure() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "gcloud",
+            arguments: ["container", "clusters", "get-credentials", "synthetic-gke"],
+            displayCommand: "gcloud container clusters get-credentials synthetic-gke"
+        )
+        let importer = MockCloudKubeConfigImporter(
+            preview: preview,
+            result: .failure(.commandFailed(
+                command: preview.displayCommand,
+                exitCode: 42,
+                message: "synthetic login required"
+            ))
+        )
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && !viewModel.isRunningCloudKubeConfigImport
+        }
+
+        viewModel.clearCloudKubeConfigImportStatus()
+
+        XCTAssertNil(viewModel.cloudKubeConfigImportStatus)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.contexts.isEmpty)
+    }
+
+    @MainActor
+    func testAddClusterCloudImportStatusClearKeepsRunningStatusWhileImportIsInFlight() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = BlockingCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [],
+            reviews: []
+        ))
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        ))
+
+        try await waitUntilForRuneAppState {
+            importer.hasSuspendedImport
+                && viewModel.isRunningCloudKubeConfigImport
+        }
+
+        viewModel.clearCloudKubeConfigImportStatus()
+
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Running EKS import...")
+        XCTAssertEqual(importer.importCallCount, 1)
+
+        importer.resume()
+
+        try await waitUntilForRuneAppState {
+            !viewModel.isRunningCloudKubeConfigImport
+        }
+    }
+
+    @MainActor
+    func testAddClusterCloudImportFailureUnlocksRetryAndClearsStaleError() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start(fixture: RuneFakeK8sFixture())
+        defer { server.stop() }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.addClusterRetry.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("synthetic-retry-kubeconfig.yaml")
+        let rawKubeconfig = server.kubeconfigYAML()
+        try rawKubeconfig.write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let review = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        ).validate(raw: rawKubeconfig, sourceName: kubeconfig.lastPathComponent)
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--region", "eu-north-1", "--name", "synthetic-cloud"],
+            displayCommand: "aws eks update-kubeconfig --region eu-north-1 --name synthetic-cloud"
+        )
+        let importer = SequencedCloudKubeConfigImporter(
+            preview: preview,
+            results: [
+                .failure(.commandFailed(
+                    command: preview.displayCommand,
+                    exitCode: 42,
+                    message: "synthetic login required"
+                )),
+                .success(CloudKubeConfigImportResult(
+                    command: preview,
+                    commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+                    discoveredURLs: [kubeconfig],
+                    reviews: [review]
+                ))
+            ]
+        )
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1"
+        )
+
+        viewModel.runCloudKubeConfigImport(request)
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && !viewModel.isRunningCloudKubeConfigImport
+                && state.lastError?.contains("Cloud import command failed") == true
+        }
+
+        viewModel.runCloudKubeConfigImport(request)
+
+        XCTAssertNil(state.lastError)
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+                && !viewModel.isRunningCloudKubeConfigImport
+                && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+        }
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(importer.importCallCount, 2)
+    }
+
+    @MainActor
+    func testAddClusterRefreshContextsLoadsExternallyWrittenKubeconfigAgainstFakeCluster() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start(fixture: RuneFakeK8sFixture())
+        defer { server.stop() }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.addClusterRefresh.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("synthetic-cli-written-kubeconfig.yaml")
+        try server.kubeconfigYAML().write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let discoverer = MutableKubeConfigDiscoverer()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: discoverer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.refreshKubeConfigSourcesFromDiscovery()
+
+        try await waitUntilForRuneAppState {
+            state.contexts.isEmpty
+        }
+
+        discoverer.urls = [kubeconfig]
+        viewModel.refreshKubeConfigSourcesFromDiscovery()
+
+        try await waitUntilForRuneAppState(timeout: 10) {
+            state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                && state.selectedNamespace == "alpha-zone"
+                && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                && state.deployments.contains { $0.name == "orbit-lens" }
+        }
+
+        XCTAssertEqual(state.kubeConfigSources.map(\.url.standardizedFileURL.path), [kubeconfig.standardizedFileURL.path])
+        XCTAssertEqual(discoverer.callCount, 2)
+        XCTAssertNil(state.lastError)
     }
 
     func testFileBackedContextPreferencesStoreRoundTripsVersionedPreferences() throws {
@@ -1434,9 +2279,11 @@ final class RuneAppStateTests: XCTestCase {
             horizontalPodAutoscalers: [],
             networkPolicies: [],
             services: [],
+            endpoints: [],
             ingresses: [],
             configMaps: [],
             secrets: [],
+            serviceAccounts: [],
             events: []
         )
         let viewModel = RuneAppViewModel(state: state, store: resourceStore, savedWorkspaceStore: store)
@@ -1671,12 +2518,15 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(defaults.runeWriteSafetyRequireCopyableCommand)
         XCTAssertTrue(defaults.runeWriteSafetyRequirePostActionVerification)
         XCTAssertTrue(defaults.runeWriteSafetyRequireProductionSecondConfirmation)
+        XCTAssertFalse(defaults.runeWriteSafetyShowDestructiveCommandsInCommandPalette)
 
         defaults.runeWriteSafetyRequireApplyDryRun = false
         defaults.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defaults.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
 
         XCTAssertFalse(defaults.runeWriteSafetyRequireApplyDryRun)
         XCTAssertFalse(defaults.runeWriteSafetyRequireProductionSecondConfirmation)
+        XCTAssertTrue(defaults.runeWriteSafetyShowDestructiveCommandsInCommandPalette)
     }
 
     func testManagedFieldsDisplaySettingDefaultsOnAndPersists() {
@@ -1994,6 +2844,26 @@ final class RuneAppStateTests: XCTestCase {
                 && !state.isLoadingResourceDetails
                 && !state.isLoadingLogs
         }
+    }
+
+    @MainActor
+    func testTerminalPodInspectorDefaultsLogContainerForMultiContainerPods() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let pod = PodSummary(
+            name: "alpha-log-matrix",
+            namespace: "alpha-zone",
+            status: "Running",
+            containerNamesLine: "main, sidecar"
+        )
+        state.setPods([pod])
+        state.selectedSection = .terminal
+
+        viewModel.focusTerminalPodInspector(pod, reloadLogs: true, loadDetails: false)
+
+        XCTAssertEqual(state.selectedSection, .terminal)
+        XCTAssertEqual(state.selectedPod?.id, pod.id)
+        XCTAssertEqual(viewModel.selectedLogContainer, "main")
     }
 
     @MainActor
@@ -3325,6 +4195,492 @@ final class RuneAppStateTests: XCTestCase {
 
         let globalItem = viewModel.commandPaletteItems(query: "Provider clusters").first { $0.id == "context:context-alpha" }
         XCTAssertEqual(globalItem?.title, "Checkout Production")
+    }
+
+    @MainActor
+    func testCommandPaletteGlobalSearchIsBoundedButResourceAliasesStillReachRows() {
+        let state = RuneAppState()
+        state.setContexts((0..<250).map { KubeContext(name: "synthetic-context-\($0)") })
+        state.setPods([
+            PodSummary(name: "needle-pod", namespace: "default", status: "Running")
+        ])
+        state.setDeployments([
+            DeploymentSummary(name: "needle-deployment", namespace: "default", readyReplicas: 1, desiredReplicas: 1)
+        ])
+        state.setServices([
+            ServiceSummary(name: "needle-service", namespace: "default", type: "ClusterIP", clusterIP: "synthetic-ip")
+        ])
+        func resource(_ kind: KubeResourceKind, _ name: String, namespace: String? = "default") -> ClusterResourceSummary {
+            ClusterResourceSummary(kind: kind, name: name, namespace: namespace, primaryText: "ready", secondaryText: "synthetic")
+        }
+        state.setStatefulSets([resource(.statefulSet, "needle-statefulset")])
+        state.setDaemonSets([resource(.daemonSet, "needle-daemonset")])
+        state.setReplicaSets([resource(.replicaSet, "needle-replicaset")])
+        state.setEndpoints([resource(.endpoint, "needle-endpoints")])
+        state.setIngresses([resource(.ingress, "needle-ingress")])
+        state.setPersistentVolumeClaims([resource(.persistentVolumeClaim, "needle-pvc")])
+        state.setPersistentVolumes([resource(.persistentVolume, "needle-pv", namespace: nil)])
+        state.setStorageClasses([resource(.storageClass, "needle-storageclass", namespace: nil)])
+        state.setHorizontalPodAutoscalers([resource(.horizontalPodAutoscaler, "needle-hpa")])
+        state.setNetworkPolicies([resource(.networkPolicy, "needle-networkpolicy")])
+        state.setConfigMaps([resource(.configMap, "needle-configmap")])
+        state.setSecrets([resource(.secret, "needle-secret")])
+        state.setNodes([resource(.node, "needle-node", namespace: nil)])
+        state.setCronJobs([resource(.cronJob, "needle-cronjob")])
+        state.setJobs([resource(.job, "needle-job")])
+        state.setRBACData(
+            roles: [],
+            serviceAccounts: [resource(.serviceAccount, "needle-serviceaccount")],
+            roleBindings: [],
+            clusterRoles: [],
+            clusterRoleBindings: []
+        )
+        let viewModel = RuneAppViewModel(state: state)
+
+        let globalItems = viewModel.commandPaletteItems(query: "synthetic")
+        XCTAssertEqual(globalItems.count, 160)
+        XCTAssertTrue(globalItems.allSatisfy { $0.id.hasPrefix("context:") })
+
+        let podItems = viewModel.commandPaletteItems(query: ":po needle")
+        XCTAssertEqual(podItems.first?.id, "cmd:pod:default/needle-pod")
+        XCTAssertEqual(podItems.first?.title, "needle-pod")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":deploy needle").first?.title, "needle-deployment")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":svc needle").first?.title, "needle-service")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sts needle").first?.title, "needle-statefulset")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ds needle").first?.title, "needle-daemonset")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":rs needle").first?.title, "needle-replicaset")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ep needle").first?.title, "needle-endpoints")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ing needle").first?.title, "needle-ingress")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":pvc needle").first?.title, "needle-pvc")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":pv needle").first?.title, "needle-pv")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sc needle").first?.title, "needle-storageclass")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":hpa needle").first?.title, "needle-hpa")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":np needle").first?.title, "needle-networkpolicy")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":cm needle").first?.title, "needle-configmap")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sec needle").first?.title, "needle-secret")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":no needle").first?.title, "needle-node")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":cj needle").first?.title, "needle-cronjob")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":job needle").first?.title, "needle-job")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sa needle").first?.title, "needle-serviceaccount")
+
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "po needle").first?.id, "cmd:pod:default/needle-pod")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "deploy needle").first?.title, "needle-deployment")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "svc needle").first?.title, "needle-service")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "ep needle").first?.title, "needle-endpoints")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "cm needle").first?.title, "needle-configmap")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "sa needle").first?.title, "needle-serviceaccount")
+    }
+
+    @MainActor
+    func testCommandPaletteBareNamespaceCommandMatchesColonCommand() {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.setNamespaces(["default", "payments"])
+        state.isCommandPalettePresented = true
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ns pay").first?.id, "cmd:namespace:payments")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "ns pay").first?.id, "cmd:namespace:payments")
+
+        viewModel.executeCommandPaletteQuery("ns payments")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(state.selectedNamespace, "payments")
+    }
+
+    @MainActor
+    func testCommandPaletteServiceAccountCommandNavigatesWithoutStub() {
+        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let items = viewModel.commandPaletteItems(query: ":sa")
+
+        XCTAssertFalse(items.contains { $0.id.hasPrefix("stub:") })
+        XCTAssertFalse(items.contains { $0.subtitle.contains("Not in Rune yet") })
+        XCTAssertEqual(items.first?.id, "nav:sa")
+        XCTAssertEqual(items.first?.title, "ServiceAccounts")
+    }
+
+    @MainActor
+    func testCommandPaletteResourceKindShortcutsExecuteExpectedNavigation() throws {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let cases: [(query: String, section: RuneSection, kind: KubeResourceKind)] = [
+            (":po", .workloads, .pod),
+            ("po", .workloads, .pod),
+            (":deploy", .workloads, .deployment),
+            (":sts", .workloads, .statefulSet),
+            (":ds", .workloads, .daemonSet),
+            (":job", .workloads, .job),
+            (":cj", .workloads, .cronJob),
+            (":rs", .workloads, .replicaSet),
+            (":hpa", .workloads, .horizontalPodAutoscaler),
+            (":svc", .networking, .service),
+            (":ep", .networking, .endpoint),
+            ("ep", .networking, .endpoint),
+            (":ing", .networking, .ingress),
+            (":np", .networking, .networkPolicy),
+            (":cm", .config, .configMap),
+            ("cm", .config, .configMap),
+            (":sec", .config, .secret),
+            (":pvc", .storage, .persistentVolumeClaim),
+            (":pv", .storage, .persistentVolume),
+            (":sc", .storage, .storageClass),
+            (":no", .storage, .node),
+            (":sa", .rbac, .serviceAccount),
+            ("sa", .rbac, .serviceAccount),
+            (":role", .rbac, .role),
+            (":rb", .rbac, .roleBinding),
+            (":cr", .rbac, .clusterRole),
+            (":crb", .rbac, .clusterRoleBinding)
+        ]
+
+        for entry in cases {
+            let item = try XCTUnwrap(viewModel.commandPaletteItems(query: entry.query).first, "Missing item for \(entry.query)")
+            viewModel.executeCommandPaletteItem(item)
+            XCTAssertEqual(state.selectedSection, entry.section, entry.query)
+            XCTAssertEqual(state.selectedWorkloadKind, entry.kind, entry.query)
+        }
+    }
+
+    @MainActor
+    func testCommandPaletteEndpointAndServiceAccountQueriesSelectRowsEndToEnd() {
+        let state = RuneAppState()
+        state.selectedNamespace = "default"
+        let endpoint = ClusterResourceSummary(
+            kind: .endpoint,
+            name: "needle-endpoints",
+            namespace: "default",
+            primaryText: "2 addresses",
+            secondaryText: "Ready"
+        )
+        let serviceAccount = ClusterResourceSummary(
+            kind: .serviceAccount,
+            name: "needle-runner",
+            namespace: "default",
+            primaryText: "0 secrets",
+            secondaryText: "ServiceAccount"
+        )
+        state.setEndpoints([endpoint])
+        state.setRBACData(
+            roles: [],
+            serviceAccounts: [serviceAccount],
+            roleBindings: [],
+            clusterRoles: [],
+            clusterRoleBindings: []
+        )
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ep needle").first?.id, "cmd:ep:endpoint|default|needle-endpoints")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":sa runner").first?.id, "cmd:sa:serviceAccount|default|needle-runner")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "ep needle").first?.id, "cmd:ep:endpoint|default|needle-endpoints")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "sa runner").first?.id, "cmd:sa:serviceAccount|default|needle-runner")
+
+        state.isCommandPalettePresented = true
+        viewModel.executeCommandPaletteQuery(":ep needle")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .endpoint)
+        XCTAssertEqual(state.selectedEndpoint?.name, "needle-endpoints")
+
+        state.isCommandPalettePresented = true
+        viewModel.executeCommandPaletteQuery(":sa runner")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(state.selectedSection, .rbac)
+        XCTAssertEqual(state.selectedWorkloadKind, .serviceAccount)
+        XCTAssertEqual(state.selectedRBACResource?.name, "needle-runner")
+
+        state.isCommandPalettePresented = true
+        viewModel.executeCommandPaletteQuery("ep needle")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(state.selectedSection, .networking)
+        XCTAssertEqual(state.selectedWorkloadKind, .endpoint)
+        XCTAssertEqual(state.selectedEndpoint?.name, "needle-endpoints")
+
+        state.isCommandPalettePresented = true
+        viewModel.executeCommandPaletteQuery("sa runner")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(state.selectedSection, .rbac)
+        XCTAssertEqual(state.selectedWorkloadKind, .serviceAccount)
+        XCTAssertEqual(state.selectedRBACResource?.name, "needle-runner")
+    }
+
+    @MainActor
+    func testCommandPaletteDoesNotExposeClusterWriteOrDestructiveCommands() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+        let writeQueries = [
+            "delete",
+            ":delete",
+            ":del",
+            ":rm",
+            ":apply",
+            ":scale",
+            ":restart",
+            ":rollout",
+            ":rollback",
+            ":exec"
+        ]
+        let blockedTerms = [
+            "delete",
+            "remove",
+            "apply yaml",
+            "scale",
+            "restart rollout",
+            "rollback",
+            "exec"
+        ]
+
+        for query in writeQueries {
+            let indexedText = viewModel.commandPaletteItems(query: query)
+                .map { "\($0.id) \($0.title) \($0.subtitle)".lowercased() }
+                .joined(separator: "\n")
+
+            for term in blockedTerms {
+                XCTAssertFalse(indexedText.contains(term), "\(query) exposed \(term)")
+            }
+        }
+    }
+
+    @MainActor
+    func testCommandPaletteDestructiveDeleteRequiresExplicitOptInAndOnlyOpensConfirmation() throws {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertEqual(viewModel.commandPaletteItems(query: "delete").first?.title, "Delete Pod: api-0")
+        let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":delete").first)
+        XCTAssertEqual(item.title, "Delete Pod: api-0")
+        XCTAssertTrue(item.subtitle.contains("opens confirmation only"))
+
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertEqual(viewModel.pendingWriteAction, .delete(kind: .pod, name: "api-0"))
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("This cannot be undone."))
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testCommandPaletteDeleteQueryWorkflowOnlyArmsConfirmationAndDismissesPalette() throws {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.selectedSection = .networking
+        state.selectedWorkloadKind = .service
+        state.isCommandPalettePresented = true
+        state.setSelectedService(ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        viewModel.executeCommandPaletteQuery(":delete")
+
+        XCTAssertFalse(state.isCommandPalettePresented)
+        XCTAssertEqual(viewModel.pendingWriteAction, .delete(kind: .service, name: "api"))
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("api"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("This cannot be undone."))
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testCommandPaletteDestructiveDeleteUsesProductionSecondConfirmation() throws {
+        let previousPalette = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        defer {
+            restoreUserDefaultsValue(previousPalette, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+            restoreUserDefaultsValue(previousProduction, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "prod")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":rm").first)
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertEqual(viewModel.pendingWriteAction, .delete(kind: .pod, name: "api-0"))
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertNil(viewModel.pendingProductionDestructiveConfirmation)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertEqual(viewModel.pendingWriteAction, .delete(kind: .pod, name: "api-0"))
+        XCTAssertEqual(viewModel.pendingProductionDestructiveConfirmation, .delete(kind: .pod, name: "api-0"))
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Final confirmation required"))
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+    }
+
+    @MainActor
+    func testCommandPaletteDeleteActionCannotBypassDisabledSettingWhenConstructedDirectly() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+        let item = CommandPaletteItem(
+            id: "synthetic-delete-bypass",
+            title: "Delete Pod: api-0",
+            subtitle: "Synthetic direct action",
+            symbolName: "trash",
+            action: .deleteSelectedResource
+        )
+
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertNil(viewModel.pendingProductionDestructiveConfirmation)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testCommandPaletteDestructiveDeleteRequiresSelectedResourceEvenWhenOptedIn() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.isCommandPalettePresented = true
+        let viewModel = RuneAppViewModel(state: state)
+
+        XCTAssertTrue(viewModel.commandPaletteItems(query: ":delete").isEmpty)
+        XCTAssertTrue(viewModel.commandPaletteItems(query: ":rm").isEmpty)
+
+        viewModel.executeCommandPaletteQuery(":delete")
+
+        XCTAssertTrue(state.isCommandPalettePresented)
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertNil(viewModel.pendingProductionDestructiveConfirmation)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testCommandPaletteDestructiveCommandsStayHiddenAcrossSelectedResourceKindsWhenOptedOut() {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let cases: [(String, (RuneAppState) -> Void)] = [
+            ("pod", { state in
+                state.selectedSection = .workloads
+                state.selectedWorkloadKind = .pod
+                state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+            }),
+            ("deployment", { state in
+                state.selectedSection = .workloads
+                state.selectedWorkloadKind = .deployment
+                state.setSelectedDeployment(DeploymentSummary(name: "api", namespace: "default", readyReplicas: 1, desiredReplicas: 1))
+            }),
+            ("service", { state in
+                state.selectedSection = .networking
+                state.selectedWorkloadKind = .service
+                state.setSelectedService(ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"))
+            }),
+            ("configmap", { state in
+                state.selectedSection = .config
+                state.selectedWorkloadKind = .configMap
+                state.setSelectedConfigMap(ClusterResourceSummary(kind: .configMap, name: "settings", namespace: "default", primaryText: "2 keys", secondaryText: "Data"))
+            })
+        ]
+
+        for (label, configure) in cases {
+            let state = RuneAppState()
+            state.selectedContext = KubeContext(name: "synthetic-dev")
+            state.selectedNamespace = "default"
+            configure(state)
+            let viewModel = RuneAppViewModel(state: state)
+
+            XCTAssertTrue(viewModel.commandPaletteItems(query: ":delete").isEmpty, label)
+            XCTAssertTrue(viewModel.commandPaletteItems(query: ":rm").isEmpty, label)
+
+            viewModel.executeCommandPaletteQuery(":delete")
+
+            XCTAssertNil(viewModel.pendingWriteAction, label)
+            XCTAssertNil(viewModel.pendingProductionDestructiveConfirmation, label)
+            XCTAssertTrue(state.writeAuditLog.isEmpty, label)
+            XCTAssertNil(state.lastError, label)
+        }
+    }
+
+    @MainActor
+    func testCommandPaletteDestructiveDeleteHonorsReadOnlyModeBeforeConfirmation() throws {
+        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
+        defer {
+            restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        }
+
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-dev")
+        state.selectedNamespace = "default"
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .pod
+        state.isReadOnlyMode = true
+        state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
+        let viewModel = RuneAppViewModel(state: state)
+
+        let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":del").first)
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertNil(viewModel.pendingProductionDestructiveConfirmation)
+        XCTAssertEqual(state.lastError, "Read-only mode is on; write actions are blocked.")
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
     }
 
     @MainActor
@@ -7261,7 +8617,7 @@ final class RuneAppStateTests: XCTestCase {
             primaryText: "Rules: 4",
             secondaryText: "ClusterRole"
         )
-        state.setRBACData(roles: [], roleBindings: [], clusterRoles: [clusterRole], clusterRoleBindings: [])
+        state.setRBACData(roles: [], serviceAccounts: [], roleBindings: [], clusterRoles: [clusterRole], clusterRoleBindings: [])
         let checker = RecordingRBACCanIChecker(result: false)
         let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
 
@@ -7326,7 +8682,7 @@ final class RuneAppStateTests: XCTestCase {
             primaryText: "6 rules",
             secondaryText: "Cluster role"
         )
-        state.setRBACData(roles: [], roleBindings: [binding], clusterRoles: [clusterRole], clusterRoleBindings: [])
+        state.setRBACData(roles: [], serviceAccounts: [], roleBindings: [binding], clusterRoles: [clusterRole], clusterRoleBindings: [])
         state.setSelectedRBACResource(binding)
         state.selectedSection = .rbac
         state.selectedWorkloadKind = .roleBinding
@@ -7370,6 +8726,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         state.setRBACData(
             roles: [role],
+            serviceAccounts: [],
             roleBindings: [binding, otherNamespaceBinding],
             clusterRoles: [],
             clusterRoleBindings: []
@@ -7474,6 +8831,16 @@ private struct EmptyKubeConfigDiscoverer: KubeConfigDiscovering {
     }
 }
 
+private final class MutableKubeConfigDiscoverer: KubeConfigDiscovering, @unchecked Sendable {
+    var urls: [URL] = []
+    private(set) var callCount = 0
+
+    func discoverCandidateFiles() -> [URL] {
+        callCount += 1
+        return urls
+    }
+}
+
 @MainActor
 private struct FixedKubeConfigPicker: KubeConfigPicking {
     let urls: [URL]
@@ -7514,6 +8881,131 @@ private struct MockCloudKubeConfigImporter: CloudKubeConfigImporting {
 
     func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
         try result.get()
+    }
+}
+
+private final class CountingCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let preview = CloudKubeConfigCommandPreview(
+        executable: "aws",
+        arguments: ["eks", "update-kubeconfig"],
+        displayCommand: "aws eks update-kubeconfig"
+    )
+    private var storedPreviewCallCount = 0
+    private var storedImportCallCount = 0
+
+    var previewCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedPreviewCallCount
+    }
+
+    var importCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedImportCallCount
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        lock.withLock {
+            storedPreviewCallCount += 1
+        }
+        return preview
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        lock.withLock {
+            storedImportCallCount += 1
+        }
+        return CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "", stderr: ""),
+            discoveredURLs: [],
+            reviews: []
+        )
+    }
+}
+
+private final class SequencedCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let preview: CloudKubeConfigCommandPreview
+    private var results: [Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>]
+    private var storedImportCallCount = 0
+
+    var importCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedImportCallCount
+    }
+
+    init(
+        preview: CloudKubeConfigCommandPreview,
+        results: [Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>]
+    ) {
+        self.preview = preview
+        self.results = results
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        preview
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        let result = lock.withLock {
+            storedImportCallCount += 1
+            guard !results.isEmpty else {
+                return Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>.failure(.missingRequiredField("Result"))
+            }
+            return results.removeFirst()
+        }
+        return try result.get()
+    }
+}
+
+private final class BlockingCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: CloudKubeConfigImportResult
+    private var continuation: CheckedContinuation<CloudKubeConfigImportResult, Error>?
+    private var storedImportCallCount = 0
+
+    var importCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedImportCallCount
+    }
+
+    var hasSuspendedImport: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return continuation != nil
+    }
+
+    init(result: CloudKubeConfigImportResult) {
+        self.result = result
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        result.command
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        lock.withLock {
+            storedImportCallCount += 1
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.withLock {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func resume() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
     }
 }
 

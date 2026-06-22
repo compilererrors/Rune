@@ -312,6 +312,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.writeSafetyRequireCopyableCommand) private var requireCopyableCommand = true
     @AppStorage(RuneSettingsKeys.writeSafetyRequirePostActionVerification) private var requirePostActionVerification = true
     @AppStorage(RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation) private var requireProductionSecondConfirmation = true
+    @AppStorage(RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette) private var showDestructivePaletteCommands = false
     @State private var cacheClearStatus: String?
     @State private var themeReloadNonce = 0
     @State private var recentAppearanceThemeIDs = UserDefaults.standard.runeAppearanceRecentThemes
@@ -723,7 +724,7 @@ public struct RunePreferencesView: View {
             subtitle: settingsString(.settingsKeyBindingsSubtitle)
         ) {
             settingsSection("Defaults") {
-                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `:`, `/`, `d`, `e`, `l`, `s`, `y`, `Ctrl-D`, and `Shift-F` follow k9s conventions; history actions are Rune mappings built around the same workflow.")
+                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `:` stays the logical k9s command-mode key across keyboard layouts; Swedish keyboards can also bind Command Palette to `Shift-.`.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -903,6 +904,12 @@ public struct RunePreferencesView: View {
                     "Require production second confirmation",
                     help: "Destructive actions in production-detected contexts require an extra review step before Rune sends the write.",
                     isOn: $requireProductionSecondConfirmation
+                )
+
+                settingsToggleRow(
+                    "Palette destructive commands",
+                    help: "Opt-in only. Shows selected-resource destructive commands such as Delete in Command Palette. Running one only opens Rune's write confirmation; it never writes directly.",
+                    isOn: $showDestructivePaletteCommands
                 )
             }
 
@@ -1506,7 +1513,7 @@ public struct RunePreferencesView: View {
     }
 
     private static var availableShortcutKeys: [String] {
-        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["[", "]", "/", ":", "?", "left", "right"]
+        Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["[", "]", "/", ".", ":", "?", "left", "right"]
     }
 
     private static func displayShortcutKey(_ key: String) -> String {

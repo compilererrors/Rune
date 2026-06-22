@@ -86,7 +86,7 @@ public struct RuneKeyboardShortcut: Equatable, Hashable, Sendable {
             return trimmed
         }
         guard trimmed.count == 1, let scalar = trimmed.unicodeScalars.first else { return nil }
-        guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]", "/", ":", "?"].contains(trimmed) else { return nil }
+        guard CharacterSet.alphanumerics.contains(scalar) || ["[", "]", "/", ".", ":", "?"].contains(trimmed) else { return nil }
         return trimmed
     }
 

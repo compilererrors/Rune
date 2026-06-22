@@ -304,6 +304,71 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         )
     }
 
+    func testCloudCommandBuilderTrimsFieldsAndOmitsBlankOptionalArguments() throws {
+        let builder = CloudKubeConfigCommandBuilder()
+
+        let aks = try builder.preview(for: CloudKubeConfigImportRequest(
+            provider: .aks,
+            clusterName: " synthetic aks ",
+            resourceGroup: " synthetic group ",
+            profileOrSubscription: " ",
+            targetKubeconfigPath: " /tmp/rune synthetic/aks config ",
+            overwriteExisting: false
+        ))
+        XCTAssertEqual(aks.arguments, [
+            "aks", "get-credentials",
+            "--resource-group", "synthetic group",
+            "--name", "synthetic aks",
+            "--file", "/tmp/rune synthetic/aks config"
+        ])
+        XCTAssertFalse(aks.arguments.contains("--subscription"))
+        XCTAssertFalse(aks.arguments.contains("--overwrite-existing"))
+        XCTAssertEqual(
+            aks.displayCommand,
+            "az aks get-credentials --resource-group 'synthetic group' --name 'synthetic aks' --file '/tmp/rune synthetic/aks config'"
+        )
+
+        let eks = try builder.preview(for: CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: " synthetic;eks ",
+            regionOrLocation: " eu-north-1 ",
+            profileOrSubscription: " synthetic profile ",
+            roleARN: " ",
+            targetKubeconfigPath: " /tmp/rune synthetic/eks config "
+        ))
+        XCTAssertEqual(eks.arguments, [
+            "eks", "update-kubeconfig",
+            "--region", "eu-north-1",
+            "--name", "synthetic;eks",
+            "--kubeconfig", "/tmp/rune synthetic/eks config",
+            "--profile", "synthetic profile"
+        ])
+        XCTAssertFalse(eks.arguments.contains("--role-arn"))
+        XCTAssertEqual(
+            eks.displayCommand,
+            "aws eks update-kubeconfig --region eu-north-1 --name 'synthetic;eks' --kubeconfig '/tmp/rune synthetic/eks config' --profile 'synthetic profile'"
+        )
+
+        let gke = try builder.preview(for: CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: " synthetic'gke ",
+            regionOrLocation: " europe-north1 ",
+            projectID: " synthetic project ",
+            targetKubeconfigPath: " /tmp/rune synthetic/gke config "
+        ))
+        XCTAssertEqual(gke.arguments, [
+            "container", "clusters", "get-credentials",
+            "synthetic'gke",
+            "--location", "europe-north1",
+            "--project", "synthetic project"
+        ])
+        XCTAssertEqual(gke.environment["KUBECONFIG"], "/tmp/rune synthetic/gke config")
+        XCTAssertEqual(
+            gke.displayCommand,
+            "gcloud container clusters get-credentials 'synthetic'\\''gke' --location europe-north1 --project 'synthetic project'"
+        )
+    }
+
     func testCloudImporterCanTargetIsolatedKubeconfigFilesForLiveProviderRuns() throws {
         let importer = CloudKubeConfigCLIImporter(
             runner: RecordingCloudCommandRunner(),

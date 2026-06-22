@@ -1784,6 +1784,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedNamespace = resource.namespace ?? "default"
         state.setRBACData(
             roles: resource.kind == .role ? [resource] : [],
+            serviceAccounts: resource.kind == .serviceAccount ? [resource] : [],
             roleBindings: resource.kind == .roleBinding ? [resource] : [],
             clusterRoles: resource.kind == .clusterRole ? [resource] : [],
             clusterRoleBindings: resource.kind == .clusterRoleBinding ? [resource] : []

@@ -69,6 +69,10 @@ final class AuthDoctorEntryActionResolverTests: XCTestCase {
             .resource(section: .networking, kind: .service)
         )
         XCTAssertEqual(
+            AuthDoctorEntryActionResolver.resolve(check: check("rbac-endpoints-list"), hasPodTarget: false)?.destination,
+            .resource(section: .networking, kind: .endpoint)
+        )
+        XCTAssertEqual(
             AuthDoctorEntryActionResolver.resolve(check: check("rbac-ingresses-list"), hasPodTarget: false)?.destination,
             .resource(section: .networking, kind: .ingress)
         )
@@ -103,6 +107,10 @@ final class AuthDoctorEntryActionResolverTests: XCTestCase {
         XCTAssertEqual(
             AuthDoctorEntryActionResolver.resolve(check: check("rbac-roles-list"), hasPodTarget: false)?.destination,
             .resource(section: .rbac, kind: .role)
+        )
+        XCTAssertEqual(
+            AuthDoctorEntryActionResolver.resolve(check: check("rbac-serviceaccounts-list"), hasPodTarget: false)?.destination,
+            .resource(section: .rbac, kind: .serviceAccount)
         )
         XCTAssertEqual(
             AuthDoctorEntryActionResolver.resolve(check: check("rbac-rolebindings-list"), hasPodTarget: false)?.destination,

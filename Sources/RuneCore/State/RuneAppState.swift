@@ -70,6 +70,7 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedStorageClass: ClusterResourceSummary?
     @Published public var selectedHorizontalPodAutoscaler: ClusterResourceSummary?
     @Published public var selectedNetworkPolicy: ClusterResourceSummary?
+    @Published public var selectedEndpoint: ClusterResourceSummary?
     @Published public var selectedIngress: ClusterResourceSummary?
     @Published public var selectedConfigMap: ClusterResourceSummary?
     @Published public var selectedSecret: ClusterResourceSummary?
@@ -91,6 +92,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var storageClasses: [ClusterResourceSummary] = []
     @Published public private(set) var horizontalPodAutoscalers: [ClusterResourceSummary] = []
     @Published public private(set) var networkPolicies: [ClusterResourceSummary] = []
+    @Published public private(set) var endpoints: [ClusterResourceSummary] = []
     @Published public private(set) var ingresses: [ClusterResourceSummary] = []
     @Published public private(set) var configMaps: [ClusterResourceSummary] = []
     @Published public private(set) var secrets: [ClusterResourceSummary] = []
@@ -98,6 +100,7 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var helmReleases: [HelmReleaseSummary] = []
     @Published public private(set) var operatorResources: [OperatorResourceSummary] = []
     @Published public private(set) var rbacRoles: [ClusterResourceSummary] = []
+    @Published public private(set) var serviceAccounts: [ClusterResourceSummary] = []
     @Published public private(set) var rbacRoleBindings: [ClusterResourceSummary] = []
     @Published public private(set) var rbacClusterRoles: [ClusterResourceSummary] = []
     @Published public private(set) var rbacClusterRoleBindings: [ClusterResourceSummary] = []
@@ -337,23 +340,38 @@ public final class RuneAppState: ObservableObject {
         self.namespaces = normalized
     }
 
+    private func assignIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<RuneAppState, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value {
+            self[keyPath: keyPath] = value
+        }
+    }
+
     public func setPods(_ pods: [PodSummary]) {
-        self.pods = pods
-        selectedPodIDs.formIntersection(Set(pods.map(\.id)))
+        assignIfChanged(\.pods, pods)
+        let validSelectedPodIDs = selectedPodIDs.intersection(Set(pods.map(\.id)))
+        if selectedPodIDs != validSelectedPodIDs {
+            selectedPodIDs = validSelectedPodIDs
+        }
         if let current = selectedPod,
            let match = pods.first(where: { $0.id == current.id }) {
-            selectedPod = match
+            if selectedPod != match {
+                selectedPod = match
+            }
             return
         }
-        selectedPod = pods.first
+        if selectedPod != pods.first {
+            selectedPod = pods.first
+        }
     }
 
     public func setDeployments(_ deployments: [DeploymentSummary]) {
-        self.deployments = deployments
+        assignIfChanged(\.deployments, deployments)
         if let selectedDeployment, deployments.contains(selectedDeployment) {
             return
         }
-        selectedDeployment = deployments.first
+        if selectedDeployment != deployments.first {
+            selectedDeployment = deployments.first
+        }
     }
 
     public func setServices(_ services: [ServiceSummary]) {
@@ -444,6 +462,12 @@ public final class RuneAppState: ObservableObject {
         selectedNetworkPolicy = resources.first
     }
 
+    public func setEndpoints(_ resources: [ClusterResourceSummary]) {
+        endpoints = resources
+        if let selectedEndpoint, resources.contains(selectedEndpoint) { return }
+        selectedEndpoint = resources.first
+    }
+
     public func setIngresses(_ resources: [ClusterResourceSummary]) {
         ingresses = resources
         if let selectedIngress, resources.contains(selectedIngress) { return }
@@ -470,11 +494,13 @@ public final class RuneAppState: ObservableObject {
 
     public func setRBACData(
         roles: [ClusterResourceSummary],
+        serviceAccounts: [ClusterResourceSummary],
         roleBindings: [ClusterResourceSummary],
         clusterRoles: [ClusterResourceSummary],
         clusterRoleBindings: [ClusterResourceSummary]
     ) {
         rbacRoles = roles
+        self.serviceAccounts = serviceAccounts
         rbacRoleBindings = roleBindings
         rbacClusterRoles = clusterRoles
         rbacClusterRoleBindings = clusterRoleBindings
@@ -489,6 +515,7 @@ public final class RuneAppState: ObservableObject {
         let listForKind: [ClusterResourceSummary] = {
             switch selectedWorkloadKind {
             case .role: return rbacRoles
+            case .serviceAccount: return serviceAccounts
             case .roleBinding: return rbacRoleBindings
             case .clusterRole: return rbacClusterRoles
             case .clusterRoleBinding: return rbacClusterRoleBindings
@@ -523,16 +550,16 @@ public final class RuneAppState: ObservableObject {
         clusterMemoryPercent: Int? = nil,
         events: [EventSummary]
     ) {
-        overviewPods = pods
-        overviewDeploymentsCount = deploymentsCount
-        overviewServicesCount = servicesCount
-        overviewIngressesCount = ingressesCount
-        overviewConfigMapsCount = configMapsCount
-        overviewCronJobsCount = cronJobsCount
-        overviewNodesCount = nodesCount
-        overviewClusterCPUPercent = clusterCPUPercent
-        overviewClusterMemoryPercent = clusterMemoryPercent
-        overviewEvents = events
+        assignIfChanged(\.overviewPods, pods)
+        assignIfChanged(\.overviewDeploymentsCount, deploymentsCount)
+        assignIfChanged(\.overviewServicesCount, servicesCount)
+        assignIfChanged(\.overviewIngressesCount, ingressesCount)
+        assignIfChanged(\.overviewConfigMapsCount, configMapsCount)
+        assignIfChanged(\.overviewCronJobsCount, cronJobsCount)
+        assignIfChanged(\.overviewNodesCount, nodesCount)
+        assignIfChanged(\.overviewClusterCPUPercent, clusterCPUPercent)
+        assignIfChanged(\.overviewClusterMemoryPercent, clusterMemoryPercent)
+        assignIfChanged(\.overviewEvents, events)
     }
 
     public func setOverviewClusterUsage(cpuPercent: Int?, memoryPercent: Int?) {
@@ -629,6 +656,10 @@ public final class RuneAppState: ObservableObject {
 
     public func setSelectedNetworkPolicy(_ resource: ClusterResourceSummary?) {
         selectedNetworkPolicy = resource
+    }
+
+    public func setSelectedEndpoint(_ resource: ClusterResourceSummary?) {
+        selectedEndpoint = resource
     }
 
     public func setSelectedIngress(_ resource: ClusterResourceSummary?) {

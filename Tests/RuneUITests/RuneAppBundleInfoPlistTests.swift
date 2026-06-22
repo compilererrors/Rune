@@ -34,6 +34,81 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("<false/>"))
     }
 
+    func testReleasePrivacyDoesNotLinkTelemetryAnalyticsOrUpdaterSDKs() throws {
+        let forbiddenSDKFragments = [
+            "Firebase",
+            "Crashlytics",
+            "Sentry",
+            "Amplitude",
+            "Mixpanel",
+            "Segment",
+            "PostHog",
+            "TelemetryDeck",
+            "AppCenter",
+            "Countly",
+            "Instabug",
+            "Sparkle"
+        ]
+        let forbiddenSourceFragments = [
+            "import Firebase",
+            "FirebaseApp.configure",
+            "Crashlytics.crashlytics",
+            "import Sentry",
+            "SentrySDK",
+            "import Amplitude",
+            "Amplitude.instance",
+            "import Mixpanel",
+            "Mixpanel.mainInstance",
+            "import Segment",
+            "SEGAnalytics",
+            "import PostHog",
+            "PostHogSDK",
+            "import TelemetryDeck",
+            "TelemetryDeck.",
+            "import AppCenter",
+            "MSAppCenter",
+            "import Countly",
+            "Countly.sharedInstance",
+            "import Instabug",
+            "Instabug.start",
+            "import Sparkle",
+            "SPUUpdater"
+        ]
+        let packageContents = try String(contentsOf: repositoryRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+
+        XCTAssertTrue(packageContents.contains("dependencies: []"))
+        for fragment in forbiddenSDKFragments {
+            XCTAssertFalse(packageContents.contains(fragment), "Package.swift must not add telemetry, analytics, crash-reporting, or updater SDK \(fragment).")
+        }
+
+        let sources = repositoryRoot.appendingPathComponent("Sources")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: sources,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))
+
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let contents = try String(contentsOf: fileURL, encoding: .utf8)
+            for fragment in forbiddenSourceFragments {
+                XCTAssertFalse(
+                    contents.contains(fragment),
+                    "\(fileURL.path) must not reference telemetry, analytics, crash-reporting, or updater SDK symbol \(fragment)."
+                )
+            }
+        }
+    }
+
+    func testReleaseCopyDisclosesKubeconfigYamlReferenceSupport() throws {
+        let readme = try String(contentsOf: repositoryRoot.appendingPathComponent("README.md"), encoding: .utf8)
+
+        XCTAssertTrue(readme.contains("Rune supports common kubeconfig YAML references"))
+        XCTAssertTrue(readme.contains("anchors"))
+        XCTAssertTrue(readme.contains("aliases"))
+        XCTAssertTrue(readme.contains("merge keys"))
+        XCTAssertTrue(readme.contains("redacted in the preview"))
+    }
+
     private func configuredLocalBundleIdentifier() throws -> String {
         let identifiers = repositoryRoot.appendingPathComponent("Sources/RuneCore/RuneApplicationIdentifiers.swift")
         let contents = try String(contentsOf: identifiers, encoding: .utf8)

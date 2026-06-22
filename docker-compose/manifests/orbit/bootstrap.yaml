@@ -250,6 +250,68 @@ spec:
     - port: 8080
       targetPort: 8080
 ---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: alpha-log-matrix
+  namespace: alpha-zone
+  annotations:
+    kubectl.kubernetes.io/default-container: main
+  labels:
+    app: alpha-log-matrix
+    tier: diagnostics
+spec:
+  restartPolicy: Always
+  initContainers:
+    - name: init-log
+      image: busybox:1.36
+      command: ["/bin/sh", "-ec"]
+      args:
+        - echo "alpha-log-matrix init complete"
+  containers:
+    - name: main
+      image: busybox:1.36
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          index=0
+          while true; do
+            echo "alpha-log-matrix main tick index=${index}"
+            index=$((index + 1))
+            sleep 2
+          done
+    - name: sidecar
+      image: busybox:1.36
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          index=0
+          while true; do
+            echo "alpha-log-matrix sidecar tick index=${index}"
+            index=$((index + 1))
+            sleep 2
+          done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: alpha-previous-log-probe
+  namespace: alpha-zone
+  labels:
+    app: alpha-previous-log-probe
+    tier: diagnostics
+spec:
+  restartPolicy: Always
+  containers:
+    - name: crasher
+      image: busybox:1.36
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          echo "alpha-previous-log-probe previous marker"
+          sleep 1
+          exit 1
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
