@@ -129,12 +129,13 @@ public enum LogArchiveBuilder {
 
     public static func splitMergedLogsByPod(mergedText: String, podNames: [String]) -> [String: String] {
         let knownPods = Set(podNames)
-        var output: [String: [String]] = [:]
+        var output: [String: String] = [:]
+        var wroteLine = Set<String>()
         for podName in podNames {
-            output[podName] = []
+            output[podName] = ""
         }
 
-        for line in mergedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        for line in mergedText.split(separator: "\n", omittingEmptySubsequences: false) {
             guard line.first == "[",
                   let close = line.firstIndex(of: "]")
             else { continue }
@@ -142,12 +143,15 @@ public enum LogArchiveBuilder {
             guard knownPods.contains(podName) else { continue }
             let textStart = line.index(after: close)
             let text = String(line[textStart...]).trimmingCharacters(in: .whitespaces)
-            output[podName, default: []].append(text)
+            if wroteLine.contains(podName) {
+                output[podName, default: ""].append("\n")
+            } else {
+                wroteLine.insert(podName)
+            }
+            output[podName, default: ""].append(text)
         }
 
-        return output.mapValues { lines in
-            lines.joined(separator: "\n")
-        }
+        return output
     }
 
     private static func podContainerOrder(_ lhs: PodLogArchiveRecord, _ rhs: PodLogArchiveRecord) -> Bool {

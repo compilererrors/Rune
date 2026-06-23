@@ -877,6 +877,33 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.35)
     }
 
+    func testLogArchiveHighCardinalityPodSplitBenchmarkKPI() {
+        let pods = (0..<240).map { "pod-\(String(format: "%03d", $0))" }
+        let text = (0..<48_000)
+            .map { index in
+                "[\(pods[index % pods.count])] 2026-05-09T10:00:\(String(format: "%02d", index % 60))Z message=\(index)"
+            }
+            .joined(separator: "\n")
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = LogArchiveBuilder.splitMergedLogsByPod(mergedText: text, podNames: pods)
+        }
+
+        var split: [String: String] = [:]
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            split = LogArchiveBuilder.splitMergedLogsByPod(mergedText: text, podNames: pods)
+        }
+
+        XCTAssertEqual(split.count, 240)
+        XCTAssertTrue(split["pod-000"]?.contains("message=0") == true)
+        XCTAssertTrue(split["pod-239"]?.contains("message=239") == true)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.20,
+            "KPI: splitting a 48k-line unified log across 240 pods should stay below 200ms in debug."
+        )
+    }
+
     func testLogZipExportBenchmarkKPI() throws {
         let pods = (0..<12).map { "api-\($0)" }
         let text = (0..<24_000)
@@ -1000,6 +1027,84 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertGreaterThan(zip.count, text.utf8.count / 2)
         XCTAssertLessThan(elapsedSeconds, 0.45, "KPI: metadata should not push a 24k-line, 12-pod log archive above the 450ms export target.")
         XCTAssertTrue(String(decoding: zip, as: UTF8.self).contains("metadata-20260507T100000Z.json"))
+    }
+
+    @MainActor
+    func testConfiguredFolderExportCollisionBenchmarkKPI() throws {
+        let payload = Data("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: settings\n".utf8)
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            guard let folderURL = try? makeBenchmarkTemporaryDirectory(prefix: "rune-configured-export-collision-measure") else {
+                XCTFail("Failed to create benchmark export folder")
+                return
+            }
+            defer { try? FileManager.default.removeItem(at: folderURL) }
+            try? prefillBenchmarkExportCollisions(in: folderURL, baseName: "logs", ext: "yaml", count: 250)
+            let exporter = ConfiguredFolderExporter(
+                resolver: BenchmarkConfiguredExportDestinationResolver(folderURL: folderURL),
+                opener: BenchmarkConfiguredExportFileOpener(),
+                securityScopedAccess: BenchmarkSecurityScopedResourceAccess(startsAccessing: false)
+            )
+            _ = try? exporter.save(
+                data: payload,
+                suggestedName: "logs.yaml",
+                allowedFileTypes: ["yaml"],
+                kind: .plainText,
+                openAfterSave: false
+            )
+        }
+
+        let folderURL = try makeBenchmarkTemporaryDirectory(prefix: "rune-configured-export-collision-kpi")
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+        try prefillBenchmarkExportCollisions(in: folderURL, baseName: "logs", ext: "yaml", count: 250)
+        let exporter = ConfiguredFolderExporter(
+            resolver: BenchmarkConfiguredExportDestinationResolver(folderURL: folderURL),
+            opener: BenchmarkConfiguredExportFileOpener(),
+            securityScopedAccess: BenchmarkSecurityScopedResourceAccess(startsAccessing: false)
+        )
+        var savedURL: URL?
+        let elapsedSeconds = try minimumThrowingElapsedSeconds(repetitions: 5) {
+            let url = try exporter.save(
+                data: payload,
+                suggestedName: "logs.yaml",
+                allowedFileTypes: ["yaml"],
+                kind: .plainText,
+                openAfterSave: false
+            )
+            savedURL = url
+            try FileManager.default.removeItem(at: url)
+        }
+
+        XCTAssertEqual(savedURL?.lastPathComponent, "logs-251.yaml")
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.08,
+            "KPI: resolving a configured export name after 250 existing collisions should stay below 80ms in debug."
+        )
+    }
+
+    @MainActor
+    func testConfiguredFolderSaveAndOpenHandoffBenchmarkKPI() throws {
+        let payload = Data("apiVersion: v1\nkind: Pod\nmetadata:\n  name: benchmark\n".utf8)
+        let batchSize = 150
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = try? runConfiguredFolderSaveAndOpenBatch(payload: payload, count: batchSize)
+        }
+
+        var result: (savedCount: Int, openedCount: Int, deferredScopeStopCount: Int)?
+        let elapsedSeconds = try minimumThrowingElapsedSeconds(repetitions: 3) {
+            result = try runConfiguredFolderSaveAndOpenBatch(payload: payload, count: batchSize)
+        }
+
+        XCTAssertEqual(result?.savedCount, batchSize)
+        XCTAssertEqual(result?.openedCount, batchSize)
+        XCTAssertEqual(result?.deferredScopeStopCount, batchSize)
+        XCTAssertLessThan(
+            elapsedSeconds,
+            0.30,
+            "KPI: configured Save and Open should write and hand off 150 small manifests below 300ms in debug."
+        )
     }
 
     @MainActor
@@ -5403,6 +5508,65 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.10)
     }
 
+    private func makeBenchmarkTemporaryDirectory(prefix: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func prefillBenchmarkExportCollisions(
+        in folderURL: URL,
+        baseName: String,
+        ext: String,
+        count: Int
+    ) throws {
+        guard count > 0 else { return }
+        for index in 0..<count {
+            let name = index == 0 ? "\(baseName).\(ext)" : "\(baseName)-\(index + 1).\(ext)"
+            try Data("existing".utf8).write(to: folderURL.appendingPathComponent(name))
+        }
+    }
+
+    @MainActor
+    private func runConfiguredFolderSaveAndOpenBatch(
+        payload: Data,
+        count: Int
+    ) throws -> (savedCount: Int, openedCount: Int, deferredScopeStopCount: Int) {
+        let folderURL = try makeBenchmarkTemporaryDirectory(prefix: "rune-configured-export-open-kpi")
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+        let opener = BenchmarkConfiguredExportFileOpener()
+        let securityScope = BenchmarkSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: BenchmarkConfiguredExportDestinationResolver(
+                folderURL: folderURL,
+                textOpenerBundleIdentifier: "com.example.TextViewer"
+            ),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+
+        var savedCount = 0
+        for index in 0..<count {
+            let url = try exporter.save(
+                data: payload,
+                suggestedName: "manifest-\(index).yaml",
+                allowedFileTypes: ["yaml"],
+                kind: .plainText,
+                openAfterSave: true
+            )
+            if FileManager.default.fileExists(atPath: url.path) {
+                savedCount += 1
+            }
+        }
+
+        return (
+            savedCount: savedCount,
+            openedCount: opener.openedCount,
+            deferredScopeStopCount: securityScope.deferredStopCount
+        )
+    }
+
     @MainActor
     private func makeLogToolbarController(
         width: CGFloat,
@@ -5480,6 +5644,58 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
         controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 160)
         return controller
+    }
+}
+
+private struct BenchmarkConfiguredExportDestinationResolver: ExportDestinationResolving {
+    let folderURL: URL?
+    var textOpenerBundleIdentifier: String?
+    var archiveOpenerBundleIdentifier: String?
+    var usesPrivacySafeFilenames = false
+
+    func exportFolderURL() throws -> URL? {
+        folderURL
+    }
+
+    func preferredOpenerBundleIdentifier(for kind: ConfiguredExportFileKind) -> String? {
+        switch kind {
+        case .plainText:
+            return textOpenerBundleIdentifier
+        case .archive:
+            return archiveOpenerBundleIdentifier
+        }
+    }
+}
+
+@MainActor
+private final class BenchmarkConfiguredExportFileOpener: ExportFileOpening {
+    private(set) var openedCount = 0
+
+    func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws {
+        openedCount += 1
+    }
+}
+
+@MainActor
+private final class BenchmarkSecurityScopedResourceAccess: SecurityScopedResourceAccessing {
+    let startsAccessing: Bool
+    private(set) var stopCount = 0
+    private(set) var deferredStopCount = 0
+
+    init(startsAccessing: Bool) {
+        self.startsAccessing = startsAccessing
+    }
+
+    func startAccessing(_ url: URL) -> Bool {
+        startsAccessing
+    }
+
+    func stopAccessing(_ url: URL) {
+        stopCount += 1
+    }
+
+    func stopAccessingAfterOpenHandoff(_ url: URL) {
+        deferredStopCount += 1
     }
 }
 

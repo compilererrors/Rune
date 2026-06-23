@@ -51,6 +51,17 @@ private enum RuneSettingsMetrics {
 private struct ExportOpenerRecommendation {
     let appName: String
     let kind: ConfiguredExportFileKind
+    let recommendedBundleIdentifier: String?
+
+    init(
+        appName: String,
+        kind: ConfiguredExportFileKind,
+        recommendedBundleIdentifier: String? = nil
+    ) {
+        self.appName = appName
+        self.kind = kind
+        self.recommendedBundleIdentifier = recommendedBundleIdentifier
+    }
 
     var detectedTitle: String {
         switch kind {
@@ -58,6 +69,15 @@ private struct ExportOpenerRecommendation {
             return "\(appName) text editor detected"
         case .archive:
             return "\(appName) archive utility detected"
+        }
+    }
+
+    var suggestedTitle: String {
+        switch kind {
+        case .plainText:
+            return "\(appName) text editor suggested"
+        case .archive:
+            return "\(appName) archive utility suggested"
         }
     }
 
@@ -74,6 +94,7 @@ private struct ExportOpenerRecommendation {
 private struct DetectedExportOpener {
     let appName: String
     let bundleIdentifier: String
+    let title: String
     let detail: String
 }
 
@@ -300,7 +321,11 @@ public struct RunePreferencesView: View {
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
     @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
     private let inklineRecommendation = ExportOpenerRecommendation(appName: "Inkline", kind: .plainText)
-    private let quikZipRecommendation = ExportOpenerRecommendation(appName: "QuikZip", kind: .archive)
+    private let quikZipRecommendation = ExportOpenerRecommendation(
+        appName: "QuikZip",
+        kind: .archive,
+        recommendedBundleIdentifier: "com.viktornyberg.quikzip"
+    )
     @AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit) private var sessionLogCacheEntryLimit =
         RuneSettingsKeys.sessionLogCacheEntryLimitDefault
     @AppStorage(RuneSettingsKeys.resourceYAMLUndoSnapshotLimit) private var resourceYAMLUndoSnapshotLimit =
@@ -1194,7 +1219,7 @@ public struct RunePreferencesView: View {
     private func exportOpenerRecommendationRow(_ recommendation: ExportOpenerRecommendation) -> some View {
         if let detected = detectedRecommendedExportOpener(recommendation) {
             settingsControlRow(
-                title: recommendation.detectedTitle,
+                title: detected.title,
                 detail: detected.detail
             ) {
                 Button("Use \(detected.appName)") {
@@ -1205,14 +1230,24 @@ public struct RunePreferencesView: View {
     }
 
     private func detectedRecommendedExportOpener(_ recommendation: ExportOpenerRecommendation) -> DetectedExportOpener? {
-        guard let appURL = applicationURL(named: recommendation.appName),
-              let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
-              !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
+        if let appURL = applicationURL(named: recommendation.appName),
+           let detectedBundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
+           !detectedBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let bundleIdentifier = recommendation.recommendedBundleIdentifier ?? detectedBundleIdentifier
+            return DetectedExportOpener(
+                appName: recommendation.appName,
+                bundleIdentifier: bundleIdentifier,
+                title: recommendation.detectedTitle,
+                detail: recommendation.detail(bundleIdentifier: bundleIdentifier)
+            )
+        }
+
+        guard let bundleIdentifier = recommendation.recommendedBundleIdentifier else { return nil }
 
         return DetectedExportOpener(
             appName: recommendation.appName,
             bundleIdentifier: bundleIdentifier,
+            title: recommendation.suggestedTitle,
             detail: recommendation.detail(bundleIdentifier: bundleIdentifier)
         )
     }
@@ -1223,9 +1258,36 @@ public struct RunePreferencesView: View {
             for: .applicationDirectory,
             in: [.userDomainMask, .localDomainMask, .systemDomainMask]
         )
-        return directories
-            .map { $0.appendingPathComponent(filename, isDirectory: true) }
+        let applicationCandidates = directories.map { $0.appendingPathComponent(filename, isDirectory: true) }
+        let workspaceCandidates = workspaceApplicationURLs(named: appName, filename: filename)
+        return (applicationCandidates + workspaceCandidates)
             .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func workspaceApplicationURLs(named appName: String, filename: String) -> [URL] {
+        let workspaceURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Workspace", isDirectory: true)
+        let projectURL = workspaceURL.appendingPathComponent(appName, isDirectory: true)
+        return [
+            projectURL.appendingPathComponent(filename, isDirectory: true),
+            projectURL
+                .appendingPathComponent(".local", isDirectory: true)
+                .appendingPathComponent("build", isDirectory: true)
+                .appendingPathComponent(filename, isDirectory: true),
+            projectURL
+                .appendingPathComponent(".local", isDirectory: true)
+                .appendingPathComponent("test-app", isDirectory: true)
+                .appendingPathComponent(filename, isDirectory: true),
+            projectURL
+                .appendingPathComponent(".build", isDirectory: true)
+                .appendingPathComponent("debug", isDirectory: true)
+                .appendingPathComponent(filename, isDirectory: true),
+            projectURL
+                .appendingPathComponent(".build", isDirectory: true)
+                .appendingPathComponent("arm64-apple-macosx", isDirectory: true)
+                .appendingPathComponent("debug", isDirectory: true)
+                .appendingPathComponent(filename, isDirectory: true)
+        ]
     }
 
     private func setExportOpenerBundleIdentifier(_ bundleIdentifier: String, for kind: ConfiguredExportFileKind) {

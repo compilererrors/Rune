@@ -7803,6 +7803,44 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(metadataText.contains("/Users/"))
     }
 
+    func testLogArchiveSplitsMergedLogsByKnownPodWithoutUnknownLines() throws {
+        let data = try LogArchiveBuilder.buildZip(
+            mergedText: "[api-0] ready\n[api-1] served\n[api-0]\n[unknown] ignored\nplain line",
+            podNames: ["api-0", "api-1", "api-2"],
+            baseName: "deployment-api-full-logs",
+            generatedAt: "20260507T100000Z"
+        )
+
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-full-logs/pods/api-0-20260507T100000Z.log"]), as: UTF8.self),
+            "ready\n"
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-full-logs/pods/api-1-20260507T100000Z.log"]), as: UTF8.self),
+            "served"
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["deployment-api-full-logs/pods/api-2-20260507T100000Z.log"]), as: UTF8.self),
+            ""
+        )
+    }
+
+    func testSinglePodLogArchiveUsesMergedTextWhenLogsHaveNoPodPrefix() throws {
+        let data = try LogArchiveBuilder.buildZip(
+            mergedText: "ready\nserved request",
+            podNames: ["api-0"],
+            baseName: "pod-api-0-full-logs",
+            generatedAt: "20260507T100000Z"
+        )
+
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(entries["pod-api-0-full-logs/pods/api-0-20260507T100000Z.log"]), as: UTF8.self),
+            "ready\nserved request"
+        )
+    }
+
     func testPodContainerLogArchiveIncludesMetadataForSelectedPods() throws {
         let metadata = LogArchiveMetadata(
             context: "demo",

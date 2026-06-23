@@ -73,6 +73,126 @@ final class ConfiguredExportServiceTests: XCTestCase {
         XCTAssertEqual(opener.opened, [RecordingExportFileOpener.Opened(url: savedURL, bundleIdentifier: "com.example.ArchiveViewer")])
     }
 
+    func testSaveUsesNextAvailableNameAfterManyExistingCollisions() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: RecordingExportFileOpener()
+        )
+        for index in 0...40 {
+            let name = index == 0 ? "logs.yaml" : "logs-\(index + 1).yaml"
+            try Data("existing".utf8).write(to: folderURL.appendingPathComponent(name))
+        }
+
+        let savedURL = try exporter.save(
+            data: Data("apiVersion: v1\n".utf8),
+            suggestedName: "logs.yaml",
+            allowedFileTypes: ["yaml"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+
+        XCTAssertEqual(savedURL.lastPathComponent, "logs-42.yaml")
+        XCTAssertEqual(try String(contentsOf: savedURL, encoding: .utf8), "apiVersion: v1\n")
+    }
+
+    func testSaveAndOpenRetainsSecurityScopeForOpenHandoff() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+
+        let savedURL = try exporter.save(
+            data: Data("line one\n".utf8),
+            suggestedName: "logs.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: true
+        )
+
+        XCTAssertEqual(opener.opened, [RecordingExportFileOpener.Opened(url: savedURL, bundleIdentifier: nil)])
+        XCTAssertEqual(securityScope.started, [folderURL])
+        XCTAssertTrue(securityScope.stopped.isEmpty)
+        XCTAssertEqual(securityScope.stoppedAfterOpenHandoff, [folderURL])
+    }
+
+    func testSaveAndOpenDoesNotStopSecurityScopeWhenScopeWasNotStarted() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: false)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+
+        let savedURL = try exporter.save(
+            data: Data("line one\n".utf8),
+            suggestedName: "logs.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: true
+        )
+
+        XCTAssertEqual(opener.opened, [RecordingExportFileOpener.Opened(url: savedURL, bundleIdentifier: nil)])
+        XCTAssertEqual(securityScope.started, [folderURL])
+        XCTAssertTrue(securityScope.stopped.isEmpty)
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
+    func testSaveAndOpenStopsSecurityScopeIfOpenFails() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: ThrowingExportFileOpener(error: RecordingExportError.openFailed),
+            securityScopedAccess: securityScope
+        )
+
+        XCTAssertThrowsError(
+            try exporter.save(
+                data: Data("line one\n".utf8),
+                suggestedName: "logs.log",
+                allowedFileTypes: ["log"],
+                kind: .plainText,
+                openAfterSave: true
+            )
+        ) { error in
+            XCTAssertEqual(error as? RecordingExportError, .openFailed)
+        }
+        XCTAssertEqual(securityScope.started, [folderURL])
+        XCTAssertEqual(securityScope.stopped, [folderURL])
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
+    func testSaveWithoutOpenStopsSecurityScopeImmediately() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+
+        _ = try exporter.save(
+            data: Data("line one\n".utf8),
+            suggestedName: "logs.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+
+        XCTAssertTrue(opener.opened.isEmpty)
+        XCTAssertEqual(securityScope.started, [folderURL])
+        XCTAssertEqual(securityScope.stopped, [folderURL])
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
     func testPrivacySafeFilenamesDoNotUseSuggestedResourceNames() throws {
         let folderURL = try makeTemporaryDirectory()
         let exporter = ConfiguredFolderExporter(
@@ -175,6 +295,10 @@ private struct ThrowingExportDestinationResolver: ExportDestinationResolving {
     }
 }
 
+private enum RecordingExportError: Error, Equatable {
+    case openFailed
+}
+
 @MainActor
 private final class RecordingExportFileOpener: ExportFileOpening {
     struct Opened: Equatable {
@@ -186,5 +310,43 @@ private final class RecordingExportFileOpener: ExportFileOpening {
 
     func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws {
         opened.append(Opened(url: url, bundleIdentifier: preferredApplicationBundleIdentifier))
+    }
+}
+
+@MainActor
+private final class ThrowingExportFileOpener: ExportFileOpening {
+    let error: Error
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws {
+        throw error
+    }
+}
+
+@MainActor
+private final class RecordingSecurityScopedResourceAccess: SecurityScopedResourceAccessing {
+    let startsAccessing: Bool
+    private(set) var started: [URL] = []
+    private(set) var stopped: [URL] = []
+    private(set) var stoppedAfterOpenHandoff: [URL] = []
+
+    init(startsAccessing: Bool) {
+        self.startsAccessing = startsAccessing
+    }
+
+    func startAccessing(_ url: URL) -> Bool {
+        started.append(url)
+        return startsAccessing
+    }
+
+    func stopAccessing(_ url: URL) {
+        stopped.append(url)
+    }
+
+    func stopAccessingAfterOpenHandoff(_ url: URL) {
+        stoppedAfterOpenHandoff.append(url)
     }
 }

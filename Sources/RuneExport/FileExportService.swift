@@ -24,6 +24,17 @@ public protocol ExportFileOpening {
     func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws
 }
 
+public protocol SecurityScopedResourceAccessing {
+    @MainActor
+    func startAccessing(_ url: URL) -> Bool
+
+    @MainActor
+    func stopAccessing(_ url: URL)
+
+    @MainActor
+    func stopAccessingAfterOpenHandoff(_ url: URL)
+}
+
 public protocol ConfiguredExporting {
     @MainActor
     func save(
@@ -127,16 +138,46 @@ public struct WorkspaceExportFileOpener: ExportFileOpening {
     }
 }
 
+public struct DefaultSecurityScopedResourceAccess: SecurityScopedResourceAccessing {
+    private let openHandoffRetentionNanoseconds: UInt64
+
+    public init(openHandoffRetentionNanoseconds: UInt64 = 15_000_000_000) {
+        self.openHandoffRetentionNanoseconds = openHandoffRetentionNanoseconds
+    }
+
+    @MainActor
+    public func startAccessing(_ url: URL) -> Bool {
+        url.startAccessingSecurityScopedResource()
+    }
+
+    @MainActor
+    public func stopAccessing(_ url: URL) {
+        url.stopAccessingSecurityScopedResource()
+    }
+
+    @MainActor
+    public func stopAccessingAfterOpenHandoff(_ url: URL) {
+        let delay = openHandoffRetentionNanoseconds
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay)
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+}
+
 public final class ConfiguredFolderExporter: ConfiguredExporting {
     private let resolver: ExportDestinationResolving
     private let opener: ExportFileOpening
+    private let securityScopedAccess: any SecurityScopedResourceAccessing
 
     public init(
         resolver: ExportDestinationResolving = UserDefaultsExportDestinationResolver(),
-        opener: ExportFileOpening = WorkspaceExportFileOpener()
+        opener: ExportFileOpening = WorkspaceExportFileOpener(),
+        securityScopedAccess: any SecurityScopedResourceAccessing = DefaultSecurityScopedResourceAccess()
     ) {
         self.resolver = resolver
         self.opener = opener
+        self.securityScopedAccess = securityScopedAccess
     }
 
     @MainActor
@@ -151,10 +192,11 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
             throw FileExportError.missingConfiguredExportFolder
         }
 
-        let didStartSecurityScope = folderURL.startAccessingSecurityScopedResource()
+        let didStartSecurityScope = securityScopedAccess.startAccessing(folderURL)
+        var shouldStopSecurityScope = didStartSecurityScope
         defer {
-            if didStartSecurityScope {
-                folderURL.stopAccessingSecurityScopedResource()
+            if shouldStopSecurityScope {
+                securityScopedAccess.stopAccessing(folderURL)
             }
         }
 
@@ -169,6 +211,10 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
 
         if openAfterSave {
             try opener.open(destination, preferredApplicationBundleIdentifier: resolver.preferredOpenerBundleIdentifier(for: kind))
+            if didStartSecurityScope {
+                shouldStopSecurityScope = false
+                securityScopedAccess.stopAccessingAfterOpenHandoff(folderURL)
+            }
         }
 
         return destination
@@ -179,6 +225,22 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
         let base = (sanitized as NSString).deletingPathExtension
         let ext = (sanitized as NSString).pathExtension
         var candidate = folderURL.appendingPathComponent(sanitized, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: candidate.path) else {
+            return candidate
+        }
+
+        if let existingNames = try? FileManager.default.contentsOfDirectory(atPath: folderURL.path) {
+            let existingNameSet = Set(existingNames)
+            var index = 2
+            while true {
+                let nextName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
+                if !existingNameSet.contains(nextName) {
+                    return folderURL.appendingPathComponent(nextName, isDirectory: false)
+                }
+                index += 1
+            }
+        }
+
         var index = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
             let nextName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
