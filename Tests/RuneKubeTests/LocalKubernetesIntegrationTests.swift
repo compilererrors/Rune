@@ -767,6 +767,69 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         }
     }
 
+    func testExecAuthFailureIncludesPluginStderr() async throws {
+        let execPlugin = try writeExecCredentialPlugin(
+            jsonPayload: "{}",
+            preflightShell: """
+            echo "synthetic login required" >&2
+            exit 12
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: execPlugin) }
+
+        let kubeconfig = try writeKubeconfig(
+            serverURL: "https://127.0.0.1:6443",
+            userYAML: """
+            exec:
+              apiVersion: client.authentication.k8s.io/v1
+              command: \(execPlugin.path)
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        do {
+            _ = try await KubernetesRESTClient._testResolvedTLSDescription(
+                environment: ["KUBECONFIG": kubeconfig.path],
+                contextName: "local-fixture"
+            )
+            XCTFail("Expected exec auth stderr failure to be reported")
+        } catch {
+            let message = String(describing: error)
+            XCTAssertTrue(message.contains("synthetic login required"))
+            XCTAssertTrue(message.contains("kubeconfig exec auth"))
+        }
+    }
+
+    func testExecAuthInvalidJSONIncludesStdoutAndStderrPreview() async throws {
+        let execPlugin = try writeExecCredentialPlugin(
+            jsonPayload: "not-json",
+            preflightShell: #"echo "synthetic stderr hint" >&2"#
+        )
+        defer { try? FileManager.default.removeItem(at: execPlugin) }
+
+        let kubeconfig = try writeKubeconfig(
+            serverURL: "https://127.0.0.1:6443",
+            userYAML: """
+            exec:
+              apiVersion: client.authentication.k8s.io/v1
+              command: \(execPlugin.path)
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        do {
+            _ = try await KubernetesRESTClient._testResolvedTLSDescription(
+                environment: ["KUBECONFIG": kubeconfig.path],
+                contextName: "local-fixture"
+            )
+            XCTFail("Expected exec auth invalid JSON to be rejected")
+        } catch {
+            let message = String(describing: error)
+            XCTAssertTrue(message.contains("stdout: not-json"))
+            XCTAssertTrue(message.contains("stderr: synthetic stderr hint"))
+        }
+    }
+
     func testLiveKubeconfigContextListsNamespacesWhenExplicitlyEnabled() async throws {
         guard ProcessInfo.processInfo.environment["RUNE_ALLOW_LIVE_K8S_TESTS"] == "1" else {
             throw XCTSkip("Set RUNE_ALLOW_LIVE_K8S_TESTS=1 plus RUNE_LIVE_K8S_CONTEXT to run this against a real kubeconfig context")

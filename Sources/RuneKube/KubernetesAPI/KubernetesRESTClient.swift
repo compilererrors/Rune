@@ -1774,7 +1774,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             timeout: timeout
         )
         do {
-            let response = try JSONDecoder().decode(ExecCredentialResponse.self, from: output)
+            let response = try JSONDecoder().decode(ExecCredentialResponse.self, from: output.stdout)
             let expectedAPIVersion = exec.apiVersion ?? "client.authentication.k8s.io/v1"
             if let apiVersion = response.apiVersion, apiVersion != expectedAPIVersion {
                 throw RuneError.parseError(
@@ -1786,9 +1786,43 @@ final class KubernetesRESTClient: @unchecked Sendable {
             if let runeError = error as? RuneError {
                 throw runeError
             }
-            let preview = String(decoding: output.prefix(512), as: UTF8.self)
+            let preview = Self.execCredentialOutputPreview(output)
             throw RuneError.parseError(message: "Kubeconfig exec auth response is not a valid ExecCredential JSON document: \(preview)")
         }
+    }
+
+    private static func execCredentialOutputPreview(_ output: ExecCredentialProcessOutput) -> String {
+        let stdout = String(decoding: output.stdout.prefix(512), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = String(decoding: output.stderr.prefix(512), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stdout.isEmpty, stderr.isEmpty {
+            return "<empty output>"
+        }
+        if stderr.isEmpty {
+            return stdout
+        }
+        if stdout.isEmpty {
+            return "stderr: \(stderr)"
+        }
+        return "stdout: \(stdout)\nstderr: \(stderr)"
+    }
+
+    private static func execCredentialFailureMessage(
+        output: ExecCredentialProcessOutput,
+        fallback: String
+    ) -> String {
+        let stdout = String(decoding: output.stdout.prefix(2_048), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = String(decoding: output.stderr.prefix(2_048), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stderr.isEmpty {
+            return stderr
+        }
+        if !stdout.isEmpty {
+            return stdout
+        }
+        return fallback
     }
 
     private func execInfo(
@@ -1823,11 +1857,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
         arguments: [String],
         environment: [String: String],
         timeout: TimeInterval
-    ) async throws -> Data {
+    ) async throws -> ExecCredentialProcessOutput {
         try await Task.detached(priority: .utility) {
             let process = Process()
             let stdout = Pipe()
             let stderr = Pipe()
+            let outputCapture = ExecCredentialProcessOutputCapture(maxBytesPerStream: 1_048_576)
 
             let expandedCommand = NSString(string: command).expandingTildeInPath
             if expandedCommand.contains("/") {
@@ -1840,6 +1875,16 @@ final class KubernetesRESTClient: @unchecked Sendable {
             process.environment = environment
             process.standardOutput = stdout
             process.standardError = stderr
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                outputCapture.appendStdout(handle.availableData)
+            }
+            stderr.fileHandleForReading.readabilityHandler = { handle in
+                outputCapture.appendStderr(handle.availableData)
+            }
+            defer {
+                stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
+            }
 
             do {
                 try process.run()
@@ -1857,19 +1902,25 @@ final class KubernetesRESTClient: @unchecked Sendable {
             if process.isRunning {
                 process.terminate()
                 process.waitUntilExit()
+                outputCapture.appendStdout(stdout.fileHandleForReading.readDataToEndOfFile())
+                outputCapture.appendStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+                let output = outputCapture.snapshot()
+                let fallback = "Timed out after \(Int(timeout)) seconds"
+                let capturedMessage = Self.execCredentialFailureMessage(output: output, fallback: fallback)
+                let message = capturedMessage == fallback ? fallback : "\(fallback): \(capturedMessage)"
                 throw RuneError.commandFailed(
                     command: "kubeconfig exec auth \(command)",
-                    message: "Timed out after \(Int(timeout)) seconds"
+                    message: message
                 )
             }
 
-            let output = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            outputCapture.appendStdout(stdout.fileHandleForReading.readDataToEndOfFile())
+            outputCapture.appendStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+            let output = outputCapture.snapshot()
             guard process.terminationStatus == 0 else {
-                let message = String(decoding: errorData.isEmpty ? output : errorData, as: UTF8.self)
                 throw RuneError.commandFailed(
                     command: "kubeconfig exec auth \(command)",
-                    message: message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    message: Self.execCredentialFailureMessage(output: output, fallback: "Exited with code \(process.terminationStatus)")
                 )
             }
             return output
@@ -1946,6 +1997,45 @@ private actor KubernetesExecCredentialCache {
 
     func setCredential(_ credential: KubernetesExecCredential, for key: String) {
         byKey[key] = credential
+    }
+}
+
+private struct ExecCredentialProcessOutput: Sendable, Equatable {
+    let stdout: Data
+    let stderr: Data
+}
+
+private final class ExecCredentialProcessOutputCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxBytesPerStream: Int
+    private var stdout = Data()
+    private var stderr = Data()
+
+    init(maxBytesPerStream: Int) {
+        self.maxBytesPerStream = max(0, maxBytesPerStream)
+    }
+
+    func appendStdout(_ data: Data) {
+        append(data, to: &stdout)
+    }
+
+    func appendStderr(_ data: Data) {
+        append(data, to: &stderr)
+    }
+
+    func snapshot() -> ExecCredentialProcessOutput {
+        lock.lock()
+        defer { lock.unlock() }
+        return ExecCredentialProcessOutput(stdout: stdout, stderr: stderr)
+    }
+
+    private func append(_ data: Data, to stream: inout Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = maxBytesPerStream - stream.count
+        guard remaining > 0 else { return }
+        stream.append(data.prefix(remaining))
     }
 }
 

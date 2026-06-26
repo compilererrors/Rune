@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import RuneExport
@@ -71,6 +72,31 @@ final class ConfiguredExportServiceTests: XCTestCase {
         XCTAssertEqual(savedURL.lastPathComponent, "logs-2.zip")
         XCTAssertEqual(try Data(contentsOf: savedURL), Data("archive".utf8))
         XCTAssertEqual(opener.opened, [RecordingExportFileOpener.Opened(url: savedURL, bundleIdentifier: "com.example.ArchiveViewer")])
+    }
+
+    func testWorkspaceOpenerUsesPreferredApplicationWithoutRunningSubstitution() throws {
+        let fileURL = URL(fileURLWithPath: "/tmp/rune-export.log")
+        let applicationURL = URL(fileURLWithPath: "/Applications/Inkline.app")
+        let workspace = RecordingWorkspaceOpening(applicationsByBundleIdentifier: [
+            "com.example.Inkline": applicationURL
+        ])
+        let opener = WorkspaceExportFileOpener(workspace: workspace)
+
+        try opener.open(fileURL, preferredApplicationBundleIdentifier: "com.example.Inkline")
+
+        XCTAssertTrue(workspace.defaultOpenedURLs.isEmpty)
+        XCTAssertEqual(
+            workspace.applicationOpenRequests,
+            [
+                RecordingWorkspaceOpening.ApplicationOpenRequest(
+                    urls: [fileURL],
+                    applicationURL: applicationURL,
+                    allowsRunningApplicationSubstitution: false,
+                    activates: true,
+                    promptsUserIfNeeded: true
+                )
+            ]
+        )
     }
 
     func testSaveUsesNextAvailableNameAfterManyExistingCollisions() throws {
@@ -297,6 +323,49 @@ private struct ThrowingExportDestinationResolver: ExportDestinationResolving {
 
 private enum RecordingExportError: Error, Equatable {
     case openFailed
+}
+
+@MainActor
+private final class RecordingWorkspaceOpening: WorkspaceOpening {
+    struct ApplicationOpenRequest: Equatable {
+        let urls: [URL]
+        let applicationURL: URL
+        let allowsRunningApplicationSubstitution: Bool
+        let activates: Bool
+        let promptsUserIfNeeded: Bool
+    }
+
+    let applicationsByBundleIdentifier: [String: URL]
+    private(set) var defaultOpenedURLs: [URL] = []
+    private(set) var applicationOpenRequests: [ApplicationOpenRequest] = []
+
+    init(applicationsByBundleIdentifier: [String: URL]) {
+        self.applicationsByBundleIdentifier = applicationsByBundleIdentifier
+    }
+
+    func applicationURL(forBundleIdentifier bundleIdentifier: String) -> URL? {
+        applicationsByBundleIdentifier[bundleIdentifier]
+    }
+
+    func openDefault(_ url: URL) {
+        defaultOpenedURLs.append(url)
+    }
+
+    func open(
+        _ urls: [URL],
+        withApplicationAt applicationURL: URL,
+        configuration: NSWorkspace.OpenConfiguration
+    ) {
+        applicationOpenRequests.append(
+            ApplicationOpenRequest(
+                urls: urls,
+                applicationURL: applicationURL,
+                allowsRunningApplicationSubstitution: configuration.allowsRunningApplicationSubstitution,
+                activates: configuration.activates,
+                promptsUserIfNeeded: configuration.promptsUserIfNeeded
+            )
+        )
+    }
 }
 
 @MainActor

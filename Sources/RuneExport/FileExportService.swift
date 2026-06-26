@@ -24,6 +24,40 @@ public protocol ExportFileOpening {
     func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws
 }
 
+@MainActor
+protocol WorkspaceOpening {
+    func applicationURL(forBundleIdentifier bundleIdentifier: String) -> URL?
+    func openDefault(_ url: URL)
+    func open(
+        _ urls: [URL],
+        withApplicationAt applicationURL: URL,
+        configuration: NSWorkspace.OpenConfiguration
+    )
+}
+
+private struct DefaultWorkspaceOpening: WorkspaceOpening {
+    func applicationURL(forBundleIdentifier bundleIdentifier: String) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    }
+
+    func openDefault(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func open(
+        _ urls: [URL],
+        withApplicationAt applicationURL: URL,
+        configuration: NSWorkspace.OpenConfiguration
+    ) {
+        NSWorkspace.shared.open(
+            urls,
+            withApplicationAt: applicationURL,
+            configuration: configuration,
+            completionHandler: nil
+        )
+    }
+}
+
 public protocol SecurityScopedResourceAccessing {
     @MainActor
     func startAccessing(_ url: URL) -> Bool
@@ -118,22 +152,30 @@ public struct UserDefaultsExportDestinationResolver: ExportDestinationResolving 
 }
 
 public struct WorkspaceExportFileOpener: ExportFileOpening {
-    public init() {}
+    private let workspace: any WorkspaceOpening
+
+    public init() {
+        self.workspace = DefaultWorkspaceOpening()
+    }
+
+    init(workspace: any WorkspaceOpening) {
+        self.workspace = workspace
+    }
 
     @MainActor
     public func open(_ url: URL, preferredApplicationBundleIdentifier: String?) throws {
         guard let bundleIdentifier = preferredApplicationBundleIdentifier,
-              let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
-            NSWorkspace.shared.open(url)
+              let applicationURL = workspace.applicationURL(forBundleIdentifier: bundleIdentifier) else {
+            workspace.openDefault(url)
             return
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open(
+        configuration.allowsRunningApplicationSubstitution = false
+        workspace.open(
             [url],
             withApplicationAt: applicationURL,
-            configuration: configuration,
-            completionHandler: nil
+            configuration: configuration
         )
     }
 }
