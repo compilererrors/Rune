@@ -2,6 +2,91 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
+    func testExternalCommandPolicyReadsDistributionFromInfoDictionary() {
+        XCTAssertEqual(
+            RuneExternalCommandPolicy.distribution(
+                infoDictionary: [RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store"],
+                environment: [:]
+            ),
+            .appStore
+        )
+        XCTAssertEqual(
+            RuneExternalCommandPolicy.distribution(
+                infoDictionary: [RuneExternalCommandPolicy.distributionInfoPlistKey: "direct"],
+                environment: [:]
+            ),
+            .direct
+        )
+    }
+
+    func testExternalCommandPolicyEnvironmentOverridesInfoDictionaryForTestsAndDev() {
+        XCTAssertEqual(
+            RuneExternalCommandPolicy.distribution(
+                infoDictionary: [RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store"],
+                environment: [RuneExternalCommandPolicy.distributionEnvironmentVariable: "direct"]
+            ),
+            .direct
+        )
+        XCTAssertEqual(
+            RuneExternalCommandPolicy.distribution(
+                infoDictionary: [:],
+                environment: [RuneExternalCommandPolicy.distributionEnvironmentVariable: "mas"]
+            ),
+            .appStore
+        )
+    }
+
+    func testExternalCommandPolicyReadsExternalCommandsFlag() {
+        XCTAssertTrue(
+            RuneExternalCommandPolicy.externalCommandsEnabled(
+                infoDictionary: [RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: true],
+                environment: [:]
+            )
+        )
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.externalCommandsEnabled(
+                infoDictionary: [RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: false],
+                environment: [:]
+            )
+        )
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.externalCommandsEnabled(
+                infoDictionary: [RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: true],
+                environment: [RuneExternalCommandPolicy.externalCommandsEnabledEnvironmentVariable: "0"]
+            )
+        )
+    }
+
+    func testExternalCommandPolicyNeverAllowsCommandsForAppStoreDistribution() {
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.allowsExternalCommands(
+                infoDictionary: [
+                    RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store",
+                    RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: true
+                ],
+                environment: [:]
+            )
+        )
+        XCTAssertTrue(
+            RuneExternalCommandPolicy.allowsExternalCommands(
+                infoDictionary: [
+                    RuneExternalCommandPolicy.distributionInfoPlistKey: "direct",
+                    RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: true
+                ],
+                environment: [:]
+            )
+        )
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.allowsExternalCommands(
+                infoDictionary: [
+                    RuneExternalCommandPolicy.distributionInfoPlistKey: "direct",
+                    RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: false
+                ],
+                environment: [:]
+            )
+        )
+    }
+
     @MainActor
     func testResourceListFreshnessTracksRefreshingLiveAndStalePerFamily() {
         let state = RuneAppState()

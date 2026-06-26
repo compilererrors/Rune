@@ -888,6 +888,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var manualKubeConfigToken: String = ""
     @Published public private(set) var cloudKubeConfigImportStatus: String?
     @Published public private(set) var cloudKubeConfigImportDiagnostic: AddClusterCloudImportDiagnostic?
+    @Published public private(set) var cloudKubeConfigImportOutput: String = ""
     @Published public private(set) var isRunningCloudKubeConfigImport = false
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
@@ -1015,6 +1016,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Coalesces rapid log preset toggles while still cancelling any in-flight fetch immediately.
     private let logsReloadDebounceNanoseconds: UInt64 = 180_000_000
     private let terminalOutputFlushNanoseconds: UInt64 = 33_000_000
+    private static let maximumCloudKubeConfigImportOutputCharacters = 12_000
     private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     private let liveStatusUpdateNanoseconds: UInt64 = 12_000_000_000
     private let kubeConfigSourceSyncNanoseconds: UInt64 = 2_000_000_000
@@ -2148,15 +2150,24 @@ public final class RuneAppViewModel: ObservableObject {
         guard !isRunningCloudKubeConfigImport else { return }
         isRunningCloudKubeConfigImport = true
         cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportOutput = ""
         if state.lastError != nil {
             state.clearError()
         }
         cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.runningStatus(for: request.provider)
+        appendCloudKubeConfigImportOutput("$ \(cloudKubeConfigCommandPreview(for: request))\n")
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.isRunningCloudKubeConfigImport = false }
             do {
-                let result = try await self.cloudKubeConfigImporter.importCluster(request)
+                let result = try await self.cloudKubeConfigImporter.importCluster(
+                    request,
+                    onOutput: { [weak self] chunk in
+                        Task { @MainActor [weak self] in
+                            self?.appendCloudKubeConfigImportOutput(chunk.text)
+                        }
+                    }
+                )
                 self.kubeConfigImportReviews = result.reviews
                 if let failure = AddClusterCloudImportWorkflow.blockingFailure(in: result.reviews) {
                     self.state.setAuthDoctorChecks(failure.checks)
@@ -2192,6 +2203,15 @@ public final class RuneAppViewModel: ObservableObject {
         guard !isRunningCloudKubeConfigImport else { return }
         cloudKubeConfigImportStatus = nil
         cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportOutput = ""
+    }
+
+    private func appendCloudKubeConfigImportOutput(_ text: String) {
+        guard !text.isEmpty else { return }
+        cloudKubeConfigImportOutput.append(text)
+        if cloudKubeConfigImportOutput.count > Self.maximumCloudKubeConfigImportOutputCharacters {
+            cloudKubeConfigImportOutput = "...\n" + cloudKubeConfigImportOutput.suffix(Self.maximumCloudKubeConfigImportOutputCharacters)
+        }
     }
 
     private func kubeConfigFiles(in folder: URL) throws -> [URL] {

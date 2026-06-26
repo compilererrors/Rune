@@ -1898,6 +1898,54 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testAddClusterCloudImportStreamsProviderOutputInsideRune() async throws {
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "gcloud",
+            arguments: ["container", "clusters", "get-credentials", "synthetic-gke"],
+            displayCommand: "gcloud container clusters get-credentials synthetic-gke"
+        )
+        let importer = OutputtingCloudKubeConfigImporter(
+            preview: preview,
+            chunks: [
+                CloudKubeConfigCommandOutput(stream: .stdout, text: "Open browser login\n"),
+                CloudKubeConfigCommandOutput(stream: .stderr, text: "Waiting for provider auth\n")
+            ],
+            result: .failure(.commandFailed(
+                command: preview.displayCommand,
+                exitCode: 42,
+                message: "synthetic login required"
+            ))
+        )
+        let viewModel = RuneAppViewModel(
+            state: RuneAppState(),
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .gke,
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1",
+            projectID: "synthetic-project"
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && viewModel.cloudKubeConfigImportOutput.contains("Open browser login")
+                && viewModel.cloudKubeConfigImportOutput.contains("Waiting for provider auth")
+        }
+
+        XCTAssertTrue(viewModel.cloudKubeConfigImportOutput.hasPrefix("$ gcloud container clusters get-credentials"))
+
+        viewModel.clearCloudKubeConfigImportStatus()
+
+        XCTAssertEqual(viewModel.cloudKubeConfigImportOutput, "")
+    }
+
+    @MainActor
     func testAddClusterCloudImportStatusClearKeepsRunningStatusWhileImportIsInFlight() async throws {
         let preview = CloudKubeConfigCommandPreview(
             executable: "aws",
@@ -8542,6 +8590,54 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testAuthDoctorKubeconfigInspectorExplainsDisabledExternalExecAuth() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try """
+        apiVersion: v1
+        clusters:
+        - name: demo
+          cluster:
+            server: https://demo.eks.amazonaws.com
+        users:
+        - name: demo
+          user:
+            exec:
+              command: aws
+              args:
+              - eks
+              - get-token
+              - --cluster-name
+              - synthetic-cluster
+        contexts:
+        - name: demo
+          context:
+            cluster: demo
+            user: demo
+        """.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let checks = AuthDoctorKubeconfigInspector(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"],
+            externalCommandsAllowed: { false }
+        ).inspect(sources: [KubeConfigSource(url: kubeconfig)])
+        let execProfile = try XCTUnwrap(checks.first { $0.id == "exec-auth-profile" })
+        let execTools = try XCTUnwrap(checks.first { $0.id == "exec-auth-tools" })
+        let cloudTools = try XCTUnwrap(checks.first { $0.id == "cloud-login-tools" })
+        let rendered = checks.map(\.message).joined(separator: "\n")
+
+        XCTAssertEqual(execProfile.status, .warning)
+        XCTAssertEqual(execTools.status, .warning)
+        XCTAssertEqual(cloudTools.status, .warning)
+        XCTAssertTrue(execProfile.message.contains("CLI-backed auth"))
+        XCTAssertTrue(execTools.message.contains("cannot run external auth plugins"))
+        XCTAssertTrue(cloudTools.message.contains("cannot run external provider commands"))
+        XCTAssertFalse(rendered.contains("synthetic-cluster"))
+        XCTAssertFalse(rendered.contains(kubeconfig.path))
+    }
+
+    @MainActor
     func testAuthDoctorKubeconfigInspectorDetectsAdditionalProviderTooling() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -8933,6 +9029,30 @@ private struct MockCloudKubeConfigImporter: CloudKubeConfigImporting {
 
     func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
         try result.get()
+    }
+}
+
+private struct OutputtingCloudKubeConfigImporter: CloudKubeConfigImporting {
+    let preview: CloudKubeConfigCommandPreview
+    let chunks: [CloudKubeConfigCommandOutput]
+    let result: Result<CloudKubeConfigImportResult, CloudKubeConfigImportError>
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        preview
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        try result.get()
+    }
+
+    func importCluster(
+        _ request: CloudKubeConfigImportRequest,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigImportResult {
+        for chunk in chunks {
+            onOutput(chunk)
+        }
+        return try result.get()
     }
 }
 

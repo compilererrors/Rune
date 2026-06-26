@@ -74,6 +74,21 @@ public struct CloudKubeConfigCommandResult: Sendable, Equatable {
     }
 }
 
+public enum CloudKubeConfigCommandOutputStream: Sendable, Equatable {
+    case stdout
+    case stderr
+}
+
+public struct CloudKubeConfigCommandOutput: Sendable, Equatable {
+    public let stream: CloudKubeConfigCommandOutputStream
+    public let text: String
+
+    public init(stream: CloudKubeConfigCommandOutputStream, text: String) {
+        self.stream = stream
+        self.text = text
+    }
+}
+
 public struct CloudKubeConfigImportResult: Sendable, Equatable {
     public let command: CloudKubeConfigCommandPreview
     public let commandResult: CloudKubeConfigCommandResult
@@ -83,6 +98,7 @@ public struct CloudKubeConfigImportResult: Sendable, Equatable {
 
 public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatable {
     case missingRequiredField(String)
+    case externalCommandsUnavailable(message: String)
     case commandFailed(command: String, exitCode: Int32, message: String)
     case commandTimedOut(command: String, timeoutSeconds: Int, message: String)
     case noKubeconfigDiscovered(command: String)
@@ -91,6 +107,8 @@ public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatab
         switch self {
         case .missingRequiredField(let name):
             return "\(name) is required."
+        case .externalCommandsUnavailable(let message):
+            return message
         case .commandFailed(_, let exitCode, _):
             return "Cloud import command failed with exit code \(exitCode). Check provider login, required fields, and provider CLI access, then run Auth Doctor again."
         case .commandTimedOut(_, let timeoutSeconds, _):
@@ -103,11 +121,41 @@ public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatab
 
 public protocol CloudKubeConfigCommandRunning: Sendable {
     func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult
+
+    func run(
+        _ command: CloudKubeConfigCommandPreview,
+        timeout: TimeInterval,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigCommandResult
+}
+
+public extension CloudKubeConfigCommandRunning {
+    func run(
+        _ command: CloudKubeConfigCommandPreview,
+        timeout: TimeInterval,
+        onOutput _: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigCommandResult {
+        try await run(command, timeout: timeout)
+    }
 }
 
 public protocol CloudKubeConfigImporting: Sendable {
     func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview
     func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult
+
+    func importCluster(
+        _ request: CloudKubeConfigImportRequest,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigImportResult
+}
+
+public extension CloudKubeConfigImporting {
+    func importCluster(
+        _ request: CloudKubeConfigImportRequest,
+        onOutput _: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigImportResult {
+        try await importCluster(request)
+    }
 }
 
 public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
@@ -136,8 +184,24 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
     }
 
     public func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        try await importCluster(request, onOutput: { _ in })
+    }
+
+    public func importCluster(
+        _ request: CloudKubeConfigImportRequest,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigImportResult {
         let command = try commandPreview(for: request)
-        let commandResult = try await runner.run(command, timeout: timeout)
+        let commandResult: CloudKubeConfigCommandResult
+        do {
+            commandResult = try await runner.run(command, timeout: timeout, onOutput: onOutput)
+        } catch let error as RuneError {
+            if case let .invalidInput(message) = error,
+               message == RuneExternalCommandPolicy.disabledMessage {
+                throw CloudKubeConfigImportError.externalCommandsUnavailable(message: message)
+            }
+            throw error
+        }
         if commandResult.timedOut {
             throw CloudKubeConfigImportError.commandTimedOut(
                 command: command.displayCommand,
@@ -199,11 +263,26 @@ public struct ProcessCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning
     }
 
     public func run(_ command: CloudKubeConfigCommandPreview, timeout: TimeInterval) async throws -> CloudKubeConfigCommandResult {
+        try await run(command, timeout: timeout, onOutput: { _ in })
+    }
+
+    public func run(
+        _ command: CloudKubeConfigCommandPreview,
+        timeout: TimeInterval,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) async throws -> CloudKubeConfigCommandResult {
         let result = try await executor.run(
             executable: command.executable,
             arguments: command.arguments,
             environment: command.environment,
-            timeout: timeout
+            timeout: timeout,
+            onOutput: { chunk in
+                let stream: CloudKubeConfigCommandOutputStream = switch chunk.stream {
+                case .stdout: .stdout
+                case .stderr: .stderr
+                }
+                onOutput(CloudKubeConfigCommandOutput(stream: stream, text: chunk.text))
+            }
         )
         return CloudKubeConfigCommandResult(
             exitCode: result.exitCode,

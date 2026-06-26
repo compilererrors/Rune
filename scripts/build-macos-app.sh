@@ -12,6 +12,17 @@ ICON_NAME="AppIcon.icns"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-app.rune.local}"
 MARKETING_VERSION="${MARKETING_VERSION:-0.1.0}"
 BUNDLE_VERSION="${BUNDLE_VERSION:-1}"
+APP_DISTRIBUTION="${APP_DISTRIBUTION:-direct}"
+ENABLE_EXTERNAL_COMMANDS="${ENABLE_EXTERNAL_COMMANDS:-1}"
+
+case "${ENABLE_EXTERNAL_COMMANDS}" in
+  1|true|TRUE|yes|YES|on|ON)
+    ENABLE_EXTERNAL_COMMANDS_PLIST_BOOL="true"
+    ;;
+  *)
+    ENABLE_EXTERNAL_COMMANDS_PLIST_BOOL="false"
+    ;;
+esac
 
 cd "${ROOT_DIR}"
 
@@ -66,6 +77,10 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 	<string>__MARKETING_VERSION__</string>
 	<key>CFBundleVersion</key>
 	<string>__BUNDLE_VERSION__</string>
+	<key>RuneDistribution</key>
+	<string>__APP_DISTRIBUTION__</string>
+	<key>RuneExternalCommandsEnabled</key>
+	<__ENABLE_EXTERNAL_COMMANDS__/>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSApplicationCategoryType</key>
@@ -86,7 +101,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 PLIST
 
 perl -0pi \
-  -e "s/__BUNDLE_IDENTIFIER__/${BUNDLE_IDENTIFIER}/g; s/__MARKETING_VERSION__/${MARKETING_VERSION}/g; s/__BUNDLE_VERSION__/${BUNDLE_VERSION}/g" \
+  -e "s/__BUNDLE_IDENTIFIER__/${BUNDLE_IDENTIFIER}/g; s/__MARKETING_VERSION__/${MARKETING_VERSION}/g; s/__BUNDLE_VERSION__/${BUNDLE_VERSION}/g; s/__APP_DISTRIBUTION__/${APP_DISTRIBUTION}/g; s/__ENABLE_EXTERNAL_COMMANDS__/${ENABLE_EXTERNAL_COMMANDS_PLIST_BOOL}/g" \
   "${APP_BUNDLE}/Contents/Info.plist"
 
 echo "Byggt: ${APP_BUNDLE}"

@@ -45,6 +45,16 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertTrue(nonZeroExit.message.contains("returned an error"))
     }
 
+    func testClassifiesDisabledCLIBackedAuthAsExecAuthFailure() throws {
+        let check = try XCTUnwrap(AuthDoctorFailureProjector.checks(
+            for: RuneExternalCommandPolicy.disabledMessage
+        ).first)
+
+        XCTAssertEqual(check.id, "exec-auth")
+        XCTAssertEqual(check.status, .failed)
+        XCTAssertEqual(check.message, RuneExternalCommandPolicy.disabledMessage)
+    }
+
     func testClassifiesAPIAuthenticationFailures() throws {
         let check = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "HTTP status 401 Unauthorized: invalid bearer token"

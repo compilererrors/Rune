@@ -1764,6 +1764,9 @@ final class KubernetesRESTClient: @unchecked Sendable {
         environment: [String: String],
         timeout: TimeInterval
     ) async throws -> ExecCredentialResponse {
+        guard RuneExternalCommandPolicy.allowsExternalCommands else {
+            throw RuneError.invalidInput(message: RuneExternalCommandPolicy.disabledMessage)
+        }
         let output = try await runProcess(
             command: exec.command,
             arguments: exec.args ?? [],

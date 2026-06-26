@@ -113,6 +113,8 @@ public enum AuthDoctorFailureProjector {
         return lower.contains("execcredential")
             || lower.contains("exec credential")
             || lower.contains("exec auth")
+            || lower.contains("exec plugin")
+            || lower.contains("cli-backed auth")
             || lower.contains("credential plugin")
             || lower.contains("kubeconfig exec")
             || lower.contains("executable file not found") && lower.contains("exec")
@@ -120,6 +122,10 @@ public enum AuthDoctorFailureProjector {
     }
 
     private static func execAuthMessage(_ lower: String) -> String {
+        if lower.contains("cli-backed auth") || lower.contains("disabled in this rune build") {
+            return RuneExternalCommandPolicy.disabledMessage
+        }
+
         if lower.contains("timed out") || lower.contains("timeout") {
             return "Kubeconfig exec authentication timed out. Refresh provider login state or check whether the credential plugin is waiting on network or interactive input."
         }

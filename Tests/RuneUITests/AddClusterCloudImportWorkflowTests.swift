@@ -33,6 +33,12 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
             ),
             provider: .gke
         )
+        let unavailable = AddClusterCloudImportWorkflow.diagnostic(
+            for: CloudKubeConfigImportError.externalCommandsUnavailable(
+                message: RuneExternalCommandPolicy.disabledMessage
+            ),
+            provider: .gke
+        )
 
         XCTAssertEqual(failed.title, "Provider CLI failed")
         XCTAssertEqual(failed.classification, "Exit code 17")
@@ -43,6 +49,27 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         XCTAssertEqual(missingKubeconfig.title, "No kubeconfig found")
         XCTAssertEqual(missingKubeconfig.classification, "No kubeconfig discovered")
         XCTAssertEqual(missingKubeconfig.documentationTitle, "GKE Login Docs")
+        XCTAssertEqual(unavailable.title, "Provider CLI unavailable")
+        XCTAssertEqual(unavailable.classification, "App Store build")
+        XCTAssertTrue(unavailable.nextAction.contains("direct download build"))
+    }
+
+    func testCloudImportDiagnosticClassifiesAKSAuthorizationFailures() {
+        let diagnostic = AddClusterCloudImportWorkflow.diagnostic(
+            for: CloudKubeConfigImportError.commandFailed(
+                command: "az aks get-credentials --resource-group synthetic-group --name synthetic-cluster",
+                exitCode: 1,
+                message: "ERROR: (AuthorizationFailed) The client does not have authorization to perform action 'Microsoft.ContainerService/managedClusters/listClusterUserCredential/action' over scope '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/synthetic-group/providers/Microsoft.ContainerService/managedClusters/synthetic-cluster'."
+            ),
+            provider: .aks
+        )
+
+        XCTAssertEqual(diagnostic.title, "Azure authorization failed")
+        XCTAssertEqual(diagnostic.classification, "AKS permission denied")
+        XCTAssertTrue(diagnostic.message.contains("cannot fetch AKS user credentials"))
+        XCTAssertTrue(diagnostic.nextAction.contains("listClusterUserCredential/action"))
+        XCTAssertFalse(diagnostic.message.contains("00000000"))
+        XCTAssertFalse(diagnostic.nextAction.contains("synthetic-cluster"))
     }
 
     func testCloudImportDiagnosticUsesSafeCommandShapeWithoutRawProviderOutput() {

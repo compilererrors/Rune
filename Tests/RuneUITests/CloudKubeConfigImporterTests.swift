@@ -18,6 +18,41 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testProcessCommandExecutorStreamsOutputWhileCapturingResult() async throws {
+        let recorder = ProcessOutputChunkRecorder()
+
+        let result = try await ProcessCommandExecutor().run(
+            executable: "sh",
+            arguments: ["-c", "printf synthetic-output; printf synthetic-error >&2"],
+            environment: [:],
+            timeout: 2,
+            onOutput: { chunk in
+                recorder.append(chunk)
+            }
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "synthetic-output")
+        XCTAssertEqual(result.stderr, "synthetic-error")
+        let chunks = recorder.chunks
+        XCTAssertTrue(chunks.contains(.init(stream: .stdout, text: "synthetic-output")))
+        XCTAssertTrue(chunks.contains(.init(stream: .stderr, text: "synthetic-error")))
+    }
+
+    func testProcessCommandExecutorBlocksExternalCommandsWhenPolicyDisallowsThem() async throws {
+        do {
+            _ = try await ProcessCommandExecutor(externalCommandsAllowed: { false }).run(
+                executable: "sh",
+                arguments: ["-c", "printf blocked"],
+                environment: [:],
+                timeout: 2
+            )
+            XCTFail("Expected external command policy to block the process")
+        } catch let error as RuneError {
+            XCTAssertEqual(error, .invalidInput(message: RuneExternalCommandPolicy.disabledMessage))
+        }
+    }
+
     func testProcessCommandExecutorMarksTimeoutsAndTerminatesProcess() async throws {
         let start = Date()
         let result = try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
@@ -166,6 +201,34 @@ final class CloudKubeConfigImporterTests: XCTestCase {
 
         XCTAssertTrue(result.timedOut)
         XCTAssertEqual(result.stdout, "started\n")
+    }
+
+    func testProcessCloudCommandRunnerForwardsOutputEvents() async throws {
+        let runner = ProcessCloudKubeConfigCommandRunner(executor: StreamingStaticProcessCommandExecutor(
+            chunks: [
+                .init(stream: .stdout, text: "synthetic-output\n"),
+                .init(stream: .stderr, text: "synthetic-error\n")
+            ],
+            result: .init(exitCode: 0, stdout: "synthetic-output\n", stderr: "synthetic-error\n", timedOut: false)
+        ))
+        let recorder = CloudOutputChunkRecorder()
+
+        let result = try await runner.run(
+            CloudKubeConfigCommandPreview(
+                executable: "gcloud",
+                arguments: ["container", "clusters", "get-credentials"],
+                displayCommand: "gcloud container clusters get-credentials"
+            ),
+            timeout: 1,
+            onOutput: { chunk in
+                recorder.append(chunk)
+            }
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        let chunks = recorder.chunks
+        XCTAssertTrue(chunks.contains(.init(stream: .stdout, text: "synthetic-output\n")))
+        XCTAssertTrue(chunks.contains(.init(stream: .stderr, text: "synthetic-error\n")))
     }
 
     func testCloudImporterBuildsProviderCommandsWithoutStoringCredentials() throws {
@@ -587,6 +650,28 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         }
     }
 
+    func testCloudImporterReportsExternalCommandPolicyBlocksSeparately() async throws {
+        let importer = CloudKubeConfigCLIImporter(
+            runner: ProcessCloudKubeConfigCommandRunner(executor: ProcessCommandExecutor(externalCommandsAllowed: { false })),
+            discoverer: StaticKubeConfigDiscoverer(urls: []),
+            timeout: 1
+        )
+
+        do {
+            _ = try await importer.importCluster(CloudKubeConfigImportRequest(
+                provider: .eks,
+                clusterName: "synthetic-cluster",
+                regionOrLocation: "eu-north-1"
+            ))
+            XCTFail("Expected App Store external command policy error")
+        } catch let error as CloudKubeConfigImportError {
+            XCTAssertEqual(
+                error,
+                .externalCommandsUnavailable(message: RuneExternalCommandPolicy.disabledMessage)
+            )
+        }
+    }
+
     func testCloudImporterRejectsSuccessfulCommandWithoutDiscoveredKubeconfig() async throws {
         let runner = RecordingCloudCommandRunner(result: .init(exitCode: 0, stdout: "updated\n", stderr: ""))
         let importer = CloudKubeConfigCLIImporter(
@@ -755,10 +840,67 @@ private struct StaticProcessCommandExecutor: ProcessCommandExecuting {
     }
 }
 
+private struct StreamingStaticProcessCommandExecutor: ProcessCommandExecuting {
+    let chunks: [ProcessCommandOutputChunk]
+    let result: ProcessCommandExecutionResult
+
+    func run(
+        executable: String,
+        arguments: [String],
+        environment additionalEnvironment: [String: String],
+        timeout: TimeInterval
+    ) async throws -> ProcessCommandExecutionResult {
+        result
+    }
+
+    func run(
+        executable: String,
+        arguments: [String],
+        environment additionalEnvironment: [String: String],
+        timeout: TimeInterval,
+        onOutput: @escaping @Sendable (ProcessCommandOutputChunk) -> Void
+    ) async throws -> ProcessCommandExecutionResult {
+        for chunk in chunks {
+            onOutput(chunk)
+        }
+        return result
+    }
+}
+
 private struct StaticKubeConfigDiscoverer: KubeConfigDiscovering {
     let urls: [URL]
 
     func discoverCandidateFiles() -> [URL] {
         urls
+    }
+}
+
+private final class ProcessOutputChunkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedChunks: [ProcessCommandOutputChunk] = []
+
+    var chunks: [ProcessCommandOutputChunk] {
+        lock.withLock { storedChunks }
+    }
+
+    func append(_ chunk: ProcessCommandOutputChunk) {
+        lock.withLock {
+            storedChunks.append(chunk)
+        }
+    }
+}
+
+private final class CloudOutputChunkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedChunks: [CloudKubeConfigCommandOutput] = []
+
+    var chunks: [CloudKubeConfigCommandOutput] {
+        lock.withLock { storedChunks }
+    }
+
+    func append(_ chunk: CloudKubeConfigCommandOutput) {
+        lock.withLock {
+            storedChunks.append(chunk)
+        }
     }
 }

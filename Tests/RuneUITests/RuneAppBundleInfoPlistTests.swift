@@ -34,6 +34,24 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("<false/>"))
     }
 
+    func testBuildScriptMarksDirectDistributionByDefault() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("APP_DISTRIBUTION=\"${APP_DISTRIBUTION:-direct}\""))
+        XCTAssertTrue(contents.contains("<key>RuneDistribution</key>"))
+        XCTAssertTrue(contents.contains("<string>__APP_DISTRIBUTION__</string>"))
+    }
+
+    func testBuildScriptEnablesExternalCommandsByDefaultWithBuildFlag() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("ENABLE_EXTERNAL_COMMANDS=\"${ENABLE_EXTERNAL_COMMANDS:-1}\""))
+        XCTAssertTrue(contents.contains("<key>RuneExternalCommandsEnabled</key>"))
+        XCTAssertTrue(contents.contains("<__ENABLE_EXTERNAL_COMMANDS__/>"))
+    }
+
     func testReleasePrivacyDoesNotLinkTelemetryAnalyticsOrUpdaterSDKs() throws {
         let forbiddenSDKFragments = [
             "Firebase",
@@ -159,7 +177,6 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
 
         let forbiddenDistributionFragments = [
             "code" + "sign",
-            "DISTRIBUTION=",
             "product" + "build",
             "xcrun " + "altool",
             "PROVISIONING_" + "PROFILE",

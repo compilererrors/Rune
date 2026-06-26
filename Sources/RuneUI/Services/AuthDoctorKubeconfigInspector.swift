@@ -4,13 +4,16 @@ import RuneCore
 public struct AuthDoctorKubeconfigInspector: Sendable {
     private let fileExists: @Sendable (String) -> Bool
     private let executableSearchPaths: [String]
+    private let externalCommandsAllowed: @Sendable () -> Bool
 
     public init(
         fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) },
-        executableSearchPaths: [String] = RuneExecutableSearchPath.directories()
+        executableSearchPaths: [String] = RuneExecutableSearchPath.directories(),
+        externalCommandsAllowed: @escaping @Sendable () -> Bool = { RuneExternalCommandPolicy.allowsExternalCommands }
     ) {
         self.fileExists = fileExists
         self.executableSearchPaths = executableSearchPaths
+        self.externalCommandsAllowed = externalCommandsAllowed
     }
 
     public func inspect(sources: [KubeConfigSource]) -> [RuneHealthCheck] {
@@ -54,40 +57,61 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
             message: providers.isEmpty ? "Generic kubeconfig profile. No cloud, OIDC, local, or vendor-specific hint was detected." : providers.joined(separator: " ")
         ))
 
-        if lowercased.contains("exec:") {
+        let usesExecAuth = lowercased.contains("exec:")
+        let canRunExternalCommands = externalCommandsAllowed()
+
+        if usesExecAuth {
             checks.append(RuneHealthCheck(
                 id: "exec-auth-profile",
                 title: "Exec auth profile",
-                status: .passed,
-                message: "Kubeconfig uses exec auth. Rune will verify the configured plugin through live Kubernetes API checks without exporting command arguments."
+                status: canRunExternalCommands ? .passed : .warning,
+                message: canRunExternalCommands
+                    ? "Kubeconfig uses exec auth. Rune will verify the configured plugin through live Kubernetes API checks without exporting command arguments."
+                    : RuneExternalCommandPolicy.disabledMessage
             ))
         }
 
-        checks.append(contentsOf: providerLifecycleChecks(in: lowercased))
+        checks.append(contentsOf: providerLifecycleChecks(
+            in: lowercased,
+            usesExecAuth: usesExecAuth,
+            externalCommandsAllowed: canRunExternalCommands
+        ))
 
         let execCommands = Set(Self.execCommands(in: combined))
         if !execCommands.isEmpty {
-            let missing = execCommands.filter { !commandExists($0) }.sorted()
+            let missing = canRunExternalCommands ? execCommands.filter { !commandExists($0) }.sorted() : []
+            let message: String
+            if canRunExternalCommands {
+                message = missing.isEmpty
+                    ? "All kubeconfig exec auth commands were found on PATH."
+                    : "Rune could not find \(missing.joined(separator: ", ")) on PATH. Cloud login may require installing or signing in with the matching CLI."
+            } else {
+                message = "Kubeconfig exec auth commands are present, but this Rune build cannot run external auth plugins."
+            }
             checks.append(RuneHealthCheck(
                 id: "exec-auth-tools",
                 title: "Exec auth tools",
-                status: missing.isEmpty ? .passed : .warning,
-                message: missing.isEmpty
-                    ? "All kubeconfig exec auth commands were found on PATH."
-                    : "Rune could not find \(missing.joined(separator: ", ")) on PATH. Cloud login may require installing or signing in with the matching CLI."
+                status: canRunExternalCommands && missing.isEmpty ? .passed : .warning,
+                message: message
             ))
         }
 
         let cloudTools = requiredCloudTools(for: providers)
         if !cloudTools.isEmpty {
-            let missing = cloudTools.filter { !commandExists($0) }.sorted()
+            let missing = canRunExternalCommands ? cloudTools.filter { !commandExists($0) }.sorted() : []
+            let message: String
+            if canRunExternalCommands {
+                message = missing.isEmpty
+                    ? "Detected cloud provider CLI tools are available on PATH."
+                    : "Missing \(missing.joined(separator: ", ")) on PATH. Install or sign in with the provider CLI before running cloud login."
+            } else {
+                message = "Cloud provider CLI tools are detected in kubeconfig hints, but this Rune build cannot run external provider commands."
+            }
             checks.append(RuneHealthCheck(
                 id: "cloud-login-tools",
                 title: "Cloud login tools",
-                status: missing.isEmpty ? .passed : .warning,
-                message: missing.isEmpty
-                    ? "Detected cloud provider CLI tools are available on PATH."
-                    : "Missing \(missing.joined(separator: ", ")) on PATH. Install or sign in with the provider CLI before running cloud login."
+                status: canRunExternalCommands && missing.isEmpty ? .passed : .warning,
+                message: message
             ))
         }
 
@@ -112,7 +136,11 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         return checks
     }
 
-    private func providerLifecycleChecks(in text: String) -> [RuneHealthCheck] {
+    private func providerLifecycleChecks(
+        in text: String,
+        usesExecAuth: Bool,
+        externalCommandsAllowed: Bool
+    ) -> [RuneHealthCheck] {
         var checks: [RuneHealthCheck] = []
 
         if text.contains("eks.amazonaws.com") || text.contains("aws eks") || text.contains("aws-iam-authenticator") {
@@ -120,37 +148,55 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
                 || text.contains("role_arn")
                 || text.contains("role-arn")
                 || text.contains("rolearn")
+            let message: String
+            if !externalCommandsAllowed && usesExecAuth {
+                message = "EKS exec auth hints were detected, but this Rune build cannot run external AWS auth commands."
+            } else if hasRoleHint {
+                message = "EKS role assumption was detected without exporting the role ARN. Rune will validate the resulting credentials through live API checks."
+            } else {
+                message = "EKS auth was detected without an explicit role assumption hint. If access fails, confirm the AWS profile or role selection outside Rune."
+            }
             checks.append(RuneHealthCheck(
                 id: "eks-role-profile",
                 title: "EKS role profile",
-                status: hasRoleHint ? .passed : .warning,
-                message: hasRoleHint
-                    ? "EKS role assumption was detected without exporting the role ARN. Rune will validate the resulting credentials through live API checks."
-                    : "EKS auth was detected without an explicit role assumption hint. If access fails, confirm the AWS profile or role selection outside Rune."
+                status: hasRoleHint && (externalCommandsAllowed || !usesExecAuth) ? .passed : .warning,
+                message: message
             ))
         }
 
         if text.contains("gke-gcloud-auth-plugin") || text.contains("container.googleapis.com") || text.contains("cmd-path: gcloud") {
             let hasPlugin = commandExists("gke-gcloud-auth-plugin")
+            let message: String
+            if externalCommandsAllowed {
+                message = hasPlugin
+                    ? "GKE auth plugin was found on PATH. Rune will validate generated credentials through live API checks."
+                    : "GKE auth hints were detected, but `gke-gcloud-auth-plugin` was not found on PATH."
+            } else {
+                message = "GKE auth plugin hints were detected, but this Rune build cannot run external GKE auth commands."
+            }
             checks.append(RuneHealthCheck(
                 id: "gke-auth-plugin-profile",
                 title: "GKE auth plugin",
-                status: hasPlugin ? .passed : .warning,
-                message: hasPlugin
-                    ? "GKE auth plugin was found on PATH. Rune will validate generated credentials through live API checks."
-                    : "GKE auth hints were detected, but `gke-gcloud-auth-plugin` was not found on PATH."
+                status: externalCommandsAllowed && hasPlugin ? .passed : .warning,
+                message: message
             ))
         }
 
         if text.contains("kubelogin") || text.contains("azure") || text.contains("aks") {
             let hasKubelogin = commandExists("kubelogin")
+            let message: String
+            if externalCommandsAllowed {
+                message = hasKubelogin
+                    ? "AKS kubelogin was found on PATH. Rune will validate token refresh through live API checks."
+                    : "AKS/kubelogin hints were detected, but `kubelogin` was not found on PATH."
+            } else {
+                message = "AKS kubelogin hints were detected, but this Rune build cannot run external AKS auth commands."
+            }
             checks.append(RuneHealthCheck(
                 id: "aks-kubelogin-profile",
                 title: "AKS kubelogin",
-                status: hasKubelogin ? .passed : .warning,
-                message: hasKubelogin
-                    ? "AKS kubelogin was found on PATH. Rune will validate token refresh through live API checks."
-                    : "AKS/kubelogin hints were detected, but `kubelogin` was not found on PATH."
+                status: externalCommandsAllowed && hasKubelogin ? .passed : .warning,
+                message: message
             ))
         }
 
@@ -159,7 +205,8 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
                 id: "doks-doctl-profile",
                 title: "DOKS doctl",
                 providerName: "DOKS",
-                command: "doctl"
+                command: "doctl",
+                externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
@@ -168,7 +215,8 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
                 id: "rancher-cli-profile",
                 title: "Rancher CLI",
                 providerName: "Rancher",
-                command: "rancher"
+                command: "rancher",
+                externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
@@ -177,7 +225,8 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
                 id: "openshift-cli-profile",
                 title: "OpenShift CLI",
                 providerName: "OpenShift",
-                command: "oc"
+                command: "oc",
+                externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
@@ -198,16 +247,18 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         id: String,
         title: String,
         providerName: String,
-        command: String
+        command: String,
+        externalCommandsAllowed: Bool
     ) -> RuneHealthCheck {
         let hasCommand = commandExists(command)
         return RuneHealthCheck(
             id: id,
             title: title,
-            status: hasCommand ? .passed : .warning,
-            message: hasCommand
+            status: externalCommandsAllowed && hasCommand ? .passed : .warning,
+            message: externalCommandsAllowed ? hasCommand
                 ? "\(providerName) \(command) was found on PATH. Rune will validate generated credentials through live API checks."
                 : "\(providerName) auth hints were detected, but `\(command)` was not found on PATH."
+                : "\(providerName) auth hints were detected, but this Rune build cannot run external provider auth commands."
         )
     }
 

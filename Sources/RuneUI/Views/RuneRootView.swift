@@ -2740,6 +2740,10 @@ public struct RuneRootView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if provider.cloudProvider != nil, !viewModel.cloudKubeConfigImportOutput.isEmpty {
+                addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
+            }
+
             if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
                 addClusterCloudImportDiagnosticView(diagnostic)
             }
@@ -2784,6 +2788,24 @@ public struct RuneRootView: View {
         }
         .padding(20)
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
+    }
+
+    private func addClusterCloudImportOutputView(_ output: String) -> some View {
+        DisclosureGroup {
+            ScrollView {
+                Text(output)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 140)
+            .background(RuneSurfaceBackground(kind: .inset))
+            .padding(.top, 8)
+        } label: {
+            Label("Login Output", systemImage: "terminal")
+                .font(.caption.weight(.semibold))
+        }
     }
 
     private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View {

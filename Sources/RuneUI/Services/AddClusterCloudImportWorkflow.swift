@@ -51,11 +51,27 @@ public enum AddClusterCloudImportWorkflow {
                 classification = "Missing field"
                 message = "\(field) is required before Rune can run the provider import."
                 nextAction = "Fill the highlighted provider fields, then run import again."
-            case .commandFailed(_, let exitCode, _):
-                title = "Provider CLI failed"
-                classification = "Exit code \(exitCode)"
-                message = "\(providerTitle(provider)) returned a non-zero exit code."
-                nextAction = "Check provider login, required fields, and CLI access, then run Auth Doctor."
+            case .externalCommandsUnavailable:
+                title = "Provider CLI unavailable"
+                classification = "App Store build"
+                message = "This context requires CLI-backed auth, which this Rune build cannot run."
+                nextAction = "Use static credentials or a native/import-guided flow where available, or use the direct download build for full CLI-backed auth compatibility."
+            case .commandFailed(_, let exitCode, let output):
+                if let providerFailure = providerCommandFailureDiagnostic(
+                    provider: provider,
+                    exitCode: exitCode,
+                    output: output
+                ) {
+                    title = providerFailure.title
+                    classification = providerFailure.classification
+                    message = providerFailure.message
+                    nextAction = providerFailure.nextAction
+                } else {
+                    title = "Provider CLI failed"
+                    classification = "Exit code \(exitCode)"
+                    message = "\(providerTitle(provider)) returned a non-zero exit code."
+                    nextAction = "Check provider login, required fields, and CLI access, then run Auth Doctor."
+                }
             case .commandTimedOut(_, let timeoutSeconds, _):
                 title = "Provider CLI timed out"
                 classification = "Timeout after \(timeoutSeconds)s"
@@ -83,6 +99,46 @@ public enum AddClusterCloudImportWorkflow {
             documentationTitle: documentationTitle(for: provider),
             documentationURL: documentationURL(for: provider)
         )
+    }
+
+    private static func providerCommandFailureDiagnostic(
+        provider: CloudKubeConfigProvider,
+        exitCode: Int32,
+        output: String
+    ) -> (title: String, classification: String, message: String, nextAction: String)? {
+        let lower = output.lowercased()
+
+        switch provider {
+        case .aks:
+            if lower.contains("authorizationfailed")
+                || lower.contains("listclusterusercredential")
+                || lower.contains("does not have authorization to perform action") {
+                return (
+                    title: "Azure authorization failed",
+                    classification: "AKS permission denied",
+                    message: "Azure CLI is logged in, but the selected identity cannot fetch AKS user credentials for this cluster.",
+                    nextAction: "Ask for access that includes Microsoft.ContainerService/managedClusters/listClusterUserCredential/action on the AKS cluster, then retry import."
+                )
+            }
+        case .eks, .gke:
+            break
+        }
+
+        if lower.contains("not logged in")
+            || lower.contains("login required")
+            || lower.contains("please run")
+            || lower.contains("az login")
+            || lower.contains("gcloud auth login")
+            || lower.contains("aws sso login") {
+            return (
+                title: "Provider login required",
+                classification: "Login required",
+                message: "\(providerTitle(provider)) could not use an active provider login session.",
+                nextAction: "Sign in with the provider CLI, then retry import."
+            )
+        }
+
+        return nil
     }
 
     public static func blockingIssues(in reviews: [KubeConfigImportReview]) -> [KubeConfigImportIssue] {
