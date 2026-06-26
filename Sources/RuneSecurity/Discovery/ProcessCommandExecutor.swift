@@ -257,11 +257,11 @@ private final class ProcessCommandOutputCapture: @unchecked Sendable {
         stream: ProcessCommandOutputStream,
         onOutput: @escaping @Sendable (ProcessCommandOutputChunk) -> Void
     ) {
-        guard !data.isEmpty,
-              let text = String(data: data, encoding: .utf8),
-              !text.isEmpty else {
+        guard !data.isEmpty else {
             return
         }
+        let text = String(decoding: data, as: UTF8.self)
+        guard !text.isEmpty else { return }
         lock.lock()
         switch stream {
         case .stdout:

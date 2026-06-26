@@ -533,7 +533,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootSource.contains("NSApp.applicationIconImage"))
         XCTAssertTrue(rootSource.contains("Image(nsImage: image)"))
         XCTAssertTrue(rootSource.contains(".frame(width: 112, height: 112)"))
-        XCTAssertTrue(rootSource.contains("workspaceChromeMountDelayNanoseconds: UInt64 = 120_000_000"))
+        XCTAssertTrue(rootSource.contains("workspaceChromeMountDelayNanoseconds: UInt64 = 80_000_000"))
         XCTAssertTrue(rootSource.contains(".allowsHitTesting(false)"))
         XCTAssertTrue(rootSource.contains("viewModel.bootstrapIfNeeded()"))
         let launchBlock = try functionBlock(
@@ -544,7 +544,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(launchBlock.contains("Text(\"Rune\")"))
 
         XCTAssertTrue(viewModelSource.contains("@Published public private(set) var isLaunchExperienceVisible = true"))
-        XCTAssertTrue(viewModelSource.contains("launchExperienceMinimumNanoseconds: UInt64 = 320_000_000"))
+        XCTAssertTrue(viewModelSource.contains("launchExperienceMinimumNanoseconds: UInt64 = 240_000_000"))
         XCTAssertTrue(viewModelSource.contains("finishLaunchExperience()"))
         XCTAssertLessThan(
             viewModelSource.range(of: "await Task.yield()")!.lowerBound,

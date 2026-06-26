@@ -1020,7 +1020,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let tailLogsReloadNanoseconds: UInt64 = 3_000_000_000
     private let liveStatusUpdateNanoseconds: UInt64 = 12_000_000_000
     private let kubeConfigSourceSyncNanoseconds: UInt64 = 2_000_000_000
-    private let launchExperienceMinimumNanoseconds: UInt64 = 320_000_000
+    private let launchExperienceMinimumNanoseconds: UInt64 = 240_000_000
     /// Keep YAML validation responsive enough for editing while still avoiding a server dry-run on every keystroke.
     private let yamlValidationDebounceNanoseconds: UInt64 = 300_000_000
     /// How long `listNamespaces` results are treated as fresh before the next snapshot refresh. Larger clusters feel snappier when we do not refetch namespaces on every navigation.

@@ -788,7 +788,7 @@ public struct RuneRootView: View {
     private let forcedManifestInlineEditorImplementation: ManifestInlineEditorImplementation?
     private let forcedInitialSidebarWidth: Double?
     private let forcedInitialDetailWidth: Double?
-    private let workspaceChromeMountDelayNanoseconds: UInt64 = 120_000_000
+    private let workspaceChromeMountDelayNanoseconds: UInt64 = 80_000_000
 
     @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0

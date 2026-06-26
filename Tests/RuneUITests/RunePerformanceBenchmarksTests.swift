@@ -1679,8 +1679,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
         let elapsed = started.duration(to: .now)
 
-        XCTAssertGreaterThanOrEqual(seconds(elapsed), 0.28)
-        XCTAssertLessThan(seconds(elapsed), 0.50)
+        XCTAssertGreaterThanOrEqual(seconds(elapsed), 0.20)
+        XCTAssertLessThan(seconds(elapsed), 0.38)
         XCTAssertFalse(state.isLoading)
     }
 

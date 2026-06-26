@@ -76,13 +76,13 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         let task = Task {
             try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
                 executable: "sh",
-                arguments: ["-c", "sleep 1; printf leaked > \"$RUNE_CANCEL_MARKER\""],
+                arguments: ["-c", "sleep 0.4; printf leaked > \"$RUNE_CANCEL_MARKER\""],
                 environment: ["RUNE_CANCEL_MARKER": marker.path],
                 timeout: 5
             )
         }
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
         task.cancel()
 
         do {
@@ -91,7 +91,7 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         } catch is CancellationError {
         }
 
-        try await Task.sleep(nanoseconds: 1_200_000_000)
+        try await Task.sleep(nanoseconds: 600_000_000)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
