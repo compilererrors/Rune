@@ -117,7 +117,7 @@ public enum AddClusterCloudImportWorkflow {
                     title: "Azure authorization failed",
                     classification: "AKS permission denied",
                     message: "Azure CLI is logged in, but the selected identity cannot fetch AKS user credentials for this cluster.",
-                    nextAction: "Ask for access that includes Microsoft.ContainerService/managedClusters/listClusterUserCredential/action on the AKS cluster, then retry import."
+                    nextAction: "Ask for AKS Cluster User access on this cluster, then retry import."
                 )
             }
         case .eks, .gke:

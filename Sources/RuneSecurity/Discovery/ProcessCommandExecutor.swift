@@ -94,81 +94,156 @@ struct ProcessCommandExecutor: ProcessCommandExecuting {
         guard externalCommandsAllowed() else {
             throw RuneError.invalidInput(message: RuneExternalCommandPolicy.disabledMessage)
         }
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [executable] + arguments
+        let executionState = ProcessCommandExecutionState()
+        return try await withTaskCancellationHandler {
+            try await runProcess(
+                executable: executable,
+                arguments: arguments,
+                environment: additionalEnvironment,
+                timeout: timeout,
+                onOutput: onOutput,
+                executionState: executionState
+            )
+        } onCancel: {
+            executionState.cancel()
+        }
+    }
 
-            var environment = ProcessInfo.processInfo.environment
-            environment["PATH"] = RuneExecutableSearchPath.pathValue(from: environment)
-            for (key, value) in additionalEnvironment {
-                environment[key] = value
-            }
-            process.environment = environment
+    private func runProcess(
+        executable: String,
+        arguments: [String],
+        environment additionalEnvironment: [String: String],
+        timeout: TimeInterval,
+        onOutput: @escaping @Sendable (ProcessCommandOutputChunk) -> Void,
+        executionState: ProcessCommandExecutionState
+    ) async throws -> ProcessCommandExecutionResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [executable] + arguments
+        guard executionState.setProcess(process) else {
+            throw CancellationError()
+        }
+        defer { executionState.clearProcess(process) }
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = RuneExecutableSearchPath.pathValue(from: environment)
+        for (key, value) in additionalEnvironment {
+            environment[key] = value
+        }
+        process.environment = environment
 
-            let outputCapture = ProcessCommandOutputCapture()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                outputCapture.append(
-                    data: handle.availableData,
-                    stream: .stdout,
-                    onOutput: onOutput
-                )
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                outputCapture.append(
-                    data: handle.availableData,
-                    stream: .stderr,
-                    onOutput: onOutput
-                )
-            }
-            defer {
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-            }
+        let outputCapture = ProcessCommandOutputCapture()
 
-            try process.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning, Date() < deadline {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            let didTimeout = process.isRunning
-            if process.isRunning {
-                process.terminate()
-                let terminationDeadline = Date().addingTimeInterval(terminationGracePeriod)
-                while process.isRunning, Date() < terminationDeadline {
-                    try await Task.sleep(nanoseconds: 25_000_000)
-                }
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
-                }
-            }
-            process.waitUntilExit()
-
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             outputCapture.append(
-                data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: handle.availableData,
                 stream: .stdout,
                 onOutput: onOutput
             )
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             outputCapture.append(
-                data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: handle.availableData,
                 stream: .stderr,
                 onOutput: onOutput
             )
-            let captured = outputCapture.snapshot()
+        }
+        defer {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+        }
 
-            return ProcessCommandExecutionResult(
-                exitCode: process.terminationStatus,
-                stdout: captured.stdout,
-                stderr: captured.stderr,
-                timedOut: didTimeout
-            )
+        try Task.checkCancellation()
+        try process.run()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline, !executionState.isCancelled {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let didCancel = executionState.isCancelled || Task.isCancelled
+        let didTimeout = process.isRunning && !didCancel
+        if process.isRunning {
+            process.terminate()
+            let terminationDeadline = Date().addingTimeInterval(terminationGracePeriod)
+            while process.isRunning, Date() < terminationDeadline {
+                await cancellationResistantSleep(nanoseconds: 25_000_000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        process.waitUntilExit()
+        if didCancel {
+            throw CancellationError()
+        }
+
+        outputCapture.append(
+            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+            stream: .stdout,
+            onOutput: onOutput
+        )
+        outputCapture.append(
+            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            stream: .stderr,
+            onOutput: onOutput
+        )
+        let captured = outputCapture.snapshot()
+
+        return ProcessCommandExecutionResult(
+            exitCode: process.terminationStatus,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+            timedOut: didTimeout
+        )
+    }
+
+    private func cancellationResistantSleep(nanoseconds: UInt64) async {
+        await Task.detached {
+            try? await Task.sleep(nanoseconds: nanoseconds)
         }.value
+    }
+}
+
+private final class ProcessCommandExecutionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func setProcess(_ process: Process) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        self.process = process
+        return true
+    }
+
+    func clearProcess(_ process: Process) {
+        lock.lock()
+        defer { lock.unlock() }
+        if self.process === process {
+            self.process = nil
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let process = self.process
+        lock.unlock()
+
+        if process?.isRunning == true {
+            process?.terminate()
+        }
     }
 }
 

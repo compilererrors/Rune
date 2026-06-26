@@ -67,7 +67,7 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         XCTAssertEqual(diagnostic.title, "Azure authorization failed")
         XCTAssertEqual(diagnostic.classification, "AKS permission denied")
         XCTAssertTrue(diagnostic.message.contains("cannot fetch AKS user credentials"))
-        XCTAssertTrue(diagnostic.nextAction.contains("listClusterUserCredential/action"))
+        XCTAssertEqual(diagnostic.nextAction, "Ask for AKS Cluster User access on this cluster, then retry import.")
         XCTAssertFalse(diagnostic.message.contains("00000000"))
         XCTAssertFalse(diagnostic.nextAction.contains("synthetic-cluster"))
     }

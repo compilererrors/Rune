@@ -68,6 +68,33 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1)
     }
 
+    func testProcessCommandExecutorCancelsAndTerminatesProcess() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-process-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let task = Task {
+            try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
+                executable: "sh",
+                arguments: ["-c", "sleep 1; printf leaked > \"$RUNE_CANCEL_MARKER\""],
+                environment: ["RUNE_CANCEL_MARKER": marker.path],
+                timeout: 5
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation to propagate")
+        } catch is CancellationError {
+        }
+
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testHelmRollbackCommandBuilderBuildsDryRunPreviewWithoutRunningHelm() throws {
         let source = KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune synthetic/config-one"))
         let preview = try HelmRollbackCommandBuilder().preview(for: HelmRollbackRequest(
