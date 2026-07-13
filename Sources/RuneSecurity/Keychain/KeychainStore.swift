@@ -27,15 +27,25 @@ public final class KeychainStore: SecretStore {
     }
 
     public func set(_ value: Data, for key: String) throws {
-        try delete(for: key)
-
-        let query: [CFString: Any] = [
+        let identityQuery: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
-            kSecAttrAccount: key,
+            kSecAttrAccount: key
+        ]
+        let update: [CFString: Any] = [
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecValueData: value
         ]
 
+        let updateStatus = SecItemUpdate(identityQuery as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainError.operationFailed(status: updateStatus)
+        }
+
+        var query = identityQuery
+        query[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        query[kSecValueData] = value
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw KeychainError.operationFailed(status: status)

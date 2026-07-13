@@ -13,17 +13,25 @@ struct CommandPaletteView: View {
     @State private var localKeyMonitor: Any?
     @FocusState private var focusedTarget: FocusTarget?
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let items = viewModel.commandPaletteItems(query: query)
 
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Command Palette")
-                    .font(.title3.weight(.semibold))
-                Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ws`, `:savews`, `:favws`, `:ov`, `:rbac`, `:cr`, `:cj` …")
-                    .font(.subheadline)
-                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Command Palette")
+                        .font(.title3.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Search or use a prefix: `:po`, `:deploy`, `:svc` / `:service`, `:no`, `:sts`, `:ing`, `:cm`, `:ctx`, `:ns`, `:ws`, `:savews`, `:favws`, `:ov`, `:rbac`, `:cr`, `:cj` …")
+                        .font(.subheadline)
+                        .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                }
+                Spacer(minLength: 0)
+                RuneDialogCloseButton("Close Command Palette") {
+                    dismiss()
+                }
             }
 
             HStack(spacing: 10) {
@@ -132,8 +140,11 @@ struct CommandPaletteView: View {
 
             keyboardActionBridge(items: items)
         }
-        .padding(16)
-        .frame(minWidth: 680, minHeight: 440)
+        .padding(RuneUILayoutMetrics.dialogContentPadding)
+        .frame(
+            width: RuneUILayoutMetrics.commandPaletteWidth,
+            height: RuneUILayoutMetrics.commandPaletteHeight
+        )
         .background(runeThemePalette?.content.opacity(0.98) ?? Color(nsColor: .windowBackgroundColor).opacity(0.82))
         .onAppear {
             let prefill = viewModel.consumeCommandPalettePrefillQuery()

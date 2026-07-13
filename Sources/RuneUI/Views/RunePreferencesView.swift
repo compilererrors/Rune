@@ -895,6 +895,8 @@ public struct RunePreferencesView: View {
                     }
                 }
 
+                helpInline("Some apps cannot load .yaml, .log, or .zip exports from a background handoff. Inkline and QuikZip are built for Save and Open.")
+
                 exportOpenerRecommendationRow(inklineRecommendation)
                 exportOpenerRecommendationRow(quikZipRecommendation)
 

@@ -420,6 +420,72 @@ struct RuneInspectorActionRow<Content: View>: View {
     }
 }
 
+/// Consistent bottom action area for custom macOS sheets. Actions remain
+/// right-aligned, use regular controls, and are separated from body content.
+struct RuneDialogActionBar<Actions: View>: View {
+    @ViewBuilder var actions: Actions
+
+    init(@ViewBuilder actions: () -> Actions) {
+        self.actions = actions()
+    }
+
+    var body: some View {
+        VStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+            Divider()
+            HStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                Spacer(minLength: 0)
+                actions
+            }
+            .controlSize(.regular)
+        }
+        .padding(.top, 2)
+    }
+}
+
+/// Gives a text action a stable visual width without inflating compact dialogs.
+struct RuneDialogButtonLabel: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .frame(
+                minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+            )
+    }
+}
+
+/// Standard close affordance for custom sheet headers with a full 28-point hit target.
+struct RuneDialogCloseButton: View {
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    init(_ accessibilityLabel: String = "Close", action: @escaping () -> Void) {
+        self.accessibilityLabel = accessibilityLabel
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(
+                    width: RuneUILayoutMetrics.dialogIconButtonSize,
+                    height: RuneUILayoutMetrics.dialogIconButtonSize
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut(.cancelAction)
+        .help(accessibilityLabel)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 extension View {
     func runePanelCard(padding: CGFloat = 12, alignment: Alignment = .leading) -> some View {
         self

@@ -55,6 +55,17 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertEqual(check.message, RuneExternalCommandPolicy.disabledMessage)
     }
 
+    func testClassifiesMissingNativeProviderProfileWithoutLeakingProviderDetails() throws {
+        let check = try XCTUnwrap(AuthDoctorFailureProjector.checks(
+            for: "Connect Amazon EKS credentials in Rune before using this context."
+        ).first)
+
+        XCTAssertEqual(check.id, "native-auth-profile")
+        XCTAssertEqual(check.status, .failed)
+        XCTAssertTrue(check.message.contains("connected native provider profile"))
+        XCTAssertFalse(check.message.contains("Amazon EKS"))
+    }
+
     func testClassifiesAPIAuthenticationFailures() throws {
         let check = try XCTUnwrap(AuthDoctorFailureProjector.checks(
             for: "HTTP status 401 Unauthorized: invalid bearer token"

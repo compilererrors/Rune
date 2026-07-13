@@ -890,6 +890,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var cloudKubeConfigImportDiagnostic: AddClusterCloudImportDiagnostic?
     @Published public private(set) var cloudKubeConfigImportOutput: String = ""
     @Published public private(set) var isRunningCloudKubeConfigImport = false
+    @Published public private(set) var nativeKubernetesAuthStatus: String?
+    @Published public private(set) var isConnectingNativeKubernetesAuth = false
     @Published public var pendingWriteAction: PendingWriteAction? {
         didSet {
             if pendingWriteAction != oldValue {
@@ -953,6 +955,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let kubeConfigImportValidator: KubeConfigImportValidator
     private let kubeConfigImportStore: KubeConfigImportStoring
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
+    private let nativeAuthConfigurator: any KubernetesNativeAuthConfiguring
     private let helmCommandRunner: HelmCommandRunning
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
     private let namespaceListPersistence: NamespaceListPersisting
@@ -1059,6 +1062,7 @@ public final class RuneAppViewModel: ObservableObject {
         kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
         kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
         cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
+        nativeAuthConfigurator: any KubernetesNativeAuthConfiguring = DefaultKubernetesNativeCredentialProvider.shared,
         helmCommandRunner: HelmCommandRunning = ProcessHelmCommandRunner(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
         namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
@@ -1080,6 +1084,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeConfigImportValidator = kubeConfigImportValidator
         self.kubeConfigImportStore = kubeConfigImportStore
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
+        self.nativeAuthConfigurator = nativeAuthConfigurator
         self.helmCommandRunner = helmCommandRunner
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
         self.namespaceListPersistence = namespaceListPersistence
@@ -2065,7 +2070,8 @@ public final class RuneAppViewModel: ObservableObject {
                 let payloads = try files.map { file in
                     (
                         raw: try String(contentsOf: file, encoding: .utf8),
-                        sourceName: file.lastPathComponent
+                        sourceName: file.lastPathComponent,
+                        sourceURL: Optional(file)
                     )
                 }
                 try await importKubeConfigPayloads(payloads, logLabel: "importKubeConfig")
@@ -2098,7 +2104,8 @@ public final class RuneAppViewModel: ObservableObject {
                 let payloads = try files.map { file in
                     (
                         raw: try String(contentsOf: file, encoding: .utf8),
-                        sourceName: file.lastPathComponent
+                        sourceName: file.lastPathComponent,
+                        sourceURL: Optional(file)
                     )
                 }
                 try await importKubeConfigPayloads(payloads, logLabel: "importKubeConfigFolder")
@@ -2112,7 +2119,10 @@ public final class RuneAppViewModel: ObservableObject {
     public func importKubeConfig(raw: String, sourceName: String = "pasted-kubeconfig.yaml") {
         Task {
             do {
-                try await importKubeConfigPayloads([(raw: raw, sourceName: sourceName)], logLabel: "importKubeConfigPaste")
+                try await importKubeConfigPayloads(
+                    [(raw: raw, sourceName: sourceName, sourceURL: nil)],
+                    logLabel: "importKubeConfigPaste"
+                )
             } catch {
                 diagnostics.log("importKubeConfigPaste failed: \(error.localizedDescription)")
                 state.setError(error)
@@ -2130,7 +2140,10 @@ public final class RuneAppViewModel: ObservableObject {
                     token: manualKubeConfigToken
                 ))
                 manualKubeConfigToken = ""
-                try await importKubeConfigPayloads([(raw: raw, sourceName: "manual-token-kubeconfig.yaml")], logLabel: "importManualTokenKubeConfig")
+                try await importKubeConfigPayloads(
+                    [(raw: raw, sourceName: "manual-token-kubeconfig.yaml", sourceURL: nil)],
+                    logLabel: "importManualTokenKubeConfig"
+                )
             } catch {
                 diagnostics.log("importManualTokenKubeConfig failed: \(error.localizedDescription)")
                 state.setError(error)
@@ -2206,6 +2219,225 @@ public final class RuneAppViewModel: ObservableObject {
         cloudKubeConfigImportOutput = ""
     }
 
+    /// Binds explicit AWS IAM/session credentials to the selected imported EKS context.
+    /// Secret material is written to Keychain by the native auth provider and is never
+    /// written back to kubeconfig or diagnostics.
+    public func connectSelectedEKSNativeAuth(
+        accessKeyID: String,
+        secretAccessKey: String,
+        sessionToken: String = "",
+        expiration: Date? = nil
+    ) {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        let accessKeyID = accessKeyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secretAccessKey = secretAccessKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionToken = sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        isConnectingNativeKubernetesAuth = true
+        nativeKubernetesAuthStatus = "Connecting AWS credentials…"
+        if state.lastError != nil { state.clearError() }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isConnectingNativeKubernetesAuth = false }
+            var profileWasSaved = false
+            do {
+                let request = try self.selectedNativeCredentialRequest(expectedProvider: .awsEKS)
+                let credentials = try AWSEKSCredentials(
+                    accessKeyID: accessKeyID,
+                    secretAccessKey: secretAccessKey,
+                    sessionToken: sessionToken.isEmpty ? nil : sessionToken,
+                    expiration: expiration
+                )
+                try await self.nativeAuthConfigurator.bindAWSCredentials(
+                    to: request,
+                    credentials: credentials,
+                    displayName: "AWS EKS"
+                )
+                profileWasSaved = true
+                self.nativeKubernetesAuthStatus = "AWS credentials connected. Verifying the selected context…"
+                try await self.reloadContexts()
+                self.nativeKubernetesAuthStatus = "AWS native authentication is connected."
+                if !UserDefaults.standard.runeSimpleMode {
+                    self.runAuthDoctor()
+                }
+            } catch {
+                self.nativeKubernetesAuthStatus = profileWasSaved
+                    ? "AWS credentials were saved, but the selected context could not be verified. Run Auth Doctor and try again."
+                    : "AWS native authentication could not be connected."
+                self.diagnostics.log("native AWS auth connection failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
+    }
+
+    /// Binds an Azure service-principal secret to a selected kubelogin context whose
+    /// non-secret tenant, audience, and client identifiers remain in kubeconfig.
+    public func connectSelectedAKSNativeAuth(clientSecret: String) {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        isConnectingNativeKubernetesAuth = true
+        nativeKubernetesAuthStatus = "Connecting Azure service principal…"
+        if state.lastError != nil { state.clearError() }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isConnectingNativeKubernetesAuth = false }
+            var profileWasSaved = false
+            do {
+                let request = try self.selectedNativeCredentialRequest(expectedProvider: .azureKubelogin)
+                try await self.nativeAuthConfigurator.bindAKSServicePrincipal(
+                    to: request,
+                    clientSecret: clientSecret,
+                    displayName: "Azure AKS"
+                )
+                profileWasSaved = true
+                self.nativeKubernetesAuthStatus = "Azure credentials connected. Verifying the selected context…"
+                try await self.reloadContexts()
+                self.nativeKubernetesAuthStatus = "Azure native authentication is connected."
+                if !UserDefaults.standard.runeSimpleMode {
+                    self.runAuthDoctor()
+                }
+            } catch {
+                self.nativeKubernetesAuthStatus = profileWasSaved
+                    ? "Azure credentials were saved, but the selected context could not be verified. Run Auth Doctor and try again."
+                    : "Azure native authentication could not be connected."
+                self.diagnostics.log("native Azure auth connection failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
+    }
+
+    /// Opens a user-mediated App Sandbox file panel, reads one bounded service-account
+    /// document, and immediately moves it into Keychain through the native provider.
+    public func chooseAndConnectSelectedGKENativeAuth() {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        guard validateSelectedNativeAuthContext(for: .googleGKE) else { return }
+        isConnectingNativeKubernetesAuth = true
+        nativeKubernetesAuthStatus = "Choose a Google service-account JSON file…"
+        let panel = NSOpenPanel()
+        panel.title = "Choose Google service-account JSON"
+        panel.prompt = "Connect"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let url = panel.url else {
+                self.isConnectingNativeKubernetesAuth = false
+                self.nativeKubernetesAuthStatus = nil
+                return
+            }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let data = try handle.read(upToCount: 1_048_577) ?? Data()
+                guard !data.isEmpty, data.count <= 1_048_576 else {
+                    throw RuneError.invalidInput(message: "The Google service-account JSON must be between 1 byte and 1 MiB.")
+                }
+                self.isConnectingNativeKubernetesAuth = false
+                self.connectSelectedGKENativeAuth(serviceAccountJSON: data)
+            } catch {
+                self.isConnectingNativeKubernetesAuth = false
+                self.nativeKubernetesAuthStatus = "Google native authentication could not be connected."
+                self.state.setError(error)
+            }
+        }
+    }
+
+    /// Validates and binds a Google service-account document to the selected imported
+    /// GKE context. The document is persisted only as a Keychain secret.
+    public func connectSelectedGKENativeAuth(serviceAccountJSON: Data) {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        isConnectingNativeKubernetesAuth = true
+        nativeKubernetesAuthStatus = "Connecting Google service account…"
+        if state.lastError != nil { state.clearError() }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isConnectingNativeKubernetesAuth = false }
+            var profileWasSaved = false
+            do {
+                let request = try self.selectedNativeCredentialRequest(expectedProvider: .googleGKE)
+                try await self.nativeAuthConfigurator.bindGCPServiceAccount(
+                    to: request,
+                    serviceAccountJSON: serviceAccountJSON,
+                    displayName: "Google GKE"
+                )
+                profileWasSaved = true
+                self.nativeKubernetesAuthStatus = "Google credentials connected. Verifying the selected context…"
+                try await self.reloadContexts()
+                self.nativeKubernetesAuthStatus = "Google native authentication is connected."
+                if !UserDefaults.standard.runeSimpleMode {
+                    self.runAuthDoctor()
+                }
+            } catch {
+                self.nativeKubernetesAuthStatus = profileWasSaved
+                    ? "Google credentials were saved, but the selected context could not be verified. Run Auth Doctor and try again."
+                    : "Google native authentication could not be connected."
+                self.diagnostics.log("native Google auth connection failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
+    }
+
+    public func disconnectSelectedNativeAuth() {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        isConnectingNativeKubernetesAuth = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isConnectingNativeKubernetesAuth = false }
+            do {
+                let request = try self.selectedNativeCredentialRequest(expectedProvider: nil)
+                try await self.nativeAuthConfigurator.removeProfile(for: request.bindingID)
+                self.nativeKubernetesAuthStatus = "Native authentication disconnected."
+            } catch {
+                self.nativeKubernetesAuthStatus = "Native authentication could not be disconnected."
+                self.state.setError(error)
+            }
+        }
+    }
+
+    public func clearNativeKubernetesAuthStatus() {
+        guard !isConnectingNativeKubernetesAuth else { return }
+        nativeKubernetesAuthStatus = nil
+    }
+
+    public func validateSelectedNativeAuthContext(for provider: KubernetesNativeAuthProviderKind) -> Bool {
+        do {
+            _ = try selectedNativeCredentialRequest(expectedProvider: provider)
+            return true
+        } catch {
+            nativeKubernetesAuthStatus = "Select a compatible imported \(provider.displayName) context first."
+            state.setError(error)
+            return false
+        }
+    }
+
+    private func selectedNativeCredentialRequest(
+        expectedProvider: KubernetesNativeAuthProviderKind?
+    ) throws -> KubernetesNativeCredentialRequest {
+        guard let selectedContextName = state.selectedContext?.name else {
+            throw RuneError.invalidInput(message: "Select an imported Kubernetes context first.")
+        }
+        let analysis = try KubeConfigNativeAuthAnalyzer().analyze(sources: state.kubeConfigSources)
+        if let descriptor = analysis.contexts.first(where: { $0.contextName == selectedContextName }),
+           let request = descriptor.credentialRequest {
+            if let expectedProvider, request.provider != expectedProvider {
+                throw RuneError.invalidInput(
+                    message: "The selected context uses \(request.provider.displayName), not \(expectedProvider.displayName)."
+                )
+            }
+            return request
+        }
+        throw RuneError.invalidInput(
+            message: "The selected context does not contain a supported native authentication configuration."
+        )
+    }
+
     private func appendCloudKubeConfigImportOutput(_ text: String) {
         guard !text.isEmpty else { return }
         cloudKubeConfigImportOutput.append(text)
@@ -2235,7 +2467,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func importKubeConfigPayloads(
-        _ payloads: [(raw: String, sourceName: String)],
+        _ payloads: [(raw: String, sourceName: String, sourceURL: URL?)],
         logLabel: String
     ) async throws {
         let reviews = payloads.map { payload in
@@ -2255,7 +2487,8 @@ public final class RuneAppViewModel: ObservableObject {
         for payload in payloads {
             let imported = try kubeConfigImportStore.saveImportedKubeConfig(
                 raw: payload.raw,
-                sourceName: payload.sourceName
+                sourceName: payload.sourceName,
+                sourceURL: payload.sourceURL
             )
             try? bookmarkManager.addKubeConfig(url: imported)
             importedFiles.append(imported)
@@ -2266,7 +2499,43 @@ public final class RuneAppViewModel: ObservableObject {
         latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
         startKubeConfigSourceSync()
         diagnostics.log("\(logLabel) loaded payloads count=\(importedFiles.count), sources count=\(sources.count)")
+
+        if !RuneExternalCommandPolicy.allowsExternalCommands {
+            let nativeAnalysis = try KubeConfigNativeAuthAnalyzer().analyze(sources: sources)
+            if nativeAnalysis.contexts.contains(where: { $0.exec != nil }) {
+                try await reloadContextDefinitionsOnly(preferredContextName: nativeAnalysis.currentContext)
+                if let selectedName = state.selectedContext?.name,
+                   let descriptor = nativeAnalysis.contexts.first(where: { $0.contextName == selectedName }),
+                   descriptor.exec != nil {
+                    if let request = descriptor.credentialRequest {
+                        let status = try await nativeAuthConfigurator.status(for: request)
+                        if status.isConnected {
+                            try await reloadContexts()
+                        } else {
+                            nativeKubernetesAuthStatus = "Kubeconfig imported. Connect \(request.provider.displayName) credentials for the selected context."
+                        }
+                    } else {
+                        nativeKubernetesAuthStatus = "Kubeconfig imported. Its exec plugin is not available in the App Store build; use a supported native profile or Rune's direct build."
+                    }
+                    return
+                }
+            }
+        }
         try await reloadContexts()
+    }
+
+    private func reloadContextDefinitionsOnly(preferredContextName: String?) async throws {
+        state.isLoading = true
+        defer { state.isLoading = false }
+        let contexts = try await kubeClient.listContexts(from: state.kubeConfigSources)
+        state.setContexts(contexts)
+        if let preferredContextName,
+           let preferred = contexts.first(where: { $0.name == preferredContextName }) {
+            state.selectedContext = preferred
+        }
+        if let selected = state.selectedContext {
+            rememberRecentContext(selected.name)
+        }
     }
 
     private func persistKubeConfigImportContextPreferences(from reviews: [KubeConfigImportReview]) {
@@ -5797,7 +6066,10 @@ public final class RuneAppViewModel: ObservableObject {
                 return
             }
             record("kubeconfig", "Kubeconfig", .passed, "\(state.kubeConfigSources.count) source(s) loaded.")
-            for check in AuthDoctorKubeconfigInspector().inspect(sources: state.kubeConfigSources) {
+            for check in AuthDoctorKubeconfigInspector().inspect(
+                sources: state.kubeConfigSources,
+                activeContextName: state.selectedContext?.name
+            ) {
                 record(check.id, check.title, check.status, check.message)
             }
             let contexts: [KubeContext]
@@ -5815,6 +6087,21 @@ public final class RuneAppViewModel: ObservableObject {
                 return
             }
             record("selected-context", "Selected context", .passed, context.name)
+            if let request = try? selectedNativeCredentialRequest(expectedProvider: nil) {
+                do {
+                    let status = try await nativeAuthConfigurator.status(for: request)
+                    record(
+                        "native-auth-profile",
+                        "Native \(request.provider.displayName) authentication",
+                        status.isConnected ? .passed : .warning,
+                        status.isConnected
+                            ? "A Keychain-backed native authentication profile is connected for the selected context."
+                            : "The selected context needs a native \(request.provider.displayName) login in this App Store build."
+                    )
+                } catch {
+                    record("native-auth-profile", "Native authentication", .warning, error.localizedDescription)
+                }
+            }
             let kubeConfigSources = state.kubeConfigSources
             let authDoctorKubeClient = kubeClient
 
@@ -5869,7 +6156,7 @@ public final class RuneAppViewModel: ObservableObject {
                 let namespaces = try await kubeClient.listNamespaces(from: state.kubeConfigSources, context: context)
                 record("namespace-list", "Namespace list", .passed, "\(namespaces.count) namespace(s) listed.")
                 record("transport", "API transport", .passed, "API server, TLS/CA, proxy settings, and auth credentials worked for a live request.")
-                record("exec-auth", "Exec auth", .passed, "Any kubeconfig exec/auth plugin needed for this request completed successfully.")
+                record("exec-auth", "Kubernetes authentication", .passed, "The selected context authenticated successfully through static, native, or exec credentials.")
                 await recordExecAuthCacheDiagnostic(context: context)
             } catch {
                 recordProjectedFailure(error)
@@ -8942,13 +9229,15 @@ public final class RuneAppViewModel: ObservableObject {
         }
         let fallback = fallbackURLs.map(KubeConfigSource.init(url:))
 
-        var merged: [String: KubeConfigSource] = [:]
+        var seen = Set<String>()
+        var merged: [KubeConfigSource] = []
         for source in bookmarked + fallback {
             let standardizedPath = source.url.standardizedFileURL.path
-            merged[standardizedPath] = source
+            guard seen.insert(standardizedPath).inserted else { continue }
+            merged.append(source)
         }
 
-        return merged.values.sorted { $0.path < $1.path }
+        return merged
     }
 
     private func fetchYAMLAndDescribe(

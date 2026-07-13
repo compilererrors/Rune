@@ -1,130 +1,185 @@
 import Foundation
 import RuneCore
+import RuneSecurity
 
 public struct AuthDoctorKubeconfigInspector: Sendable {
+    private enum ExecutableState {
+        case available
+        case missing
+        case notExecutable
+    }
+
+    private enum ProviderKind: CaseIterable, Hashable {
+        case eks
+        case gke
+        case aks
+        case oidc
+        case doks
+        case rancher
+        case openShift
+
+        var hint: String {
+            switch self {
+            case .eks: return "EKS auth hints detected."
+            case .gke: return "GKE auth hints detected."
+            case .aks: return "AKS/kubelogin auth hints detected."
+            case .oidc: return "OIDC-style token hints detected."
+            case .doks: return "DOKS auth hints detected."
+            case .rancher: return "Rancher auth hints detected."
+            case .openShift: return "OpenShift auth hints detected."
+            }
+        }
+    }
+
+    private struct InspectionScope {
+        let users: [AuthDoctorKubeconfigProjection.User]
+        let clusters: [AuthDoctorKubeconfigProjection.Cluster]
+    }
+
     private let fileExists: @Sendable (String) -> Bool
+    private let isExecutable: @Sendable (String) -> Bool
     private let executableSearchPaths: [String]
     private let externalCommandsAllowed: @Sendable () -> Bool
 
+    /// Production initializer. Availability means the file both exists and is executable.
     public init(
-        fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) },
+        executableSearchPaths: [String] = RuneExecutableSearchPath.directories(),
+        externalCommandsAllowed: @escaping @Sendable () -> Bool = { RuneExternalCommandPolicy.allowsExternalCommands }
+    ) {
+        self.fileExists = { path in FileManager.default.fileExists(atPath: path) }
+        self.isExecutable = { path in
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else { return false }
+            return FileManager.default.isExecutableFile(atPath: path)
+        }
+        self.executableSearchPaths = executableSearchPaths
+        self.externalCommandsAllowed = externalCommandsAllowed
+    }
+
+    /// Compatibility initializer for existing deterministic callers. A reported file is treated as executable.
+    public init(
+        fileExists: @escaping @Sendable (String) -> Bool,
         executableSearchPaths: [String] = RuneExecutableSearchPath.directories(),
         externalCommandsAllowed: @escaping @Sendable () -> Bool = { RuneExternalCommandPolicy.allowsExternalCommands }
     ) {
         self.fileExists = fileExists
+        self.isExecutable = fileExists
+        self.executableSearchPaths = executableSearchPaths
+        self.externalCommandsAllowed = externalCommandsAllowed
+    }
+
+    /// Deterministic initializer used when callers need to distinguish a missing file from a non-executable file.
+    public init(
+        fileExists: @escaping @Sendable (String) -> Bool,
+        isExecutable: @escaping @Sendable (String) -> Bool,
+        executableSearchPaths: [String] = RuneExecutableSearchPath.directories(),
+        externalCommandsAllowed: @escaping @Sendable () -> Bool = { RuneExternalCommandPolicy.allowsExternalCommands }
+    ) {
+        self.fileExists = fileExists
+        self.isExecutable = isExecutable
         self.executableSearchPaths = executableSearchPaths
         self.externalCommandsAllowed = externalCommandsAllowed
     }
 
     public func inspect(sources: [KubeConfigSource]) -> [RuneHealthCheck] {
+        inspect(sources: sources, activeContextName: nil)
+    }
+
+    /// Inspects only the explicitly selected context when supplied. Otherwise kubeconfig `current-context`
+    /// is used when it can be resolved across the supplied sources.
+    public func inspect(
+        sources: [KubeConfigSource],
+        activeContextName: String?
+    ) -> [RuneHealthCheck] {
         guard !sources.isEmpty else { return [] }
 
-        var readableContents: [String] = []
+        var projections: [AuthDoctorKubeconfigProjection] = []
         var unreadableCount = 0
         for source in sources {
             do {
-                readableContents.append(try String(contentsOf: source.url, encoding: .utf8))
+                let content = try String(contentsOf: source.url, encoding: .utf8)
+                projections.append(AuthDoctorKubeconfigProjection.parse(content, sourceURL: source.url))
             } catch {
                 unreadableCount += 1
             }
         }
-        let combined = readableContents.joined(separator: "\n")
 
-        let lowercased = combined.lowercased()
+        let scope = inspectionScope(projections: projections, activeContextName: activeContextName)
+        let providers = detectedProviders(in: scope)
+        let providerHints = ProviderKind.allCases.filter(providers.contains).map(\.hint)
+        let execEntries = scope.users.compactMap(\.exec)
+        let usesExecAuth = !execEntries.isEmpty
+        let canRunExternalCommands = externalCommandsAllowed()
+        let nativeSubstitutionAvailable = !canRunExternalCommands
+            && hasNativeSubstitution(sources: sources, activeContextName: activeContextName)
         var checks: [RuneHealthCheck] = []
 
-        if unreadableCount > 0 {
-            checks.append(RuneHealthCheck(
-                id: "kubeconfig-files",
-                title: "Kubeconfig files",
-                status: .warning,
-                message: "\(unreadableCount) kubeconfig source(s) could not be inspected for local auth hints. Live API checks still verify the active context."
-            ))
-        } else {
-            checks.append(RuneHealthCheck(
-                id: "kubeconfig-files",
-                title: "Kubeconfig files",
-                status: .passed,
-                message: "\(sources.count) kubeconfig source(s) were readable for local auth hints."
-            ))
-        }
+        checks.append(RuneHealthCheck(
+            id: "kubeconfig-files",
+            title: "Kubeconfig files",
+            status: unreadableCount == 0 ? .passed : .warning,
+            message: unreadableCount == 0
+                ? "\(sources.count) kubeconfig source(s) were readable for local auth hints."
+                : "\(unreadableCount) kubeconfig source(s) could not be inspected for local auth hints. Live API checks still verify the active context."
+        ))
 
-        let providers = detectedProviderHints(in: lowercased)
         checks.append(RuneHealthCheck(
             id: "auth-provider-profile",
             title: "Auth provider profile",
             status: .passed,
-            message: providers.isEmpty ? "Generic kubeconfig profile. No cloud, OIDC, local, or vendor-specific hint was detected." : providers.joined(separator: " ")
+            message: providerHints.isEmpty
+                ? "Generic kubeconfig profile. No cloud, OIDC, local, or vendor-specific hint was detected for the selected context."
+                : providerHints.joined(separator: " ")
         ))
-
-        let usesExecAuth = lowercased.contains("exec:")
-        let canRunExternalCommands = externalCommandsAllowed()
 
         if usesExecAuth {
             checks.append(RuneHealthCheck(
                 id: "exec-auth-profile",
                 title: "Exec auth profile",
-                status: canRunExternalCommands ? .passed : .warning,
-                message: canRunExternalCommands
-                    ? "Kubeconfig uses exec auth. Rune will verify the configured plugin through live Kubernetes API checks without exporting command arguments."
+                status: canRunExternalCommands || nativeSubstitutionAvailable ? .passed : .warning,
+                message: nativeSubstitutionAvailable
+                    ? "The selected ExecConfig has a supported in-process authentication replacement. Native profile and live API checks verify it without launching the configured command."
+                    : canRunExternalCommands
+                    ? "The selected kubeconfig context uses exec auth. Rune verifies the configured plugin through live Kubernetes API checks without exporting command arguments or environment values."
                     : RuneExternalCommandPolicy.disabledMessage
             ))
+            if nativeSubstitutionAvailable {
+                checks.append(RuneHealthCheck(
+                    id: "exec-auth-tools",
+                    title: "Exec auth tools",
+                    status: .passed,
+                    message: "No external auth executable is required for the selected native authentication profile."
+                ))
+            } else {
+                checks.append(contentsOf: execConfigurationChecks(execEntries))
+                checks.append(execToolsCheck(execEntries, externalCommandsAllowed: canRunExternalCommands))
+            }
         }
 
-        checks.append(contentsOf: providerLifecycleChecks(
-            in: lowercased,
-            usesExecAuth: usesExecAuth,
-            externalCommandsAllowed: canRunExternalCommands
-        ))
-
-        let execCommands = Set(Self.execCommands(in: combined))
-        if !execCommands.isEmpty {
-            let missing = canRunExternalCommands ? execCommands.filter { !commandExists($0) }.sorted() : []
-            let message: String
-            if canRunExternalCommands {
-                message = missing.isEmpty
-                    ? "All kubeconfig exec auth commands were found on PATH."
-                    : "Rune could not find \(missing.joined(separator: ", ")) on PATH. Cloud login may require installing or signing in with the matching CLI."
-            } else {
-                message = "Kubeconfig exec auth commands are present, but this Rune build cannot run external auth plugins."
-            }
-            checks.append(RuneHealthCheck(
-                id: "exec-auth-tools",
-                title: "Exec auth tools",
-                status: canRunExternalCommands && missing.isEmpty ? .passed : .warning,
-                message: message
+        if !nativeSubstitutionAvailable {
+            checks.append(contentsOf: providerLifecycleChecks(
+                providers: providers,
+                users: scope.users,
+                externalCommandsAllowed: canRunExternalCommands
             ))
         }
 
-        let cloudTools = requiredCloudTools(for: providers)
-        if !cloudTools.isEmpty {
-            let missing = canRunExternalCommands ? cloudTools.filter { !commandExists($0) }.sorted() : []
-            let message: String
-            if canRunExternalCommands {
-                message = missing.isEmpty
-                    ? "Detected cloud provider CLI tools are available on PATH."
-                    : "Missing \(missing.joined(separator: ", ")) on PATH. Install or sign in with the provider CLI before running cloud login."
-            } else {
-                message = "Cloud provider CLI tools are detected in kubeconfig hints, but this Rune build cannot run external provider commands."
-            }
-            checks.append(RuneHealthCheck(
-                id: "cloud-login-tools",
-                title: "Cloud login tools",
-                status: canRunExternalCommands && missing.isEmpty ? .passed : .warning,
-                message: message
-            ))
+        let cloudToolEntries = requiredCloudToolEntries(from: execEntries)
+        if !cloudToolEntries.isEmpty, !nativeSubstitutionAvailable {
+            checks.append(cloudToolsCheck(cloudToolEntries, externalCommandsAllowed: canRunExternalCommands))
         }
 
-        if lowercased.contains("proxy-url:") || lowercased.contains("https_proxy") || lowercased.contains("http_proxy") {
+        if scope.clusters.contains(where: \.hasProxyURL) {
             checks.append(RuneHealthCheck(
                 id: "proxy-profile",
                 title: "Proxy profile",
-                status: .passed,
-                message: "Proxy configuration was detected. API transport checks verify that proxy routing works for the selected context."
+                status: .warning,
+                message: "Proxy configuration was detected. Rune's Kubernetes REST transport does not currently apply kubeconfig proxy-url, so proxy routing is not verified."
             ))
         }
 
-        if lowercased.contains("certificate-authority-data:") || lowercased.contains("certificate-authority:") {
+        if scope.clusters.contains(where: \.hasCustomCA) {
             checks.append(RuneHealthCheck(
                 id: "custom-ca-profile",
                 title: "Custom CA profile",
@@ -136,110 +191,271 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         return checks
     }
 
-    private func providerLifecycleChecks(
-        in text: String,
-        usesExecAuth: Bool,
-        externalCommandsAllowed: Bool
+    private func hasNativeSubstitution(
+        sources: [KubeConfigSource],
+        activeContextName: String?
+    ) -> Bool {
+        guard let analysis = try? KubeConfigNativeAuthAnalyzer().analyze(sources: sources) else {
+            return false
+        }
+        let requestedName = activeContextName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetName = requestedName?.isEmpty == false ? requestedName : analysis.currentContext
+        if let targetName {
+            return analysis.contexts.first(where: { $0.contextName == targetName })?.credentialRequest != nil
+        }
+        return analysis.contexts.count == 1 && analysis.contexts[0].credentialRequest != nil
+    }
+
+    private func inspectionScope(
+        projections: [AuthDoctorKubeconfigProjection],
+        activeContextName: String?
+    ) -> InspectionScope {
+        var contexts: [String: AuthDoctorKubeconfigProjection.Context] = [:]
+        var users: [String: AuthDoctorKubeconfigProjection.User] = [:]
+        var clusters: [String: AuthDoctorKubeconfigProjection.Cluster] = [:]
+        var mergedCurrentContext: String?
+
+        for projection in projections {
+            if mergedCurrentContext == nil, projection.currentContext?.isEmpty == false {
+                mergedCurrentContext = projection.currentContext
+            }
+            for context in projection.contexts where contexts[context.name] == nil {
+                contexts[context.name] = context
+            }
+            for user in projection.users where users[user.name] == nil {
+                users[user.name] = user
+            }
+            for cluster in projection.clusters where clusters[cluster.name] == nil {
+                clusters[cluster.name] = cluster
+            }
+        }
+
+        let explicitContext = activeContextName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedContextName = explicitContext?.isEmpty == false ? explicitContext : mergedCurrentContext
+        if let selectedContextName,
+           let context = contexts[selectedContextName] {
+            return InspectionScope(
+                users: users[context.user].map { [$0] } ?? [],
+                clusters: clusters[context.cluster].map { [$0] } ?? []
+            )
+        }
+
+        return InspectionScope(
+            users: Array(users.values),
+            clusters: Array(clusters.values)
+        )
+    }
+
+    private func execConfigurationChecks(
+        _ entries: [AuthDoctorKubeconfigProjection.User.Exec]
     ) -> [RuneHealthCheck] {
         var checks: [RuneHealthCheck] = []
+        let alwaysCount = entries.filter {
+            $0.interactiveMode?.caseInsensitiveCompare("Always") == .orderedSame
+        }.count
+        if alwaysCount > 0 {
+            checks.append(RuneHealthCheck(
+                id: "exec-auth-interactive-mode",
+                title: "Exec auth interactivity",
+                status: .failed,
+                message: "The selected exec auth configuration requires interactive stdin. Rune's non-interactive credential runner cannot satisfy interactiveMode Always."
+            ))
+        }
 
-        if text.contains("eks.amazonaws.com") || text.contains("aws eks") || text.contains("aws-iam-authenticator") {
-            let hasRoleHint = text.contains("--role-arn")
-                || text.contains("role_arn")
-                || text.contains("role-arn")
-                || text.contains("rolearn")
+        let missingV1InteractiveMode = entries.contains { entry in
+            entry.apiVersion == "client.authentication.k8s.io/v1"
+                && entry.interactiveMode?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        }
+        if missingV1InteractiveMode {
+            checks.append(RuneHealthCheck(
+                id: "exec-auth-v1-interactive-mode",
+                title: "Exec auth v1 configuration",
+                status: .failed,
+                message: "A client.authentication.k8s.io/v1 exec entry is missing interactiveMode, which is required by the Kubernetes ExecConfig v1 contract."
+            ))
+        }
+
+        let hasInvalidMode = entries.contains { entry in
+            guard let mode = entry.interactiveMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !mode.isEmpty else { return false }
+            return mode != "Never" && mode != "IfAvailable" && mode != "Always"
+        }
+        if hasInvalidMode {
+            checks.append(RuneHealthCheck(
+                id: "exec-auth-invalid-interactive-mode",
+                title: "Exec auth interactivity",
+                status: .failed,
+                message: "An exec auth entry has an unsupported interactiveMode. Kubernetes accepts Never, IfAvailable, or Always."
+            ))
+        }
+        return checks
+    }
+
+    private func execToolsCheck(
+        _ entries: [AuthDoctorKubeconfigProjection.User.Exec],
+        externalCommandsAllowed: Bool
+    ) -> RuneHealthCheck {
+        guard externalCommandsAllowed else {
+            return RuneHealthCheck(
+                id: "exec-auth-tools",
+                title: "Exec auth tools",
+                status: .warning,
+                message: "Kubeconfig exec auth commands are present, but this Rune build cannot run external auth plugins."
+            )
+        }
+
+        let assessments = entries.map { entry in
+            (entry: entry, state: executableState(for: entry.command, sourceDirectory: entry.sourceDirectory))
+        }
+        let missing = uniqueSafeCommandNames(assessments.filter { $0.state == .missing }.map { $0.entry.command })
+        let notExecutable = uniqueSafeCommandNames(assessments.filter { $0.state == .notExecutable }.map { $0.entry.command })
+        let hints = assessments
+            .filter { $0.state != .available }
+            .compactMap { safeInstallHint($0.entry.installHint) }
+            .uniqued()
+
+        var messages: [String] = []
+        if !missing.isEmpty {
+            messages.append("Missing exec auth tool(s): \(missing.joined(separator: ", ")). Install the plugin or fix its kubeconfig command.")
+        }
+        if !notExecutable.isEmpty {
+            messages.append("Exec auth tool(s) found but not executable: \(notExecutable.joined(separator: ", ")). Check the file's execute permission.")
+        }
+        if !hints.isEmpty {
+            messages.append("Plugin guidance: \(hints.prefix(2).joined(separator: " "))")
+        }
+        if messages.isEmpty {
+            messages.append("All kubeconfig exec auth commands were found on PATH. Each selected command is executable.")
+        }
+
+        return RuneHealthCheck(
+            id: "exec-auth-tools",
+            title: "Exec auth tools",
+            status: missing.isEmpty && notExecutable.isEmpty ? .passed : .warning,
+            message: messages.joined(separator: " ")
+        )
+    }
+
+    private func cloudToolsCheck(
+        _ entries: [AuthDoctorKubeconfigProjection.User.Exec],
+        externalCommandsAllowed: Bool
+    ) -> RuneHealthCheck {
+        guard externalCommandsAllowed else {
+            return RuneHealthCheck(
+                id: "cloud-login-tools",
+                title: "Cloud login tools",
+                status: .warning,
+                message: "Cloud provider CLI tools are detected in the selected kubeconfig context, but this Rune build cannot run external provider commands."
+            )
+        }
+
+        let assessments = entries.map { entry in
+            (name: safeCommandName(entry.command), state: executableState(for: entry.command, sourceDirectory: entry.sourceDirectory))
+        }
+        let missing = assessments.filter { $0.state == .missing }.map(\.name).uniqued().sorted()
+        let notExecutable = assessments.filter { $0.state == .notExecutable }.map(\.name).uniqued().sorted()
+        var messages: [String] = []
+        if !missing.isEmpty {
+            messages.append("Missing \(missing.joined(separator: ", ")) on PATH.")
+        }
+        if !notExecutable.isEmpty {
+            messages.append("Found but not executable: \(notExecutable.joined(separator: ", ")).")
+        }
+        if messages.isEmpty {
+            messages.append("Detected cloud provider CLI tools are available on PATH. Each detected tool is executable.")
+        }
+        return RuneHealthCheck(
+            id: "cloud-login-tools",
+            title: "Cloud login tools",
+            status: missing.isEmpty && notExecutable.isEmpty ? .passed : .warning,
+            message: messages.joined(separator: " ")
+        )
+    }
+
+    private func providerLifecycleChecks(
+        providers: Set<ProviderKind>,
+        users: [AuthDoctorKubeconfigProjection.User],
+        externalCommandsAllowed: Bool
+    ) -> [RuneHealthCheck] {
+        let execEntries = users.compactMap(\.exec)
+        var checks: [RuneHealthCheck] = []
+
+        if providers.contains(.eks) {
+            let hasRoleHint = execEntries.contains(where: \.hasEKSRoleArgument)
             let message: String
-            if !externalCommandsAllowed && usesExecAuth {
+            if !externalCommandsAllowed, !execEntries.isEmpty {
                 message = "EKS exec auth hints were detected, but this Rune build cannot run external AWS auth commands."
             } else if hasRoleHint {
-                message = "EKS role assumption was detected without exporting the role ARN. Rune will validate the resulting credentials through live API checks."
+                message = "EKS role assumption was detected without exporting the role ARN. Rune validates the resulting credentials through live API checks."
             } else {
                 message = "EKS auth was detected without an explicit role assumption hint. If access fails, confirm the AWS profile or role selection outside Rune."
             }
             checks.append(RuneHealthCheck(
                 id: "eks-role-profile",
                 title: "EKS role profile",
-                status: hasRoleHint && (externalCommandsAllowed || !usesExecAuth) ? .passed : .warning,
+                status: hasRoleHint && (externalCommandsAllowed || execEntries.isEmpty) ? .passed : .warning,
                 message: message
             ))
         }
 
-        if text.contains("gke-gcloud-auth-plugin") || text.contains("container.googleapis.com") || text.contains("cmd-path: gcloud") {
-            let hasPlugin = commandExists("gke-gcloud-auth-plugin")
-            let message: String
-            if externalCommandsAllowed {
-                message = hasPlugin
-                    ? "GKE auth plugin was found on PATH. Rune will validate generated credentials through live API checks."
-                    : "GKE auth hints were detected, but `gke-gcloud-auth-plugin` was not found on PATH."
-            } else {
-                message = "GKE auth plugin hints were detected, but this Rune build cannot run external GKE auth commands."
-            }
-            checks.append(RuneHealthCheck(
+        if providers.contains(.gke) {
+            checks.append(providerToolCheck(
                 id: "gke-auth-plugin-profile",
                 title: "GKE auth plugin",
-                status: externalCommandsAllowed && hasPlugin ? .passed : .warning,
-                message: message
+                providerName: "GKE",
+                command: "gke-gcloud-auth-plugin",
+                configuredEntries: execEntries,
+                externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
-        if text.contains("kubelogin") || text.contains("azure") || text.contains("aks") {
-            let hasKubelogin = commandExists("kubelogin")
-            let message: String
-            if externalCommandsAllowed {
-                message = hasKubelogin
-                    ? "AKS kubelogin was found on PATH. Rune will validate token refresh through live API checks."
-                    : "AKS/kubelogin hints were detected, but `kubelogin` was not found on PATH."
-            } else {
-                message = "AKS kubelogin hints were detected, but this Rune build cannot run external AKS auth commands."
-            }
-            checks.append(RuneHealthCheck(
+        if providers.contains(.aks) {
+            checks.append(providerToolCheck(
                 id: "aks-kubelogin-profile",
                 title: "AKS kubelogin",
-                status: externalCommandsAllowed && hasKubelogin ? .passed : .warning,
-                message: message
+                providerName: "AKS",
+                command: "kubelogin",
+                configuredEntries: execEntries,
+                externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
-        if text.contains("digitalocean") || text.contains("doctl") || text.contains("doks") {
+        if providers.contains(.doks) {
             checks.append(providerToolCheck(
                 id: "doks-doctl-profile",
                 title: "DOKS doctl",
                 providerName: "DOKS",
                 command: "doctl",
+                configuredEntries: execEntries,
                 externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
-        if text.contains("rancher") {
+        if providers.contains(.rancher) {
             checks.append(providerToolCheck(
                 id: "rancher-cli-profile",
                 title: "Rancher CLI",
                 providerName: "Rancher",
                 command: "rancher",
+                configuredEntries: execEntries,
                 externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
-        if Self.hasOpenShiftHint(in: text) {
+        if providers.contains(.openShift) {
             checks.append(providerToolCheck(
                 id: "openshift-cli-profile",
                 title: "OpenShift CLI",
                 providerName: "OpenShift",
                 command: "oc",
+                configuredEntries: execEntries,
                 externalCommandsAllowed: externalCommandsAllowed
             ))
         }
 
-        if text.contains("oidc") || text.contains("id-token") || text.contains("client-id") {
-            let expiry = Self.oidcExpiryState(in: text)
-            checks.append(RuneHealthCheck(
-                id: "oidc-token-profile",
-                title: "OIDC token profile",
-                status: expiry.status,
-                message: expiry.message
-            ))
+        if providers.contains(.oidc) {
+            checks.append(oidcLifecycleCheck(users: users))
         }
-
         return checks
     }
 
@@ -248,62 +464,169 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         title: String,
         providerName: String,
         command: String,
+        configuredEntries: [AuthDoctorKubeconfigProjection.User.Exec],
         externalCommandsAllowed: Bool
     ) -> RuneHealthCheck {
-        let hasCommand = commandExists(command)
+        guard externalCommandsAllowed else {
+            return RuneHealthCheck(
+                id: id,
+                title: title,
+                status: .warning,
+                message: "\(providerName) auth hints were detected, but this Rune build cannot run external provider auth commands."
+            )
+        }
+        let configuredEntry = configuredEntries.first { safeCommandName($0.command) == command }
+        let state = configuredEntry.map {
+            executableState(for: $0.command, sourceDirectory: $0.sourceDirectory)
+        } ?? executableState(for: command, sourceDirectory: "")
+        let message: String
+        switch state {
+        case .available:
+            message = "\(providerName) \(command) was found on PATH and is executable. Rune validates generated credentials through live API checks."
+        case .missing:
+            message = "\(providerName) auth hints were detected, but `\(command)` was not found on PATH."
+        case .notExecutable:
+            message = "\(providerName) `\(command)` was found on PATH but is not executable."
+        }
         return RuneHealthCheck(
             id: id,
             title: title,
-            status: externalCommandsAllowed && hasCommand ? .passed : .warning,
-            message: externalCommandsAllowed ? hasCommand
-                ? "\(providerName) \(command) was found on PATH. Rune will validate generated credentials through live API checks."
-                : "\(providerName) auth hints were detected, but `\(command)` was not found on PATH."
-                : "\(providerName) auth hints were detected, but this Rune build cannot run external provider auth commands."
+            status: state == .available ? .passed : .warning,
+            message: message
         )
     }
 
-    private static func oidcExpiryState(in text: String) -> (status: RuneHealthCheckStatus, message: String) {
-        guard let expiryText = firstValue(after: "expiry:", in: text) ?? firstValue(after: "expiration:", in: text) else {
-            return (
-                .passed,
-                "OIDC-style auth was detected. No local expiry timestamp was exported; live API checks validate whether the token is still accepted."
+    private func oidcLifecycleCheck(users: [AuthDoctorKubeconfigProjection.User]) -> RuneHealthCheck {
+        let expiryValues = users.compactMap(\.authExpiry)
+        if expiryValues.contains(where: { value in
+            guard let date = Self.parseDate(value) else { return false }
+            return date <= Date()
+        }) {
+            return RuneHealthCheck(
+                id: "oidc-token-profile",
+                title: "OIDC token profile",
+                status: .warning,
+                message: "OIDC-style auth appears expired. Refresh provider login before retrying the Kubernetes API."
             )
         }
-
-        guard let expiry = parseDate(expiryText) else {
-            return (
-                .warning,
-                "OIDC-style auth includes an expiry timestamp Rune could not parse. Refresh login if live API checks fail."
+        if !expiryValues.isEmpty, expiryValues.contains(where: { Self.parseDate($0) == nil }) {
+            return RuneHealthCheck(
+                id: "oidc-token-profile",
+                title: "OIDC token profile",
+                status: .warning,
+                message: "OIDC-style auth includes an expiry timestamp Rune could not parse. Refresh login if live API checks fail."
             )
         }
-
-        if expiry <= Date() {
-            return (
-                .warning,
-                "OIDC-style auth appears expired. Refresh provider login before retrying the Kubernetes API."
-            )
-        }
-
-        return (
-            .passed,
-            "OIDC-style auth includes a future expiry timestamp. Rune does not export the token or timestamp value."
+        return RuneHealthCheck(
+            id: "oidc-token-profile",
+            title: "OIDC token profile",
+            status: .passed,
+            message: expiryValues.isEmpty
+                ? "OIDC-style auth was detected. No local expiry timestamp was exported; live API checks validate whether the token is still accepted."
+                : "OIDC-style auth includes a future expiry timestamp. Rune does not export the token or timestamp value."
         )
     }
 
-    private static func firstValue(after marker: String, in text: String) -> String? {
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix(marker) else { continue }
-            let value = trimmed.dropFirst(marker.count).trimmingCharacters(in: .whitespacesAndNewlines)
-            let unquoted = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            guard !unquoted.isEmpty else { return nil }
-            return unquoted
+    private func detectedProviders(in scope: InspectionScope) -> Set<ProviderKind> {
+        var providers = Set<ProviderKind>()
+        for cluster in scope.clusters {
+            let server = cluster.server.lowercased()
+            if server.contains("eks.amazonaws.com") { providers.insert(.eks) }
+            if server.contains("container.googleapis.com") { providers.insert(.gke) }
+            if server.contains("azmk8s.io") || server.contains("azure.com") { providers.insert(.aks) }
+            if server.contains("digitalocean.com") { providers.insert(.doks) }
+            if server.contains("rancher") { providers.insert(.rancher) }
+            if server.contains("openshift") { providers.insert(.openShift) }
         }
-        return nil
+        for user in scope.users {
+            if user.authProviderName?.lowercased() == "oidc" { providers.insert(.oidc) }
+            guard let command = user.exec?.command else { continue }
+            switch safeCommandName(command).lowercased() {
+            case "aws", "aws-iam-authenticator": providers.insert(.eks)
+            case "gcloud", "gke-gcloud-auth-plugin": providers.insert(.gke)
+            case "az", "kubelogin": providers.insert(.aks)
+            case "doctl": providers.insert(.doks)
+            case "rancher": providers.insert(.rancher)
+            case "oc": providers.insert(.openShift)
+            default: break
+            }
+        }
+        return providers
+    }
+
+    private func requiredCloudToolEntries(
+        from entries: [AuthDoctorKubeconfigProjection.User.Exec]
+    ) -> [AuthDoctorKubeconfigProjection.User.Exec] {
+        let knownTools: Set<String> = [
+            "aws", "aws-iam-authenticator", "az", "kubelogin", "gcloud",
+            "gke-gcloud-auth-plugin", "doctl", "rancher", "oc"
+        ]
+        var seen = Set<String>()
+        return entries.filter { entry in
+            let name = safeCommandName(entry.command)
+            return knownTools.contains(name) && seen.insert(entry.command).inserted
+        }
+    }
+
+    private func executableState(for command: String, sourceDirectory: String) -> ExecutableState {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .missing }
+
+        let candidates: [String]
+        if trimmed.contains("/") {
+            let expanded = NSString(string: trimmed).expandingTildeInPath
+            if expanded.hasPrefix("/") || sourceDirectory.isEmpty {
+                candidates = [expanded]
+            } else {
+                candidates = [URL(fileURLWithPath: sourceDirectory).appendingPathComponent(expanded).standardized.path]
+            }
+        } else {
+            candidates = executableSearchPaths.map {
+                URL(fileURLWithPath: $0).appendingPathComponent(trimmed).path
+            }
+        }
+
+        var foundFile = false
+        for candidate in candidates where fileExists(candidate) {
+            foundFile = true
+            if isExecutable(candidate) { return .available }
+        }
+        return foundFile ? .notExecutable : .missing
+    }
+
+    private func uniqueSafeCommandNames(_ commands: [String]) -> [String] {
+        commands.map(safeCommandName).uniqued().sorted()
+    }
+
+    private func safeCommandName(_ command: String) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.contains("/")
+            ? URL(fileURLWithPath: trimmed).lastPathComponent
+            : trimmed
+        let printable = name.unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) }
+            .map(String.init)
+            .joined()
+        guard printable.count > 80 else { return printable }
+        return String(printable.prefix(77)) + "..."
+    }
+
+    private func safeInstallHint(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        guard normalized.count > 240 else { return normalized }
+        return String(normalized.prefix(237)) + "..."
     }
 
     private static func parseDate(_ value: String) -> Date? {
-        var normalized = value.hasSuffix("z") ? String(value.dropLast()) + "Z" : value
+        var normalized = value
+        if normalized.hasSuffix("z") {
+            normalized = String(normalized.dropLast()) + "Z"
+        }
         if let separatorIndex = normalized.firstIndex(of: "t") {
             normalized.replaceSubrange(separatorIndex...separatorIndex, with: "T")
         }
@@ -313,86 +636,11 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
         iso.formatOptions = [.withInternetDateTime]
         return iso.date(from: normalized)
     }
+}
 
-    private func commandExists(_ command: String) -> Bool {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        if trimmed.contains("/") {
-            return fileExists(NSString(string: trimmed).expandingTildeInPath)
-        }
-        return executableSearchPaths.contains { directory in
-            fileExists(URL(fileURLWithPath: directory).appendingPathComponent(trimmed).path)
-        }
-    }
-
-    private func requiredCloudTools(for providerHints: [String]) -> Set<String> {
-        var tools = Set<String>()
-        let joined = providerHints.joined(separator: " ").lowercased()
-        if joined.contains("eks") {
-            tools.insert("aws")
-        }
-        if joined.contains("gke") {
-            tools.insert("gcloud")
-            tools.insert("gke-gcloud-auth-plugin")
-        }
-        if joined.contains("aks") || joined.contains("kubelogin") {
-            tools.insert("az")
-            tools.insert("kubelogin")
-        }
-        if joined.contains("doks") || joined.contains("digitalocean") {
-            tools.insert("doctl")
-        }
-        if joined.contains("rancher") {
-            tools.insert("rancher")
-        }
-        if joined.contains("openshift") {
-            tools.insert("oc")
-        }
-        return tools
-    }
-
-    private static func execCommands(in text: String) -> [String] {
-        text
-            .split(whereSeparator: \.isNewline)
-            .compactMap { rawLine -> String? in
-                let trimmed = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard trimmed.hasPrefix("command:") else { return nil }
-                let value = String(trimmed.dropFirst("command:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !value.isEmpty else { return nil }
-                return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            }
-    }
-
-    private func detectedProviderHints(in text: String) -> [String] {
-        var hints: [String] = []
-        if text.contains("aws eks") || text.contains("eks.amazonaws.com") || text.contains("aws-iam-authenticator") {
-            hints.append("EKS auth hints detected.")
-        }
-        if text.contains("gke-gcloud-auth-plugin") || text.contains("container.googleapis.com") || text.contains("cmd-path: gcloud") {
-            hints.append("GKE auth hints detected.")
-        }
-        if text.contains("kubelogin") || text.contains("azure") || text.contains("aks") {
-            hints.append("AKS/kubelogin auth hints detected.")
-        }
-        if text.contains("oidc") || text.contains("id-token") || text.contains("client-id") {
-            hints.append("OIDC-style token hints detected.")
-        }
-        if text.contains("digitalocean") || text.contains("doctl") || text.contains("doks") {
-            hints.append("DOKS auth hints detected.")
-        }
-        if text.contains("rancher") {
-            hints.append("Rancher auth hints detected.")
-        }
-        if Self.hasOpenShiftHint(in: text) {
-            hints.append("OpenShift auth hints detected.")
-        }
-        return hints
-    }
-
-    private static func hasOpenShiftHint(in text: String) -> Bool {
-        text.contains("openshift")
-            || text.contains("crc")
-            || text.contains(" oc ")
-            || text.contains("command: oc")
+private extension Sequence where Element == String {
+    func uniqued() -> [String] {
+        var seen = Set<String>()
+        return filter { seen.insert($0).inserted }
     }
 }

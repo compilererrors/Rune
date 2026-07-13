@@ -1,7 +1,13 @@
 import Foundation
 
 public protocol KubeConfigImportStoring: Sendable {
-    func saveImportedKubeConfig(raw: String, sourceName: String) throws -> URL
+    func saveImportedKubeConfig(raw: String, sourceName: String, sourceURL: URL?) throws -> URL
+}
+
+public extension KubeConfigImportStoring {
+    func saveImportedKubeConfig(raw: String, sourceName: String) throws -> URL {
+        try saveImportedKubeConfig(raw: raw, sourceName: sourceName, sourceURL: nil)
+    }
 }
 
 public struct AppOwnedKubeConfigImportStore: KubeConfigImportStoring {
@@ -11,17 +17,40 @@ public struct AppOwnedKubeConfigImportStore: KubeConfigImportStoring {
         self.rootDirectory = rootDirectory
     }
 
-    public func saveImportedKubeConfig(raw: String, sourceName: String) throws -> URL {
+    public func saveImportedKubeConfig(raw: String, sourceName: String, sourceURL: URL?) throws -> URL {
         let fileManager = FileManager.default
-        let directory = try importsDirectory()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let imports = try importsDirectory()
+        try fileManager.createDirectory(
+            at: imports,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: imports.path)
 
-        let filename = "\(UUID().uuidString)-\(sanitizedFilename(from: sourceName))"
-        let destination = directory.appendingPathComponent(filename, isDirectory: false)
-        try raw.write(to: destination, atomically: true, encoding: .utf8)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-        return destination
+        let importID = UUID().uuidString
+        let directory = imports.appendingPathComponent(importID, isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+
+            let materialized = try KubeConfigImportMaterializer(fileManager: fileManager).materialize(
+                raw: raw,
+                sourceURL: sourceURL,
+                importDirectory: directory
+            )
+            let filename = sanitizedFilename(from: sourceName)
+            let destination = directory.appendingPathComponent(filename, isDirectory: false)
+            try materialized.write(to: destination, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            return destination
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
     }
 
     private func importsDirectory() throws -> URL {

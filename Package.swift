@@ -17,7 +17,9 @@ let package = Package(
         .library(name: "RuneExport", targets: ["RuneExport"]),
         .library(name: "RuneDiagnostics", targets: ["RuneDiagnostics"])
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/jpsim/Yams.git", exact: "6.2.2")
+    ],
     targets: [
         .executableTarget(
             name: "RuneApp",
@@ -33,14 +35,18 @@ let package = Package(
         .target(name: "RuneCore"),
         .target(
             name: "RuneSecurity",
-            dependencies: ["RuneCore"]
+            dependencies: [
+                "RuneCore",
+                .product(name: "Yams", package: "Yams")
+            ]
         ),
         .target(
             name: "RuneKube",
             dependencies: [
                 "RuneCore",
                 "RuneSecurity",
-                "RuneDiagnostics"
+                "RuneDiagnostics",
+                .product(name: "Yams", package: "Yams")
             ]
         ),
         .target(
@@ -82,11 +88,15 @@ let package = Package(
         ),
         .testTarget(
             name: "RuneKubeTests",
-            dependencies: ["RuneKube", "RuneCore", "RuneFakeK8sSupport"]
+            dependencies: ["RuneKube", "RuneCore", "RuneSecurity", "RuneFakeK8sSupport"]
         ),
         .testTarget(
             name: "RuneStoreTests",
             dependencies: ["RuneStore"]
+        ),
+        .testTarget(
+            name: "RuneSecurityTests",
+            dependencies: ["RuneSecurity"]
         ),
         .testTarget(
             name: "RuneUITests",

@@ -99,6 +99,29 @@ final class ConfiguredExportServiceTests: XCTestCase {
         )
     }
 
+    func testWorkspaceOpenerUsesQuikZipServiceURLForArchiveHandoff() throws {
+        let fileURL = URL(fileURLWithPath: "/tmp/Rune Exports/unified logs.zip")
+        let applicationURL = URL(fileURLWithPath: "/Applications/QuikZip.app")
+        let workspace = RecordingWorkspaceOpening(applicationsByBundleIdentifier: [
+            "com.viktornyberg.quikzip": applicationURL
+        ])
+        let opener = WorkspaceExportFileOpener(workspace: workspace)
+
+        try opener.open(fileURL, preferredApplicationBundleIdentifier: "com.viktornyberg.quikzip")
+
+        XCTAssertTrue(workspace.defaultOpenedURLs.isEmpty)
+        let request = try XCTUnwrap(workspace.applicationOpenRequests.first)
+        XCTAssertEqual(workspace.applicationOpenRequests.count, 1)
+        XCTAssertEqual(request.applicationURL, applicationURL)
+        XCTAssertEqual(request.allowsRunningApplicationSubstitution, false)
+        let serviceURL = try XCTUnwrap(request.urls.first)
+        let components = try XCTUnwrap(URLComponents(url: serviceURL, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.scheme, "quikzip")
+        XCTAssertEqual(components.host, "service")
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "action" })?.value, "openInQuikZip")
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "path" })?.value, fileURL.path)
+    }
+
     func testSaveUsesNextAvailableNameAfterManyExistingCollisions() throws {
         let folderURL = try makeTemporaryDirectory()
         let exporter = ConfiguredFolderExporter(

@@ -455,17 +455,23 @@ struct ResourceYAMLEditorSheetView: View {
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !presentedIssues.contains(where: { $0.severity == .error })
 
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(t(.yamlManifest))
                         .font(.title2.weight(.bold))
+                        .accessibilityAddTraits(.isHeader)
                     Text(resourceReference)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Close", action: onClose)
+                Button(action: onClose) {
+                    RuneDialogButtonLabel("Close")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .keyboardShortcut(.cancelAction)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -551,8 +557,11 @@ struct ResourceYAMLEditorSheetView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
-        .frame(minWidth: 760, minHeight: 560)
+        .padding(RuneUILayoutMetrics.dialogContentPadding)
+        .frame(
+            width: RuneUILayoutMetrics.wideDialogWidth,
+            height: RuneUILayoutMetrics.wideDialogHeight
+        )
         .background(.regularMaterial)
     }
 

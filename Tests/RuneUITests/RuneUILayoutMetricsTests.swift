@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import RuneCore
 @testable import RuneSecurity
@@ -68,17 +70,19 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         )
     }
 
-    func testAddClusterProviderActionLayoutWrapsCloudActionsInsteadOfCompressingLabels() {
+    func testAddClusterProviderActionLayoutUsesReadableThreeColumnUtilityGrid() {
         XCTAssertEqual(RuneAddClusterProviderActionLayout.dialogWidth, 560)
-        XCTAssertEqual(RuneAddClusterProviderActionLayout.minimumButtonWidth, 116)
-        XCTAssertEqual(RuneAddClusterProviderActionLayout.columnCount(for: 5), 4)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.minimumButtonWidth, 150)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.columnCount(for: 5), 3)
         XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 5), 2)
-        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 4), 1)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 4), 2)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 3), 1)
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 6), 2)
         XCTAssertEqual(RuneAddClusterProviderActionLayout.rowCount(for: 0), 0)
     }
 
     func testAddClusterProviderActionLayoutKeepsButtonsAboveMinimumReadableWidth() {
-        let actionCounts = [3, 4, 5]
+        let actionCounts = [3, 4, 5, 6]
 
         for actionCount in actionCounts {
             let columns = RuneAddClusterProviderActionLayout.columnCount(for: actionCount)
@@ -92,6 +96,72 @@ final class RuneUILayoutMetricsTests: XCTestCase {
                 "Add Cluster action count \(actionCount) should wrap before labels are compressed below the readable width."
             )
         }
+    }
+
+    func testDialogMetricsRemainComfortableAtMinimumWindowSize() {
+        XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogButtonMinHeight, 30)
+        XCTAssertLessThan(RuneUILayoutMetrics.dialogButtonLabelMinHeight, RuneUILayoutMetrics.dialogButtonMinHeight)
+        XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogIconButtonSize, 28)
+        XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth, 72)
+        XCTAssertEqual(RuneUILayoutMetrics.dialogContentPadding, 20)
+        XCTAssertEqual(RuneUILayoutMetrics.dialogSectionSpacing, 14)
+        XCTAssertEqual(RuneUILayoutMetrics.dialogControlSpacing, 8)
+
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.wideDialogWidth,
+            RuneWindowLayoutDefaults.minimumWidth - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.wideDialogHeight,
+            RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.addClusterPopoverMaxHeight,
+            RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.providerDialogMaxHeight,
+            RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.providerDialogBodyMinHeight,
+            RuneUILayoutMetrics.providerDialogBodyIdealHeight
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.providerDialogBodyIdealHeight,
+            RuneUILayoutMetrics.providerDialogBodyMaxHeight
+        )
+    }
+
+    @MainActor
+    func testSharedDialogControlsRenderAtMinimumProfessionalHitSizes() {
+        let labelHost = NSHostingView(rootView: RuneDialogButtonLabel("Close"))
+        let closeHost = NSHostingView(rootView: RuneDialogCloseButton(action: {}))
+        let buttonHost = NSHostingView(rootView: Button(action: {}) {
+            RuneDialogButtonLabel("Close")
+        }.buttonStyle(.bordered).controlSize(.regular))
+
+        XCTAssertGreaterThanOrEqual(
+            labelHost.fittingSize.height,
+            RuneUILayoutMetrics.dialogButtonLabelMinHeight
+        )
+        XCTAssertGreaterThanOrEqual(
+            labelHost.fittingSize.width,
+            RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth
+        )
+        XCTAssertGreaterThanOrEqual(
+            closeHost.fittingSize.width,
+            RuneUILayoutMetrics.dialogIconButtonSize
+        )
+        XCTAssertGreaterThanOrEqual(
+            closeHost.fittingSize.height,
+            RuneUILayoutMetrics.dialogIconButtonSize
+        )
+        XCTAssertGreaterThanOrEqual(
+            buttonHost.fittingSize.height,
+            RuneUILayoutMetrics.dialogButtonMinHeight
+        )
+        XCTAssertLessThanOrEqual(buttonHost.fittingSize.height, 32)
     }
 
     func testCloudCredentialDraftRequiredFieldsGateProviderRunAction() {

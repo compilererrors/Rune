@@ -89,6 +89,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
                     """
                     exec:
                       apiVersion: client.authentication.k8s.io/v1
+                      interactiveMode: Never
                       command: \(plugin.path)
                       args:
                         - eks
@@ -111,6 +112,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
                     """
                     exec:
                       apiVersion: client.authentication.k8s.io/v1
+                      interactiveMode: Never
                       command: \(plugin.path)
                       args:
                         - get-token
@@ -141,6 +143,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
                     """
                     exec:
                       apiVersion: client.authentication.k8s.io/v1
+                      interactiveMode: Never
                       command: \(plugin.path)
                       env:
                         - name: CLOUDSDK_CORE_PROJECT
@@ -326,6 +329,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
               provideClusterInfo: true
             """
@@ -354,6 +358,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -700,6 +705,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -724,6 +730,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -751,6 +758,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -782,6 +790,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -800,7 +809,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         }
     }
 
-    func testExecAuthInvalidJSONIncludesStdoutAndStderrPreview() async throws {
+    func testExecAuthInvalidJSONDoesNotExposeStdoutAndSanitizesDiagnosticStderr() async throws {
         let execPlugin = try writeExecCredentialPlugin(
             jsonPayload: "not-json",
             preflightShell: #"echo "synthetic stderr hint" >&2"#
@@ -812,6 +821,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             userYAML: """
             exec:
               apiVersion: client.authentication.k8s.io/v1
+              interactiveMode: Never
               command: \(execPlugin.path)
             """
         )
@@ -825,8 +835,8 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             XCTFail("Expected exec auth invalid JSON to be rejected")
         } catch {
             let message = String(describing: error)
-            XCTAssertTrue(message.contains("stdout: not-json"))
-            XCTAssertTrue(message.contains("stderr: synthetic stderr hint"))
+            XCTAssertFalse(message.contains("not-json"))
+            XCTAssertTrue(message.contains("synthetic stderr hint"))
         }
     }
 
@@ -1253,7 +1263,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             ? ""
             : "\n" + clusterYAML
                 .split(separator: "\n", omittingEmptySubsequences: false)
-                .map { "            \($0)" }
+                .map { "    \($0)" }
                 .joined(separator: "\n")
         let kubeconfig = """
         apiVersion: v1

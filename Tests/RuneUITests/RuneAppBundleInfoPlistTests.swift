@@ -94,7 +94,7 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         ]
         let packageContents = try String(contentsOf: repositoryRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
 
-        XCTAssertTrue(packageContents.contains("dependencies: []"))
+        XCTAssertTrue(packageContents.contains("github.com/jpsim/Yams.git"))
         for fragment in forbiddenSDKFragments {
             XCTAssertFalse(packageContents.contains(fragment), "Package.swift must not add telemetry, analytics, crash-reporting, or updater SDK \(fragment).")
         }

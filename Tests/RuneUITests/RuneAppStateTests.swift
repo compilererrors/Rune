@@ -119,7 +119,7 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(
             discoverer.discoverCandidateFiles().map(\.path),
-            [first.path, second.path, defaultConfig.path].sorted()
+            [second.path, first.path, defaultConfig.path]
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: defaultConfig.path))
     }
@@ -152,7 +152,7 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(
             discoverer.discoverCandidateFiles().map(\.path),
-            [runeFirst.path, runeSecond.path, defaultConfig.path].sorted()
+            [runeSecond.path, runeFirst.path, defaultConfig.path]
         )
         XCTAssertFalse(discoverer.discoverCandidateFiles().map(\.path).contains(terminalOnly.path))
     }
@@ -1017,6 +1017,91 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testImportKubeConfigCarriesSourceURLThroughViewModelAndPreservesRelativeCredentialFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importRelativeCredentials.\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = directory.appendingPathComponent("selected", isDirectory: true)
+        let credentialsDirectory = sourceDirectory.appendingPathComponent("credentials", isDirectory: true)
+        let appOwnedDirectory = directory.appendingPathComponent("app-owned-imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: credentialsDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let referencedFiles: [(String, String)] = [
+            ("ca.pem", "synthetic-ca"),
+            ("client.pem", "synthetic-client-certificate"),
+            ("client-key.pem", "synthetic-client-key"),
+            ("token", "synthetic-token")
+        ]
+        for (name, contents) in referencedFiles {
+            try contents.write(
+                to: credentialsDirectory.appendingPathComponent(name),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        let source = sourceDirectory.appendingPathComponent("selected-config.yaml")
+        let kubeconfig = """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-context
+        clusters:
+        - name: synthetic-cluster
+          cluster:
+            server: https://example.invalid
+            certificate-authority: credentials/ca.pem
+        contexts:
+        - name: synthetic-context
+          context:
+            cluster: synthetic-cluster
+            user: synthetic-user
+        users:
+        - name: synthetic-user
+          user:
+            tokenFile: credentials/token
+            client-certificate: credentials/client.pem
+            client-key: credentials/client-key.pem
+        """
+        try kubeconfig.write(to: source, atomically: true, encoding: .utf8)
+
+        let bookmarkStore = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarkStore),
+            picker: FixedKubeConfigPicker(urls: [source]),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: appOwnedDirectory)
+        )
+
+        viewModel.importKubeConfig()
+
+        try await waitUntilForRuneAppState {
+            !bookmarkStore.records.isEmpty
+        }
+
+        let record = try XCTUnwrap(bookmarkStore.records.first)
+        let imported = URL(fileURLWithPath: record.path)
+        let saved = try String(contentsOf: imported, encoding: .utf8)
+        let assetsDirectory = imported.deletingLastPathComponent().appendingPathComponent("assets", isDirectory: true)
+        let assets = try FileManager.default.contentsOfDirectory(
+            at: assetsDirectory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(assets.count, 4)
+        XCTAssertTrue(saved.contains("assets/000-certificate-authority.pem"))
+        XCTAssertTrue(saved.contains("assets/001-client-certificate.pem"))
+        XCTAssertTrue(saved.contains("assets/002-client-key.pem"))
+        XCTAssertTrue(saved.contains("assets/003-token"))
+        XCTAssertEqual(state.kubeConfigSources.first?.url.standardizedFileURL.path, imported.standardizedFileURL.path)
+
+        try FileManager.default.removeItem(at: sourceDirectory)
+        for asset in assets {
+            XCTAssertFalse(try Data(contentsOf: asset).isEmpty)
+        }
+    }
+
+    @MainActor
     func testImportKubeConfigRawCopiesValidPasteIntoAppOwnedStorageBeforeBookmarking() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.importPaste.\(UUID().uuidString)", isDirectory: true)
@@ -1261,6 +1346,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(Set(viewModel.kubeConfigImportReviews.flatMap { $0.contexts.map(\.name) }), ["folder-config", "folder-extra"])
         XCTAssertTrue(bookmarkStore.records.allSatisfy { $0.path.hasPrefix(appOwnedDirectory.path) })
         XCTAssertFalse(bookmarkStore.records.contains { $0.path.contains("notes") || $0.path.contains("nested") })
+        XCTAssertEqual(state.kubeConfigSources.map(\.displayName), ["config.yaml", "extra.yaml"])
     }
 
     @MainActor

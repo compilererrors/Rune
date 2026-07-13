@@ -10,6 +10,17 @@ public enum AuthDoctorFailureProjector {
         guard !trimmed.isEmpty else { return [] }
         let lower = trimmed.lowercased()
 
+        if isNativeAuthFailure(lower) {
+            return withEndpointDiagnostic(trimmed, checks: [
+                RuneHealthCheck(
+                    id: "native-auth-profile",
+                    title: "Native authentication",
+                    status: .failed,
+                    message: "The selected context needs a connected native provider profile. Open Add Cluster, connect the matching provider credentials, and retry."
+                )
+            ])
+        }
+
         if isExecAuthFailure(lower) {
             return withEndpointDiagnostic(trimmed, checks: [
                 RuneHealthCheck(
@@ -119,6 +130,15 @@ public enum AuthDoctorFailureProjector {
             || lower.contains("kubeconfig exec")
             || lower.contains("executable file not found") && lower.contains("exec")
             || lower.contains("no such file or directory") && lower.contains("exec")
+    }
+
+    private static func isNativeAuthFailure(_ lower: String) -> Bool {
+        lower.contains("native kubernetes authentication")
+            || lower.contains("native authentication profile")
+            || lower.contains("connect amazon eks credentials")
+            || lower.contains("connect microsoft aks credentials")
+            || lower.contains("connect google gke credentials")
+            || lower.contains("connect oidc credentials")
     }
 
     private static func execAuthMessage(_ lower: String) -> String {

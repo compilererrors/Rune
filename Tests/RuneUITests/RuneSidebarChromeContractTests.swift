@@ -336,6 +336,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(workspaceSource.contains("private func terminalHeight"))
         XCTAssertTrue(shellSource.contains("TerminalSessionTabBar("))
         XCTAssertTrue(shellSource.contains("TerminalTranscriptSurface("))
+        XCTAssertTrue(transcriptSource.contains("width: RuneUILayoutMetrics.dialogIconButtonSize"))
+        XCTAssertTrue(transcriptSource.contains("height: RuneUILayoutMetrics.dialogIconButtonSize"))
+        XCTAssertTrue(transcriptSource.contains(".accessibilityLabel(\"Close find\")"))
         XCTAssertTrue(portForwardSource.contains("@Binding var isExpanded"))
         XCTAssertTrue(portForwardSource.contains("compactStatus"))
         XCTAssertTrue(portForwardSource.contains("expandedControls"))
@@ -717,6 +720,28 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(actionRow.contains("HStack(alignment: .center"))
         XCTAssertFalse(actionRow.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertFalse(actionRow.contains("VStack(alignment: .leading"))
+    }
+
+    func testCustomDialogsUseSharedRegularSizedActions() throws {
+        let designSource = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
+        let commandPaletteSource = try String(contentsOfFile: commandPaletteViewPath, encoding: .utf8)
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+
+        XCTAssertTrue(designSource.contains("struct RuneDialogActionBar<Actions: View>: View"))
+        XCTAssertTrue(designSource.contains(".controlSize(.regular)"))
+        XCTAssertTrue(designSource.contains("minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight"))
+        XCTAssertTrue(designSource.contains("width: RuneUILayoutMetrics.dialogIconButtonSize"))
+        XCTAssertTrue(designSource.contains("height: RuneUILayoutMetrics.dialogIconButtonSize"))
+        XCTAssertTrue(designSource.contains(".keyboardShortcut(.cancelAction)"))
+
+        XCTAssertTrue(commandPaletteSource.contains("RuneDialogCloseButton(\"Close Command Palette\")"))
+        XCTAssertTrue(commandPaletteSource.contains("width: RuneUILayoutMetrics.commandPaletteWidth"))
+        XCTAssertTrue(commandPaletteSource.contains("height: RuneUILayoutMetrics.commandPaletteHeight"))
+
+        XCTAssertTrue(yamlSource.contains("RuneDialogButtonLabel(\"Close\")"))
+        XCTAssertTrue(yamlSource.contains(".controlSize(.regular)"))
+        XCTAssertTrue(yamlSource.contains("width: RuneUILayoutMetrics.wideDialogWidth"))
+        XCTAssertTrue(yamlSource.contains("height: RuneUILayoutMetrics.wideDialogHeight"))
     }
 
     func testBulkSelectionBarsAvoidBreakpointWrappingThatCausesVerticalJumps() throws {
@@ -1672,7 +1697,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("showsAuthDoctorAction: !simpleMode"))
         XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return }"))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    Menu {\n                        Button(\"Save Bundle\")"))
-        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    Button {\n                        viewModel.runAuthDoctor()"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {") && rootViewSource.contains("viewModel.runAuthDoctor()"))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                RBACCanISimulatorPanel(viewModel: viewModel)"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
         XCTAssertTrue(rootViewSource.contains("let shouldOfferReplicaSetHistoryLoad = simpleMode && relatedReplicaSets.isEmpty"))
@@ -1725,6 +1750,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(preferencesSource.contains("Bundle(url: url)?.bundleIdentifier"))
         XCTAssertTrue(preferencesSource.contains("ExportOpenerRecommendation(appName: \"Inkline\", kind: .plainText)"))
         XCTAssertTrue(preferencesSource.contains("appName: \"QuikZip\""))
+        XCTAssertTrue(preferencesSource.contains("Some apps cannot load .yaml, .log, or .zip exports from a background handoff"))
         XCTAssertTrue(preferencesSource.contains("recommendedBundleIdentifier: \"com.viktornyberg.quikzip\""))
         XCTAssertTrue(preferencesSource.contains("return \"\\(appName) text editor detected\""))
         XCTAssertTrue(preferencesSource.contains("return \"\\(appName) archive utility detected\""))
@@ -2328,9 +2354,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("RuneGlassPaneSurface(role: .content)"))
         XCTAssertTrue(rootViewSource.contains("RuneSurfaceBackground(kind: .inset)"))
         XCTAssertTrue(rootViewSource.contains("RuneUILayoutMetrics.paneShellCornerRadius"))
-        XCTAssertTrue(rootViewSource.contains(".fixedSize(horizontal: false, vertical: true)"))
-        XCTAssertTrue(rootViewSource.contains(".id(addClusterPopoverLayoutID)"))
-        XCTAssertTrue(rootViewSource.contains("private var addClusterPopoverLayoutID: String"))
+        XCTAssertTrue(rootViewSource.contains(".frame(maxHeight: RuneUILayoutMetrics.addClusterPopoverMaxHeight)"))
+        XCTAssertFalse(rootViewSource.contains(".id(addClusterPopoverLayoutID)"))
         XCTAssertTrue(rootViewSource.contains("isManualAddClusterExpanded = false"))
         XCTAssertTrue(rootViewSource.contains("Standard"))
         XCTAssertTrue(rootViewSource.contains("addClusterDiscoveryStatus"))
@@ -2413,13 +2438,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("copyToPasteboard(credentialCommand)"))
         XCTAssertTrue(rootViewSource.contains(".help(\"Copy the provider CLI command.\")"))
         XCTAssertTrue(rootViewSource.contains("if provider != .local {"))
-        XCTAssertTrue(rootViewSource.contains(".help(\"Refresh contexts after running or editing kubeconfig outside Rune.\")"))
+        XCTAssertTrue(rootViewSource.contains("Refresh contexts after running or editing kubeconfig outside Rune."))
         XCTAssertTrue(rootViewSource.contains("Label(\"Doctor\", systemImage: \"stethoscope\")"))
         XCTAssertTrue(rootViewSource.contains(".help(\"Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.\")"))
-        XCTAssertTrue(rootViewSource.contains("LazyVGrid(columns: addClusterProviderActionColumns, spacing: 8)"))
+        XCTAssertTrue(rootViewSource.contains("LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing)"))
         XCTAssertTrue(rootViewSource.contains(".adaptive(minimum: RuneAddClusterProviderActionLayout.minimumButtonWidth)"))
         XCTAssertTrue(rootViewSource.contains("spacing: RuneAddClusterProviderActionLayout.columnSpacing"))
         XCTAssertTrue(rootViewSource.contains(".frame(width: RuneAddClusterProviderActionLayout.dialogWidth)"))
+        XCTAssertTrue(rootViewSource.contains(".frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)"))
+        XCTAssertTrue(rootViewSource.contains("minHeight: RuneUILayoutMetrics.providerDialogBodyMinHeight"))
+        XCTAssertTrue(rootViewSource.contains("idealHeight: RuneUILayoutMetrics.providerDialogBodyIdealHeight"))
+        XCTAssertTrue(rootViewSource.contains("maxHeight: RuneUILayoutMetrics.providerDialogBodyMaxHeight"))
+        XCTAssertTrue(rootViewSource.contains("RuneDialogActionBar {"))
+        XCTAssertTrue(rootViewSource.contains("RuneDialogButtonLabel(\"Close\")"))
+        XCTAssertTrue(rootViewSource.contains("providerPrimaryAction("))
         XCTAssertTrue(rootViewSource.contains("viewModel.runCloudKubeConfigImport"))
         XCTAssertTrue(rootViewSource.contains("openAddClusterProviderSheet(provider)"))
         XCTAssertTrue(rootViewSource.contains("private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider)"))
@@ -2432,9 +2464,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("closeAddClusterProviderSheet(showPopover: true)"))
         XCTAssertTrue(rootViewSource.contains("Image(systemName: \"chevron.left\")"))
         XCTAssertTrue(rootViewSource.contains(".help(\"Back to Add Cluster\")"))
-        XCTAssertTrue(rootViewSource.contains("Image(systemName: \"xmark\")"))
         XCTAssertTrue(rootViewSource.contains(".keyboardShortcut(.cancelAction)"))
-        XCTAssertTrue(rootViewSource.contains(".help(\"Close Add Cluster\")"))
         XCTAssertTrue(rootViewSource.contains("private func resetAddClusterProviderSheetStateIfIdle()"))
         XCTAssertTrue(rootViewSource.contains("guard !viewModel.isRunningCloudKubeConfigImport else { return }"))
         XCTAssertTrue(rootViewSource.contains("cloudCredentialDraft = CloudCredentialDraft()"))
@@ -2473,7 +2503,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("APP_SANDBOX_CONTAINER_ID"))
         XCTAssertTrue(viewModelSource.contains("pickDefaultKubeConfig(at: url)"))
         XCTAssertTrue(viewModelSource.contains("getpwuid(getuid())"))
-        XCTAssertTrue(viewModelSource.contains("merged[standardizedPath] = source"))
+        XCTAssertTrue(viewModelSource.contains("seen.insert(standardizedPath).inserted"))
+        XCTAssertTrue(viewModelSource.contains("merged.append(source)"))
         XCTAssertTrue(pickerSource.contains("func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL?"))
         XCTAssertTrue(pickerSource.contains("panel.showsHiddenFiles = true"))
         XCTAssertFalse(pickerSource.contains("allowedContentTypes"))
@@ -2487,24 +2518,26 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "private var addClusterProviderActionColumns",
             in: rootViewSource
         )
-        let closeBlock = try functionBlock(
-            named: "Button(\"Close\")",
-            endingBefore: "if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus",
-            in: sheetBlock
+        let primaryActionBlock = try functionBlock(
+            named: "private func providerPrimaryAction(",
+            endingBefore: "private func nativeCloudAuthConnectButton",
+            in: rootViewSource
         )
 
         XCTAssertTrue(
-            sheetBlock.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")\n                    }\n                    .buttonStyle(.borderedProminent)\n                    .keyboardShortcut(.defaultAction)"),
+            primaryActionBlock.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")")
+                && primaryActionBlock.contains(".buttonStyle(.borderedProminent)\n            .keyboardShortcut(.defaultAction)"),
             "Local Add Cluster should default Return to the primary Import action, not Close."
         )
         XCTAssertTrue(
-            sheetBlock.contains("Image(systemName: \"icloud.and.arrow.down\")\n                        }\n                        .frame(maxWidth: .infinity)\n                    }\n                    .buttonStyle(.borderedProminent)\n                    .keyboardShortcut(.defaultAction)"),
+            primaryActionBlock.contains("Image(systemName: \"icloud.and.arrow.down\")")
+                && primaryActionBlock.contains(".disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)"),
             "Cloud Add Cluster should default Return to the primary Run action once required fields are valid."
         )
-        XCTAssertFalse(
-            closeBlock.contains(".keyboardShortcut(.defaultAction)"),
-            "Close must not be the default Add Cluster provider-sheet action."
-        )
+        XCTAssertTrue(sheetBlock.contains("RuneDialogButtonLabel(\"Close\")"))
+        XCTAssertTrue(sheetBlock.contains(".keyboardShortcut(.cancelAction)"))
+        XCTAssertFalse(sheetBlock.contains("RuneDialogCloseButton"))
+        XCTAssertTrue(sheetBlock.contains("providerPrimaryAction("))
     }
 
     func testAuthDoctorPanelExposesSupportBundleQuickAction() throws {
@@ -3661,6 +3694,15 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceYAMLInspectorView.swift").path
+    }
+
+    private var commandPaletteViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/CommandPaletteView.swift").path
     }
 
     private var runeAppStatePath: String {

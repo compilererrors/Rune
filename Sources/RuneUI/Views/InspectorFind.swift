@@ -120,10 +120,15 @@ struct InspectorFindBar: View {
                 query = ""
             } label: {
                 Image(systemName: "xmark")
-                    .frame(width: 20, height: 20)
+                    .frame(
+                        width: RuneUILayoutMetrics.dialogIconButtonSize,
+                        height: RuneUILayoutMetrics.dialogIconButtonSize
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Close find")
+            .accessibilityLabel("Close find")
         }
         .controlSize(.small)
         .padding(.horizontal, 10)

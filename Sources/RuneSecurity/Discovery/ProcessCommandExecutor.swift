@@ -134,6 +134,7 @@ struct ProcessCommandExecutor: ProcessCommandExecuting {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
@@ -174,9 +175,21 @@ struct ProcessCommandExecutor: ProcessCommandExecuting {
             }
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
+                let killDeadline = Date().addingTimeInterval(terminationGracePeriod)
+                while process.isRunning, Date() < killDeadline {
+                    await cancellationResistantSleep(nanoseconds: 25_000_000)
+                }
             }
         }
-        process.waitUntilExit()
+        guard !process.isRunning else {
+            if didCancel {
+                throw CancellationError()
+            }
+            throw RuneError.commandFailed(
+                command: executable,
+                message: "The command did not terminate after its timeout."
+            )
+        }
         if didCancel {
             throw CancellationError()
         }

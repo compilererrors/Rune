@@ -170,13 +170,36 @@ public struct WorkspaceExportFileOpener: ExportFileOpening {
             return
         }
 
+        let handoffURL = Self.handoffURL(for: url, bundleIdentifier: bundleIdentifier)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.allowsRunningApplicationSubstitution = false
         workspace.open(
-            [url],
+            [handoffURL],
             withApplicationAt: applicationURL,
             configuration: configuration
         )
+    }
+
+    private static func handoffURL(for url: URL, bundleIdentifier: String) -> URL {
+        guard isQuikZipBundleIdentifier(bundleIdentifier) else { return url }
+
+        var components = URLComponents()
+        components.scheme = "quikzip"
+        components.host = "service"
+        components.queryItems = [
+            URLQueryItem(name: "action", value: "openInQuikZip"),
+            URLQueryItem(name: "path", value: url.path)
+        ]
+        return components.url ?? url
+    }
+
+    private static func isQuikZipBundleIdentifier(_ bundleIdentifier: String) -> Bool {
+        switch bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "com.viktornyberg.quikzip", "com.quikzip.local":
+            return true
+        default:
+            return false
+        }
     }
 }
 

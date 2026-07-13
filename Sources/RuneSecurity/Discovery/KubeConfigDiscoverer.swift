@@ -50,14 +50,16 @@ public struct KubeConfigDiscoverer: KubeConfigDiscovering {
             candidates.append(defaultConfig)
         }
 
-        var uniqueByPath: [String: URL] = [:]
+        var seen = Set<String>()
+        var discovered: [URL] = []
         for candidate in candidates {
             let standardized = candidate.standardizedFileURL
             guard fileExists(standardized.path) else { continue }
-            uniqueByPath[standardized.path] = standardized
+            guard seen.insert(standardized.path).inserted else { continue }
+            discovered.append(standardized)
         }
 
-        return uniqueByPath.values.sorted { $0.path < $1.path }
+        return discovered
     }
 
     public static func isIsolatedKubeconfigActive(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

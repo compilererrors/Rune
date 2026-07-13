@@ -19,18 +19,28 @@ final class RuneCoreTests: XCTestCase {
         )
     }
 
-    func testExternalCommandPolicyEnvironmentOverridesInfoDictionaryForTestsAndDev() {
+    func testExternalCommandPolicyEnvironmentCannotLoosenAppStoreDistribution() {
         XCTAssertEqual(
             RuneExternalCommandPolicy.distribution(
                 infoDictionary: [RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store"],
                 environment: [RuneExternalCommandPolicy.distributionEnvironmentVariable: "direct"]
             ),
-            .direct
+            .appStore
         )
         XCTAssertEqual(
             RuneExternalCommandPolicy.distribution(
                 infoDictionary: [:],
                 environment: [RuneExternalCommandPolicy.distributionEnvironmentVariable: "mas"]
+            ),
+            .appStore
+        )
+    }
+
+    func testExternalCommandPolicyEnvironmentCanRestrictDirectDistribution() {
+        XCTAssertEqual(
+            RuneExternalCommandPolicy.distribution(
+                infoDictionary: [RuneExternalCommandPolicy.distributionInfoPlistKey: "direct"],
+                environment: [RuneExternalCommandPolicy.distributionEnvironmentVariable: "app-store"]
             ),
             .appStore
         )
@@ -55,16 +65,34 @@ final class RuneCoreTests: XCTestCase {
                 environment: [RuneExternalCommandPolicy.externalCommandsEnabledEnvironmentVariable: "0"]
             )
         )
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.externalCommandsEnabled(
+                infoDictionary: [RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: false],
+                environment: [RuneExternalCommandPolicy.externalCommandsEnabledEnvironmentVariable: "1"]
+            )
+        )
     }
 
     func testExternalCommandPolicyNeverAllowsCommandsForAppStoreDistribution() {
+        let appStoreInfo: [String: Any] = [
+            RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store",
+            RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: false
+        ]
+        let looseningEnvironment = [
+            RuneExternalCommandPolicy.distributionEnvironmentVariable: "direct",
+            RuneExternalCommandPolicy.externalCommandsEnabledEnvironmentVariable: "1"
+        ]
+
+        XCTAssertFalse(
+            RuneExternalCommandPolicy.externalCommandsEnabled(
+                infoDictionary: appStoreInfo,
+                environment: looseningEnvironment
+            )
+        )
         XCTAssertFalse(
             RuneExternalCommandPolicy.allowsExternalCommands(
-                infoDictionary: [
-                    RuneExternalCommandPolicy.distributionInfoPlistKey: "app-store",
-                    RuneExternalCommandPolicy.externalCommandsEnabledInfoPlistKey: true
-                ],
-                environment: [:]
+                infoDictionary: appStoreInfo,
+                environment: looseningEnvironment
             )
         )
         XCTAssertTrue(

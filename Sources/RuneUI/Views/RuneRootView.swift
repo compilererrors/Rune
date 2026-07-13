@@ -316,10 +316,10 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
 }
 
 enum RuneAddClusterProviderActionLayout {
-    static let dialogWidth: CGFloat = 560
-    static let horizontalPadding: CGFloat = 40
+    static let dialogWidth: CGFloat = RuneUILayoutMetrics.standardDialogWidth
+    static let horizontalPadding: CGFloat = RuneUILayoutMetrics.dialogContentPadding * 2
     static let columnSpacing: CGFloat = 8
-    static let minimumButtonWidth: CGFloat = 116
+    static let minimumButtonWidth: CGFloat = 150
 
     static func contentWidth(dialogWidth: CGFloat = Self.dialogWidth) -> CGFloat {
         max(0, dialogWidth - horizontalPadding)
@@ -457,6 +457,10 @@ struct CloudCredentialDraft {
     var projectID = ""
     var profileOrSubscription = ""
     var roleARN = ""
+    var nativeAWSAccessKeyID = ""
+    var nativeAWSSecretAccessKey = ""
+    var nativeAWSSessionToken = ""
+    var nativeAKSClientSecret = ""
 
     func request(provider: CloudKubeConfigProvider) -> CloudKubeConfigImportRequest {
         CloudKubeConfigImportRequest(
@@ -515,6 +519,14 @@ struct CloudCredentialDraft {
 
     private func hasValue(_ value: String) -> Bool {
         value.unicodeScalars.contains { !Self.fieldWhitespace.contains($0) }
+    }
+
+    var hasNativeAWSCredentials: Bool {
+        hasValue(nativeAWSAccessKeyID) && hasValue(nativeAWSSecretAccessKey)
+    }
+
+    var hasNativeAKSClientSecret: Bool {
+        hasValue(nativeAKSClientSecret)
     }
 
     private func trimmed(_ value: String) -> String {
@@ -1488,9 +1500,10 @@ public struct RuneRootView: View {
     }
 
     private var manualNamespaceSheet: some View {
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
             Text("Enter Namespace")
                 .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             Text("Use this when RBAC does not allow listing namespaces, or when the namespace is not in the cached menu yet.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -1499,21 +1512,28 @@ public struct RuneRootView: View {
             TextField("namespace", text: $manualNamespaceInput)
                 .textFieldStyle(.roundedBorder)
 
-            HStack {
-                Spacer()
-                Button("Cancel") {
+            RuneDialogActionBar {
+                Button {
                     isManualNamespaceSheetPresented = false
+                } label: {
+                    RuneDialogButtonLabel("Cancel")
                 }
-                Button("Use Namespace") {
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+
+                Button {
                     viewModel.setNamespace(manualNamespaceInput)
                     isManualNamespaceSheetPresented = false
+                } label: {
+                    RuneDialogButtonLabel("Use Namespace")
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
                 .disabled(manualNamespaceInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(18)
-        .frame(width: 420)
+        .padding(RuneUILayoutMetrics.dialogContentPadding)
+        .frame(width: RuneUILayoutMetrics.compactDialogWidth)
     }
 
     private func startLiveDebugScenarioIfNeeded() {
@@ -2224,19 +2244,21 @@ public struct RuneRootView: View {
         ZStack {
             RuneGlassPaneSurface(role: .content)
 
-            VStack(alignment: .leading, spacing: 13) {
-                HStack(spacing: 9) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.accentColor.opacity(0.12)))
-                    Text("Add Cluster")
-                        .font(.headline)
-                    Spacer(minLength: 0)
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 13) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(Color.accentColor.opacity(0.12)))
+                        Text("Add Cluster")
+                            .font(.headline)
+                            .accessibilityAddTraits(.isHeader)
+                        Spacer(minLength: 0)
+                    }
 
-                addClusterDiscoveryStatus
+                    addClusterDiscoveryStatus
 
                 VStack(alignment: .leading, spacing: 8) {
                     addClusterSectionLabel("Standard")
@@ -2340,7 +2362,7 @@ public struct RuneRootView: View {
                                     Label("Add Manual Token Cluster", systemImage: "key")
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
+                                .controlSize(.regular)
                             }
                             .padding(.top, 6)
                         } label: {
@@ -2357,35 +2379,35 @@ public struct RuneRootView: View {
                 .padding(10)
                 .background(RuneSurfaceBackground(kind: .inset))
 
-                if let review = viewModel.kubeConfigImportReviews.last {
-                    KubeConfigImportReviewPanel(
-                        review: review,
-                        duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
-                        metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
-                        onUpdateMetadata: { contextName, metadata in
-                            viewModel.setKubeConfigImportContextMetadata(
-                                contextName: contextName,
-                                alias: metadata.alias,
-                                colorKey: metadata.colorKey,
-                                iconName: metadata.iconName,
-                                tags: metadata.tags,
-                                group: metadata.group
-                            )
-                        },
-                        onClear: viewModel.clearKubeConfigImportReviews,
-                        showsAuthDoctorAction: !simpleMode,
-                        onRunAuthDoctor: {
-                            addClusterPopoverPresented = false
-                            viewModel.runAuthDoctor()
-                        }
-                    )
+                    if let review = viewModel.kubeConfigImportReviews.last {
+                        KubeConfigImportReviewPanel(
+                            review: review,
+                            duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
+                            metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
+                            onUpdateMetadata: { contextName, metadata in
+                                viewModel.setKubeConfigImportContextMetadata(
+                                    contextName: contextName,
+                                    alias: metadata.alias,
+                                    colorKey: metadata.colorKey,
+                                    iconName: metadata.iconName,
+                                    tags: metadata.tags,
+                                    group: metadata.group
+                                )
+                            },
+                            onClear: viewModel.clearKubeConfigImportReviews,
+                            showsAuthDoctorAction: !simpleMode,
+                            onRunAuthDoctor: {
+                                addClusterPopoverPresented = false
+                                viewModel.runAuthDoctor()
+                            }
+                        )
+                    }
                 }
+                .padding(14)
             }
-            .padding(14)
         }
         .frame(width: 400)
-        .fixedSize(horizontal: false, vertical: true)
-        .id(addClusterPopoverLayoutID)
+        .frame(maxHeight: RuneUILayoutMetrics.addClusterPopoverMaxHeight)
         .animation(.snappy(duration: 0.18), value: isManualAddClusterExpanded)
         .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
         .overlay {
@@ -2395,15 +2417,6 @@ public struct RuneRootView: View {
         .onAppear {
             viewModel.refreshKubeConfigSourcesFromDiscovery()
         }
-    }
-
-    private var addClusterPopoverLayoutID: String {
-        let review = viewModel.kubeConfigImportReviews.last
-        return [
-            isManualAddClusterExpanded ? "advanced" : "standard",
-            "contexts:\(review?.contexts.count ?? 0)",
-            "issues:\(review?.issues.count ?? 0)"
-        ].joined(separator: ":")
     }
 
     private var addClusterGridColumns: [GridItem] {
@@ -2463,6 +2476,7 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.borderless)
             .help("Refresh detected contexts")
+            .accessibilityLabel("Refresh detected contexts")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -2614,12 +2628,18 @@ public struct RuneRootView: View {
         let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
         let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
 
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
                 Button {
                     closeAddClusterProviderSheet(showPopover: true)
                 } label: {
                     Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(
+                            width: RuneUILayoutMetrics.dialogIconButtonSize,
+                            height: RuneUILayoutMetrics.dialogIconButtonSize
+                        )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .help("Back to Add Cluster")
@@ -2633,161 +2653,177 @@ public struct RuneRootView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(provider.title)
                         .font(.title3.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
                     Text(provider.subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-
-                Button {
-                    closeAddClusterProviderSheet()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut(.cancelAction)
-                .help("Close Add Cluster")
-                .accessibilityLabel("Close Add Cluster")
             }
+            .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
+            .padding(.top, RuneUILayoutMetrics.dialogContentPadding)
+            .padding(.bottom, RuneUILayoutMetrics.dialogSectionSpacing)
 
-            if provider != .local {
-                providerCredentialFields(provider)
-            }
+            Divider()
 
-            if provider == .local {
-                HStack(spacing: 8) {
-                    Button {
-                        selectedAddClusterProvider = nil
-                        viewModel.importKubeConfig()
-                    } label: {
-                        Label("Import…", systemImage: "doc.badge.plus")
+            ScrollView {
+                VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
+                    if provider != .local {
+                        providerCredentialFields(provider)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .help("Import kubeconfig from a file.")
 
-                    Button {
-                        viewModel.refreshKubeConfigSourcesFromDiscovery()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Refresh detected contexts after your local cluster tool writes kubeconfig.")
-                }
-            }
-
-            LazyVGrid(columns: addClusterProviderActionColumns, spacing: 8) {
-                if let cloudProvider = provider.cloudProvider {
-                    Button {
-                        viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
-                    } label: {
-                        Label {
-                            Text(viewModel.isRunningCloudKubeConfigImport ? "Running" : "Run")
-                        } icon: {
-                            Image(systemName: "icloud.and.arrow.down")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
-                    .help(runHelp)
-                }
-
-                Button {
-                    copyToPasteboard(credentialCommand)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .help("Copy the provider CLI command.")
-
-                if provider != .local {
-                    Button {
-                        viewModel.refreshKubeConfigSourcesFromDiscovery()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Refresh contexts after running or editing kubeconfig outside Rune.")
-                }
-
-                if !simpleMode {
-                    Button {
-                        viewModel.runAuthDoctor()
-                    } label: {
-                        Label("Doctor", systemImage: "stethoscope")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.state.isRunningAuthDoctor)
-                    .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
-                }
-
-                Button("Close") {
-                    closeAddClusterProviderSheet()
-                }
-                .frame(maxWidth: .infinity)
-                .buttonStyle(.bordered)
-            }
-            .controlSize(.small)
-
-            if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus {
-                Text(status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if provider.cloudProvider != nil, !viewModel.cloudKubeConfigImportOutput.isEmpty {
-                addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
-            }
-
-            if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
-                addClusterCloudImportDiagnosticView(diagnostic)
-            }
-
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(credentialCommand)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RuneSurfaceBackground(kind: .inset))
-
-                    ForEach(provider.auxiliaryCommands, id: \.title) { item in
-                        HStack(spacing: 8) {
-                            Text(item.title)
-                                .font(.caption.weight(.semibold))
-                                .frame(width: 54, alignment: .leading)
-                            Text(item.command)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                            Spacer(minLength: 0)
+                    LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                        if !RuneExternalCommandPolicy.allowsExternalCommands, provider.cloudProvider != nil {
                             Button {
-                                copyToPasteboard(item.command)
+                                viewModel.importKubeConfig()
                             } label: {
-                                Image(systemName: "doc.on.doc")
+                                Label("Import…", systemImage: "doc.badge.plus")
+                                    .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(.borderless)
-                            .help("Copy \(item.title.lowercased()) command")
+                            .buttonStyle(.bordered)
+                            .help("Import a provider kubeconfig before connecting native credentials.")
+
+                            Button(role: .destructive) {
+                                viewModel.disconnectSelectedNativeAuth()
+                            } label: {
+                                Label("Disconnect", systemImage: "key.slash")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(viewModel.isConnectingNativeKubernetesAuth)
+                            .help("Remove the native credentials for the selected context from Keychain.")
                         }
-                        .padding(8)
-                        .background(RuneSurfaceBackground(kind: .inset))
+
+                        Button {
+                            copyToPasteboard(credentialCommand)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Copy the provider CLI command.")
+
+                        Button {
+                            viewModel.refreshKubeConfigSourcesFromDiscovery()
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .help(provider == .local
+                            ? "Refresh detected contexts after your local cluster tool writes kubeconfig."
+                            : "Refresh contexts after running or editing kubeconfig outside Rune.")
+
+                        if !simpleMode {
+                            Button {
+                                viewModel.runAuthDoctor()
+                            } label: {
+                                Label("Doctor", systemImage: "stethoscope")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(viewModel.state.isRunningAuthDoctor)
+                            .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
+                        }
+                    }
+                    .controlSize(.regular)
+
+                    if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Provider login status: \(status)")
+                    }
+
+                    if let nativeStatus = viewModel.nativeKubernetesAuthStatus {
+                        Text(nativeStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Authentication status: \(nativeStatus)")
+                    }
+
+                    if provider.cloudProvider != nil, !viewModel.cloudKubeConfigImportOutput.isEmpty {
+                        addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
+                    }
+
+                    if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                        addClusterCloudImportDiagnosticView(diagnostic)
+                    }
+
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(credentialCommand)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RuneSurfaceBackground(kind: .inset))
+
+                            ForEach(provider.auxiliaryCommands, id: \.title) { item in
+                                HStack(spacing: 8) {
+                                    Text(item.title)
+                                        .font(.caption.weight(.semibold))
+                                        .frame(width: 54, alignment: .leading)
+                                    Text(item.command)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .textSelection(.enabled)
+                                    Spacer(minLength: 0)
+                                    Button {
+                                        copyToPasteboard(item.command)
+                                    } label: {
+                                        Image(systemName: "doc.on.doc")
+                                            .frame(
+                                                width: RuneUILayoutMetrics.dialogIconButtonSize,
+                                                height: RuneUILayoutMetrics.dialogIconButtonSize
+                                            )
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Copy \(item.title.lowercased()) command")
+                                    .accessibilityLabel("Copy \(item.title) command")
+                                }
+                                .padding(8)
+                                .background(RuneSurfaceBackground(kind: .inset))
+                            }
+                        }
+                        .padding(.top, 8)
+                    } label: {
+                        Label("Command Details", systemImage: "terminal")
+                            .font(.caption.weight(.semibold))
                     }
                 }
-                .padding(.top, 8)
-            } label: {
-                Label("Command Details", systemImage: "terminal")
-                    .font(.caption.weight(.semibold))
+                .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
+                .padding(.vertical, RuneUILayoutMetrics.dialogSectionSpacing)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(
+                minHeight: RuneUILayoutMetrics.providerDialogBodyMinHeight,
+                idealHeight: RuneUILayoutMetrics.providerDialogBodyIdealHeight,
+                maxHeight: RuneUILayoutMetrics.providerDialogBodyMaxHeight
+            )
+
+            RuneDialogActionBar {
+                Button {
+                    closeAddClusterProviderSheet()
+                } label: {
+                    RuneDialogButtonLabel("Close")
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+
+                providerPrimaryAction(
+                    provider,
+                    canRunCredentialImport: canRunCredentialImport,
+                    runHelp: runHelp
+                )
+            }
+            .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
+            .padding(.bottom, RuneUILayoutMetrics.dialogContentPadding)
         }
-        .padding(20)
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
+        .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
     }
 
     private func addClusterCloudImportOutputView(_ output: String) -> some View {
@@ -2859,6 +2895,7 @@ public struct RuneRootView: View {
         if !viewModel.isRunningCloudKubeConfigImport {
             viewModel.clearCloudKubeConfigImportStatus()
         }
+        viewModel.clearNativeKubernetesAuthStatus()
         addClusterPopoverPresented = false
         selectedAddClusterProvider = provider
     }
@@ -2883,30 +2920,167 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func providerCredentialFields(_ provider: RuneAddClusterProvider) -> some View {
         VStack(spacing: 8) {
-            TextField("Cluster name", text: $cloudCredentialDraft.clusterName)
-                .textFieldStyle(.roundedBorder)
+            if RuneExternalCommandPolicy.allowsExternalCommands {
+                TextField("Cluster name", text: $cloudCredentialDraft.clusterName)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             switch provider {
             case .aks:
-                TextField("Resource group", text: $cloudCredentialDraft.resourceGroup)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Subscription ID or name (optional)", text: $cloudCredentialDraft.profileOrSubscription)
-                    .textFieldStyle(.roundedBorder)
+                if RuneExternalCommandPolicy.allowsExternalCommands {
+                    TextField("Resource group", text: $cloudCredentialDraft.resourceGroup)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Subscription ID or name (optional)", text: $cloudCredentialDraft.profileOrSubscription)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    SecureField("Azure service-principal secret", text: $cloudCredentialDraft.nativeAKSClientSecret)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Select an imported kubelogin service-principal context. Tenant, server, and client IDs stay in kubeconfig; the secret is stored only in Keychain.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             case .eks:
-                TextField("Region", text: $cloudCredentialDraft.regionOrLocation)
-                    .textFieldStyle(.roundedBorder)
-                TextField("AWS profile (optional)", text: $cloudCredentialDraft.profileOrSubscription)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Role ARN (optional)", text: $cloudCredentialDraft.roleARN)
-                    .textFieldStyle(.roundedBorder)
+                if RuneExternalCommandPolicy.allowsExternalCommands {
+                    TextField("Region", text: $cloudCredentialDraft.regionOrLocation)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("AWS profile (optional)", text: $cloudCredentialDraft.profileOrSubscription)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Role ARN (optional)", text: $cloudCredentialDraft.roleARN)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    SecureField("AWS access key ID", text: $cloudCredentialDraft.nativeAWSAccessKeyID)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("AWS secret access key", text: $cloudCredentialDraft.nativeAWSSecretAccessKey)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("AWS session token (optional)", text: $cloudCredentialDraft.nativeAWSSessionToken)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Select an imported EKS context, then connect credentials. Secrets are stored only in Keychain.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             case .gke:
-                TextField("Location, region or zone", text: $cloudCredentialDraft.regionOrLocation)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Project ID", text: $cloudCredentialDraft.projectID)
-                    .textFieldStyle(.roundedBorder)
+                if RuneExternalCommandPolicy.allowsExternalCommands {
+                    TextField("Location, region or zone", text: $cloudCredentialDraft.regionOrLocation)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Project ID", text: $cloudCredentialDraft.projectID)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    Text("Select an imported GKE context, then choose a Google service-account JSON file. Rune validates it and stores it only in Keychain.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             case .local:
                 EmptyView()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func providerPrimaryAction(
+        _ provider: RuneAddClusterProvider,
+        canRunCredentialImport: Bool,
+        runHelp: String
+    ) -> some View {
+        if provider == .local {
+            Button {
+                selectedAddClusterProvider = nil
+                viewModel.importKubeConfig()
+            } label: {
+                Label("Import…", systemImage: "doc.badge.plus")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .help("Import kubeconfig from a file.")
+        } else if let cloudProvider = provider.cloudProvider {
+            if RuneExternalCommandPolicy.allowsExternalCommands {
+                Button {
+                    viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
+                } label: {
+                    Label {
+                        Text(viewModel.isRunningCloudKubeConfigImport ? "Running" : "Run")
+                    } icon: {
+                        Image(systemName: "icloud.and.arrow.down")
+                    }
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
+                .help(runHelp)
+            } else {
+                nativeCloudAuthConnectButton(provider)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nativeCloudAuthConnectButton(_ provider: RuneAddClusterProvider) -> some View {
+        switch provider {
+        case .eks:
+            Button {
+                guard viewModel.validateSelectedNativeAuthContext(for: .awsEKS) else { return }
+                let accessKeyID = cloudCredentialDraft.nativeAWSAccessKeyID
+                let secretAccessKey = cloudCredentialDraft.nativeAWSSecretAccessKey
+                let sessionToken = cloudCredentialDraft.nativeAWSSessionToken
+                cloudCredentialDraft.nativeAWSAccessKeyID = ""
+                cloudCredentialDraft.nativeAWSSecretAccessKey = ""
+                cloudCredentialDraft.nativeAWSSessionToken = ""
+                viewModel.connectSelectedEKSNativeAuth(
+                    accessKeyID: accessKeyID,
+                    secretAccessKey: secretAccessKey,
+                    sessionToken: sessionToken
+                )
+            } label: {
+                Label(viewModel.isConnectingNativeKubernetesAuth ? "Connecting" : "Connect", systemImage: "key.fill")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!cloudCredentialDraft.hasNativeAWSCredentials || viewModel.isConnectingNativeKubernetesAuth)
+            .help("Bind AWS credentials to the selected imported EKS context.")
+        case .aks:
+            Button {
+                guard viewModel.validateSelectedNativeAuthContext(for: .azureKubelogin) else { return }
+                let secret = cloudCredentialDraft.nativeAKSClientSecret
+                cloudCredentialDraft.nativeAKSClientSecret = ""
+                viewModel.connectSelectedAKSNativeAuth(clientSecret: secret)
+            } label: {
+                Label(viewModel.isConnectingNativeKubernetesAuth ? "Connecting" : "Connect", systemImage: "key.fill")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!cloudCredentialDraft.hasNativeAKSClientSecret || viewModel.isConnectingNativeKubernetesAuth)
+            .help("Bind an Azure service-principal secret to the selected imported AKS context.")
+        case .gke:
+            Button {
+                viewModel.chooseAndConnectSelectedGKENativeAuth()
+            } label: {
+                Label(viewModel.isConnectingNativeKubernetesAuth ? "Connecting" : "Choose JSON…", systemImage: "key.fill")
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(viewModel.isConnectingNativeKubernetesAuth)
+            .help("Choose and bind a Google service-account JSON file to the selected imported GKE context.")
+        case .local:
+            EmptyView()
         }
     }
 

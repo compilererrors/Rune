@@ -45,6 +45,27 @@ enum RuneUILayoutMetrics {
     static let inspectorToolbarActionGroupHeight: CGFloat = 44
     static let inspectorToolbarControlMinHeight: CGFloat = 30
 
+    // Modal sheets and custom dialogs. Native alerts, confirmation dialogs and
+    // open/save panels keep the system-provided macOS metrics.
+    static let dialogContentPadding: CGFloat = 20
+    static let dialogSectionSpacing: CGFloat = 14
+    static let dialogControlSpacing: CGFloat = 8
+    static let dialogButtonMinHeight: CGFloat = 30
+    static let dialogButtonLabelMinHeight: CGFloat = 22
+    static let dialogFooterButtonLabelMinWidth: CGFloat = 72
+    static let dialogIconButtonSize: CGFloat = 28
+    static let compactDialogWidth: CGFloat = 420
+    static let standardDialogWidth: CGFloat = 560
+    static let wideDialogWidth: CGFloat = 760
+    static let wideDialogHeight: CGFloat = 560
+    static let commandPaletteWidth: CGFloat = 720
+    static let commandPaletteHeight: CGFloat = 520
+    static let providerDialogBodyMinHeight: CGFloat = 220
+    static let providerDialogBodyIdealHeight: CGFloat = 300
+    static let providerDialogBodyMaxHeight: CGFloat = 430
+    static let providerDialogMaxHeight: CGFloat = 600
+    static let addClusterPopoverMaxHeight: CGFloat = 560
+
     static let minWindowContentTopInset: CGFloat = 0
     static let maxWindowContentTopInset: CGFloat = 0
 

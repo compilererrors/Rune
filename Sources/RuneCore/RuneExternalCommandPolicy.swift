@@ -31,13 +31,20 @@ public enum RuneExternalCommandPolicy {
         infoDictionary: [String: Any],
         environment: [String: String]
     ) -> RuneAppDistribution {
+        let bundledDistribution = (infoDictionary[distributionInfoPlistKey] as? String)
+            .flatMap(normalizedDistribution)
+
+        // A signed App Store bundle is authoritative. Environment variables remain
+        // useful for direct/development builds, but may only make policy stricter.
+        if bundledDistribution == .appStore {
+            return .appStore
+        }
         if let raw = environment[distributionEnvironmentVariable],
            let distribution = normalizedDistribution(raw) {
             return distribution
         }
-        if let raw = infoDictionary[distributionInfoPlistKey] as? String,
-           let distribution = normalizedDistribution(raw) {
-            return distribution
+        if let bundledDistribution {
+            return bundledDistribution
         }
         return .direct
     }
@@ -46,18 +53,31 @@ public enum RuneExternalCommandPolicy {
         infoDictionary: [String: Any],
         environment: [String: String]
     ) -> Bool {
+        guard distribution(infoDictionary: infoDictionary, environment: environment) != .appStore else {
+            return false
+        }
+
+        let bundledSetting: Bool?
+        if let enabled = infoDictionary[externalCommandsEnabledInfoPlistKey] as? Bool {
+            bundledSetting = enabled
+        } else if let raw = infoDictionary[externalCommandsEnabledInfoPlistKey] as? String {
+            bundledSetting = normalizedBoolean(raw)
+        } else {
+            bundledSetting = nil
+        }
+
+        // An explicit signed false value cannot be loosened by the process environment.
+        if bundledSetting == false {
+            return false
+        }
         if let raw = environment[externalCommandsEnabledEnvironmentVariable],
            let enabled = normalizedBoolean(raw) {
             return enabled
         }
-        if let enabled = infoDictionary[externalCommandsEnabledInfoPlistKey] as? Bool {
-            return enabled
+        if let bundledSetting {
+            return bundledSetting
         }
-        if let raw = infoDictionary[externalCommandsEnabledInfoPlistKey] as? String,
-           let enabled = normalizedBoolean(raw) {
-            return enabled
-        }
-        return distribution(infoDictionary: infoDictionary, environment: environment) != .appStore
+        return true
     }
 
     public static func allowsExternalCommands(

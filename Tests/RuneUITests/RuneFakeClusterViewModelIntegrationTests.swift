@@ -1032,6 +1032,62 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertFalse(harness.server.requestLines().contains { $0.localizedCaseInsensitiveContains("helm") })
     }
 
+    func testAuthDoctorLocalInspectionUsesSelectedContextInsteadOfKubeconfigCurrentContext() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+        let endpoint = "http://127.0.0.1:\(harness.server.port)"
+        try """
+        apiVersion: v1
+        kind: Config
+        current-context: current-exec
+        clusters:
+        - name: current-cluster
+          cluster:
+            server: \(endpoint)
+        - name: selected-cluster
+          cluster:
+            server: \(endpoint)
+        contexts:
+        - name: current-exec
+          context:
+            cluster: current-cluster
+            namespace: alpha-zone
+            user: exec-user
+        - name: selected-static
+          context:
+            cluster: selected-cluster
+            namespace: alpha-zone
+            user: static-user
+        users:
+        - name: exec-user
+          user:
+            exec:
+              apiVersion: client.authentication.k8s.io/v1
+              command: synthetic-inactive-credential-helper
+              interactiveMode: Never
+        - name: static-user
+          user:
+            token: fake-token
+        """.write(to: harness.kubeconfigURL, atomically: true, encoding: .utf8)
+        harness.state.selectedContext = KubeContext(name: "selected-static")
+
+        harness.viewModel.runAuthDoctor()
+
+        try await waitUntil {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains { $0.id == "selected-context" }
+        }
+
+        XCTAssertEqual(
+            harness.state.authDoctorChecks.first { $0.id == "selected-context" }?.message,
+            "selected-static"
+        )
+        XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "exec-auth-profile" })
+        XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "exec-auth-tools" })
+        XCTAssertFalse(harness.state.authDoctorChecks.map(\.message).joined(separator: "\n")
+            .contains("synthetic-inactive-credential-helper"))
+    }
+
     func testAuthDoctorIsReadOnlyAgainstFakeCluster() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
