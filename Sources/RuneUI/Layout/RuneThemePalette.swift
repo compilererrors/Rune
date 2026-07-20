@@ -238,6 +238,16 @@ enum RuneAppearanceTheme: String, CaseIterable, Identifiable {
     }
 
     var resolvedTheme: RuneResolvedTheme {
+        Self.resolvedThemeCache[self] ?? RuneAppearanceTheme.native.makeResolvedTheme()
+    }
+
+    private static let resolvedThemeCache = Dictionary(
+        uniqueKeysWithValues: RuneAppearanceTheme.allCases.map { theme in
+            (theme, theme.makeResolvedTheme())
+        }
+    )
+
+    private func makeResolvedTheme() -> RuneResolvedTheme {
         RuneResolvedTheme(
             id: rawValue,
             title: title,
@@ -245,34 +255,76 @@ enum RuneAppearanceTheme: String, CaseIterable, Identifiable {
             preferredColorScheme: preferredColorScheme,
             palette: palette,
             appKitPalette: appKitPalette,
-            syntaxPalette: nil,
+            syntaxPalette: syntaxPalette,
             builtin: self
         )
     }
 
     var appKitPalette: RuneThemeAppKitPalette? {
+        guard let palette else { return nil }
+        return RuneThemeAppKitPalette(
+            window: palette.window.runeHexRGB,
+            foreground: palette.foreground.runeHexRGB,
+            accent: palette.accent.runeHexRGB,
+            stroke: palette.stroke.runeHexRGB,
+            row: palette.row.runeHexRGB,
+            rowSelected: palette.rowSelected.runeHexRGB,
+            success: palette.success.runeHexRGB,
+            warning: palette.warning.runeHexRGB,
+            danger: palette.danger.runeHexRGB,
+            info: palette.info.runeHexRGB,
+            selectedAlpha: appKitSelectionAlpha
+        )
+    }
+
+    private var appKitSelectionAlpha: CGFloat {
+        switch self {
+        case .paper: return 0.14
+        case .daylight: return 0.16
+        case .contrastDark: return 0.24
+        case .native, .aurora, .graphiteBlue, .emberGlass, .mossTerminal, .fjord, .contrastLight:
+            return 0.18
+        }
+    }
+
+    private var syntaxPalette: RuneThemeSyntaxPalette? {
+        guard let palette else { return nil }
+        let boolean: String
+        let directive: String
+        let anchor: String
+
         switch self {
         case .native:
             return nil
         case .aurora:
-            return RuneThemeAppKitPalette(window: "#16131c", foreground: "#f4efff", accent: "#c59cff", stroke: "#493d5d", row: "#202230", rowSelected: "#4d4266")
+            (boolean, directive, anchor) = ("#d7b3ff", "#ff9ac8", "#80e6d6")
         case .graphiteBlue:
-            return RuneThemeAppKitPalette(window: "#1b2027", foreground: "#eef4fb", accent: "#6bb7f7", stroke: "#485360", row: "#2d3541", rowSelected: "#3b5267")
+            (boolean, directive, anchor) = ("#b8a7ff", "#f09ab6", "#78d5d2")
         case .emberGlass:
-            return RuneThemeAppKitPalette(window: "#11151b", foreground: "#f8f1e7", accent: "#ffb454", stroke: "#48474a", row: "#24272f", rowSelected: "#46443f")
+            (boolean, directive, anchor) = ("#d6a3ff", "#ff9ca8", "#82d8c7")
         case .mossTerminal:
-            return RuneThemeAppKitPalette(window: "#20221e", foreground: "#f1f4df", accent: "#b8db4c", stroke: "#4b5041", row: "#34382d", rowSelected: "#566246")
+            (boolean, directive, anchor) = ("#c2a6ff", "#eba0a8", "#80d6bf")
         case .fjord:
-            return RuneThemeAppKitPalette(window: "#082b33", foreground: "#e6f7fb", accent: "#43a6d9", stroke: "#52727c", row: "#123944", rowSelected: "#255d63")
+            (boolean, directive, anchor) = ("#b5a9ff", "#ef96ad", "#75d7cf")
         case .paper:
-            return RuneThemeAppKitPalette(window: "#f7f6f2", foreground: "#1f2933", accent: "#3d70b2", stroke: "#d4d2c9", row: "#f1f0ea", rowSelected: "#dce9f0", selectedAlpha: 0.14)
+            (boolean, directive, anchor) = ("#7a4fb3", "#b0446d", "#1c7f78")
         case .daylight:
-            return RuneThemeAppKitPalette(window: "#fbf5e6", foreground: "#24323a", accent: "#2f7e9f", stroke: "#c9bfa9", row: "#f2ead9", rowSelected: "#d7e5e4", selectedAlpha: 0.16)
+            (boolean, directive, anchor) = ("#7b5eb8", "#b45a78", "#27817a")
         case .contrastDark:
-            return RuneThemeAppKitPalette(window: "#05070a", foreground: "#f8fbff", accent: "#00b7ff", stroke: "#6f879b", row: "#111820", rowSelected: "#1f4f7a", selectedAlpha: 0.24)
+            (boolean, directive, anchor) = ("#c58cff", "#ff8cc6", "#64ffe5")
         case .contrastLight:
-            return RuneThemeAppKitPalette(window: "#ffffff", foreground: "#07111f", accent: "#005fcc", stroke: "#6a7f93", row: "#f1f5fa", rowSelected: "#c8e4ff", selectedAlpha: 0.18)
+            (boolean, directive, anchor) = ("#6a40b8", "#a0005a", "#00766f")
         }
+
+        return RuneThemeSyntaxPalette(
+            key: palette.info.runeHexRGB,
+            string: palette.success.runeHexRGB,
+            number: palette.warning.runeHexRGB,
+            boolean: boolean,
+            comment: palette.mutedText.runeHexRGB,
+            directive: directive,
+            anchor: anchor
+        )
     }
 
     static func builtin(_ rawValue: String) -> RuneAppearanceTheme {
@@ -371,6 +423,22 @@ struct RuneThemePalette {
     var focusRing: Color { accent.opacity(0.72) }
     var chipFill: Color { secondaryText.opacity(0.13) }
     var divider: Color { stroke.opacity(0.48) }
+}
+
+enum RuneSemanticColorRole: Sendable {
+    case success
+    case warning
+    case danger
+    case info
+
+    func color(in palette: RuneThemePalette?) -> Color {
+        switch self {
+        case .success: return palette?.success ?? .green
+        case .warning: return palette?.warning ?? .orange
+        case .danger: return palette?.danger ?? .red
+        case .info: return palette?.info ?? .blue
+        }
+    }
 }
 
 enum RuneThemeCatalog {
@@ -769,7 +837,14 @@ private extension Dictionary where Key == String, Value == JSONValue {
     }
 }
 
-private enum RuneThemeColorParser {
+enum RuneThemeColorParser {
+    struct Components: Equatable {
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+        let alpha: CGFloat
+    }
+
     static func visibleHex(_ rawValue: String?) -> String? {
         guard let hex = normalizedHex(rawValue) else { return nil }
         if hex.count == 9, let alpha = UInt8(String(hex.suffix(2)), radix: 16), alpha < 28 {
@@ -778,7 +853,7 @@ private enum RuneThemeColorParser {
         return hex
     }
 
-    private static func normalizedHex(_ rawValue: String?) -> String? {
+    static func normalizedHex(_ rawValue: String?) -> String? {
         guard var value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
         }
@@ -791,16 +866,62 @@ private enum RuneThemeColorParser {
         }
         return "#\(hex.lowercased())"
     }
+
+    static func components(_ rawValue: String?) -> Components? {
+        guard let normalized = normalizedHex(rawValue) else { return nil }
+        let hex = String(normalized.dropFirst())
+        guard let value = UInt64(hex, radix: 16) else { return nil }
+
+        if hex.count == 8 {
+            return Components(
+                red: CGFloat((value >> 24) & 0xff) / 255,
+                green: CGFloat((value >> 16) & 0xff) / 255,
+                blue: CGFloat((value >> 8) & 0xff) / 255,
+                alpha: CGFloat(value & 0xff) / 255
+            )
+        }
+
+        return Components(
+            red: CGFloat((value >> 16) & 0xff) / 255,
+            green: CGFloat((value >> 8) & 0xff) / 255,
+            blue: CGFloat(value & 0xff) / 255,
+            alpha: 1
+        )
+    }
+
+    static func rgbaHex(_ color: NSColor) -> String? {
+        guard let converted = color.usingColorSpace(.sRGB) else { return nil }
+        return String(
+            format: "#%02x%02x%02x%02x",
+            channelByte(converted.redComponent),
+            channelByte(converted.greenComponent),
+            channelByte(converted.blueComponent),
+            channelByte(converted.alphaComponent)
+        )
+    }
+
+    private static func channelByte(_ component: CGFloat) -> Int {
+        Int((min(1, max(0, component)) * 255).rounded())
+    }
 }
 
 private struct RuneThemePaletteEnvironmentKey: EnvironmentKey {
     static let defaultValue: RuneThemePalette? = nil
 }
 
+private struct RuneResolvedThemeEnvironmentKey: EnvironmentKey {
+    static let defaultValue = RuneAppearanceTheme.native.resolvedTheme
+}
+
 extension EnvironmentValues {
     var runeThemePalette: RuneThemePalette? {
         get { self[RuneThemePaletteEnvironmentKey.self] }
         set { self[RuneThemePaletteEnvironmentKey.self] = newValue }
+    }
+
+    var runeResolvedTheme: RuneResolvedTheme {
+        get { self[RuneResolvedThemeEnvironmentKey.self] }
+        set { self[RuneResolvedThemeEnvironmentKey.self] = newValue }
     }
 }
 
@@ -810,6 +931,7 @@ private struct RuneAppearanceThemeModifier: ViewModifier {
     func body(content: Content) -> some View {
         let palette = theme.palette
         content
+            .environment(\.runeResolvedTheme, theme)
             .environment(\.runeThemePalette, palette)
             .tint(palette?.accent ?? Color.accentColor)
             .accentColor(palette?.accent)
@@ -903,7 +1025,7 @@ private struct RuneAppearanceWindowConfigurator: NSViewRepresentable {
 
     private func windowBackground(for theme: RuneResolvedTheme) -> NSColor {
         guard let window = theme.appKitPalette?.window else { return .windowBackgroundColor }
-        return NSColor.runeWindowHex(window)
+        return NSColor.runeHex(window)
     }
 
     private func invalidateWindowChrome(_ window: NSWindow) {
@@ -929,49 +1051,35 @@ private struct RuneAppearanceWindowConfigurator: NSViewRepresentable {
     }
 }
 
-private extension NSColor {
-    static func runeWindowHex(_ hex: String) -> NSColor {
-        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let value = UInt64(cleaned, radix: 16) ?? 0
-        let red: CGFloat
-        let green: CGFloat
-        let blue: CGFloat
-        let alpha: CGFloat
-
-        switch cleaned.count {
-        case 8:
-            red = CGFloat((value >> 24) & 0xff) / 255
-            green = CGFloat((value >> 16) & 0xff) / 255
-            blue = CGFloat((value >> 8) & 0xff) / 255
-            alpha = CGFloat(value & 0xff) / 255
-        default:
-            red = CGFloat((value >> 16) & 0xff) / 255
-            green = CGFloat((value >> 8) & 0xff) / 255
-            blue = CGFloat(value & 0xff) / 255
-            alpha = 1
-        }
-
-        return NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+extension NSColor {
+    static func runeHex(_ hex: String) -> NSColor {
+        guard let components = RuneThemeColorParser.components(hex) else { return .black }
+        return NSColor(
+            srgbRed: components.red,
+            green: components.green,
+            blue: components.blue,
+            alpha: components.alpha
+        )
     }
 }
 
 extension Color {
     static func runeHex(_ hex: String) -> Color {
-        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let value = UInt64(cleaned, radix: 16) ?? 0
+        guard let components = RuneThemeColorParser.components(hex) else { return .black }
+        return Color(
+            red: Double(components.red),
+            green: Double(components.green),
+            blue: Double(components.blue),
+            opacity: Double(components.alpha)
+        )
+    }
 
-        switch cleaned.count {
-        case 8:
-            let red = Double((value >> 24) & 0xff) / 255
-            let green = Double((value >> 16) & 0xff) / 255
-            let blue = Double((value >> 8) & 0xff) / 255
-            let alpha = Double(value & 0xff) / 255
-            return Color(red: red, green: green, blue: blue).opacity(alpha)
-        default:
-            let red = Double((value >> 16) & 0xff) / 255
-            let green = Double((value >> 8) & 0xff) / 255
-            let blue = Double(value & 0xff) / 255
-            return Color(red: red, green: green, blue: blue)
-        }
+    fileprivate var runeHexRGBA: String {
+        RuneThemeColorParser.rgbaHex(NSColor(self)) ?? "#000000ff"
+    }
+
+    fileprivate var runeHexRGB: String {
+        let rgba = runeHexRGBA
+        return rgba.hasSuffix("ff") ? String(rgba.dropLast(2)) : rgba
     }
 }

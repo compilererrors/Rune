@@ -43,7 +43,19 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             filter: .tailLines(200),
             previous: false
         )
-        XCTAssertEqual(multiContainerLogs, "main line\nsidecar line\n")
+        XCTAssertEqual(
+            multiContainerLogs,
+            "[main] main line 1\n[main] main line 2\n[main] main line 10\n[sidecar] sidecar line\n[setup] setup line\n[debugger] debugger line"
+        )
+
+        let multiContainerPod = try await client.fetchPodSummaryForInspector(
+            from: sources,
+            context: context,
+            namespace: "default",
+            podName: "multi-0"
+        )
+        XCTAssertEqual(multiContainerPod.containerNames, ["main", "sidecar"])
+        XCTAssertEqual(multiContainerPod.logContainerNames, ["main", "sidecar", "setup", "debugger"])
 
         let selectedContainerLogs = try await client.podLogs(
             from: sources,
@@ -188,6 +200,7 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         let podLogsBlock = String(source[podLogsStart.lowerBound..<serviceSelectorStart.lowerBound])
         XCTAssertTrue(podLogsBlock.contains(#""Accept": "*/*""#))
         XCTAssertFalse(podLogsBlock.contains(#""Accept": "text/plain""#))
+        XCTAssertFalse(podLogsBlock.contains("allContainers"))
     }
 
     func testPortForwardListenerReportsWaitingAndStartupTimeout() throws {
@@ -232,6 +245,19 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
 
         XCTAssertTrue(message.contains("Port in use: 127.0.0.1:\(server.port)"))
         XCTAssertTrue(message.contains("pid "))
+    }
+
+    func testAppStorePolicySkipsExternalPortOwnerInspection() async throws {
+        let server = try await LocalKubernetesAPIServer.start()
+        defer { server.stop() }
+
+        XCTAssertNil(
+            KubernetesRESTClient._testLocalPortConflictMessage(
+                port: Int(server.port),
+                address: "127.0.0.1",
+                externalCommandsAllowed: false
+            )
+        )
     }
 
     func testPortForwardLocalPortConflictMarksSessionFailed() async throws {
@@ -1978,15 +2004,23 @@ private final class LocalKubernetesAPIServer: @unchecked Sendable {
         case "/api/v1/namespaces/default/pods/api-0/log":
             return (200, "text/plain", "line one\nline two\n")
         case "/api/v1/namespaces/default/pods/multi-0/log":
+            if target.contains("container=debugger") {
+                return (200, "text/plain", "debugger line\n")
+            }
+            if target.contains("container=setup") {
+                return (200, "text/plain", "setup line\n")
+            }
             if target.contains("container=sidecar") {
                 return (200, "text/plain", "sidecar line\n")
             }
-            if target.contains("allContainers=true") {
-                return (200, "text/plain", "main line\nsidecar line\n")
+            if target.contains("container=main") {
+                return (200, "text/plain", "main line 1\nmain line 2\nmain line 10\n")
             }
-            return (400, "application/json", #"{"kind":"Status","status":"Failure","message":"a container name must be specified for pod multi-0, choose one of: [main sidecar]"}"#)
+            return (400, "application/json", #"{"kind":"Status","status":"Failure","message":"a container name must be specified for pod multi-0, choose one of: [main sidecar setup debugger]"}"#)
         case "/api/v1/namespaces/default/pods/api-0":
             return (200, "application/json", podJSON)
+        case "/api/v1/namespaces/default/pods/multi-0":
+            return (200, "application/json", multiContainerPodJSON)
         case "/api/v1/namespaces/default/secrets", "/api/v1/secrets":
             return (200, "application/json", helmSecretListJSON)
         default:
@@ -1996,6 +2030,10 @@ private final class LocalKubernetesAPIServer: @unchecked Sendable {
 
     private static let podJSON = """
     {"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z"},"status":{"phase":"Running","podIP":"10.42.0.10","containerStatuses":[{"ready":true,"restartCount":1}]}}
+    """
+
+    private static let multiContainerPodJSON = """
+    {"metadata":{"name":"multi-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z"},"spec":{"containers":[{"name":"main","image":"example.invalid/main:test"},{"name":"sidecar","image":"example.invalid/sidecar:test"}],"initContainers":[{"name":"setup","image":"example.invalid/setup:test"}],"ephemeralContainers":[{"name":"debugger","image":"example.invalid/debugger:test"}]},"status":{"phase":"Running","containerStatuses":[{"name":"main","ready":true,"restartCount":0},{"name":"sidecar","ready":true,"restartCount":0}],"initContainerStatuses":[{"name":"setup","ready":true,"restartCount":0}],"ephemeralContainerStatuses":[{"name":"debugger","ready":true,"restartCount":0}]}}
     """
 
     private static let podListJSON = """

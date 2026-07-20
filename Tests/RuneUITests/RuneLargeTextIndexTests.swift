@@ -80,6 +80,59 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertEqual(result.matches.last?.lineNumber, 59_996)
     }
 
+    func testLargeTextIndexBuildCancelsCooperatively() {
+        enum SyntheticCancellation: Error {
+            case requested
+        }
+
+        let text = (0..<20_000)
+            .map { "line-\($0) value=synthetic" }
+            .joined(separator: "\n")
+        var cancellationChecks = 0
+
+        XCTAssertThrowsError(
+            try RuneLargeTextIndex(
+                text: text,
+                cancellationCheck: {
+                    cancellationChecks += 1
+                    if cancellationChecks == 4 {
+                        throw SyntheticCancellation.requested
+                    }
+                }
+            )
+        ) { error in
+            XCTAssertTrue(error is SyntheticCancellation)
+        }
+        XCTAssertEqual(cancellationChecks, 4)
+    }
+
+    func testLargeTextSearchCancelsCooperativelyBeforePublishingPartialMatches() {
+        enum SyntheticCancellation: Error {
+            case requested
+        }
+
+        let text = (0..<40_000)
+            .map { "line-\($0) status=error" }
+            .joined(separator: "\n")
+        let index = RuneLargeTextIndex(text: text)
+        var cancellationChecks = 0
+
+        XCTAssertThrowsError(
+            try index.search(
+                query: "status=error",
+                cancellationCheck: {
+                    cancellationChecks += 1
+                    if cancellationChecks == 12 {
+                        throw SyntheticCancellation.requested
+                    }
+                }
+            )
+        ) { error in
+            XCTAssertTrue(error is SyntheticCancellation)
+        }
+        XCTAssertEqual(cancellationChecks, 12)
+    }
+
     func testTerminalTranscriptSearchFindsAllMatchesPastOldHighlightLimit() {
         let transcript = (0..<60_000)
             .map { index in

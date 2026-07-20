@@ -34,6 +34,8 @@ public enum RuneSettingsKeys {
     public static let keyBindingHistoryForward = "rune.settings.keybindings.historyForward"
     public static let keyBindingFocusPreviousPane = "rune.settings.keybindings.focusPreviousPane"
     public static let keyBindingFocusNextPane = "rune.settings.keybindings.focusNextPane"
+    /// When true, pane tab navigation skips the cluster/context list between Sections and content.
+    public static let skipClusterOnTabNavigationFromSections = "rune.settings.keybindings.skipClusterOnTabNavigationFromSections"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
     public static let keyBindingSaveLogs = "rune.settings.keybindings.saveLogs"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
@@ -147,6 +149,7 @@ public enum RuneSettingsKeys {
             keyBindingHistoryForward: RuneKeyBindingAction.historyForward.defaultShortcut.storageValue,
             keyBindingFocusPreviousPane: RuneKeyBindingAction.focusPreviousPane.defaultShortcut.storageValue,
             keyBindingFocusNextPane: RuneKeyBindingAction.focusNextPane.defaultShortcut.storageValue,
+            skipClusterOnTabNavigationFromSections: false,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
             keyBindingSaveLogs: RuneKeyBindingAction.saveLogs.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
@@ -276,7 +279,10 @@ public extension UserDefaults {
     }
 
     var runeEnableDemoCluster: Bool {
-        get { (object(forKey: RuneSettingsKeys.enableDemoCluster) as? Bool) ?? true }
+        get {
+            guard object(forKey: RuneSettingsKeys.enableDemoCluster) != nil else { return true }
+            return bool(forKey: RuneSettingsKeys.enableDemoCluster)
+        }
         set { set(newValue, forKey: RuneSettingsKeys.enableDemoCluster) }
     }
 

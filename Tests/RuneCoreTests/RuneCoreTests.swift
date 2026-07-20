@@ -305,6 +305,46 @@ final class RuneCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testResourceDetailRefreshPreservesYAMLStateAndStartsLoading() {
+        let state = RuneAppState()
+        let scope = ResourceDetailScope(
+            contextName: "context-synthetic",
+            namespace: "namespace-synthetic",
+            kind: .deployment,
+            name: "deployment-synthetic"
+        )
+        state.beginResourceDetailLoad(scope: scope)
+        state.setResourceYAML("baseline manifest")
+        state.updateResourceYAMLDraft("edited manifest")
+        state.setResourceDescribe("visible describe")
+        state.finishResourceDetailLoad()
+
+        state.beginResourceDetailRefresh(scope: scope)
+
+        XCTAssertEqual(state.resourceYAML, "edited manifest")
+        XCTAssertEqual(state.resourceDescribe, "visible describe")
+        XCTAssertTrue(state.resourceYAMLHasUnsavedEdits)
+        XCTAssertTrue(state.canUndoResourceYAMLEdit)
+        XCTAssertNil(state.lastResourceYAMLError)
+        XCTAssertNil(state.lastResourceDescribeError)
+        XCTAssertEqual(state.resourceDetailScope, scope)
+        XCTAssertTrue(state.isLoadingResourceDetails)
+
+        state.setResourceYAMLRefreshError("synthetic YAML refresh failure")
+        state.setResourceDescribeRefreshError("synthetic describe refresh failure")
+        state.finishResourceDetailLoad()
+
+        XCTAssertEqual(state.resourceYAML, "edited manifest")
+        XCTAssertEqual(state.resourceDescribe, "visible describe")
+        XCTAssertEqual(state.lastResourceYAMLError, "synthetic YAML refresh failure")
+        XCTAssertEqual(state.lastResourceDescribeError, "synthetic describe refresh failure")
+        XCTAssertFalse(state.isLoadingResourceDetails)
+
+        state.revertResourceYAMLToClusterSnapshot()
+        XCTAssertEqual(state.resourceYAML, "baseline manifest")
+    }
+
+    @MainActor
     func testResourceYAMLUndoHistoryIsBounded() {
         let defaults = UserDefaults.standard
         let oldValue = defaults.object(forKey: RuneSettingsKeys.resourceYAMLUndoSnapshotLimit)
@@ -567,6 +607,20 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertFalse(defaults.runeShowHoverTooltips)
     }
 
+    func testDemoClusterSettingAcceptsCommandLineStyleBooleanStrings() {
+        let suiteName = "RuneCoreTests.demoClusterArgument.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(defaults.runeEnableDemoCluster)
+
+        defaults.set("false", forKey: RuneSettingsKeys.enableDemoCluster)
+        XCTAssertFalse(defaults.runeEnableDemoCluster)
+
+        defaults.set("true", forKey: RuneSettingsKeys.enableDemoCluster)
+        XCTAssertTrue(defaults.runeEnableDemoCluster)
+    }
+
     func testDefaultRuneKeyBindingsResolveExactActions() {
         let resolver = RuneKeyBindingResolver()
 
@@ -729,6 +783,17 @@ final class RuneCoreTests: XCTestCase {
         let raw = "pulling layer 10%\u{001B}[3D20%\n"
 
         XCTAssertEqual(TerminalTranscriptSanitizer.sanitize(raw), "pulling layer 20%\n")
+    }
+
+    func testTerminalTranscriptSanitizerBackspaceAndCursorLeftPreserveUnicodeScalarBoundaries() {
+        XCTAssertEqual(
+            TerminalTranscriptSanitizer.sanitize("räksmörgås🙂\u{0008}X\n"),
+            "räksmörgåsX\n"
+        )
+        XCTAssertEqual(
+            TerminalTranscriptSanitizer.sanitize("status 🙂\u{001B}[1Dready\n"),
+            "status ready\n"
+        )
     }
 
     func testTerminalTranscriptSanitizerHandlesClearScreenSequences() {

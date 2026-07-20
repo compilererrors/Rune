@@ -146,6 +146,47 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertTrue(logs.contains("synthetic REST fake log"))
     }
 
+    func testAllContainerLogsPreserveSuccessfulOutputAndNamePartialFailures() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        let podName = "ember-gate-75c9f746b8-kq2wm"
+
+        let logs = try await client.podLogs(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            podName: podName,
+            containers: ["gate", "synthetic-missing"],
+            filter: .tailLines(50),
+            previous: false
+        )
+
+        XCTAssertTrue(logs.contains("[gate]"))
+        XCTAssertTrue(logs.contains("synthetic REST fake log"))
+        XCTAssertTrue(logs.contains("[synthetic-missing] ⚠ Logs unavailable for container synthetic-missing:"))
+
+        do {
+            _ = try await client.podLogs(
+                from: sources,
+                context: context,
+                namespace: "alpha-zone",
+                podName: podName,
+                containers: ["synthetic-missing-a", "synthetic-missing-b"],
+                filter: .tailLines(50),
+                previous: false
+            )
+            XCTFail("All-container logs must fail when every requested container fails.")
+        } catch {
+            XCTAssertFalse(error is CancellationError)
+        }
+    }
+
     func testRESTFakeCanForcePodLogEndpointFailure() async throws {
         let failingPodName = "ember-gate-75c9f746b8-kq2wm"
         let base = RuneFakeK8sFixture.defaultContexts[0]

@@ -165,6 +165,51 @@ final class YAMLLanguageServiceTests: XCTestCase {
         })
     }
 
+    func testAnalyzeTreatsLiteralBlockScalarIndentationAsContent() {
+        let source = """
+        spec:
+          containers:
+          - args:
+            - |-
+              index=0
+              while true; do
+                echo "synthetic tick index=${index}"
+                index=$((index + 1))
+              done
+            command:
+            - /bin/sh
+        status:
+          phase: Running
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertTrue(analysis.validationIssues.isEmpty)
+        XCTAssertTrue(analysis.highlights.contains {
+            $0.kind == .string && nsSubstring(source, $0.range).contains("echo \"synthetic tick")
+        })
+    }
+
+    func testAnalyzeEndsFoldedBlockScalarAtOutdentAndStillReportsFollowingInvalidIndentation() {
+        let source = """
+        message: >2-
+          first line
+            deeper text remains scalar content
+        next: value
+          nested: invalid
+        """
+
+        let analysis = YAMLLanguageService.analyze(source)
+
+        XCTAssertEqual(
+            analysis.validationIssues.filter {
+                $0.severity == .error
+                    && $0.message == "Unexpected indentation. The previous line does not start a nested YAML block."
+            }.map(\.line),
+            [5]
+        )
+    }
+
     func testAnalyzeStillReportsUnexpectedNestedMappingBelowScalarMappingValue() {
         let source = """
         spec:

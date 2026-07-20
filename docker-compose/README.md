@@ -64,17 +64,18 @@ Run the local-only integration suite and produce both a human-readable Markdown 
 scripts/run-local-k8s-integration-report.sh
 ```
 
-The report runner resets only the local `rune-fake-k8s` Docker Compose project by default, starts both fake clusters, merges the generated localhost kubeconfig, and runs the guarded integration tests. The Docker Compose suite includes read checks plus reversible writes for manifest apply/update/delete, CronJob suspend/create Job, deployment scale, rollout restart, pod delete, port-forward start/stop, exec, and logs. Reports are written under:
+The default report run exercises the script and REST fake-cluster suites without starting Docker Compose. This keeps the normal run lightweight and avoids kubelet/cgroup noise. Reports are written under:
 
 - `test-reports/local-k8s-integration/<run-id>/report.md`
 - `test-reports/local-k8s-integration/<run-id>/report.json`
 
-Useful switches:
+To reset the local `rune-fake-k8s` project, start both k3s clusters, merge the localhost kubeconfig, and run the guarded Docker integration tests:
 
 ```bash
-RUNE_SKIP_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh
-RUNE_RESET_DOCKER_FAKE_K8S=0 scripts/run-local-k8s-integration-report.sh
+RUNE_SKIP_DOCKER_FAKE_K8S=0 RUNE_RESET_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh
 ```
+
+The Docker suite includes read checks plus reversible writes for manifest apply/update/delete, CronJob suspend/create Job, deployment scale, rollout restart, pod delete, port-forward start/stop, exec, and logs. To reuse an already running local stack, set `RUNE_RESET_DOCKER_FAKE_K8S=0` while keeping `RUNE_SKIP_DOCKER_FAKE_K8S=0`.
 
 ## Local Cluster Test Commands
 

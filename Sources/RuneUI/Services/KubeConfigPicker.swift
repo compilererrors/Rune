@@ -28,7 +28,7 @@ public final class OpenPanelKubeConfigPicker: KubeConfigPicking {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.prompt = "Importera"
+        panel.prompt = "Import"
 
         let result = panel.runModal()
         guard result == .OK else {

@@ -21,7 +21,7 @@ struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: Vie
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: true) {
             Group {
                 if labelsHidden {
                     Picker(selection: selection) { content } label: {
@@ -40,7 +40,6 @@ struct RuneSegmentedPickerInScroll<SelectionValue: Hashable, Content: View>: Vie
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Extra inset so the first segment clears the column edge comfortably.
-        .padding(.leading, 6)
+        .accessibilityHint("Scroll horizontally to reveal additional choices")
     }
 }

@@ -17,6 +17,7 @@ struct TerminalTranscriptSurface: View {
     @State private var selectedSearchMatchIndex = 0
     @State private var isLargeTextPinnedToBottom = true
     @State private var lastReportedGridSize: (columns: Int, rows: Int)?
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     private var shouldUseLargeTextSurface: Bool {
         text.utf8.count > 250_000
@@ -27,6 +28,7 @@ struct TerminalTranscriptSurface: View {
     }
 
     var body: some View {
+        let warning = RuneSemanticColorRole.warning.color(in: runeThemePalette)
         let model = TerminalTranscriptRenderModel(
             text: text,
             query: searchQuery,
@@ -82,27 +84,32 @@ struct TerminalTranscriptSurface: View {
         }
         .overlay(alignment: .topTrailing) {
             if isSearchVisible {
-                searchBar(searchIndex: model.searchIndex, resolvedSearchMatchIndex: resolvedSearchMatchIndex)
+                TerminalTranscriptSearchBar(
+                    searchIndex: model.searchIndex,
+                    resolvedSearchMatchIndex: resolvedSearchMatchIndex,
+                    query: $searchQuery,
+                    matchCase: $searchMatchCase,
+                    onPrevious: { advanceSearch(by: -1) },
+                    onNext: { advanceSearch(by: 1) },
+                    onClose: {
+                        isSearchVisible = false
+                        searchQuery = ""
+                    }
+                )
                     .padding(10)
             } else {
-                Button {
+                RuneIconButton("Find in terminal", systemImage: "magnifyingglass") {
                     isSearchVisible = true
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .frame(width: 28, height: 24)
                 }
-                .buttonStyle(.plain)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                         .fill(Color(nsColor: .controlBackgroundColor).opacity(0.76))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                         .stroke(Color.primary.opacity(0.16), lineWidth: 1)
                 )
                 .padding(10)
-                .help("Find in terminal")
-                .accessibilityLabel("Find in terminal")
                 .keyboardShortcut("f", modifiers: [.command])
             }
         }
@@ -113,14 +120,14 @@ struct TerminalTranscriptSurface: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                             .fill(Color(nsColor: .controlBackgroundColor).opacity(0.84))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color.orange.opacity(0.42), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
+                            .stroke(warning.opacity(0.42), lineWidth: 1)
                     )
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(warning)
                     .padding(10)
                     .help("Older terminal output was discarded by the scrollback limit")
                     .accessibilityLabel("Scrollback trimmed")
@@ -134,91 +141,6 @@ struct TerminalTranscriptSurface: View {
         }
         .onChange(of: text) { _, _ in
             selectedSearchMatchIndex = model.searchIndex.clampedIndex(selectedSearchMatchIndex)
-        }
-    }
-
-    private func searchBar(searchIndex: TerminalTranscriptSearchIndex, resolvedSearchMatchIndex: Int) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-
-            TextField("Find in terminal", text: $searchQuery)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
-                .frame(minWidth: 190, idealWidth: 240, maxWidth: 280)
-                .onSubmit {
-                    advanceSearch(by: 1)
-                }
-                .terminalSearchCursor(.arrow)
-
-            Text(searchIndex.statusText(selectedIndex: resolvedSearchMatchIndex))
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 56, alignment: .trailing)
-
-            Button {
-                advanceSearch(by: -1)
-            } label: {
-                Image(systemName: "chevron.up")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .disabled(searchIndex.ranges.isEmpty)
-            .help("Previous match")
-
-            Button {
-                advanceSearch(by: 1)
-            } label: {
-                Image(systemName: "chevron.down")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .disabled(searchIndex.ranges.isEmpty)
-            .help("Next match")
-
-            Button {
-                searchMatchCase.toggle()
-            } label: {
-                Text("Aa")
-                    .font(.caption.weight(.semibold))
-                    .frame(width: 24, height: 20)
-            }
-            .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(searchMatchCase ? Color.accentColor.opacity(0.22) : Color.clear)
-            )
-            .help("Match case")
-
-            Button {
-                isSearchVisible = false
-                searchQuery = ""
-            } label: {
-                Image(systemName: "xmark")
-                    .frame(
-                        width: RuneUILayoutMetrics.dialogIconButtonSize,
-                        height: RuneUILayoutMetrics.dialogIconButtonSize
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close find")
-            .accessibilityLabel("Close find")
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(0.16), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 5)
-        .contentShape(Rectangle())
-        .terminalSearchCursor(.arrow)
-        .onExitCommand {
-            isSearchVisible = false
-            searchQuery = ""
         }
     }
 
@@ -252,6 +174,74 @@ struct TerminalTranscriptSurface: View {
 
     nonisolated static func hasTrimmedScrollback(_ text: String) -> Bool {
         text.hasPrefix(TerminalScrollbackRetention.truncationMarker)
+    }
+}
+
+struct TerminalTranscriptSearchBar: View {
+    let searchIndex: TerminalTranscriptSearchIndex
+    let resolvedSearchMatchIndex: Int
+    @Binding var query: String
+    @Binding var matchCase: Bool
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        RuneFindBarChrome("Terminal find controls") {
+            searchField
+        } secondary: {
+            navigationControls
+        }
+        .terminalSearchCursor(.arrow)
+        .onExitCommand(perform: onClose)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Find in terminal", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+                .frame(
+                    minWidth: RuneFindBarMetrics.minimumSearchFieldWidth,
+                    idealWidth: RuneFindBarMetrics.idealSearchFieldWidth,
+                    maxWidth: .infinity
+                )
+                .onSubmit(onNext)
+                .terminalSearchCursor(.arrow)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var navigationControls: some View {
+        HStack(spacing: 8) {
+            Text(searchIndex.statusText(selectedIndex: resolvedSearchMatchIndex))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(minWidth: 56, alignment: .trailing)
+
+            RuneIconButton(
+                "Previous match",
+                systemImage: "chevron.up",
+                isDisabled: searchIndex.ranges.isEmpty,
+                action: onPrevious
+            )
+
+            RuneIconButton(
+                "Next match",
+                systemImage: "chevron.down",
+                isDisabled: searchIndex.ranges.isEmpty,
+                action: onNext
+            )
+
+            RuneMatchCaseButton(isSelected: $matchCase)
+
+            RuneIconButton("Close find", systemImage: "xmark", action: onClose)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

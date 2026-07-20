@@ -367,7 +367,7 @@ final class KubernetesClientTests: XCTestCase {
 
     func testOutputParserParsesKubernetesPodJSON() throws {
         let raw = """
-        {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z","labels":{"app":"api","tier":"web"},"ownerReferences":[{"kind":"ReplicaSet","name":"api-7c9d8f6b5c"}]},"spec":{"containers":[{"name":"app","image":"example.test/api:v1"},{"name":"sidecar","image":"example.test/sidecar:v2"}]},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}}]}
+        {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z","labels":{"app":"api","tier":"web"},"ownerReferences":[{"kind":"ReplicaSet","name":"api-7c9d8f6b5c"}]},"spec":{"containers":[{"name":"app","image":"example.test/api:v1"},{"name":"sidecar","image":"example.test/sidecar:v2"}],"initContainers":[{"name":"setup","image":"example.test/setup:v1"}],"ephemeralContainers":[{"name":"debugger","image":"example.test/debugger:v1"}]},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}],"initContainerStatuses":[{"restartCount":1}],"ephemeralContainerStatuses":[{"restartCount":3}]}}]}
         """
 
         let pods = try KubernetesOutputParser().parsePodsListJSON(namespace: "default", from: raw)
@@ -375,9 +375,12 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(pods.count, 1)
         XCTAssertEqual(pods.first?.name, "api-0")
         XCTAssertEqual(pods.first?.status, "Running")
-        XCTAssertEqual(pods.first?.totalRestarts, 2)
+        XCTAssertEqual(pods.first?.totalRestarts, 6)
         XCTAssertEqual(pods.first?.labels, ["app": "api", "tier": "web"])
         XCTAssertEqual(pods.first?.containerNamesLine, "app, sidecar")
+        XCTAssertEqual(pods.first?.initContainerNamesLine, "setup")
+        XCTAssertEqual(pods.first?.ephemeralContainerNamesLine, "debugger")
+        XCTAssertEqual(pods.first?.logContainerNames, ["app", "sidecar", "setup", "debugger"])
         XCTAssertEqual(pods.first?.containerImagesLine, "example.test/api:v1, example.test/sidecar:v2")
         XCTAssertEqual(pods.first?.ownerReferencesLine, "ReplicaSet/api-7c9d8f6b5c")
     }
@@ -630,6 +633,38 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(KubernetesClient.preferredPortForwardPod(from: pods)?.name, "api-a")
     }
 
+    func testTerminalSessionRegistryRejectsLateHandleAfterStopAndAllowsExplicitNewGeneration() async {
+        let registry = TerminalSessionRegistry()
+        let lateHandle = RecordingTerminalSessionHandle()
+        let stoppedGeneration = await registry.beginStart(id: "terminal-synthetic")
+
+        let handleBeforeRegistration = await registry.remove(id: "terminal-synthetic")
+        let insertedLateHandle = await registry.insert(
+            handle: lateHandle,
+            id: "terminal-synthetic",
+            generation: stoppedGeneration
+        )
+
+        XCTAssertNil(handleBeforeRegistration)
+        XCTAssertFalse(insertedLateHandle)
+        XCTAssertTrue(lateHandle.isTerminated)
+        let missingLateHandle = await registry.handle(id: "terminal-synthetic")
+        XCTAssertNil(missingLateHandle)
+
+        let replacementHandle = RecordingTerminalSessionHandle()
+        let replacementGeneration = await registry.beginStart(id: "terminal-synthetic")
+        let insertedReplacement = await registry.insert(
+            handle: replacementHandle,
+            id: "terminal-synthetic",
+            generation: replacementGeneration
+        )
+        let registeredReplacement = await registry.handle(id: "terminal-synthetic")
+
+        XCTAssertTrue(insertedReplacement)
+        XCTAssertEqual(registeredReplacement?.id, replacementHandle.id)
+        XCTAssertFalse(replacementHandle.isTerminated)
+    }
+
     func testServerSideApplyYAMLOmitsManagedFieldsFromFetchedManifest() {
         let yaml = """
         apiVersion: v1
@@ -685,6 +720,26 @@ final class KubernetesClientTests: XCTestCase {
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
+}
+
+private final class RecordingTerminalSessionHandle: RunningCommandControlling, @unchecked Sendable {
+    let id = UUID()
+    private let lock = NSLock()
+    private var terminated = false
+
+    var isTerminated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return terminated
+    }
+
+    func terminate() {
+        lock.lock()
+        terminated = true
+        lock.unlock()
+    }
+
+    func writeToStdin(_: Data) throws {}
 }
 
 private actor RESTRequestCoalescerCounter {

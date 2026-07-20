@@ -79,6 +79,7 @@ struct ResourceYAMLInspectorPane: View {
     let onExportToExportFolder: () -> Void
     let onExportAndOpen: () -> Void
     let readOnlyResetID: String
+    var documentState: ManifestDocumentState? = nil
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
@@ -91,10 +92,18 @@ struct ResourceYAMLInspectorPane: View {
     @State private var selectedFindMatchIndex = 0
 
     var body: some View {
-        let filteredYAML = KubernetesManagedFieldsDisplayFilter.removingManagedFields(from: yamlDisplayText)
+        let documentText = yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ""
+            : yamlDisplayText
+        let resolvedDocumentState = documentState ?? (
+            documentText.isEmpty
+                ? .empty(title: "No YAML available", message: yamlFooterText)
+                : .ready
+        )
+        let filteredYAML = KubernetesManagedFieldsDisplayFilter.removingManagedFields(from: documentText)
         let canHideManagedFields = filteredYAML.removedBlockCount > 0 && !isInlineEditing
         let effectiveHidesManagedFields = simpleMode || hidesManagedFields
-        let displayedYAML = effectiveHidesManagedFields && canHideManagedFields ? filteredYAML.text : yamlDisplayText
+        let displayedYAML = effectiveHidesManagedFields && canHideManagedFields ? filteredYAML.text : documentText
         let presentedIssues = YAMLIssuePresentation.presentedIssues(
             text: yamlText,
             externalIssues: validationIssues
@@ -114,90 +123,67 @@ struct ResourceYAMLInspectorPane: View {
                 ManifestUnsavedEditsChip()
             }
         } toolbar: {
-            ManifestToolbarScrollRow {
-                ManifestToolbarGroup {
-                    Button(t(.applyYAML), action: onApply)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyYAML)
-                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
-
-                    if inlineEditorImplementation.supportsInlineEditing {
-                        Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
-                            isInlineEditing.toggle()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(yamlText.isEmpty)
+            ManifestActionToolbar(
+                applyTitle: t(.applyYAML),
+                canApply: canApplyYAML,
+                applyHelp: hasUnsavedEdits
+                    ? "Sends the manifest to the cluster. Closing the editor or this tab does not."
+                    : "No local YAML changes to apply.",
+                statusText: statusText,
+                onApply: onApply
+            ) {
+                if inlineEditorImplementation.supportsInlineEditing {
+                    Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
+                        isInlineEditing.toggle()
                     }
-
-                    Button("\(t(.edit))...", action: onOpenEditor)
-                        .buttonStyle(.bordered)
-                        .disabled(yamlText.isEmpty)
+                    .buttonStyle(.bordered)
+                    .disabled(yamlText.isEmpty)
                 }
 
-                ManifestToolbarGroup {
-                    Menu {
-                        Button("Apply Last Fetched YAML", action: onReapplySnapshot)
-                            .disabled(!canReapplySnapshot)
-                            .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
-
-                        Divider()
-
-                        Button("Undo Draft Edit") {
-                            onUndoEdit()
-                        }
-                        .disabled(!canUndoEdit)
-                        .help("Restore the previous local YAML draft.")
-
-                        Button("Revert Draft") {
-                            onRevert()
-                            isInlineEditing = false
-                        }
-                        .disabled(!hasUnsavedEdits)
-                        .help("Discard local YAML edits and return to the current loaded draft.")
-                    } label: {
-                        Label(t(.draft), systemImage: "clock.arrow.circlepath")
-                    }
-
-                    Menu {
-                        Button("Import YAML…") {
-                            onImport()
-                            onOpenEditor()
-                        }
-                        .help("Replace the editor with the contents of a YAML file.")
-
-                        Button("Export YAML…", action: onExport)
-                            .disabled(yamlText.isEmpty)
-                            .help("Export the current YAML text to a file.")
-
-                        Button("Save YAML to Export Folder", action: onExportToExportFolder)
-                            .disabled(yamlText.isEmpty)
-                            .help("Save the current YAML text to the configured export folder.")
-
-                        Button("Save YAML and Open", action: onExportAndOpen)
-                            .disabled(yamlText.isEmpty)
-                            .help("Save the current YAML text to the configured export folder and open it.")
-                    } label: {
-                        Label(t(.file), systemImage: "doc")
-                    }
-
-                    ManifestStatusChip(text: statusText, systemImage: "clock")
-                }
+                Button("\(t(.edit))...", action: onOpenEditor)
+                    .buttonStyle(.bordered)
+                    .disabled(yamlText.isEmpty)
+            } secondaryActions: {
+                ManifestYAMLActionMenus(
+                    draftTitle: t(.draft),
+                    fileTitle: t(.file),
+                    yamlTextIsEmpty: yamlText.isEmpty,
+                    hasUnsavedEdits: hasUnsavedEdits,
+                    canUndoEdit: canUndoEdit,
+                    canReapplySnapshot: canReapplySnapshot,
+                    onReapplySnapshot: onReapplySnapshot,
+                    onUndoEdit: onUndoEdit,
+                    onRevert: {
+                        onRevert()
+                        isInlineEditing = false
+                    },
+                    onImport: {
+                        onImport()
+                        onOpenEditor()
+                    },
+                    onExport: onExport,
+                    onExportToExportFolder: onExportToExportFolder,
+                    onExportAndOpen: onExportAndOpen
+                )
 
                 if !simpleMode, filteredYAML.removedBlockCount > 0 {
-                    ManifestToolbarGroup {
-                        ManifestManagedFieldsToggle(
-                            hidesManagedFields: $hidesManagedFields,
-                            isDisabled: isInlineEditing
-                        )
-                    }
+                    ManifestManagedFieldsToggle(
+                        hidesManagedFields: $hidesManagedFields,
+                        isDisabled: isInlineEditing
+                    )
                 }
             }
         } status: {
-            YAMLValidationSummaryView(
-                issues: presentedIssues,
-                isValidating: isValidating,
-                onSelectIssue: navigateToIssue
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                YAMLValidationSummaryView(
+                    issues: presentedIssues,
+                    isValidating: isValidating,
+                    onSelectIssue: navigateToIssue
+                )
+                if let staleContentState = resolvedDocumentState.staleContentState {
+                    RuneContentStateView(staleContentState, variant: .inline)
+                }
+            }
         } surface: {
             FindableInspectorSurface(
                 text: isInlineEditing ? yamlText : displayedYAML,
@@ -207,26 +193,23 @@ struct ResourceYAMLInspectorPane: View {
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
             ) {
-                ResourceYAMLEditorSurface(
-                    text: $yamlText,
-                    displayText: displayedYAML,
-                    readOnlyResetID: readOnlyResetID,
-                    inlineEditing: isInlineEditing,
-                    implementation: inlineEditorImplementation,
-                    validationIssues: surfaceIssues,
-                    navigationRequest: issueNavigationRequest,
-                    searchQuery: findQuery,
-                    searchMatchCase: findMatchCase,
-                    selectedSearchMatchIndex: selectedFindMatchIndex
-                )
+                ManifestDocumentSurface(state: resolvedDocumentState) {
+                    ResourceYAMLEditorSurface(
+                        text: $yamlText,
+                        displayText: displayedYAML,
+                        readOnlyResetID: readOnlyResetID,
+                        inlineEditing: isInlineEditing,
+                        implementation: inlineEditorImplementation,
+                        validationIssues: surfaceIssues,
+                        navigationRequest: issueNavigationRequest,
+                        searchQuery: findQuery,
+                        searchMatchCase: findMatchCase,
+                        selectedSearchMatchIndex: selectedFindMatchIndex
+                    )
+                }
             }
         } footer: {
-            if yamlText.isEmpty {
-                Text(yamlFooterText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            EmptyView()
         }
         .onChange(of: baseline) { _, _ in
             isInlineEditing = false
@@ -253,23 +236,19 @@ struct ResourceYAMLInspectorPane: View {
 struct ManifestUnsavedEditsChip: View {
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        RuneChip(
-            horizontalPadding: 8,
-            verticalPadding: 3,
-            fill: Color.orange.opacity(0.14),
-            cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius
-        ) {
-            Label(t(.unsavedEdits), systemImage: "circle.fill")
-                .font(.caption.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .imageScale(.small)
-                .foregroundStyle(.orange)
-        }
-        .frame(height: RuneUILayoutMetrics.headerChipHeight)
+        let warning = RuneSemanticColorRole.warning.color(in: runeThemePalette)
+        RuneHeaderCapsule(
+            t(.unsavedEdits),
+            role: .status,
+            indicatorColor: warning,
+            foregroundColor: warning,
+            fill: warning.opacity(0.14),
+            accessibilityLabel: "Unsaved YAML edits"
+        )
         .help("The YAML draft has local changes that have not been applied to the cluster.")
-        .accessibilityLabel("Unsaved YAML edits")
     }
 
     private var language: RuneLanguage {
@@ -317,42 +296,6 @@ struct ManifestInlineNote<Accessory: View>: View {
     }
 }
 
-struct ManifestToolbarScrollRow<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
-                content
-            }
-            .fixedSize(horizontal: true, vertical: false)
-        }
-        .controlSize(.small)
-    }
-}
-
-struct ManifestToolbarGroup<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
-            content
-        }
-        .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
-        .padding(.vertical, RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding)
-        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarGroupMinHeight)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-}
-
 struct ManifestManagedFieldsToggle: View {
     @Binding var hidesManagedFields: Bool
     let isDisabled: Bool
@@ -373,11 +316,11 @@ struct ManifestManagedFieldsToggle: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.62))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -389,31 +332,6 @@ struct ManifestManagedFieldsToggle: View {
 
     private func t(_ key: RuneLocalizedStringKey) -> String {
         RuneLocalizedStrings.shared.string(key, language: language)
-    }
-}
-
-struct ManifestStatusChip: View {
-    let text: String
-    var systemImage = "clock"
-
-    var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .monospacedDigit()
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-            }
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -436,6 +354,7 @@ struct ResourceYAMLEditorSheetView: View {
     let onExportToExportFolder: () -> Void
     let onExportAndOpen: () -> Void
     let onClose: () -> Void
+    var documentState: ManifestDocumentState? = nil
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
@@ -454,6 +373,11 @@ struct ResourceYAMLEditorSheetView: View {
             && hasUnsavedEdits
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !presentedIssues.contains(where: { $0.severity == .error })
+        let resolvedDocumentState = documentState ?? (
+            yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .empty(title: "No YAML available", message: yamlFooterText)
+                : .ready
+        )
 
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
             HStack(alignment: .firstTextBaseline) {
@@ -474,52 +398,37 @@ struct ResourceYAMLEditorSheetView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button(t(.applyYAML), action: onApply)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyYAML)
-                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing this sheet does not." : "No local YAML changes to apply.")
-
-                    Menu {
-                        Button("Apply Last Fetched YAML", action: onReapplySnapshot)
-                            .disabled(!canReapplySnapshot)
-                            .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
-
-                        Divider()
-
-                        Button("Undo Draft Edit", action: onUndoEdit)
-                            .disabled(!canUndoEdit)
-
-                        Button("Revert Draft", action: onRevert)
-                            .disabled(!hasUnsavedEdits)
-                    } label: {
-                        Label(t(.draft), systemImage: "clock.arrow.circlepath")
-                    }
-
-                    Menu {
-                        Button("Import YAML…", action: onImport)
-
-                        Button("Export YAML…", action: onExport)
-                            .disabled(yamlText.isEmpty)
-
-                        Button("Save YAML to Export Folder", action: onExportToExportFolder)
-                            .disabled(yamlText.isEmpty)
-
-                        Button("Save YAML and Open", action: onExportAndOpen)
-                            .disabled(yamlText.isEmpty)
-                    } label: {
-                        Label(t(.file), systemImage: "doc")
-                    }
-
-                    Spacer(minLength: 0)
-                }
+            ManifestActionToolbar(
+                applyTitle: t(.applyYAML),
+                canApply: canApplyYAML,
+                applyHelp: hasUnsavedEdits
+                    ? "Sends the manifest to the cluster. Closing this sheet does not."
+                    : "No local YAML changes to apply.",
+                onApply: onApply
+            ) {
+                EmptyView()
+            } secondaryActions: {
+                ManifestYAMLActionMenus(
+                    draftTitle: t(.draft),
+                    fileTitle: t(.file),
+                    yamlTextIsEmpty: yamlText.isEmpty,
+                    hasUnsavedEdits: hasUnsavedEdits,
+                    canUndoEdit: canUndoEdit,
+                    canReapplySnapshot: canReapplySnapshot,
+                    onReapplySnapshot: onReapplySnapshot,
+                    onUndoEdit: onUndoEdit,
+                    onRevert: onRevert,
+                    onImport: onImport,
+                    onExport: onExport,
+                    onExportToExportFolder: onExportToExportFolder,
+                    onExportAndOpen: onExportAndOpen
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             YAMLValidationSummaryView(
                 issues: presentedIssues,
                 isValidating: isValidating,
+                expandedListMaxHeight: RuneUILayoutMetrics.yamlSheetValidationListMaxHeight,
                 onSelectIssue: navigateToIssue
             )
 
@@ -531,25 +440,20 @@ struct ResourceYAMLEditorSheetView: View {
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
             ) {
-                ResourceYAMLEditorSurface(
-                    text: $yamlText,
-                    displayText: yamlText,
-                    readOnlyResetID: "yaml-sheet:\(resourceReference)",
-                    inlineEditing: true,
-                    implementation: .appKitTextView,
-                    validationIssues: presentedIssues,
-                    navigationRequest: issueNavigationRequest,
-                    searchQuery: findQuery,
-                    searchMatchCase: findMatchCase,
-                    selectedSearchMatchIndex: selectedFindMatchIndex
-                )
-            }
-
-            if yamlText.isEmpty {
-                Text(yamlFooterText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ManifestDocumentSurface(state: resolvedDocumentState) {
+                    ResourceYAMLEditorSurface(
+                        text: $yamlText,
+                        displayText: yamlText,
+                        readOnlyResetID: "yaml-sheet:\(resourceReference)",
+                        inlineEditing: true,
+                        implementation: .appKitTextView,
+                        validationIssues: presentedIssues,
+                        navigationRequest: issueNavigationRequest,
+                        searchQuery: findQuery,
+                        searchMatchCase: findMatchCase,
+                        selectedSearchMatchIndex: selectedFindMatchIndex
+                    )
+                }
             }
 
             Text("Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab.")
@@ -579,15 +483,30 @@ struct ResourceYAMLEditorSheetView: View {
     }
 }
 
-private struct YAMLValidationSummaryView: View {
+struct YAMLValidationSummaryView: View {
     let issues: [YAMLValidationIssue]
     let isValidating: Bool
+    let expandedListMaxHeight: CGFloat?
     let onSelectIssue: (YAMLValidationIssue) -> Void
     private let maxVisibleIssues = 6
     @State private var isExpanded = false
 
+    init(
+        issues: [YAMLValidationIssue],
+        isValidating: Bool,
+        expandedListMaxHeight: CGFloat? = nil,
+        initiallyExpanded: Bool = false,
+        onSelectIssue: @escaping (YAMLValidationIssue) -> Void
+    ) {
+        self.issues = issues
+        self.isValidating = isValidating
+        self.expandedListMaxHeight = expandedListMaxHeight
+        self.onSelectIssue = onSelectIssue
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
+
     private var visibleIssues: [YAMLValidationIssue] {
-        Array(issues.prefix(maxVisibleIssues))
+        expandedListMaxHeight == nil ? Array(issues.prefix(maxVisibleIssues)) : issues
     }
 
     private var errorCount: Int {
@@ -604,84 +523,40 @@ private struct YAMLValidationSummaryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                if !issues.isEmpty {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    HStack(spacing: 5) {
-                        statusLight(color: .red, isActive: errorCount > 0)
-                        statusLight(color: .orange, isActive: warningCount > 0)
-                        statusLight(color: .green, isActive: !isValidating && issues.isEmpty)
+            if issues.isEmpty {
+                validationSummaryHeader
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: RuneDisclosureMetrics.headerMinimumHeight,
+                        alignment: .leading
+                    )
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(summaryTitle)
+            } else {
+                RuneDisclosureRow(
+                    summaryTitle,
+                    isExpanded: isExpanded,
+                    help: isExpanded ? "Collapse validation issues" : "Expand validation issues",
+                    action: {
+                        isExpanded.toggle()
                     }
-
-                    Text(summaryTitle)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer(minLength: 0)
-
-                    if isValidating {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    if !issues.isEmpty {
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
+                ) {
+                    validationSummaryHeader
                 }
             }
-            .buttonStyle(.plain)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(visibleIssues) { issue in
-                        Button {
-                            onSelectIssue(issue)
-                        } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: symbolName(for: issue))
-                                    .font(.caption)
-                                    .foregroundStyle(color(for: issue))
-                                    .frame(width: 14, alignment: .center)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(issue.message)
-                                        .font(.caption)
-                                        .foregroundStyle(.primary)
-                                    Text(locationText(for: issue))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer(minLength: 0)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        .help("Jump to this YAML problem")
-                    }
-
-                    if issues.count > maxVisibleIssues {
-                        Text("\(issues.count - maxVisibleIssues) more issues not shown")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 2)
+                expandedIssues
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .fill(Color.primary.opacity(0.035))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
         }
         .onChange(of: issueSignature) { _, _ in
@@ -689,6 +564,77 @@ private struct YAMLValidationSummaryView: View {
                 isExpanded = false
             }
         }
+    }
+
+    private var validationSummaryHeader: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                statusLight(color: .red, isActive: errorCount > 0)
+                statusLight(color: .orange, isActive: warningCount > 0)
+                statusLight(color: .green, isActive: !isValidating && issues.isEmpty)
+            }
+
+            Text(summaryTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+
+            if isValidating {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var expandedIssues: some View {
+        if let expandedListMaxHeight {
+            ScrollView(.vertical, showsIndicators: true) {
+                issueList
+            }
+            .frame(maxHeight: expandedListMaxHeight)
+        } else {
+            issueList
+        }
+    }
+
+    private var issueList: some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            ForEach(visibleIssues) { issue in
+                Button {
+                    onSelectIssue(issue)
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: symbolName(for: issue))
+                            .font(.caption)
+                            .foregroundStyle(color(for: issue))
+                            .frame(width: 14, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issue.message)
+                                .font(.caption)
+                                .foregroundStyle(.primary)
+                            Text(locationText(for: issue))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .help("Jump to this YAML problem")
+            }
+
+            if expandedListMaxHeight == nil, issues.count > maxVisibleIssues {
+                Text("\(issues.count - maxVisibleIssues) more issues not shown")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 2)
     }
 
     private var summaryTitle: String {

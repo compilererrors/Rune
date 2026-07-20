@@ -21,7 +21,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
     var searchMatchCase = false
     var selectedSearchMatchIndex = 0
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AppKitManifestTextView
@@ -64,7 +64,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
             contentStyle: contentStyle,
             externalValidationIssues: externalValidationIssues,
             showsLineNumbers: showsLineNumbers,
-            manifestThemeID: appearanceThemeRaw
+            manifestTheme: resolvedTheme
         )
         textView.delegate = context.coordinator
         textView.setStringKeepingSelection(text)
@@ -89,7 +89,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
             contentStyle: contentStyle,
             externalValidationIssues: externalValidationIssues,
             showsLineNumbers: showsLineNumbers,
-            manifestThemeID: appearanceThemeRaw
+            manifestTheme: resolvedTheme
         )
 
         if textView.representedText != text {
@@ -355,19 +355,19 @@ private final class PlainManifestTextView: NSTextView {
         contentStyle: AppKitManifestTextView.ContentStyle,
         externalValidationIssues: [YAMLValidationIssue],
         showsLineNumbers: Bool,
-        manifestThemeID: String
+        manifestTheme: RuneResolvedTheme
     ) {
         let styleChanged = self.contentStyle != contentStyle
         let fontSizeChanged = self.configuredFontSize != fontSize
         let issuesChanged = self.externalValidationIssues != externalValidationIssues
         let lineNumbersChanged = self.showsLineNumbers != showsLineNumbers
-        let themeChanged = self.manifestThemeID != manifestThemeID
+        let themeChanged = self.manifestThemeID != manifestTheme.id
         self.contentStyle = contentStyle
         self.configuredFontSize = fontSize
         self.externalValidationIssues = externalValidationIssues
         self.showsLineNumbers = showsLineNumbers
-        self.manifestThemeID = manifestThemeID
-        manifestPalette = ManifestPalette.resolved(RuneAppearanceTheme.resolved(manifestThemeID))
+        self.manifestThemeID = manifestTheme.id
+        manifestPalette = ManifestPalette.resolved(manifestTheme)
 
         if self.isEditable != isEditable {
             self.isEditable = isEditable
@@ -1091,157 +1091,35 @@ private struct ManifestPalette {
     let describeColon: NSColor
 
     static func resolved(_ theme: RuneResolvedTheme) -> ManifestPalette {
-        guard let builtin = theme.builtin else {
-            guard let appKit = theme.appKitPalette, let syntax = theme.syntaxPalette else { return native }
-            return themed(
-                foreground: appKit.foreground,
-                accent: appKit.accent,
-                key: syntax.key,
-                string: syntax.string,
-                number: syntax.number,
-                boolean: syntax.boolean,
-                comment: syntax.comment,
-                directive: syntax.directive,
-                anchor: syntax.anchor,
-                danger: appKit.danger,
-                warning: appKit.warning,
-                selectionAlpha: appKit.selectedAlpha
-            )
-        }
-
-        switch builtin {
-        case .native:
+        guard !theme.isNative,
+              let appKit = theme.appKitPalette,
+              let syntax = theme.syntaxPalette else {
             return native
-        case .aurora:
-            return themed(
-                foreground: "#f4efff",
-                accent: "#c59cff",
-                key: "#8bd3ff",
-                string: "#7ee6a8",
-                number: "#ffd166",
-                boolean: "#d7b3ff",
-                comment: "#8e819f",
-                directive: "#ff9ac8",
-                anchor: "#80e6d6",
-                danger: "#ff7a9a",
-                warning: "#ffd166"
-            )
-        case .graphiteBlue:
-            return themed(
-                foreground: "#eef4fb",
-                accent: "#6bb7f7",
-                key: "#7cc7ff",
-                string: "#86d59a",
-                number: "#e9c46a",
-                boolean: "#b8a7ff",
-                comment: "#8592a0",
-                directive: "#f09ab6",
-                anchor: "#78d5d2",
-                danger: "#ef7b86",
-                warning: "#e9c46a"
-            )
-        case .emberGlass:
-            return themed(
-                foreground: "#f8f1e7",
-                accent: "#ffb454",
-                key: "#7ed0ff",
-                string: "#9bdc88",
-                number: "#ffcc66",
-                boolean: "#d6a3ff",
-                comment: "#958b7c",
-                directive: "#ff9ca8",
-                anchor: "#82d8c7",
-                danger: "#ff8a80",
-                warning: "#ffcc66"
-            )
-        case .mossTerminal:
-            return themed(
-                foreground: "#f1f4df",
-                accent: "#b8db4c",
-                key: "#8dcbd2",
-                string: "#a7e06f",
-                number: "#e5c45a",
-                boolean: "#c2a6ff",
-                comment: "#929b7e",
-                directive: "#eba0a8",
-                anchor: "#80d6bf",
-                danger: "#ef7f74",
-                warning: "#e5c45a"
-            )
-        case .fjord:
-            return themed(
-                foreground: "#e6f7fb",
-                accent: "#43a6d9",
-                key: "#60c5e8",
-                string: "#77d6a0",
-                number: "#dfc36f",
-                boolean: "#b5a9ff",
-                comment: "#7f9da6",
-                directive: "#ef96ad",
-                anchor: "#75d7cf",
-                danger: "#ed7c8a",
-                warning: "#dfc36f"
-            )
-        case .paper:
-            return themed(
-                foreground: "#1f2933",
-                accent: "#3d70b2",
-                key: "#2f80b7",
-                string: "#2f8f62",
-                number: "#a86d00",
-                boolean: "#7a4fb3",
-                comment: "#7b8794",
-                directive: "#b0446d",
-                anchor: "#1c7f78",
-                danger: "#b42335",
-                warning: "#a86d00",
-                selectionAlpha: 0.18
-            )
-        case .daylight:
-            return themed(
-                foreground: "#24323a",
-                accent: "#2f7e9f",
-                key: "#1f789d",
-                string: "#4c8f47",
-                number: "#a66a00",
-                boolean: "#7b5eb8",
-                comment: "#87918e",
-                directive: "#b45a78",
-                anchor: "#27817a",
-                danger: "#b94a48",
-                warning: "#a66a00",
-                selectionAlpha: 0.18
-            )
-        case .contrastDark:
-            return themed(
-                foreground: "#f8fbff",
-                accent: "#00b7ff",
-                key: "#4dd8ff",
-                string: "#5cff9d",
-                number: "#ffd84d",
-                boolean: "#c58cff",
-                comment: "#9ab0c0",
-                directive: "#ff8cc6",
-                anchor: "#64ffe5",
-                danger: "#ff5c7a",
-                warning: "#ffd84d",
-                selectionAlpha: 0.30
-            )
-        case .contrastLight:
-            return themed(
-                foreground: "#07111f",
-                accent: "#005fcc",
-                key: "#005fae",
-                string: "#006d3b",
-                number: "#8a5a00",
-                boolean: "#6a40b8",
-                comment: "#52677d",
-                directive: "#a0005a",
-                anchor: "#00766f",
-                danger: "#b00020",
-                warning: "#8a5a00",
-                selectionAlpha: 0.20
-            )
+        }
+        return themed(
+            foreground: appKit.foreground,
+            accent: appKit.accent,
+            key: syntax.key,
+            string: syntax.string,
+            number: syntax.number,
+            boolean: syntax.boolean,
+            comment: syntax.comment,
+            directive: syntax.directive,
+            anchor: syntax.anchor,
+            danger: appKit.danger,
+            warning: appKit.warning,
+            selectionAlpha: selectionAlpha(for: theme, fallback: appKit.selectedAlpha)
+        )
+    }
+
+    private static func selectionAlpha(for theme: RuneResolvedTheme, fallback: CGFloat) -> CGFloat {
+        switch theme.builtin {
+        case .contrastDark: return 0.30
+        case .contrastLight: return 0.20
+        case .paper, .daylight: return 0.18
+        case .aurora, .graphiteBlue, .emberGlass, .mossTerminal, .fjord: return 0.24
+        case .native: return fallback
+        case nil: return fallback
         }
     }
 
@@ -1345,32 +1223,6 @@ extension YAMLValidationIssue {
                 .backgroundColor: palette.warningBackground
             ]
         }
-    }
-}
-
-private extension NSColor {
-    static func runeHex(_ hex: String) -> NSColor {
-        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let value = UInt64(cleaned, radix: 16) ?? 0
-        let red: CGFloat
-        let green: CGFloat
-        let blue: CGFloat
-        let alpha: CGFloat
-
-        switch cleaned.count {
-        case 8:
-            red = CGFloat((value >> 24) & 0xff) / 255
-            green = CGFloat((value >> 16) & 0xff) / 255
-            blue = CGFloat((value >> 8) & 0xff) / 255
-            alpha = CGFloat(value & 0xff) / 255
-        default:
-            red = CGFloat((value >> 16) & 0xff) / 255
-            green = CGFloat((value >> 8) & 0xff) / 255
-            blue = CGFloat(value & 0xff) / 255
-            alpha = 1
-        }
-
-        return NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
 }
 

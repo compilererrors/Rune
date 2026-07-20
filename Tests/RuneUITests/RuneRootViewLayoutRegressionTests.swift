@@ -167,7 +167,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                     shellVariant: .appKitSplitView,
                     manifestInlineEditorImplementation: .swiftUITextEditor,
                     initialSidebarWidthOverride: 240,
-                    initialDetailWidthOverride: 360
+                    initialDetailWidthOverride: 320
                 )
             },
             section: .workloads,
@@ -183,6 +183,17 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             accuracy: 1.5,
             "Compact windows should not lose bottom content to fixed top or footer reservations."
         )
+        XCTAssertEqual(
+            snapshot.detailWidth,
+            RuneInspectorScaffoldMetrics.supportedMinimumWidth,
+            accuracy: 1.5,
+            "The real Root shell must preserve the supported 320-point inspector width at 980×640."
+        )
+        XCTAssertEqual(snapshot.detailHeight, snapshot.splitViewHeight, accuracy: 1.5)
+        XCTAssertGreaterThanOrEqual(snapshot.contentWidth, 360)
+        XCTAssertGreaterThanOrEqual(snapshot.contentMinX, snapshot.sidebarWidth)
+        XCTAssertGreaterThanOrEqual(snapshot.detailMinX, snapshot.contentMinX + snapshot.contentWidth)
+        XCTAssertLessThanOrEqual(snapshot.detailMinX + snapshot.detailWidth, snapshot.splitViewWidth + 1)
     }
 
     func testWorkloadPodYAMLTabRemainsTopAligned() async throws {
@@ -652,6 +663,86 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         )
     }
 
+    func testAppKitSplitUserResizePersistsDividerWidthsWhenEnabled() async throws {
+        let defaults = UserDefaults.standard
+        let sidebarKey = RuneSettingsKeys.layoutSidebarWidth
+        let detailKey = RuneSettingsKeys.layoutDetailWidth
+        let originalSidebar = defaults.object(forKey: sidebarKey)
+        let originalDetail = defaults.object(forKey: detailKey)
+        defaults.set(280.0, forKey: sidebarKey)
+        defaults.set(440.0, forKey: detailKey)
+        defer {
+            if let originalSidebar {
+                defaults.set(originalSidebar, forKey: sidebarKey)
+            } else {
+                defaults.removeObject(forKey: sidebarKey)
+            }
+            if let originalDetail {
+                defaults.set(originalDetail, forKey: detailKey)
+            } else {
+                defaults.removeObject(forKey: detailKey)
+            }
+        }
+
+        let pod = PodSummary(
+            name: "sample-pod-7c9db",
+            namespace: "team-alpha",
+            status: "Running",
+            totalRestarts: 1,
+            ageDescription: "5m"
+        )
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: makePodViewModel(pod: pod),
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true,
+                debugDisableLayoutPersistence: false,
+                initialPodInspectorTab: .overview,
+                shellVariant: .appKitSplitView,
+                initialSidebarWidthOverride: 280,
+                initialDetailWidthOverride: 440
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        window.contentView = container
+        let hostView = host.view
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            hostView.removeFromSuperview()
+            window.orderOut(nil)
+        }
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+        container.layoutSubtreeIfNeeded()
+        let splitView = try XCTUnwrap(firstThreePaneVerticalSplitView(in: container))
+        let targetSidebarWidth: CGFloat = 340
+        let targetDetailWidth: CGFloat = 500
+        splitView.setPosition(targetSidebarWidth, ofDividerAt: 0)
+        splitView.setPosition(
+            splitView.bounds.width - splitView.dividerThickness - targetDetailWidth,
+            ofDividerAt: 1
+        )
+        splitView.adjustSubviews()
+        try await Task.sleep(nanoseconds: 350_000_000)
+
+        XCTAssertEqual(defaults.double(forKey: sidebarKey), targetSidebarWidth, accuracy: 3)
+        XCTAssertEqual(defaults.double(forKey: detailKey), targetDetailWidth, accuracy: 3)
+    }
+
     func testConfigAndWorkloadsRemainTopAligned() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
@@ -953,6 +1044,15 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             containersReady: "2/2",
             containerNamesLine: "web, sidecar"
         )
+        let finishLoading: (RuneAppState) -> Void = { state in
+            state.setPods(self.makePodLoadingRows(seed: basePod, count: 36))
+            state.isLoading = false
+            state.beginResourceDetailLoad()
+            state.setSelectedPod(basePod.mergingInspectorDetail(enrichedPod))
+            state.setResourceYAML(self.sampleYAML(named: basePod.name))
+            state.setResourceDescribe(self.sampleDescribe(named: basePod.name))
+            state.finishResourceDetailLoad()
+        }
 
         for shellVariant in RuneRootShellVariant.allCases {
             let state = RuneAppState()
@@ -963,6 +1063,53 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
             let viewModel = RuneAppViewModel(state: state)
             prepareLayoutTestViewModel(viewModel)
+
+            if shellVariant == .appKitSplitView {
+                let loadingSnapshot = try await hostAppKitSplitSnapshot(
+                    viewModel: viewModel,
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .overview,
+                            shellVariant: shellVariant
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod,
+                    settleNanoseconds: 350_000_000
+                )
+
+                finishLoading(state)
+
+                let loadedSnapshot = try await hostAppKitSplitSnapshot(
+                    viewModel: viewModel,
+                    rootView: { viewModel, capture in
+                        RuneRootView(
+                            viewModel: viewModel,
+                            onLayoutSnapshotChange: capture,
+                            debugDisableBootstrap: true,
+                            initialPodInspectorTab: .overview,
+                            shellVariant: shellVariant
+                        )
+                    },
+                    section: .workloads,
+                    kind: .pod,
+                    settleNanoseconds: 650_000_000
+                )
+
+                assertAppKitSplitUsesFullHeight(loadingSnapshot)
+                assertAppKitSplitUsesFullHeight(loadedSnapshot)
+                XCTAssertEqual(loadedSnapshot.contentMinY, loadingSnapshot.contentMinY, accuracy: 2.0)
+                XCTAssertEqual(loadedSnapshot.detailMinY, loadingSnapshot.detailMinY, accuracy: 2.0)
+                XCTAssertEqual(loadedSnapshot.contentMinX, loadingSnapshot.contentMinX, accuracy: horizontalOffsetAccuracy)
+                XCTAssertEqual(loadedSnapshot.detailMinX, loadingSnapshot.detailMinX, accuracy: horizontalOffsetAccuracy)
+                XCTAssertEqual(loadedSnapshot.contentHeight, loadingSnapshot.contentHeight, accuracy: 1.5)
+                XCTAssertEqual(loadedSnapshot.detailHeight, loadingSnapshot.detailHeight, accuracy: 1.5)
+                continue
+            }
+
             var snapshots: [RuneRootLayoutSnapshot] = []
 
             let host = NSHostingController(
@@ -987,21 +1134,21 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             window.makeKeyAndOrderFront(nil)
             defer { window.orderOut(nil) }
 
-            let loadingSnapshot = try await stableSnapshot(
-                in: window,
-                snapshots: { snapshots },
-                section: .workloads,
-                kind: .pod,
-                observationDuration: 0.4
-            )
+            let loadingSnapshot: RuneRootLayoutSnapshot
+            do {
+                loadingSnapshot = try await stableSnapshot(
+                    in: window,
+                    snapshots: { snapshots },
+                    section: .workloads,
+                    kind: .pod,
+                    observationDuration: 0.4
+                )
+            } catch {
+                XCTFail("Initial loading layout did not settle for shell=\(shellVariant.debugLabel): \(error)")
+                throw error
+            }
 
-            state.setPods(makePodLoadingRows(seed: basePod, count: 36))
-            state.isLoading = false
-            state.beginResourceDetailLoad()
-            state.setSelectedPod(basePod.mergingInspectorDetail(enrichedPod))
-            state.setResourceYAML(sampleYAML(named: basePod.name))
-            state.setResourceDescribe(sampleDescribe(named: basePod.name))
-            state.finishResourceDetailLoad()
+            finishLoading(state)
 
             let loadedSnapshot = try await stableSnapshot(
                 in: window,
@@ -1682,12 +1829,14 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         observationDuration: TimeInterval
     ) async throws {
         let timeout = Date().addingTimeInterval(observationDuration)
+        var nextSnapshotIndex = settledSnapshotCount
 
         while Date() < timeout {
             window.contentView?.layoutSubtreeIfNeeded()
             await Task.yield()
 
-            let recentSnapshots = snapshots().dropFirst(settledSnapshotCount).filter {
+            let capturedSnapshots = snapshots()
+            let recentSnapshots = capturedSnapshots.dropFirst(nextSnapshotIndex).filter {
                 $0.section == section
                     && $0.workloadKind == kind
                     && $0.contentMinY != nil
@@ -1697,10 +1846,21 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                     && $0.headerMinX != nil
                     && $0.detailMinX != nil
             }
+            nextSnapshotIndex = capturedSnapshots.count
 
-            for snapshot in recentSnapshots.suffix(6) {
-                XCTAssertEqual(snapshot.contentMinY ?? 0, baseline.contentMinY ?? 0, accuracy: 2.0)
-                XCTAssertEqual(snapshot.detailMinY ?? 0, baseline.detailMinY ?? 0, accuracy: 2.0)
+            for snapshot in recentSnapshots {
+                XCTAssertEqual(
+                    snapshot.contentMinY ?? 0,
+                    baseline.contentMinY ?? 0,
+                    accuracy: 2.0,
+                    "post-settle content MinY drift; baseline=\(baseline) candidate=\(snapshot)"
+                )
+                XCTAssertEqual(
+                    snapshot.detailMinY ?? 0,
+                    baseline.detailMinY ?? 0,
+                    accuracy: 2.0,
+                    "post-settle detail MinY drift; baseline=\(baseline) candidate=\(snapshot)"
+                )
                 XCTAssertEqual(
                     snapshot.contentMinX ?? 0,
                     baseline.contentMinX ?? 0,
@@ -1965,6 +2125,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let detailHeight: CGFloat
         let sidebarWidth: CGFloat
         let contentMinX: CGFloat
+        let contentWidth: CGFloat
         let detailMinX: CGFloat
         let detailWidth: CGFloat
     }
@@ -2037,6 +2198,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                         detailHeight: detail.height,
                         sidebarWidth: sidebar.width,
                         contentMinX: content.minX,
+                        contentWidth: content.width,
                         detailMinX: detail.minX,
                         detailWidth: detail.width
                     )

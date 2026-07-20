@@ -20,6 +20,7 @@ struct TerminalPortForwardPanelView: View {
     let onRetryPortForward: (PortForwardSession) -> Void
     let onClearPortForward: (PortForwardSession) -> Void
     let onClearInactivePortForwards: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
     private let compactStatusHeight: CGFloat = 54
     private let activeSessionListHeight: CGFloat = 128
 
@@ -41,6 +42,7 @@ struct TerminalPortForwardPanelView: View {
             $0.targetKind == .pod
                 && $0.targetName == selectedPod.name
                 && $0.namespace == selectedPod.namespace
+                && $0.contextName == contextName
                 && $0.isActiveOrStarting
         }
     }
@@ -59,22 +61,12 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        RuneAdaptiveToolbar("Port-forward controls") {
             titleBlock
-            Spacer(minLength: 12)
+        } secondary: {
             headerActions
         }
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    @ViewBuilder
-    private func stableHorizontalControls<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 10) {
-                content()
-            }
-            .fixedSize(horizontal: true, vertical: false)
-        }
     }
 
     private var titleBlock: some View {
@@ -91,40 +83,50 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var headerActions: some View {
-        HStack(spacing: 6) {
-            startButton
-            copyDraftKubectlButton
+        PortForwardPrimaryActionLayout {
+            primaryActionButton
+        } utilities: {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    copyDraftKubectlButton
+                    expansionButton
+                }
+                .fixedSize(horizontal: true, vertical: false)
 
-            Button {
-                isExpanded.toggle()
-            } label: {
-                Label(isExpanded ? "Minimize" : "Expand", systemImage: isExpanded ? "chevron.up" : "chevron.down")
+                VStack(alignment: .leading, spacing: 6) {
+                    copyDraftKubectlButton
+                    expansionButton
+                }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .frame(width: 104)
-            .help(isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
         }
     }
 
-    private var startButton: some View {
-        Group {
-            if let session = selectedStoppableSession {
-                Button(session.status == .starting ? "Cancel" : "Stop") {
-                    onStopPortForward(session)
+    private var primaryActionButton: some View {
+        PortForwardPrimaryActionButton(
+            activeSession: selectedStoppableSession,
+            startTitle: "Start",
+            isStartDisabled: selectedPod == nil || !canApplyMutations,
+            onStart: {
+                if let selectedPod {
+                    onStartPortForward(selectedPod)
                 }
-                .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
-            } else {
-                Button("Start") {
-                    if let selectedPod {
-                        onStartPortForward(selectedPod)
-                    }
-                }
-                .disabled(selectedPod == nil || !canApplyMutations)
-            }
+            },
+            onStop: onStopPortForward
+        )
+    }
+
+    private var expansionButton: some View {
+        Button {
+            isExpanded.toggle()
+        } label: {
+            Label(
+                isExpanded ? "Minimize" : "Expand",
+                systemImage: isExpanded ? "chevron.up" : "chevron.down"
+            )
         }
-        .controlSize(.small)
-        .frame(width: 74)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
     }
 
     private var copyDraftKubectlButton: some View {
@@ -134,8 +136,7 @@ struct TerminalPortForwardPanelView: View {
             Label("Copy kubectl", systemImage: "doc.on.doc")
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
-        .frame(width: 126)
+        .controlSize(.regular)
         .disabled(selectedPod == nil)
         .help("Copy kubectl port-forward command")
     }
@@ -151,9 +152,11 @@ struct TerminalPortForwardPanelView: View {
                 selection: $selectedPortForwardPodID
             )
 
-            stableHorizontalControls {
-                endpointFields
-            }
+            PortForwardEndpointFields(
+                localPort: $localPort,
+                remotePort: $remotePort,
+                address: $address
+            )
 
             activeSessionList
         }
@@ -171,62 +174,57 @@ struct TerminalPortForwardPanelView: View {
                     Spacer(minLength: 0)
                     Text(session.status.rawValue.capitalized)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(TerminalStatusStyling.color(session.status))
-                    if session.status == .active, session.browserURL != nil {
-                        openInBrowserButton(session)
-                    }
-                    copyPortForwardCommandButton(session)
-                    if session.isActiveOrStarting {
-                        stopButton(session)
-                    } else if session.status == .failed {
-                        retryButton(session)
-                    }
-                    if session.isInactive {
-                        clearButton(session)
-                    }
+                        .foregroundStyle(TerminalStatusStyling.color(session.status, palette: runeThemePalette))
                 } else {
                     statusDot(.stopped)
                     Text("No active port-forward")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    Text("\(localPort) -> \(remotePort)")
+                    Text("\(localPort) → \(remotePort)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             }
 
-            HStack(spacing: 8) {
-                Text(selectedPod.map(\.name) ?? "No pod selected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
+            if let session = primarySession {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        selectedPodStatusLabel
+                        sessionUtilityButtons(session)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
 
-                if activeOrStartingSessions.count > 1 {
-                    RuneChip(verticalPadding: 2) {
-                        Text("+\(activeOrStartingSessions.count - 1) more")
-                            .font(.caption2.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 6) {
+                        selectedPodStatusLabel
+                        sessionUtilityButtons(session)
                     }
                 }
+            } else {
+                selectedPodStatusLabel
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .frame(height: compactStatusHeight)
+        .frame(minHeight: compactStatusHeight)
         .background(RuneSurfaceBackground(kind: .editor))
     }
 
-    private var endpointFields: some View {
+    private var selectedPodStatusLabel: some View {
         HStack(spacing: 8) {
-            field("Local", text: $localPort, minWidth: 74, idealWidth: 92)
-            Text("->")
-                .font(.caption.weight(.semibold))
+            Text(selectedPod.map(\.name) ?? "No pod selected")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            field("Remote", text: $remotePort, minWidth: 74, idealWidth: 92)
-            field("Address", text: $address, minWidth: 120, idealWidth: 150)
+                .lineLimit(1)
+                .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
+
+            if activeOrStartingSessions.count > 1 {
+                RuneChip(verticalPadding: 2) {
+                    Text("+\(activeOrStartingSessions.count - 1) more")
+                        .font(.caption2.weight(.semibold))
+                }
+            }
         }
-        .controlSize(.small)
     }
 
     private var activeSessionList: some View {
@@ -254,32 +252,27 @@ struct TerminalPortForwardPanelView: View {
                             .frame(maxWidth: .infinity, minHeight: activeSessionListHeight - 8, alignment: .topLeading)
                     } else {
                         ForEach(portForwardSessions) { session in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                statusDot(session.status)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(session.resourceLabel)  \(session.localPort):\(session.remotePort)")
-                                        .font(.subheadline.weight(.semibold))
-                                        .lineLimit(1)
-                                        .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
-                                    Text("\(session.contextName) - \(session.namespace) - \(session.status.rawValue.capitalized)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .help("\(session.contextName) - \(session.namespace) - \(session.status.rawValue.capitalized)")
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    statusDot(session.status)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("\(session.resourceLabel)  \(session.localPort):\(session.remotePort)")
+                                            .font(.subheadline.weight(.semibold))
+                                            .lineLimit(1)
+                                            .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
+                                        Text("\(session.contextName) - \(session.namespace)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .help("\(session.contextName) - \(session.namespace)")
+                                    }
+                                    Spacer(minLength: 0)
+                                    Text(session.status.rawValue.capitalized)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(TerminalStatusStyling.color(session.status, palette: runeThemePalette))
                                 }
-                                Spacer(minLength: 0)
-                                if session.isActiveOrStarting {
-                                    stopButton(session)
-                                } else if session.status == .failed {
-                                    retryButton(session)
-                                }
-                                if session.status == .active, session.browserURL != nil {
-                                    openInBrowserButton(session)
-                                }
-                                copyPortForwardCommandButton(session)
-                                if session.isInactive {
-                                    clearButton(session)
-                                }
+
+                                sessionUtilityButtons(session)
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
@@ -293,11 +286,32 @@ struct TerminalPortForwardPanelView: View {
         }
     }
 
-    private func field(_ placeholder: String, text: Binding<String>, minWidth: CGFloat, idealWidth: CGFloat) -> some View {
-        TextField(placeholder, text: text)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
-            .frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: idealWidth + 44)
+    private func sessionUtilityButtons(_ session: PortForwardSession) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                sessionUtilityButtonContent(session)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            VStack(alignment: .leading, spacing: 6) {
+                sessionUtilityButtonContent(session)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func sessionUtilityButtonContent(_ session: PortForwardSession) -> some View {
+        if session.status == .active, session.browserURL != nil {
+            openInBrowserButton(session)
+        }
+        if session.status == .failed {
+            retryButton(session)
+        }
+        copyPortForwardCommandButton(session)
+        if session.isInactive {
+            clearButton(session)
+        }
     }
 
     private func openInBrowserButton(_ session: PortForwardSession) -> some View {
@@ -307,17 +321,8 @@ struct TerminalPortForwardPanelView: View {
             Label("Open in Browser", systemImage: "safari")
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.regular)
         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
-    }
-
-    private func stopButton(_ session: PortForwardSession) -> some View {
-        Button(session.status == .starting ? "Cancel" : "Stop") {
-            onStopPortForward(session)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
     }
 
     private func retryButton(_ session: PortForwardSession) -> some View {
@@ -327,7 +332,7 @@ struct TerminalPortForwardPanelView: View {
             Label("Retry", systemImage: "arrow.clockwise")
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.regular)
         .help("Try this port-forward again")
     }
 
@@ -338,7 +343,7 @@ struct TerminalPortForwardPanelView: View {
             Label("Clear", systemImage: "xmark.circle")
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.regular)
         .help("Remove this inactive port-forward row")
     }
 
@@ -359,7 +364,7 @@ struct TerminalPortForwardPanelView: View {
             Label("Copy kubectl", systemImage: "doc.on.doc")
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.regular)
         .help("Copy kubectl port-forward command")
     }
 
@@ -379,6 +384,9 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private func statusDot(_ status: PortForwardStatus) -> some View {
-        TerminalStatusDot(color: TerminalStatusStyling.color(status), topPadding: 4)
+        TerminalStatusDot(
+            color: TerminalStatusStyling.color(status, palette: runeThemePalette),
+            topPadding: 4
+        )
     }
 }

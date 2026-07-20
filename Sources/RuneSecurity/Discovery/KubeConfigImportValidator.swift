@@ -1,4 +1,5 @@
 import Foundation
+import Yams
 
 public enum KubeConfigImportIssueSeverity: String, Sendable, Equatable {
     case warning
@@ -61,11 +62,11 @@ public enum KubeConfigDuplicateHandlingChoice: String, CaseIterable, Sendable, E
     public var detail: String {
         switch self {
         case .updateExisting:
-            return "Replace the saved context metadata after review."
+            return "Keep the last definition for each duplicated name."
         case .importAsCopy:
-            return "Keep both contexts by assigning a new alias before saving."
+            return "Keep every definition with deterministic copy names and rewritten references."
         case .skipDuplicate:
-            return "Leave the existing context unchanged."
+            return "Keep the first definition for each duplicated name. New contexts that redefine a loaded cluster or user name are blocked."
         }
     }
 }
@@ -75,17 +76,20 @@ public struct KubeConfigImportReview: Sendable, Equatable {
     public let issues: [KubeConfigImportIssue]
     public let redactedPreview: String
     public let sourceName: String?
+    public let hasDuplicateConflicts: Bool
 
     public init(
         contexts: [KubeConfigImportContextPreview],
         issues: [KubeConfigImportIssue],
         redactedPreview: String,
-        sourceName: String? = nil
+        sourceName: String? = nil,
+        hasDuplicateConflicts: Bool = false
     ) {
         self.contexts = contexts
         self.issues = issues
         self.redactedPreview = redactedPreview
         self.sourceName = sourceName
+        self.hasDuplicateConflicts = hasDuplicateConflicts
     }
 
     public var isValid: Bool {
@@ -93,7 +97,9 @@ public struct KubeConfigImportReview: Sendable, Equatable {
     }
 
     public var duplicateHandlingChoices: [KubeConfigDuplicateHandlingChoice] {
-        issues.contains { $0.id.contains("duplicate") } ? KubeConfigDuplicateHandlingChoice.allCases : []
+        hasDuplicateConflicts || issues.contains { $0.id.contains("duplicate") }
+            ? KubeConfigDuplicateHandlingChoice.allCases
+            : []
     }
 }
 
@@ -132,7 +138,11 @@ public struct KubeConfigImportValidator: Sendable {
         }
 
         let currentContext = parsed.currentContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parsedContextNames = Set(parsed.contexts.map(\.name))
+        var parsedContextNames = Set<String>()
+        parsedContextNames.reserveCapacity(parsed.contexts.count)
+        for context in parsed.contexts {
+            parsedContextNames.insert(context.name)
+        }
         if !currentContext.isEmpty, !parsedContextNames.contains(currentContext) {
             issues.append(.init(
                 id: "missing-current-context-reference",
@@ -163,9 +173,18 @@ public struct KubeConfigImportValidator: Sendable {
             ))
         }
 
-        let clustersByName = Dictionary(parsed.clusters.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        let usersByName = Dictionary(parsed.users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        var clustersByName: [String: ParsedKubeConfig.Cluster] = [:]
+        clustersByName.reserveCapacity(parsed.clusters.count)
+        for cluster in parsed.clusters where clustersByName[cluster.name] == nil {
+            clustersByName[cluster.name] = cluster
+        }
+        var usersByName: [String: ParsedKubeConfig.User] = [:]
+        usersByName.reserveCapacity(parsed.users.count)
+        for user in parsed.users where usersByName[user.name] == nil {
+            usersByName[user.name] = user
+        }
         var previews: [KubeConfigImportContextPreview] = []
+        previews.reserveCapacity(parsed.contexts.count)
 
         for context in parsed.contexts {
             let cluster = context.clusterName.flatMap { clustersByName[$0] }
@@ -252,40 +271,381 @@ public struct KubeConfigImportValidator: Sendable {
         return providerHint(serverHost: serverHost, user: user)
     }
 
-    private func redacted(_ raw: String) -> String {
-        let sensitiveKeys: Set<String> = [
-            "token",
-            "id-token",
-            "access-token",
-            "refresh-token",
-            "client-certificate-data",
-            "client-key-data",
-            "client-certificate",
-            "client-key",
-            "certificate-authority",
-            "certificate-authority-data",
-            "password",
-            "username",
-            "tokenfile",
-            "token-file"
-        ]
+    private typealias YAMLMapping = [AnyHashable: Any]
 
-        return raw.split(separator: "\n", omittingEmptySubsequences: false).map { line in
-            let text = String(line)
-            guard let colon = text.firstIndex(of: ":") else { return text }
-            let key = normalizedRedactionKey(String(text[..<colon]))
-            guard sensitiveKeys.contains(key) else { return text }
-            return "\(text[..<text.index(after: colon)]) <redacted>"
+    private static let redactedValue = "<redacted>"
+    private static let unavailableRedactedPreview = "# Kubeconfig preview unavailable because it could not be safely redacted."
+    private static let sensitiveRedactionKeys: Set<String> = [
+        "token",
+        "idtoken",
+        "accesstoken",
+        "refreshtoken",
+        "bearertoken",
+        "tokenfile",
+        "clientcertificate",
+        "clientcertificatedata",
+        "clientkey",
+        "clientkeydata",
+        "certificateauthority",
+        "certificateauthoritydata",
+        "password",
+        "username",
+        "clientsecret",
+        "secret",
+        "secretaccesskey",
+        "privatekey",
+        "privatekeydata",
+        "apikey",
+        "credential",
+        "credentials"
+    ]
+
+    /// Uses an indentation-aware fast path for ordinary block YAML and structural
+    /// redaction for complex syntax. Unsafe structural parsing always fails closed.
+    private func redacted(_ raw: String) -> String {
+        if Self.requiresStructuralPreviewRedaction(raw) {
+            return structurallyRedacted(raw)
         }
-        .joined(separator: "\n")
+        return Self.fastBlockYAMLRedaction(raw) ?? structurallyRedacted(raw)
     }
 
-    private func normalizedRedactionKey(_ rawKey: String) -> String {
-        var key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if key.hasPrefix("-") {
-            key = String(key.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Common kubeconfigs use block mappings with scalar values. This path keeps large
+    /// folder imports snappy while tracking indentation so a sensitive block or folded
+    /// scalar is removed in full, not only on its key line.
+    private enum FastPreviewKeyKind {
+        case ordinary
+        case sensitive
+        case requiresStructuralRedaction
+    }
+
+    private static func fastBlockYAMLRedaction(_ raw: String) -> String? {
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+        var output = ""
+        output.reserveCapacity(raw.utf8.count)
+        var hasOutputLine = false
+        var sensitiveParentIndent: Int?
+
+        for lineSlice in lines {
+            let indent = lineSlice.prefix(while: { $0 == " " }).count
+            let content = lineSlice.dropFirst(indent)
+
+            if let parentIndent = sensitiveParentIndent {
+                if content.isEmpty || indent > parentIndent {
+                    continue
+                }
+                sensitiveParentIndent = nil
+            }
+
+            guard !content.isEmpty, let colon = lineSlice.firstIndex(of: ":") else {
+                appendFastPreviewLine(lineSlice, to: &output, hasOutputLine: &hasOutputLine)
+                continue
+            }
+
+            switch fastPreviewKeyKind(lineSlice[..<colon]) {
+            case .ordinary:
+                appendFastPreviewLine(lineSlice, to: &output, hasOutputLine: &hasOutputLine)
+            case .requiresStructuralRedaction:
+                return nil
+            case .sensitive:
+                if hasOutputLine { output.append("\n") }
+                output.append(contentsOf: lineSlice[..<lineSlice.index(after: colon)])
+                output.append(" ")
+                output.append(redactedValue)
+                hasOutputLine = true
+                sensitiveParentIndent = indent
+            }
         }
-        return key
+        return output
+    }
+
+    private static func appendFastPreviewLine(
+        _ line: Substring,
+        to output: inout String,
+        hasOutputLine: inout Bool
+    ) {
+        if hasOutputLine { output.append("\n") }
+        output.append(contentsOf: line)
+        hasOutputLine = true
+    }
+
+    private static func fastPreviewKeyKind(_ rawKey: Substring) -> FastPreviewKeyKind {
+        var key = rawKey
+        while let first = key.first, first == " " || first == "-" {
+            key = key.dropFirst()
+        }
+        while let last = key.last, last == " " {
+            key = key.dropLast()
+        }
+
+        switch key {
+        case "env", "args":
+            return .requiresStructuralRedaction
+        case "token", "id-token", "access-token", "refresh-token", "bearer-token",
+             "tokenfile", "token-file", "tokenFile", "client-certificate",
+             "client-certificate-data", "client-key", "client-key-data",
+             "certificate-authority", "certificate-authority-data", "password",
+             "username", "client-secret", "secret", "secret-access-key",
+             "private-key", "private-key-data", "api-key", "apikey",
+             "credential", "credentials":
+            return .sensitive
+        default:
+            break
+        }
+
+        // Ordinary kubeconfig keys are lowercase ASCII plus separators. Only unusual
+        // quoting/casing needs the more general Unicode-normalized comparison.
+        let isOrdinaryASCII = key.utf8.allSatisfy { byte in
+            (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45 || byte == 95
+        }
+        guard !isOrdinaryASCII else { return .ordinary }
+
+        let normalized = normalizedRedactionKey(String(key))
+        if normalized == "env" || normalized == "args" {
+            return .requiresStructuralRedaction
+        }
+        return isSensitiveRedactionKey(normalized) ? .sensitive : .ordinary
+    }
+
+    /// Complex syntax is delegated to Yams. Comments are included because they can
+    /// contain copied credentials and the structural dump deliberately drops them.
+    private static func requiresStructuralPreviewRedaction(_ raw: String) -> Bool {
+        raw.utf8.contains { byte in
+            switch byte {
+            case 9, 33, 35, 38, 42, 63, 64, 91, 123:
+                return true // tab, !, #, &, *, ?, @, [, {
+            default:
+                return false
+            }
+        }
+    }
+
+    private func structurallyRedacted(_ raw: String) -> String {
+        do {
+            var documents: [Any] = []
+            var sequence = try load_all(yaml: raw)
+            while let document = sequence.next() {
+                documents.append(document)
+            }
+            guard sequence.error == nil, !documents.isEmpty else {
+                return Self.unavailableRedactedPreview
+            }
+
+            var sensitiveScalarValues = Set<String>()
+            for document in documents {
+                collectSensitiveScalarValues(in: document, into: &sensitiveScalarValues)
+            }
+            let previews = try documents.map { document in
+                try dump(
+                    object: sanitizedPreviewValue(document, sensitiveScalarValues: sensitiveScalarValues),
+                    indent: 2,
+                    width: -1,
+                    allowUnicode: true,
+                    sortKeys: false
+                )
+                .trimmingCharacters(in: .newlines)
+            }
+            return previews.joined(separator: "\n---\n")
+        } catch {
+            return Self.unavailableRedactedPreview
+        }
+    }
+
+    private func collectSensitiveScalarValues(in value: Any, into values: inout Set<String>) {
+        if let mapping = value as? YAMLMapping {
+            for (key, child) in mapping {
+                let normalizedKey = (key.base as? String).map(Self.normalizedRedactionKey)
+                if normalizedKey.map(Self.isSensitiveRedactionKey) == true {
+                    collectScalarStrings(in: child, into: &values)
+                } else if normalizedKey == "env" {
+                    collectEnvironmentValues(in: child, into: &values)
+                } else if normalizedKey == "args" {
+                    collectSensitiveArgumentValues(in: child, into: &values)
+                } else if (normalizedKey == "server" || normalizedKey == "proxyurl"),
+                          let string = child as? String,
+                          Self.isSecretBearingURL(string) {
+                    values.insert(string)
+                }
+                collectSensitiveScalarValues(in: child, into: &values)
+            }
+        } else if let items = value as? [Any] {
+            for item in items {
+                collectSensitiveScalarValues(in: item, into: &values)
+            }
+        }
+    }
+
+    private func collectScalarStrings(in value: Any, into values: inout Set<String>) {
+        if let string = value as? String {
+            if !string.isEmpty {
+                values.insert(string)
+            }
+        } else if let mapping = value as? YAMLMapping {
+            for child in mapping.values {
+                collectScalarStrings(in: child, into: &values)
+            }
+        } else if let items = value as? [Any] {
+            for item in items {
+                collectScalarStrings(in: item, into: &values)
+            }
+        }
+    }
+
+    private func collectEnvironmentValues(in value: Any, into values: inout Set<String>) {
+        guard let entries = value as? [Any] else { return }
+        for entry in entries {
+            guard let mapping = entry as? YAMLMapping else { continue }
+            for (key, child) in mapping where (key.base as? String).map(Self.normalizedRedactionKey) == "value" {
+                collectScalarStrings(in: child, into: &values)
+            }
+        }
+    }
+
+    private func collectSensitiveArgumentValues(in value: Any, into values: inout Set<String>) {
+        guard let arguments = value as? [Any] else { return }
+        var redactNext = false
+        for argument in arguments {
+            guard let string = argument as? String else { continue }
+            if redactNext {
+                if !string.isEmpty { values.insert(string) }
+                redactNext = false
+                continue
+            }
+            let parsed = Self.parsedSensitiveArgument(string)
+            if let value = parsed.inlineValue, !value.isEmpty {
+                values.insert(value)
+            } else if parsed.redactsFollowingValue {
+                redactNext = true
+            }
+        }
+    }
+
+    private func sanitizedPreviewValue(
+        _ value: Any,
+        sensitiveScalarValues: Set<String>,
+        environmentEntry: Bool = false
+    ) -> Any {
+        if let string = value as? String {
+            return sensitiveScalarValues.contains(string) ? Self.redactedValue : string
+        }
+        if let mapping = value as? YAMLMapping {
+            var sanitized: YAMLMapping = [:]
+            sanitized.reserveCapacity(mapping.count)
+            for (key, child) in mapping {
+                let normalizedKey = (key.base as? String).map(Self.normalizedRedactionKey)
+                if normalizedKey.map(Self.isSensitiveRedactionKey) == true
+                    || (environmentEntry && normalizedKey == "value") {
+                    sanitized[key] = Self.redactedValue
+                } else if normalizedKey == "env" {
+                    sanitized[key] = sanitizedEnvironmentValue(
+                        child,
+                        sensitiveScalarValues: sensitiveScalarValues
+                    )
+                } else if normalizedKey == "args" {
+                    sanitized[key] = sanitizedArgumentValue(
+                        child,
+                        sensitiveScalarValues: sensitiveScalarValues
+                    )
+                } else if (normalizedKey == "server" || normalizedKey == "proxyurl"),
+                          let string = child as? String,
+                          Self.isSecretBearingURL(string) {
+                    sanitized[key] = Self.redactedValue
+                } else {
+                    sanitized[key] = sanitizedPreviewValue(
+                        child,
+                        sensitiveScalarValues: sensitiveScalarValues
+                    )
+                }
+            }
+            return sanitized
+        }
+        if let items = value as? [Any] {
+            return items.map {
+                sanitizedPreviewValue($0, sensitiveScalarValues: sensitiveScalarValues)
+            }
+        }
+        return value
+    }
+
+    private func sanitizedEnvironmentValue(_ value: Any, sensitiveScalarValues: Set<String>) -> Any {
+        guard let entries = value as? [Any] else {
+            return sanitizedPreviewValue(value, sensitiveScalarValues: sensitiveScalarValues)
+        }
+        return entries.map {
+            sanitizedPreviewValue(
+                $0,
+                sensitiveScalarValues: sensitiveScalarValues,
+                environmentEntry: true
+            )
+        }
+    }
+
+    private func sanitizedArgumentValue(_ value: Any, sensitiveScalarValues: Set<String>) -> Any {
+        guard let arguments = value as? [Any] else {
+            return sanitizedPreviewValue(value, sensitiveScalarValues: sensitiveScalarValues)
+        }
+        var redactNext = false
+        return arguments.map { argument -> Any in
+            guard let string = argument as? String else {
+                return sanitizedPreviewValue(argument, sensitiveScalarValues: sensitiveScalarValues)
+            }
+            if redactNext {
+                redactNext = false
+                return Self.redactedValue
+            }
+            let parsed = Self.parsedSensitiveArgument(string)
+            if parsed.redactsFollowingValue {
+                redactNext = true
+                return string
+            }
+            if let inlineValue = parsed.inlineValue {
+                return string.replacingOccurrences(of: inlineValue, with: Self.redactedValue)
+            }
+            return sensitiveScalarValues.contains(string) ? Self.redactedValue : string
+        }
+    }
+
+    private static func parsedSensitiveArgument(
+        _ argument: String
+    ) -> (redactsFollowingValue: Bool, inlineValue: String?) {
+        let trimmed = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutPrefix = trimmed.drop(while: { $0 == "-" })
+        if let separator = withoutPrefix.firstIndex(of: "=") {
+            let name = String(withoutPrefix[..<separator])
+            guard isSensitiveArgumentName(name) else { return (false, nil) }
+            return (false, String(withoutPrefix[withoutPrefix.index(after: separator)...]))
+        }
+        return (isSensitiveArgumentName(String(withoutPrefix)), nil)
+    }
+
+    private static func isSensitiveArgumentName(_ name: String) -> Bool {
+        let normalized = normalizedRedactionKey(name)
+        return isSensitiveRedactionKey(normalized)
+            || normalized.contains("token")
+            || normalized.contains("password")
+            || normalized.contains("secret")
+            || normalized.contains("credential")
+            || normalized.contains("privatekey")
+            || normalized.contains("apikey")
+    }
+
+    private static func isSensitiveRedactionKey(_ normalizedKey: String) -> Bool {
+        sensitiveRedactionKeys.contains(normalizedKey)
+    }
+
+    private static func normalizedRedactionKey(_ rawKey: String) -> String {
+        rawKey
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func isSecretBearingURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value) else { return true }
+        if components.user != nil || components.password != nil || components.fragment != nil {
+            return true
+        }
+        return components.queryItems?.contains { item in
+            isSensitiveArgumentName(item.name)
+        } == true
     }
 }
 
@@ -339,7 +699,9 @@ private struct ParsedKubeConfig {
             return
         }
 
-        let yamlReferences = Self.referenceIndex(for: raw)
+        let yamlReferences = Self.mayContainYAMLReferences(raw)
+            ? Self.referenceIndex(for: raw)
+            : YAMLReferenceIndex()
         syntaxIssues.append(contentsOf: yamlReferences.issues)
 
         enum Section {
@@ -555,8 +917,8 @@ private struct ParsedKubeConfig {
             }
         }
 
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            let line = Self.removingInlineComment(from: line)
+        for lineSlice in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = Self.removingInlineCommentIfPresent(from: String(lineSlice))
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
             let indent = line.prefix { $0 == " " }.count
@@ -813,7 +1175,7 @@ private struct ParsedKubeConfig {
         let lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         for (lineIndex, rawLine) in lines.enumerated() {
-            let line = removingInlineComment(from: rawLine)
+            let line = removingInlineCommentIfPresent(from: rawLine)
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
 
@@ -861,7 +1223,7 @@ private struct ParsedKubeConfig {
         guard lineIndex + 1 < lines.count else { return mapping }
 
         for rawLine in lines[(lineIndex + 1)...] {
-            let line = removingInlineComment(from: rawLine)
+            let line = removingInlineCommentIfPresent(from: rawLine)
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
 
@@ -947,9 +1309,22 @@ private struct ParsedKubeConfig {
         if value.hasPrefix("\u{FEFF}") {
             value.removeFirst()
         }
-        value = value.replacingOccurrences(of: "\r\n", with: "\n")
-        value = value.replacingOccurrences(of: "\r", with: "\n")
+        if value.utf8.contains(13) {
+            value = value.replacingOccurrences(of: "\r\n", with: "\n")
+            value = value.replacingOccurrences(of: "\r", with: "\n")
+        }
         return value
+    }
+
+    private static func mayContainYAMLReferences(_ raw: String) -> Bool {
+        raw.utf8.contains { byte in
+            byte == 38 || byte == 42 // `&` anchor or `*` alias.
+        }
+    }
+
+    private static func removingInlineCommentIfPresent(from line: String) -> String {
+        guard line.utf8.contains(35) else { return line } // `#`
+        return removingInlineComment(from: line)
     }
 
     private static func removingInlineComment(from line: String) -> String {

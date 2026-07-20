@@ -18,6 +18,7 @@ struct OverviewClusterSignalsPanelView: View {
     let onOpenGitOpsRollup: (OverviewGitOpsRollupItem) -> Void
     let onOpenDependency: (OverviewDependencyItem) -> Void
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     private var activeCount: Int {
         unhealthy.count + gitOpsRollups.count + incidents.count + dependencies.count
@@ -27,18 +28,19 @@ struct OverviewClusterSignalsPanelView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle")
-                    .foregroundStyle(activeCount == 0 ? Color.secondary : Color.orange)
+                    .foregroundStyle(
+                        activeCount == 0
+                            ? Color.secondary
+                            : RuneSemanticColorRole.warning.color(in: runeThemePalette)
+                    )
                     .frame(width: 18)
                 Text("Cluster Signals")
                     .font(.headline.weight(.semibold))
                 Spacer(minLength: 8)
-                Text(activeCount == 0 ? "Clear" : "\(activeCount) item\(activeCount == 1 ? "" : "s")")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .frame(height: 22)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                RuneHeaderCapsule(
+                    activeCount == 0 ? "Clear" : "\(activeCount) item\(activeCount == 1 ? "" : "s")",
+                    role: .value
+                )
             }
             .runeHelp(overviewClusterSignalsHelp, enabled: showHoverTooltips)
 
@@ -209,18 +211,18 @@ struct OverviewClusterSignalsPanelView: View {
         isExpanded: Bool,
         help: String
     ) -> some View {
-        Button {
-            if isExpanded {
-                expandedPanels.remove(id)
-            } else {
-                expandedPanels.insert(id)
+        RuneDisclosureRow(
+            "\(title), \(severity.rawValue), \(badge). \(summary)",
+            isExpanded: isExpanded,
+            action: {
+                if isExpanded {
+                    expandedPanels.remove(id)
+                } else {
+                    expandedPanels.insert(id)
+                }
             }
-        } label: {
+        ) {
             HStack(alignment: .center, spacing: 8) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 10)
                 Image(systemName: symbol)
                     .foregroundStyle(signalColor(severity))
                     .frame(width: 18)
@@ -243,9 +245,7 @@ struct OverviewClusterSignalsPanelView: View {
                     .frame(height: 22)
                     .background(Color.secondary.opacity(0.12), in: Capsule())
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .runeHelp(help, enabled: showHoverTooltips)
     }
 
@@ -285,6 +285,7 @@ struct OverviewClusterSignalsPanelView: View {
                     .foregroundStyle(.tertiary)
                     .padding(.top, 4)
             }
+            .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -318,6 +319,7 @@ struct OverviewClusterSignalsPanelView: View {
                     .foregroundStyle(.tertiary)
                     .padding(.top, 3)
             }
+            .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -353,6 +355,7 @@ struct OverviewClusterSignalsPanelView: View {
                     .foregroundStyle(.tertiary)
                     .padding(.top, 4)
             }
+            .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -361,9 +364,9 @@ struct OverviewClusterSignalsPanelView: View {
     private func signalColor(_ severity: OverviewSignalSeverity) -> Color {
         switch severity {
         case .critical:
-            return .red
+            return RuneSemanticColorRole.danger.color(in: runeThemePalette)
         case .warning:
-            return .orange
+            return RuneSemanticColorRole.warning.color(in: runeThemePalette)
         case .info:
             return .secondary
         }

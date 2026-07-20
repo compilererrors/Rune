@@ -2,11 +2,13 @@ import AppKit
 import SwiftUI
 
 struct WindowChromeConfigurator: NSViewRepresentable {
-    @Binding var measuredTopInset: CGFloat?
+    let onMeasuredTopInsetChange: (CGFloat) -> Void
+    let onOwningWindowChange: (Int?) -> Void
 
     final class Coordinator {
         var configuredWindowNumber: Int?
         var lastMeasuredTopInset: CGFloat?
+        var lastReportedWindowNumber: Int?
     }
 
     final class TrackingView: NSView {
@@ -40,6 +42,12 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 
     func updateNSView(_ nsView: TrackingView, context: Context) {
         nsView.onGeometryChange = { trackingView in
+            let resolvedWindowNumber = trackingView.window?.windowNumber
+            if context.coordinator.lastReportedWindowNumber != resolvedWindowNumber {
+                context.coordinator.lastReportedWindowNumber = resolvedWindowNumber
+                onOwningWindowChange(resolvedWindowNumber)
+            }
+
             guard let window = trackingView.window else { return }
             let windowNumber = window.windowNumber
             if context.coordinator.configuredWindowNumber != windowNumber {
@@ -58,7 +66,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             guard context.coordinator.lastMeasuredTopInset != inset else { return }
 
             context.coordinator.lastMeasuredTopInset = inset
-            measuredTopInset = inset
+            onMeasuredTopInsetChange(inset)
         }
     }
 }

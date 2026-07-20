@@ -1,4 +1,3 @@
-import RuneCore
 import SwiftUI
 
 enum RuneGlassPaneRole {
@@ -48,18 +47,17 @@ enum RuneGlassPaneRole {
 
 struct RuneGlassPaneSurface: View {
     let role: RuneGlassPaneRole
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     var body: some View {
-        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
         ZStack {
             Rectangle()
                 .fill(role.material)
 
             Rectangle()
-                .fill(tint(theme: theme))
+                .fill(tint(theme: resolvedTheme))
 
-            if theme.isNative {
+            if resolvedTheme.isNative {
                 LinearGradient(
                     colors: [
                         Color.white.opacity(role.highlightOpacity),
@@ -90,11 +88,10 @@ struct RuneGlassPaneSurface: View {
 
 struct RuneGlassPaneBorder: View {
     let role: RuneGlassPaneRole
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     var body: some View {
-        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
-        let borderColor = theme.palette?.stroke.opacity(0.42) ?? role.borderColor
+        let borderColor = resolvedTheme.palette?.stroke.opacity(0.42) ?? role.borderColor
         Rectangle()
             .fill(
                 LinearGradient(

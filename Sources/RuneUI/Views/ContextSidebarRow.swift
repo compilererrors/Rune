@@ -12,6 +12,7 @@ struct ContextSidebarRow: View {
     let onSelect: () -> Void
     let onToggleProduction: () -> Void
     let onToggleFavorite: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         HStack(spacing: 8) {
@@ -22,7 +23,7 @@ struct ContextSidebarRow: View {
                     if isProduction {
                         Image(systemName: "exclamationmark.shield.fill")
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(RuneSemanticColorRole.danger.color(in: runeThemePalette))
                             .help(isManuallyMarkedProduction ? "Marked as production" : "Production context detected")
                     }
                     Spacer()
@@ -32,6 +33,8 @@ struct ContextSidebarRow: View {
                 .runeSidebarSelection(isSelected: isSelected)
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("rune.context.\(rawName)")
+            .accessibilityValue(isSelected ? "Selected" : "Not selected")
             .contextMenu {
                 Button(action: onToggleProduction) {
                     Label(
@@ -41,11 +44,13 @@ struct ContextSidebarRow: View {
                 }
             }
 
-            Button(action: onToggleFavorite) {
-                Image(systemName: isFavorite ? "star.fill" : "star")
-                    .foregroundStyle(isFavorite ? Color.yellow : Color.gray)
-            }
-            .buttonStyle(.plain)
+            RuneIconButton(
+                isFavorite ? "Remove context from favorites" : "Add context to favorites",
+                systemImage: isFavorite ? "star.fill" : "star",
+                isSelected: isFavorite,
+                selectedTint: .yellow,
+                action: onToggleFavorite
+            )
         }
     }
 

@@ -382,19 +382,52 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             harness.state.selectedPod?.name == "alpha-log-matrix"
                 && harness.state.selectedPod?.containerNames.contains("main") == true
                 && harness.state.selectedPod?.containerNames.contains("sidecar") == true
+                && harness.state.selectedPod?.initContainerNames == ["init-log"]
+                && harness.state.selectedPod?.logContainerNames == ["main", "sidecar", "init-log"]
                 && harness.state.resourceYAML.contains("initContainers")
                 && harness.state.resourceYAML.contains("sidecar")
                 && !harness.state.isLoadingResourceDetails
         }
+        let manifestErrors = YAMLLanguageService.analyze(harness.state.resourceYAML).validationIssues.filter {
+            $0.severity == .error
+        }
+        let manifestLines = harness.state.resourceYAML.split(separator: "\n", omittingEmptySubsequences: false)
+        let manifestErrorSummary = manifestErrors.map { issue in
+            let lineNumber = issue.line ?? -1
+            let previous = lineNumber > 1 && lineNumber - 2 < manifestLines.count
+                ? String(manifestLines[lineNumber - 2])
+                : "<none>"
+            let current = lineNumber > 0 && lineNumber - 1 < manifestLines.count
+                ? String(manifestLines[lineNumber - 1])
+                : "<none>"
+            return "line \(lineNumber): \(issue.message) previous=\(previous) current=\(current)"
+        }.joined(separator: "; ")
+        XCTAssertTrue(
+            manifestErrors.isEmpty,
+            "A valid Kubernetes API manifest must not show YAML errors: \(manifestErrorSummary)"
+        )
 
         harness.viewModel.selectedLogPreset = .recentLines
         harness.viewModel.includePreviousLogs = false
+        harness.viewModel.selectedLogContainer = ""
+        harness.viewModel.reloadLogsForSelection()
+
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedPod?.name == "alpha-log-matrix"
+                && harness.state.podLogs.contains("[main] alpha-log-matrix main tick")
+                && harness.state.podLogs.contains("[sidecar] alpha-log-matrix sidecar tick")
+                && harness.state.podLogs.contains("[init-log] alpha-log-matrix init complete")
+                && !harness.state.isLoadingLogs
+        }
+        XCTAssertNil(harness.state.lastLogFetchError)
+
         harness.viewModel.selectedLogContainer = "sidecar"
         harness.viewModel.reloadLogsForSelection()
 
         try await waitUntil(timeout: 30) {
             harness.state.selectedPod?.name == "alpha-log-matrix"
                 && harness.state.podLogs.contains("alpha-log-matrix sidecar tick")
+                && !harness.state.podLogs.contains("alpha-log-matrix main tick")
                 && !harness.state.isLoadingLogs
         }
         XCTAssertFalse(harness.state.podLogs.contains("alpha-log-matrix main tick"))
@@ -405,10 +438,30 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         try await waitUntil(timeout: 30) {
             harness.state.selectedPod?.name == "alpha-log-matrix"
                 && harness.state.podLogs.contains("alpha-log-matrix main tick")
+                && !harness.state.podLogs.contains("alpha-log-matrix sidecar tick")
                 && !harness.state.isLoadingLogs
         }
         XCTAssertFalse(harness.state.podLogs.contains("alpha-log-matrix sidecar tick"))
         XCTAssertNil(harness.state.lastLogFetchError)
+
+        let unifiedMultiContainerLogs = try await harness.kubeClient.unifiedLogsForDeployment(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            deployment: DeploymentSummary(
+                name: "synthetic-log-selector",
+                namespace: namespace,
+                readyReplicas: 1,
+                desiredReplicas: 1,
+                selector: ["app": "alpha-log-matrix"]
+            ),
+            filter: .tailLines(20),
+            previous: false
+        )
+        XCTAssertEqual(unifiedMultiContainerLogs.podNames, ["alpha-log-matrix"])
+        XCTAssertTrue(unifiedMultiContainerLogs.mergedText.contains("[alpha-log-matrix] [main] alpha-log-matrix main tick"))
+        XCTAssertTrue(unifiedMultiContainerLogs.mergedText.contains("[alpha-log-matrix] [sidecar] alpha-log-matrix sidecar tick"))
+        XCTAssertTrue(unifiedMultiContainerLogs.mergedText.contains("[alpha-log-matrix] [init-log] alpha-log-matrix init complete"))
 
         let previousLogPod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-previous-log-probe" })
         let previousLogs = try await waitForPreviousPodLogs(
@@ -810,6 +863,8 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             harness.state.selectedSection == .workloads
                 && harness.state.selectedWorkloadKind == .pod
                 && !harness.state.pods.isEmpty
+                && !harness.state.resourceYAML.isEmpty
+                && !harness.state.resourceDescribe.isEmpty
                 && !harness.state.isLoading
                 && !harness.state.isLoadingResourceDetails
         }
@@ -824,6 +879,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             namespace: namespace
         )
         let stateBeforeAuthDoctor = ViewModelResourceStateSnapshot(state: harness.state)
+        let requestMetricCountBeforeAuthDoctor = await harness.kubeClient.restRequestMetricsSnapshot().count
 
         harness.viewModel.runAuthDoctor()
 
@@ -841,10 +897,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(clusterAfterAuthDoctor, clusterBefore)
         XCTAssertEqual(ViewModelResourceStateSnapshot(state: harness.state), stateBeforeAuthDoctor)
+        let authDoctorRequestMetrics = await harness.kubeClient.restRequestMetricsSnapshot()
+        let authDoctorRequests = authDoctorRequestMetrics.dropFirst(requestMetricCountBeforeAuthDoctor)
+        XCTAssertFalse(authDoctorRequests.contains(where: isMutatingAuthDoctorRequest))
         XCTAssertEqual(harness.state.writeAuditLog.count, 0)
         XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" })
 
         let stateBeforeSupportBundle = ViewModelResourceStateSnapshot(state: harness.state)
+        let podCountBeforeSupportBundle = harness.state.pods.count
         let requestCountBeforeSupportBundle = await harness.kubeClient.restRequestMetricsSummary().requestCount
 
         harness.viewModel.saveSupportBundle()
@@ -863,7 +923,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: save.data)
         XCTAssertEqual(decoded.contextName, "<context-name>")
         XCTAssertEqual(decoded.namespace, namespace)
-        XCTAssertEqual(decoded.resourceCounts["pods"], stateBeforeSupportBundle.podNames.count)
+        XCTAssertEqual(decoded.resourceCounts["pods"], podCountBeforeSupportBundle)
         XCTAssertFalse(decoded.requestMetrics.isEmpty)
         XCTAssertNil(harness.state.lastError)
     }
@@ -1430,19 +1490,28 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         context: KubeContext,
         namespace: String
     ) async throws -> DockerComposeClusterSnapshot {
-        async let pods = client.listPods(from: sources, context: context, namespace: namespace)
         async let deployments = client.listDeployments(from: sources, context: context, namespace: namespace)
         async let services = client.listServices(from: sources, context: context, namespace: namespace)
         async let configMaps = client.listConfigMaps(from: sources, context: context, namespace: namespace)
-        async let events = client.listEvents(from: sources, context: context, namespace: namespace)
 
         return try await DockerComposeClusterSnapshot(
-            podNames: pods.map(\.name).sorted(),
             deploymentNames: deployments.map(\.name).sorted(),
             serviceNames: services.map(\.name).sorted(),
-            configMapNames: configMaps.map(\.name).sorted(),
-            eventObjectNames: events.map(\.objectName).sorted()
+            configMapNames: configMaps.map(\.name).sorted()
         )
+    }
+
+    private func isMutatingAuthDoctorRequest(_ metric: KubernetesRESTRequestMetric) -> Bool {
+        switch metric.method {
+        case "PATCH", "PUT", "DELETE":
+            return true
+        case "POST":
+            let isReadOnlyAuthorizationReview = metric.apiPath.contains("subjectaccessreviews")
+            let isDryRun = metric.apiPath.contains("dryRun=")
+            return !isReadOnlyAuthorizationReview && !isDryRun
+        default:
+            return false
+        }
     }
 
     private static func shortTestID() -> String {
@@ -1509,11 +1578,9 @@ private final class DockerComposeRecordingHelmCommandRunner: HelmCommandRunning,
 }
 
 private struct DockerComposeClusterSnapshot: Equatable {
-    let podNames: [String]
     let deploymentNames: [String]
     let serviceNames: [String]
     let configMapNames: [String]
-    let eventObjectNames: [String]
 }
 
 private struct ViewModelResourceStateSnapshot: Equatable {
@@ -1521,11 +1588,10 @@ private struct ViewModelResourceStateSnapshot: Equatable {
     let selectedNamespace: String
     let selectedSection: RuneSection
     let selectedWorkloadKind: KubeResourceKind
-    let podNames: [String]
-    let deploymentNames: [String]
-    let serviceNames: [String]
-    let configMapNames: [String]
-    let eventObjectNames: [String]
+    let selectedPodID: String?
+    let resourceYAML: String
+    let resourceDescribe: String
+    let podLogs: String
 
     @MainActor
     init(state: RuneAppState) {
@@ -1533,11 +1599,10 @@ private struct ViewModelResourceStateSnapshot: Equatable {
         selectedNamespace = state.selectedNamespace
         selectedSection = state.selectedSection
         selectedWorkloadKind = state.selectedWorkloadKind
-        podNames = state.pods.map(\.name)
-        deploymentNames = state.deployments.map(\.name)
-        serviceNames = state.services.map(\.name)
-        configMapNames = state.configMaps.map(\.name)
-        eventObjectNames = state.events.map(\.objectName)
+        selectedPodID = state.selectedPod?.id
+        resourceYAML = state.resourceYAML
+        resourceDescribe = state.resourceDescribe
+        podLogs = state.podLogs
     }
 }
 

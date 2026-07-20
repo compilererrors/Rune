@@ -241,6 +241,107 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(seconds(elapsed), 0.25)
     }
 
+    func testIncrementalLogSearchWithReusedIndexBenchmarkKPI() {
+        let text = (0..<10_000)
+            .map { index in
+                index.isMultiple(of: 40)
+                    ? "ts=\(index) level=error component=api message=synthetic failure"
+                    : "ts=\(index) level=info component=worker message=synthetic ok"
+            }
+            .joined(separator: "\n")
+        let textIndex = RuneLargeTextIndex(text: text)
+        let queries = Array(repeating: ["e", "er", "err", "erro", "error"], count: 5).flatMap { $0 }
+
+        let started = ContinuousClock.now
+        let results = queries.map { query in
+            ResourceLogSearchResult.makeForInspector(
+                text: text,
+                textIndex: textIndex,
+                query: query
+            )
+        }
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(results.last?.matchingLineCount, 250)
+        XCTAssertTrue(results.allSatisfy { $0.textIndex == textIndex })
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.50,
+            "KPI: 25 incremental log queries over a reused 10k-line index should stay below 500ms in debug."
+        )
+    }
+
+    @MainActor
+    func testLogSearchChromeQueryResultUpdateBenchmarkKPI() async throws {
+        let text = (0..<1_000)
+            .map { index in index.isMultiple(of: 10) ? "INFO synthetic \(index)" : "DEBUG synthetic \(index)" }
+            .joined(separator: "\n")
+        let textIndex = RuneLargeTextIndex(text: text)
+        let queries = ["i", "in", "inf", "info", "missing"]
+        let results = Dictionary(uniqueKeysWithValues: queries.map { query in
+            (
+                query,
+                ResourceLogSearchResult.makeForInspector(
+                    text: text,
+                    textIndex: textIndex,
+                    query: query
+                )
+            )
+        })
+        let model = LogSearchChromeBenchmarkModel()
+        let host = NSHostingController(
+            rootView: LogSearchChromeBenchmarkHarness(model: model)
+                .frame(width: 520, height: 60, alignment: .topLeading)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 60),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(nanoseconds: 40_000_000)
+        host.view.layoutSubtreeIfNeeded()
+
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants(of: $0) }
+        }
+        let initialViews = [host.view] + descendants(of: host.view)
+        let originalField = try XCTUnwrap(initialViews.compactMap { $0 as? NSTextField }.first { $0.isEditable })
+        let originalFrame = host.view.convert(originalField.bounds, from: originalField)
+        let originalViewCount = initialViews.count
+
+        let started = ContinuousClock.now
+        for iteration in 0..<100 {
+            let query = queries[iteration % queries.count]
+            model.query = query
+            model.searchSummary = nil
+            try await Task.sleep(nanoseconds: 1_000_000)
+            host.view.layoutSubtreeIfNeeded()
+
+            model.searchSummary = results[query]
+            try await Task.sleep(nanoseconds: 1_000_000)
+            host.view.layoutSubtreeIfNeeded()
+        }
+        let elapsed = started.duration(to: .now)
+
+        let finalViews = [host.view] + descendants(of: host.view)
+        let finalFields = finalViews.compactMap { $0 as? NSTextField }.filter(\.isEditable)
+        let finalField = try XCTUnwrap(finalFields.first)
+        XCTAssertEqual(finalFields.count, 1)
+        XCTAssertTrue(finalField === originalField)
+        XCTAssertEqual(host.view.convert(finalField.bounds, from: finalField), originalFrame)
+        XCTAssertLessThanOrEqual(finalViews.count, originalViewCount + 2)
+        XCTAssertLessThan(
+            seconds(elapsed),
+            0.80,
+            "KPI: 100 pending/current search-chrome updates should stay below 800ms in debug without native-view churn."
+        )
+    }
+
     func testResourceLogRenderPolicyBenchmarkKPI() {
         let manyLineLogs = (0..<60_000)
             .map { index in
@@ -730,24 +831,34 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
         let viewModel = RuneAppViewModel(state: state)
 
-        let elapsed = minimumElapsedSeconds {
-            for _ in 0..<1_000 {
+        var invalidTransitionCount = 0
+        let transitionCount = 10_000
+        let elapsed = minimumElapsedSeconds(repetitions: 5) {
+            for _ in 0..<transitionCount {
                 viewModel.requestDeleteSelectedResource()
                 viewModel.confirmPendingWriteAction()
-                XCTAssertEqual(viewModel.pendingProductionDestructiveConfirmation, .delete(kind: .pod, name: "api-0"))
+                if viewModel.pendingProductionDestructiveConfirmation != .delete(kind: .pod, name: "api-0") {
+                    invalidTransitionCount += 1
+                }
                 viewModel.cancelPendingWriteAction()
+                if viewModel.pendingWriteAction != nil
+                    || viewModel.pendingProductionDestructiveConfirmation != nil
+                {
+                    invalidTransitionCount += 1
+                }
             }
         }
 
+        XCTAssertEqual(invalidTransitionCount, 0)
         #if DEBUG
-        let maximumTransitionSeconds = 0.02
+        let maximumTransitionSeconds = 0.20
         #else
-        let maximumTransitionSeconds = 0.01
+        let maximumTransitionSeconds = 0.10
         #endif
         XCTAssertLessThan(
             elapsed,
             maximumTransitionSeconds,
-            "KPI: production confirmation state transition should stay below 20ms in debug and 10ms in release for 1k synthetic actions."
+            "KPI: production confirmation state transition should stay below 20ms in debug and 10ms in release per 1k synthetic actions."
         )
     }
 
@@ -1244,11 +1355,16 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         let minHeight = heights.min() ?? 0
         let maxHeight = heights.max() ?? 0
+        let maximumSingleStackDelta = RuneUILayoutMetrics.iconButtonSize
+            + 12
+            + RuneAdaptiveToolbarMetrics.rowSpacing
         XCTAssertLessThanOrEqual(
             maxHeight - minHeight,
-            8,
-            "KPI: log inspector controls should not jump vertically or wrap into extra rows when the detail pane width changes."
+            maximumSingleStackDelta,
+            "KPI: log inspector controls may use one deliberate compact stack but must not cascade into extra rows. Measured heights: \(heights)."
         )
+        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[2] - heights[3]), 1)
     }
 
     @MainActor
@@ -1315,9 +1431,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(
             (heights.max() ?? 0) - (heights.min() ?? 0),
-            8,
-            "KPI: terminal log pod picker should not wrap or jump vertically across panel widths."
+            RuneUILayoutMetrics.iconButtonSize + 12 + RuneAdaptiveToolbarMetrics.rowSpacing,
+            "KPI: terminal log controls may use one deliberate compact stack but must not cascade into extra rows. Measured heights: \(heights)."
         )
+        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[2] - heights[3]), 1)
     }
 
     @MainActor
@@ -1436,7 +1554,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(
             seconds(elapsed),
             maximumLayoutSeconds,
-            "KPI: manifest inspector controls should stay snappy while resizing the detail pane."
+            "KPI: shared manifest action-toolbar construction should stay snappy while resizing the detail pane."
         )
 
         let minHeight = heights.min() ?? 0
@@ -3342,17 +3460,19 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = projectedChecksum()
         }
 
-        #if DEBUG
-        let maximumProjectionSeconds = 0.025
-        #else
         let maximumProjectionSeconds = 0.01
-        #endif
+
+        print(
+            "KPI resource column projection: 50 resize-sample passes in "
+                + String(format: "%.3f", elapsedSeconds * 1_000)
+                + "ms (target < 10ms)."
+        )
 
         XCTAssertGreaterThan(checksum, 0)
         XCTAssertLessThan(
             elapsedSeconds,
             maximumProjectionSeconds,
-            "KPI: resource column width projection should stay below 25ms in debug and 10ms in release for 50 passes across resize samples so the middle panel tracks the side panel."
+            "KPI: resource column width projection should stay below 10ms for 50 passes across resize samples so the middle panel tracks the side panel."
         )
     }
 
@@ -3685,23 +3805,26 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     func testKubeConfigImportDuplicateDetectionBenchmarkKPI() {
         let contexts = (0..<500).map { index in
-            """
-            - name: context-\(String(format: "%03d", index))
+            let nameIndex = index == 499 ? 250 : index
+            return """
+            - name: context-\(String(format: "%03d", nameIndex))
               context:
-                cluster: cluster-\(String(format: "%03d", index))
-                user: user-\(String(format: "%03d", index))
+                cluster: cluster-\(String(format: "%03d", nameIndex))
+                user: user-\(String(format: "%03d", nameIndex))
             """
         }.joined(separator: "\n")
         let clusters = (0..<500).map { index in
-            """
-            - name: cluster-\(String(format: "%03d", index))
+            let nameIndex = index == 499 ? 250 : index
+            return """
+            - name: cluster-\(String(format: "%03d", nameIndex))
               cluster:
-                server: https://cluster-\(String(format: "%03d", index)).example.invalid
+                server: https://cluster-\(String(format: "%03d", nameIndex)).example.invalid
             """
         }.joined(separator: "\n")
         let users = (0..<500).map { index in
-            """
-            - name: user-\(String(format: "%03d", index))
+            let nameIndex = index == 499 ? 250 : index
+            return """
+            - name: user-\(String(format: "%03d", nameIndex))
               user:
                 token: test-token-\(index)
             """
@@ -3728,17 +3851,21 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = validator.validate(raw: raw)
         }
 
-        XCTAssertTrue(review.isValid)
+        XCTAssertFalse(review.isValid)
         XCTAssertEqual(review.contexts.count, 500)
+        XCTAssertTrue(review.issues.contains { $0.id == "duplicate-context-context-250" })
+        XCTAssertTrue(review.issues.contains { $0.id == "duplicate-cluster-cluster-250" })
+        XCTAssertTrue(review.issues.contains { $0.id == "duplicate-user-user-250" })
+        XCTAssertEqual(review.duplicateHandlingChoices, KubeConfigDuplicateHandlingChoice.allCases)
         #if DEBUG
-        let maximumDuplicateDetectionSeconds = 0.12
+        let maximumDuplicateDetectionSeconds = 0.08
         #else
-        let maximumDuplicateDetectionSeconds = 0.05
+        let maximumDuplicateDetectionSeconds = 0.04
         #endif
         XCTAssertLessThan(
             elapsedSeconds,
             maximumDuplicateDetectionSeconds,
-            "KPI: duplicate detection over 500 contexts should stay below 120ms in debug and 50ms in release."
+            "KPI: validation and real duplicate detection over 500 contexts should stay below 80ms in debug and 40ms in release."
         )
     }
 
@@ -3802,6 +3929,185 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             elapsedSeconds,
             maximumReviewProjectionSeconds,
             "KPI: import review projection for 120 selected/folder kubeconfig files should stay below 120ms in debug and 80ms in release."
+        )
+    }
+
+    func testKubeConfigImportTransactionalPreflightBenchmarkKPI() {
+        let payloads = (0..<120).map { fileIndex in
+            KubeConfigImportTransaction.Payload(
+                raw: transactionBenchmarkKubeConfig(fileIndex: fileIndex, contextsPerFile: 5),
+                sourceName: "synthetic-\(String(format: "%03d", fileIndex)).yaml",
+                sourceURL: nil
+            )
+        }
+        let existingNames = KubeConfigNameRegistry(
+            contextNames: Set((0..<200).map { "context-\(String(format: "%04d", $0))" }),
+            clusterNames: Set((0..<200).map { "cluster-\(String(format: "%04d", $0))" }),
+            userNames: Set((0..<200).map { "user-\(String(format: "%04d", $0))" })
+        )
+        let validator = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        )
+        let resolver = KubeConfigDuplicateResolver()
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            _ = KubeConfigImportTransaction(
+                payloads: payloads,
+                logLabel: "syntheticPreflight",
+                existingNames: existingNames,
+                validator: validator,
+                resolver: resolver
+            )
+        }
+
+        let transaction = KubeConfigImportTransaction(
+            payloads: payloads,
+            logLabel: "syntheticPreflight",
+            existingNames: existingNames,
+            validator: validator,
+            resolver: resolver
+        )
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            _ = KubeConfigImportTransaction(
+                payloads: payloads,
+                logLabel: "syntheticPreflight",
+                existingNames: existingNames,
+                validator: validator,
+                resolver: resolver
+            )
+        }
+
+        XCTAssertEqual(transaction.reviews.count, 120)
+        XCTAssertEqual(transaction.reviews.flatMap(\.contexts).count, 600)
+        XCTAssertEqual(transaction.reviews.filter { $0.hasDuplicateConflicts }.count, 40)
+        XCTAssertEqual(
+            transaction.reviews.flatMap(\.issues).filter { $0.id.hasPrefix("duplicate-existing-") }.count,
+            120
+        )
+        XCTAssertFalse(transaction.reviews.contains { $0.redactedPreview.contains("synthetic-token") })
+        #if DEBUG
+        let maximumPreflightSeconds = 0.25
+        #else
+        let maximumPreflightSeconds = 0.13
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumPreflightSeconds,
+            "KPI: transactional preflight for 120 files and 600 contexts should stay below 250ms in debug and 130ms in release."
+        )
+    }
+
+    func testKubeConfigImportDuplicateResolutionBenchmarkKPI() throws {
+        let raw = duplicateResolutionBenchmarkKubeConfig(uniqueNameCount: 250)
+        let resolver = KubeConfigDuplicateResolver()
+        let choices = KubeConfigDuplicateHandlingChoice.allCases
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            for choice in choices {
+                _ = try! resolver.resolve(raw: raw, choice: choice)
+            }
+        }
+
+        let elapsedSeconds = try minimumThrowingElapsedSeconds(repetitions: 3) {
+            for choice in choices {
+                _ = try resolver.resolve(raw: raw, choice: choice)
+            }
+        }
+        let skipped = KubeConfigImportValidator().validate(
+            raw: try resolver.resolve(raw: raw, choice: .skipDuplicate)
+        )
+        let updated = KubeConfigImportValidator().validate(
+            raw: try resolver.resolve(raw: raw, choice: .updateExisting)
+        )
+        let copied = KubeConfigImportValidator().validate(
+            raw: try resolver.resolve(raw: raw, choice: .importAsCopy)
+        )
+
+        XCTAssertTrue(skipped.isValid)
+        XCTAssertTrue(updated.isValid)
+        XCTAssertTrue(copied.isValid)
+        XCTAssertEqual(skipped.contexts.count, 250)
+        XCTAssertEqual(updated.contexts.count, 250)
+        XCTAssertEqual(copied.contexts.count, 500)
+        XCTAssertEqual(Set(copied.contexts.map(\.name)).count, 500)
+        #if DEBUG
+        let maximumResolutionSeconds = 0.55
+        #else
+        let maximumResolutionSeconds = 0.25
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumResolutionSeconds,
+            "KPI: resolving skip, update, and copy policies for 500 duplicated contexts should stay below 550ms in debug and 250ms in release."
+        )
+    }
+
+    func testKubeConfigImportTransactionResolutionMetadataProjectionBenchmarkKPI() throws {
+        let payloads = (0..<40).map { fileIndex in
+            KubeConfigImportTransaction.Payload(
+                raw: transactionBenchmarkKubeConfig(
+                    fileIndex: fileIndex,
+                    contextsPerFile: 4,
+                    repeatsNamesAcrossFiles: true
+                ),
+                sourceName: "synthetic-\(String(format: "%03d", fileIndex)).yaml",
+                sourceURL: nil
+            )
+        }
+        let validator = KubeConfigImportValidator(
+            fileExists: { _ in true },
+            executableSearchPaths: ["/synthetic/bin"]
+        )
+        let resolver = KubeConfigDuplicateResolver()
+        let transaction = KubeConfigImportTransaction(
+            payloads: payloads,
+            logLabel: "syntheticResolution",
+            existingNames: KubeConfigNameRegistry(),
+            validator: validator,
+            resolver: resolver
+        )
+
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            let resolution = try! transaction.resolvingDuplicates(
+                choice: .importAsCopy,
+                resolver: resolver,
+                validator: validator
+            )
+            _ = KubeConfigImportReviewAggregator.aggregate(resolution.reviews)
+        }
+
+        let elapsedSeconds = try minimumThrowingElapsedSeconds(repetitions: 3) {
+            let resolution = try transaction.resolvingDuplicates(
+                choice: .importAsCopy,
+                resolver: resolver,
+                validator: validator
+            )
+            _ = KubeConfigImportReviewAggregator.aggregate(resolution.reviews)
+        }
+        let resolution = try transaction.resolvingDuplicates(
+            choice: .importAsCopy,
+            resolver: resolver,
+            validator: validator
+        )
+        let aggregate = try XCTUnwrap(KubeConfigImportReviewAggregator.aggregate(resolution.reviews))
+
+        XCTAssertEqual(resolution.payloads.count, 40)
+        XCTAssertEqual(resolution.reviews.count, 40)
+        XCTAssertEqual(resolution.contextNamesForPreferences.count, 160)
+        XCTAssertEqual(aggregate.contexts.count, 160)
+        XCTAssertEqual(aggregate.sourceName, "40 kubeconfig files")
+        XCTAssertTrue(resolution.reviews.allSatisfy { $0.isValid })
+        XCTAssertFalse(aggregate.redactedPreview.contains("synthetic-token"))
+        #if DEBUG
+        let maximumProjectionSeconds = 0.18
+        #else
+        let maximumProjectionSeconds = 0.09
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumProjectionSeconds,
+            "KPI: duplicate resolution plus final review and preference-name projection for 40 files and 160 contexts should stay below 180ms in debug and 90ms in release."
         )
     }
 
@@ -4120,6 +4426,232 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    func testAddClusterCapabilityPresentationAndNativeContextResolutionBenchmarkKPI() {
+        let presentationModes: [AddClusterProviderExecutionMode] = [.externalCLI, .nativeOnly]
+        let connectionStates = [false, true]
+        let presentationCases = AddClusterProviderIdentifier.allCases.flatMap { provider in
+            presentationModes.flatMap { mode in
+                connectionStates.map { isConnected in
+                    (provider: provider, mode: mode, isConnected: isConnected)
+                }
+            }
+        }
+        let presentations = presentationCases.map { item in
+            AddClusterProviderPresentation.resolve(
+                provider: item.provider,
+                mode: item.mode,
+                isNativeProfileConnected: item.isConnected
+            )
+        }
+
+        let nativePresentations = presentations.filter { $0.executionMode == .nativeOnly }
+        XCTAssertEqual(presentations.count, 16)
+        XCTAssertEqual(nativePresentations.count, 8)
+        XCTAssertTrue(nativePresentations.allSatisfy { presentation in
+            !presentation.allowsExternalCommandExecution
+                && !presentation.exposesCLIOnlyActions
+                && !presentation.primaryAction.id.isCLIOnly
+                && !presentation.utilityActions.contains { $0.id.isCLIOnly }
+        })
+
+        let externalCloudPresentations = presentations.filter {
+            $0.executionMode == .externalCLI && $0.provider != .local
+        }
+        XCTAssertEqual(externalCloudPresentations.count, 6)
+        XCTAssertTrue(externalCloudPresentations.allSatisfy(\.allowsExternalCommandExecution))
+        XCTAssertTrue(externalCloudPresentations.allSatisfy(\.exposesCLIOnlyActions))
+
+        let nativeCloudPresentations = presentations.filter {
+            $0.executionMode == .nativeOnly && $0.provider != .local
+        }
+        XCTAssertEqual(nativeCloudPresentations.count, 6)
+        XCTAssertEqual(
+            nativeCloudPresentations.filter {
+                $0.utilityActions.contains { $0.id == .disconnectNativeCredentials }
+            }.count,
+            3
+        )
+
+        let descriptorProviders: [KubernetesNativeAuthProviderKind?] = [
+            .awsEKS,
+            .azureKubelogin,
+            .googleGKE,
+            .oidc,
+            nil
+        ]
+        let descriptors = (0..<10_000).map { index in
+            let provider = descriptorProviders[index % descriptorProviders.count]
+            let providerLabel = provider?.rawValue ?? "static"
+            let suffix = String(format: "%05d", index)
+            let contextName = "synthetic-\(providerLabel)-context-\(suffix)"
+            let clusterName = "synthetic-\(providerLabel)-cluster-\(suffix)"
+            return KubernetesNativeAuthContextDescriptor(
+                contextName: contextName,
+                clusterName: clusterName,
+                userName: "synthetic-\(providerLabel)-user-\(suffix)",
+                namespace: "namespace-\(index % 24)",
+                cluster: KubernetesNativeAuthClusterDescriptor(
+                    name: clusterName,
+                    server: "https://\(providerLabel)-\(suffix).example.invalid"
+                ),
+                exec: provider.map { _ in
+                    KubernetesNativeAuthExecDescriptor(command: "synthetic-\(providerLabel)-auth-plugin")
+                },
+                authProvider: nil,
+                provider: provider,
+                bindingID: provider.map { _ in "synthetic-\(providerLabel)-binding-\(suffix)" }
+            )
+        }
+        let nativeProviders: [KubernetesNativeAuthProviderKind] = [
+            .awsEKS,
+            .azureKubelogin,
+            .googleGKE
+        ]
+        let resolutionCases = nativeProviders.map { provider in
+            (
+                provider: provider,
+                expectedContextNames: descriptors.compactMap { descriptor in
+                    descriptor.provider == provider ? descriptor.contextName : nil
+                }
+            )
+        }
+        let awsCurrentContext = resolutionCases[0].expectedContextNames[1_379]
+        let analysis = KubeConfigNativeAuthAnalysis(
+            currentContext: awsCurrentContext,
+            contexts: descriptors,
+            issues: []
+        )
+
+        for item in resolutionCases {
+            let firstOptions = AddClusterNativeContextResolver.compatibleOptions(
+                provider: item.provider,
+                analysis: analysis
+            )
+            let repeatedOptions = AddClusterNativeContextResolver.compatibleOptions(
+                provider: item.provider,
+                analysis: analysis
+            )
+            XCTAssertEqual(firstOptions.map(\.contextName), item.expectedContextNames)
+            XCTAssertEqual(repeatedOptions, firstOptions)
+
+            let firstChoice = AddClusterNativeContextResolver.resolve(
+                provider: item.provider,
+                analysis: analysis,
+                currentContextName: "synthetic-incompatible-current"
+            )
+            let repeatedChoice = AddClusterNativeContextResolver.resolve(
+                provider: item.provider,
+                analysis: analysis,
+                currentContextName: "synthetic-incompatible-current"
+            )
+            XCTAssertEqual(repeatedChoice, firstChoice)
+            guard case let .requiresChoice(options) = firstChoice else {
+                XCTFail("Expected multiple compatible synthetic contexts to preserve choice ordering")
+                continue
+            }
+            XCTAssertEqual(options.map(\.contextName), item.expectedContextNames)
+
+            let selectedContext = item.expectedContextNames[1_379]
+            let firstSelection = AddClusterNativeContextResolver.resolve(
+                provider: item.provider,
+                analysis: analysis,
+                currentContextName: selectedContext
+            )
+            let repeatedSelection = AddClusterNativeContextResolver.resolve(
+                provider: item.provider,
+                analysis: analysis,
+                currentContextName: selectedContext
+            )
+            XCTAssertEqual(repeatedSelection, firstSelection)
+            guard case let .selected(option) = firstSelection else {
+                XCTFail("Expected the explicitly selected compatible context to win")
+                continue
+            }
+            XCTAssertEqual(option.contextName, selectedContext)
+        }
+
+        guard case let .selected(defaultSelection) = AddClusterNativeContextResolver.resolve(
+            provider: .awsEKS,
+            analysis: analysis
+        ) else {
+            return XCTFail("Expected the compatible kubeconfig current context to win")
+        }
+        XCTAssertEqual(defaultSelection.contextName, awsCurrentContext)
+        XCTAssertEqual(
+            AddClusterNativeContextResolver.resolve(provider: .oidc, analysis: analysis),
+            .unavailable
+        )
+        XCTAssertTrue(
+            AddClusterNativeContextResolver.compatibleOptions(provider: .oidc, analysis: analysis).isEmpty
+        )
+
+        let presentationPasses = 1_000
+        let workload: () -> Int = {
+            var checksum = 0
+            for _ in 0..<presentationPasses {
+                for item in presentationCases {
+                    let presentation = AddClusterProviderPresentation.resolve(
+                        provider: item.provider,
+                        mode: item.mode,
+                        isNativeProfileConnected: item.isConnected
+                    )
+                    checksum &+= presentation.fields.count
+                    checksum &+= presentation.utilityActions.count
+                    checksum &+= presentation.primaryAction.title.utf8.count
+                    checksum &+= presentation.exposesCLIOnlyActions ? 1 : 0
+                }
+            }
+
+            for item in resolutionCases {
+                let options = AddClusterNativeContextResolver.compatibleOptions(
+                    provider: item.provider,
+                    analysis: analysis
+                )
+                checksum &+= options.count
+                checksum &+= options.first?.contextName.utf8.count ?? 0
+                checksum &+= options.last?.contextName.utf8.count ?? 0
+
+                if case let .requiresChoice(choices) = AddClusterNativeContextResolver.resolve(
+                    provider: item.provider,
+                    analysis: analysis,
+                    currentContextName: "synthetic-incompatible-current"
+                ) {
+                    checksum &+= choices.count
+                    checksum &+= choices.last?.id.utf8.count ?? 0
+                }
+
+                if case let .selected(option) = AddClusterNativeContextResolver.resolve(
+                    provider: item.provider,
+                    analysis: analysis,
+                    currentContextName: item.expectedContextNames[1_379]
+                ) {
+                    checksum &+= option.id.utf8.count
+                }
+            }
+            return checksum
+        }
+
+        var measuredChecksum = 0
+        measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
+            measuredChecksum = workload()
+        }
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
+            measuredChecksum = workload()
+        }
+
+        XCTAssertGreaterThan(measuredChecksum, 0)
+        #if DEBUG
+        let maximumResolutionSeconds = 0.10
+        #else
+        let maximumResolutionSeconds = 0.04
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumResolutionSeconds,
+            "KPI: resolving 16 capability presentations and deterministic native context choices across 10k mixed descriptors should stay below 100ms in debug and 40ms in release."
+        )
+    }
+
     @MainActor
     func testMockedAddClusterFakeRESTCoreLoadBenchmarkKPI() async throws {
         let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
@@ -4171,6 +4703,18 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 clusterName: "synthetic-cloud",
                 regionOrLocation: "eu-north-1"
             ))
+
+            try await waitUntil {
+                !viewModel.isRunningCloudKubeConfigImport
+            }
+            XCTAssertEqual(
+                viewModel.cloudKubeConfigImportStatus,
+                AddClusterCloudImportWorkflow.readyForReviewStatus(for: .eks),
+                "Unexpected preflight result: \(state.lastError ?? "no error")"
+            )
+            XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+            XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+            viewModel.confirmKubeConfigImport()
 
             try await waitUntil {
                 viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
@@ -4377,6 +4921,18 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
             viewModel.runCloudKubeConfigImport(request)
             XCTAssertNil(state.lastError)
+            try await waitUntil {
+                !viewModel.isRunningCloudKubeConfigImport
+            }
+            XCTAssertEqual(
+                viewModel.cloudKubeConfigImportStatus,
+                AddClusterCloudImportWorkflow.readyForReviewStatus(for: .eks),
+                "Unexpected retry preflight result: \(state.lastError ?? "no error")"
+            )
+            XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+            XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+            viewModel.confirmKubeConfigImport()
+
             try await waitUntil {
                 viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
                     && !viewModel.isRunningCloudKubeConfigImport
@@ -5490,6 +6046,185 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertLessThan(elapsedSeconds, 0.08)
     }
 
+    private struct InspectorScaffoldBenchmarkResult: Equatable {
+        var mountCount = 0
+        var width320Count = 0
+        var width520Count = 0
+        var verticalCount = 0
+        var selfManagedCount = 0
+        var widthTransitionCount = 0
+        var behaviorTransitionCount = 0
+        var combinationCounts = [Int](repeating: 0, count: 4)
+        var verticalScrollViewCount = 0
+        var selfManagedScrollViewCount = 0
+        var invalidLayoutCount = 0
+        var copyCallbackCount = 0
+        var refreshCallbackCount = 0
+        var actionCallbackCount = 0
+        var layoutChecksum = 0
+    }
+
+    @MainActor
+    func testInspectorScaffoldAlternatingLayoutBenchmarkKPI() {
+        let alternationRounds = 16
+
+        func scrollViewCount(in view: NSView) -> Int {
+            (view is NSScrollView ? 1 : 0)
+                + view.subviews.reduce(0) { $0 + scrollViewCount(in: $1) }
+        }
+
+        func workload() -> InspectorScaffoldBenchmarkResult {
+            var result = InspectorScaffoldBenchmarkResult()
+            var previousWidth: CGFloat?
+            var previousBehavior: RuneInspectorBodyScrollBehavior?
+
+            for _ in 0..<alternationRounds {
+                let configurations: [(width: CGFloat, behavior: RuneInspectorBodyScrollBehavior)] = [
+                    (320, .vertical),
+                    (520, .selfManaged),
+                    (520, .vertical),
+                    (320, .selfManaged),
+                ]
+
+                for (configurationIndex, configuration) in configurations.enumerated() {
+                    let copyAction = { result.copyCallbackCount += 1 }
+                    let refreshAction = { result.refreshCallbackCount += 1 }
+                    let inspectAction = { result.actionCallbackCount += 1 }
+                    let rootView = RuneInspectorScaffold(
+                        title: "synthetic-resource-with-a-long-name",
+                        copyAccessibilityLabel: "Copy synthetic resource name",
+                        bodyScrollBehavior: configuration.behavior,
+                        onCopy: copyAction,
+                        onRefresh: refreshAction,
+                        info: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Ready")
+                                Text("Synthetic namespace")
+                                    .foregroundStyle(.secondary)
+                            }
+                        },
+                        tabs: {
+                            Picker("Inspector", selection: .constant(0)) {
+                                Text("Overview").tag(0)
+                                Text("YAML").tag(1)
+                                Text("Events").tag(2)
+                            }
+                            .pickerStyle(.segmented)
+                        },
+                        actions: {
+                            Button("Inspect", action: inspectAction)
+                            Button("Open YAML", action: inspectAction)
+                        },
+                        content: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                ForEach(0..<16, id: \.self) { index in
+                                    Text("Synthetic inspector row \(index)")
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    )
+                    let controller = NSHostingController(rootView: rootView)
+                    controller.view.frame = NSRect(
+                        x: 0,
+                        y: 0,
+                        width: configuration.width,
+                        height: 420
+                    )
+                    controller.view.layoutSubtreeIfNeeded()
+
+                    copyAction()
+                    refreshAction()
+                    inspectAction()
+
+                    result.mountCount += 1
+                    result.combinationCounts[configurationIndex] += 1
+                    if configuration.width == 320 {
+                        result.width320Count += 1
+                    } else {
+                        result.width520Count += 1
+                    }
+                    if configuration.behavior == .vertical {
+                        result.verticalCount += 1
+                    } else {
+                        result.selfManagedCount += 1
+                    }
+                    if let previousWidth, previousWidth != configuration.width {
+                        result.widthTransitionCount += 1
+                    }
+                    if let previousBehavior, previousBehavior != configuration.behavior {
+                        result.behaviorTransitionCount += 1
+                    }
+                    previousWidth = configuration.width
+                    previousBehavior = configuration.behavior
+
+                    let scrollCount = scrollViewCount(in: controller.view)
+                    if configuration.behavior == .vertical {
+                        result.verticalScrollViewCount += scrollCount
+                    } else {
+                        result.selfManagedScrollViewCount += scrollCount
+                    }
+                    let frame = controller.view.frame
+                    let fittingSize = controller.view.fittingSize
+                    if abs(frame.width - configuration.width) > 0.5
+                        || frame.height <= 0
+                        || !fittingSize.width.isFinite
+                        || !fittingSize.height.isFinite {
+                        result.invalidLayoutCount += 1
+                    }
+                    result.layoutChecksum &+= Int(frame.width.rounded())
+                    result.layoutChecksum &+= Int(frame.height.rounded())
+                    result.layoutChecksum &+= scrollCount
+                    result.layoutChecksum &+= Int(fittingSize.height.rounded())
+                }
+            }
+            return result
+        }
+
+        let expected = workload()
+        XCTAssertEqual(workload(), expected, "Repeated scaffold layout must remain deterministic.")
+        XCTAssertEqual(expected.mountCount, alternationRounds * 4)
+        XCTAssertEqual(expected.width320Count, alternationRounds * 2)
+        XCTAssertEqual(expected.width520Count, alternationRounds * 2)
+        XCTAssertEqual(expected.verticalCount, alternationRounds * 2)
+        XCTAssertEqual(expected.selfManagedCount, alternationRounds * 2)
+        XCTAssertEqual(expected.combinationCounts, [16, 16, 16, 16])
+        XCTAssertGreaterThan(expected.widthTransitionCount, 0)
+        XCTAssertGreaterThanOrEqual(expected.behaviorTransitionCount, 50)
+        XCTAssertGreaterThan(expected.verticalScrollViewCount, expected.selfManagedScrollViewCount)
+        XCTAssertEqual(expected.invalidLayoutCount, 0)
+        XCTAssertEqual(expected.copyCallbackCount, expected.mountCount)
+        XCTAssertEqual(expected.refreshCallbackCount, expected.mountCount)
+        XCTAssertEqual(expected.actionCallbackCount, expected.mountCount)
+        XCTAssertGreaterThan(expected.layoutChecksum, 0)
+
+        let measureOptions = XCTMeasureOptions()
+        measureOptions.iterationCount = 3
+        var measuredResult = InspectorScaffoldBenchmarkResult()
+        measure(
+            metrics: [XCTClockMetric(), XCTMemoryMetric()],
+            options: measureOptions
+        ) {
+            measuredResult = workload()
+        }
+        XCTAssertEqual(measuredResult, expected)
+
+        let elapsedSeconds = minimumElapsedSeconds(repetitions: 3) {
+            measuredResult = workload()
+        }
+        XCTAssertEqual(measuredResult, expected)
+        #if DEBUG
+        let maximumLayoutSeconds = 1.10
+        #else
+        let maximumLayoutSeconds = 0.90
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumLayoutSeconds,
+            "KPI: 16 four-mode alternation rounds (64 mounts) across 320/520pt and vertical/self-managed inspectors should stay below 1.10s in debug and 900ms in release."
+        )
+    }
+
     func testYAMLDiffPreviewBenchmarkKPI() {
         let baseline = (0..<2_000).map { index in "key\(index): old" }.joined(separator: "\n")
         let edited = (0..<2_000).map { index in "key\(index): new" }.joined(separator: "\n")
@@ -5567,6 +6302,100 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
     }
 
+    private func transactionBenchmarkKubeConfig(
+        fileIndex: Int,
+        contextsPerFile: Int,
+        repeatsNamesAcrossFiles: Bool = false
+    ) -> String {
+        let identifiers = (0..<contextsPerFile).map { contextIndex in
+            repeatsNamesAcrossFiles ? contextIndex : fileIndex * contextsPerFile + contextIndex
+        }
+        let contexts = identifiers.map { identifier in
+            let name = String(format: "%04d", identifier)
+            return """
+            - name: context-\(name)
+              context:
+                cluster: cluster-\(name)
+                user: user-\(name)
+                namespace: namespace-\(identifier % 12)
+            """
+        }.joined(separator: "\n")
+        let clusters = identifiers.map { identifier in
+            let name = String(format: "%04d", identifier)
+            return """
+            - name: cluster-\(name)
+              cluster:
+                server: https://cluster-\(fileIndex)-\(name).example.invalid
+            """
+        }.joined(separator: "\n")
+        let users = identifiers.map { identifier in
+            let name = String(format: "%04d", identifier)
+            return """
+            - name: user-\(name)
+              user:
+                token: synthetic-token-\(fileIndex)-\(name)
+            """
+        }.joined(separator: "\n")
+        let currentContext = String(format: "%04d", identifiers[0])
+        return """
+        apiVersion: v1
+        kind: Config
+        current-context: context-\(currentContext)
+        clusters:
+        \(clusters)
+        contexts:
+        \(contexts)
+        users:
+        \(users)
+        """
+    }
+
+    private func duplicateResolutionBenchmarkKubeConfig(uniqueNameCount: Int) -> String {
+        let clusters = (0..<uniqueNameCount).flatMap { index -> [String] in
+            let name = String(format: "%04d", index)
+            return [0, 1].map { variant in
+                """
+                - name: cluster-\(name)
+                  cluster:
+                    server: https://cluster-\(name)-\(variant).example.invalid
+                """
+            }
+        }.joined(separator: "\n")
+        let contexts = (0..<uniqueNameCount).flatMap { index -> [String] in
+            let name = String(format: "%04d", index)
+            return [0, 1].map { variant in
+                """
+                - name: context-\(name)
+                  context:
+                    cluster: cluster-\(name)
+                    user: user-\(name)
+                    namespace: namespace-\(variant)
+                """
+            }
+        }.joined(separator: "\n")
+        let users = (0..<uniqueNameCount).flatMap { index -> [String] in
+            let name = String(format: "%04d", index)
+            return [0, 1].map { variant in
+                """
+                - name: user-\(name)
+                  user:
+                    token: synthetic-token-\(name)-\(variant)
+                """
+            }
+        }.joined(separator: "\n")
+        return """
+        apiVersion: v1
+        kind: Config
+        current-context: context-0000
+        clusters:
+        \(clusters)
+        contexts:
+        \(contexts)
+        users:
+        \(users)
+        """
+    }
+
     @MainActor
     private func makeLogToolbarController(
         width: CGFloat,
@@ -5584,17 +6413,13 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 selectedContainer: .constant(""),
                 isTailModeEnabled: .constant(false),
                 isStreamPaused: .constant(false),
-                searchQuery: .constant("error"),
-                searchMatchCase: .constant(false),
-                selectedSearchMatchIndex: .constant(2),
-                searchPulseID: 0,
-                searchSummary: searchSummary,
                 statusText: "Last updated 12:00:00",
                 podOptions: podOptions,
                 selectedPodID: podOptions.isEmpty ? nil : .constant(selectedPodID),
                 presentationStyle: presentationStyle,
                 showsContainerPicker: showsContainerPicker,
                 containerOptions: containerOptions,
+                visibleLogText: searchSummary.displayedText,
                 onReload: {},
                 onSave: {},
                 onSaveVisibleZip: { _ in },
@@ -5617,27 +6442,22 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     ManifestUnsavedEditsSlot(isVisible: true)
                 }
 
-                ManifestToolbarScrollRow {
-                    ManifestToolbarGroup {
-                        Button("Apply YAML") {}
-                            .buttonStyle(.borderedProminent)
-                        Button("Quick Edit") {}
-                            .buttonStyle(.bordered)
-                        Button("Edit…") {}
-                            .buttonStyle(.bordered)
-                        Button("Undo") {}
-                            .buttonStyle(.bordered)
-                        Button("Revert") {}
-                            .buttonStyle(.bordered)
-                    }
-
-                    ManifestToolbarGroup {
-                        Button("Import…") {}
-                            .buttonStyle(.bordered)
-                        Button("Export…") {}
-                            .buttonStyle(.bordered)
-                        ManifestStatusChip(text: "Last updated 12:00:00", systemImage: "clock")
-                    }
+                ManifestActionToolbar(
+                    applyTitle: "Apply YAML",
+                    canApply: true,
+                    applyHelp: "Apply local changes",
+                    statusText: "Last updated 12:00:00",
+                    onApply: {}
+                ) {
+                    Button("Quick Edit") {}
+                        .buttonStyle(.bordered)
+                    Button("Edit…") {}
+                        .buttonStyle(.bordered)
+                } secondaryActions: {
+                    Button("Draft") {}
+                        .buttonStyle(.bordered)
+                    Button("File") {}
+                        .buttonStyle(.bordered)
                 }
             }
             .frame(width: width, alignment: .leading)
@@ -5852,6 +6672,32 @@ private final class BenchmarkTableDataSource: NSObject, NSTableViewDataSource, N
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         NSTextField(labelWithString: "row-\(row)")
+    }
+}
+
+@MainActor
+private final class LogSearchChromeBenchmarkModel: ObservableObject {
+    @Published var query = ""
+    @Published var matchCase = false
+    @Published var selectedMatchIndex = 0
+    @Published var searchSummary: ResourceLogSearchResult?
+}
+
+private struct LogSearchChromeBenchmarkHarness: View {
+    @ObservedObject var model: LogSearchChromeBenchmarkModel
+
+    var body: some View {
+        ResourceLogsSearchBar(
+            query: $model.query,
+            matchCase: $model.matchCase,
+            selectedMatchIndex: $model.selectedMatchIndex,
+            focusRequestID: 0,
+            searchSummary: model.searchSummary,
+            placeholder: "Search logs",
+            findHelp: "Find in logs",
+            matchCaseHelp: "Match case"
+        )
+        .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
     }
 }
 

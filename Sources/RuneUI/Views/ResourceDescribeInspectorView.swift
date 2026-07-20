@@ -15,6 +15,7 @@ struct ResourceDescribeInspectorPane: View {
     let onExportToExportFolder: () -> Void
     let onExportAndOpen: () -> Void
     let readOnlyResetID: String
+    var documentState: ManifestDocumentState = .ready
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
@@ -23,7 +24,6 @@ struct ResourceDescribeInspectorPane: View {
     @State private var findQuery = ""
     @State private var findMatchCase = false
     @State private var selectedFindMatchIndex = 0
-    @State private var isDescribeReadOnlyDialogPresented = false
 
     var body: some View {
         let canApplyYAML = canApplyMutations
@@ -39,44 +39,47 @@ struct ResourceDescribeInspectorPane: View {
                 ManifestUnsavedEditsChip()
             }
         } toolbar: {
-            ManifestToolbarScrollRow {
+            ManifestActionToolbar(
+                applyTitle: t(.apply),
+                canApply: canApplyYAML,
+                applyHelp: hasUnsavedEdits
+                    ? "Sends the manifest to the cluster. Closing the editor or this tab does not."
+                    : "No local YAML changes to apply.",
+                statusText: statusText,
+                onApply: onApply
+            ) {
+                Button {
+                    onOpenYAMLEditor()
+                } label: {
+                    Label("Edit YAML…", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("resource-describe-edit-yaml")
+                .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Open this resource's editable YAML. Changes stay local until you choose Apply.")
+            } secondaryActions: {
                 if !simpleMode {
-                    ManifestToolbarGroup {
-                        ManifestManagedFieldsToggle(
-                            hidesManagedFields: $hidesManagedFields,
-                            isDisabled: managedFieldsFilter.removedBlockCount == 0
-                        )
-                    }
+                    ManifestManagedFieldsToggle(
+                        hidesManagedFields: $hidesManagedFields,
+                        isDisabled: managedFieldsFilter.removedBlockCount == 0
+                    )
                 }
 
-                ManifestToolbarGroup {
-                    ManifestStatusChip(text: statusText, systemImage: "clock")
-
-                    Button(t(.apply), action: onApply)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canApplyYAML)
-                        .help(hasUnsavedEdits ? "Sends the manifest to the cluster. Closing the editor or this tab does not." : "No local YAML changes to apply.")
-
-                    Button("\(t(.yamlManifest))...") {
-                        isDescribeReadOnlyDialogPresented = true
-                    }
-                        .buttonStyle(.bordered)
-                        .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Opens the YAML manifest for this resource—the same buffer as the YAML tab. Use Apply to push changes to the cluster.")
-
-                    Menu {
-                        Button("\(t(.exportDescribe))...", action: onExport)
-                        Button("Save Describe to Export Folder", action: onExportToExportFolder)
-                        Button("Save Describe and Open", action: onExportAndOpen)
-                    } label: {
-                        Label(t(.exportDescribe), systemImage: "square.and.arrow.down")
-                    }
-                    .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Export the current describe output to a file.")
+                Menu {
+                    Button("\(t(.exportDescribe))...", action: onExport)
+                    Button("Save Describe to Export Folder", action: onExportToExportFolder)
+                    Button("Save Describe and Open", action: onExportAndOpen)
+                } label: {
+                    Label(t(.exportDescribe), systemImage: "square.and.arrow.down")
+                        .runeMinimumInteractiveTarget()
                 }
+                .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Export the current describe output to a file.")
             }
         } status: {
-            EmptyView()
+            if let staleContentState = documentState.staleContentState {
+                RuneContentStateView(staleContentState, variant: .inline)
+            }
         } surface: {
             FindableInspectorSurface(
                 text: presentedDescribeText,
@@ -86,29 +89,19 @@ struct ResourceDescribeInspectorPane: View {
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
             ) {
-                DescribeTextSurface(
-                    text: presentedDescribeText,
-                    minHeight: 280,
-                    resetID: readOnlyResetID,
-                    searchQuery: findQuery,
-                    searchMatchCase: findMatchCase,
-                    selectedSearchMatchIndex: selectedFindMatchIndex
-                )
+                ManifestDocumentSurface(state: documentState) {
+                    DescribeTextSurface(
+                        text: presentedDescribeText,
+                        minHeight: 280,
+                        resetID: readOnlyResetID,
+                        searchQuery: findQuery,
+                        searchMatchCase: findMatchCase,
+                        selectedSearchMatchIndex: selectedFindMatchIndex
+                    )
+                }
             }
         } footer: {
             EmptyView()
-        }
-        .confirmationDialog(
-            t(.describeReadOnlyNote),
-            isPresented: $isDescribeReadOnlyDialogPresented,
-            titleVisibility: .visible
-        ) {
-            Button("\(t(.yamlManifest))...") {
-                onOpenYAMLEditor()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(t(.yamlEditsStayLocal))
         }
     }
 

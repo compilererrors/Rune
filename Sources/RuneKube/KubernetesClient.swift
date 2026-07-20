@@ -258,6 +258,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 qosClass: pod.qosClass,
                 containersReady: pod.containersReady,
                 containerNamesLine: pod.containerNamesLine,
+                initContainerNamesLine: pod.initContainerNamesLine,
+                ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
                 ownerReferencesLine: pod.ownerReferencesLine
@@ -1047,17 +1049,169 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         filter: LogTimeFilter,
         previous: Bool
     ) async throws -> String {
-        try await podLogs(
+        if let container = Self.normalizedContainerName(container) {
+            return try await podLogs(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                podName: podName,
+                container: container,
+                filter: filter,
+                previous: previous,
+                timeoutOverride: nil,
+                profile: .pod
+            )
+        }
+
+        let pod = try await fetchPodSummaryForInspector(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            podName: podName
+        )
+        return try await podLogs(
             from: sources,
             context: context,
             namespace: namespace,
             podName: podName,
-            container: container,
+            containers: pod.logContainerNames,
+            filter: filter,
+            previous: previous
+        )
+    }
+
+    /// Fetches one or every known container without relying on kubectl-only `allContainers` semantics.
+    public func podLogs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        containers: [String],
+        filter: LogTimeFilter,
+        previous: Bool
+    ) async throws -> String {
+        let containers = Self.normalizedContainerNames(containers)
+        guard containers.count > 1 else {
+            return try await podLogs(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                podName: podName,
+                container: containers.first,
+                filter: filter,
+                previous: previous,
+                timeoutOverride: nil,
+                profile: .pod
+            )
+        }
+
+        let lines = try await collectContainerPodLogLines(
+            podName: podName,
+            containers: containers,
+            sources: sources,
+            context: context,
+            namespace: namespace,
             filter: filter,
             previous: previous,
             timeoutOverride: nil,
-            profile: .pod
+            profile: .pod,
+            allowsPartialFailure: true
         )
+        return lines
+            .map { line in
+                "[\(line.containerName ?? "container")] \(line.text)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func normalizedContainerName(_ container: String?) -> String? {
+        let trimmed = container?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizedContainerNames(_ containers: [String]) -> [String] {
+        var seen: Set<String> = []
+        return containers.compactMap { container in
+            guard let normalized = normalizedContainerName(container), seen.insert(normalized).inserted else {
+                return nil
+            }
+            return normalized
+        }
+    }
+
+    private func collectContainerPodLogLines(
+        podName: String,
+        containers: [String],
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        filter: LogTimeFilter,
+        previous: Bool,
+        timeoutOverride: TimeInterval?,
+        profile: LogQueryProfile,
+        allowsPartialFailure: Bool
+    ) async throws -> [TaggedLogLine] {
+        let containers = Self.normalizedContainerNames(containers)
+        guard containers.count > 1 else {
+            let logs = try await podLogs(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                podName: podName,
+                container: containers.first,
+                filter: filter,
+                previous: previous,
+                timeoutOverride: timeoutOverride,
+                profile: profile
+            )
+            return taggedLines(from: logs, podName: podName, containerName: nil)
+        }
+
+        var collectedLines: [TaggedLogLine] = []
+        var failures: [(container: String, error: Error)] = []
+        var successfulContainerFetches = 0
+        for container in containers {
+            do {
+                let logs = try await podLogs(
+                    from: sources,
+                    context: context,
+                    namespace: namespace,
+                    podName: podName,
+                    container: container,
+                    filter: filter,
+                    previous: previous,
+                    timeoutOverride: timeoutOverride,
+                    profile: profile
+                )
+                successfulContainerFetches += 1
+                collectedLines.append(
+                    contentsOf: taggedLines(
+                        from: logs,
+                        podName: podName,
+                        containerName: container
+                    )
+                )
+            } catch {
+                if error is CancellationError || !allowsPartialFailure {
+                    throw error
+                }
+                failures.append((container, error))
+            }
+        }
+
+        if successfulContainerFetches == 0, let firstFailure = failures.first {
+            throw firstFailure.error
+        }
+        for failure in failures {
+            collectedLines.append(TaggedLogLine(
+                podName: podName,
+                containerName: failure.container,
+                text: "⚠ Logs unavailable for container \(failure.container): \(failure.error.localizedDescription)",
+                timestamp: nil,
+                sequence: Int.max
+            ))
+        }
+        return collectedLines
     }
 
     private func podLogs(
@@ -1145,7 +1299,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let merged = collectedLines
             .sorted(by: Self.taggedLineSort)
             .map { line in
-                "[\(line.podName)] \(line.text)"
+                let containerTag = line.containerName.map { " [\($0)]" } ?? ""
+                return "[\(line.podName)]\(containerTag) \(line.text)"
             }
             .joined(separator: "\n")
 
@@ -1210,7 +1365,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let merged = collectedLines
             .sorted(by: Self.taggedLineSort)
             .map { line in
-                "[\(line.podName)] \(line.text)"
+                let containerTag = line.containerName.map { " [\($0)]" } ?? ""
+                return "[\(line.podName)]\(containerTag) \(line.text)"
             }
             .joined(separator: "\n")
 
@@ -1288,18 +1444,19 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 nextPodIndex += 1
                 group.addTask {
                     do {
-                        let logs = try await self.podLogs(
-                            from: sources,
+                        let lines = try await self.collectContainerPodLogLines(
+                            podName: pod.name,
+                            containers: pod.logContainerNames,
+                            sources: sources,
                             context: context,
                             namespace: namespace,
-                            podName: pod.name,
-                            container: nil,
                             filter: filter,
                             previous: previous,
                             timeoutOverride: self.unifiedLogsPerPodTimeout,
-                            profile: .unifiedPerPod
+                            profile: .unifiedPerPod,
+                            allowsPartialFailure: true
                         )
-                        return .success(self.taggedLines(from: logs, podName: pod.name))
+                        return .success(lines)
                     } catch {
                         if error is CancellationError {
                             throw error
@@ -1321,18 +1478,19 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     nextPodIndex += 1
                     group.addTask {
                         do {
-                            let logs = try await self.podLogs(
-                                from: sources,
+                            let lines = try await self.collectContainerPodLogLines(
+                                podName: pod.name,
+                                containers: pod.logContainerNames,
+                                sources: sources,
                                 context: context,
                                 namespace: namespace,
-                                podName: pod.name,
-                                container: nil,
                                 filter: filter,
                                 previous: previous,
                                 timeoutOverride: self.unifiedLogsPerPodTimeout,
-                                profile: .unifiedPerPod
+                                profile: .unifiedPerPod,
+                                allowsPartialFailure: true
                             )
-                            return .success(self.taggedLines(from: logs, podName: pod.name))
+                            return .success(lines)
                         } catch {
                             if error is CancellationError {
                                 throw error
@@ -1511,6 +1669,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         onTermination: @escaping @Sendable (Int32) -> Void
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
+        let registrationGeneration = await terminalSessionRegistry.beginStart(id: sessionID)
         let handle = try await restClient.startPodTerminalSession(
             environment: env,
             contextName: context.name,
@@ -1521,7 +1680,14 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             onOutput: onOutput,
             onTermination: onTermination
         )
-        await terminalSessionRegistry.insert(handle: handle, id: sessionID)
+        let didInsert = await terminalSessionRegistry.insert(
+            handle: handle,
+            id: sessionID,
+            generation: registrationGeneration
+        )
+        guard didInsert else {
+            throw CancellationError()
+        }
     }
 
     public func writeToPodTerminalSession(id: String, text: String) async throws {
@@ -2236,13 +2402,24 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
-    private func taggedLines(from logs: String, podName: String) -> [TaggedLogLine] {
+    private func taggedLines(
+        from logs: String,
+        podName: String,
+        containerName: String? = nil
+    ) -> [TaggedLogLine] {
         logs
             .split(whereSeparator: \.isNewline)
             .map { String($0) }
             .filter { !$0.isEmpty }
-            .map { line in
-                TaggedLogLine(podName: podName, text: line, timestamp: parseTimestamp(line))
+            .enumerated()
+            .map { index, line in
+                TaggedLogLine(
+                    podName: podName,
+                    containerName: containerName,
+                    text: line,
+                    timestamp: parseTimestamp(line),
+                    sequence: index
+                )
             }
     }
 
@@ -2279,13 +2456,25 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             return lhs.podName < rhs.podName
         }
 
+        let lhsContainer = lhs.containerName ?? ""
+        let rhsContainer = rhs.containerName ?? ""
+        if lhsContainer != rhsContainer {
+            return lhsContainer < rhsContainer
+        }
+
+        if lhs.sequence != rhs.sequence {
+            return lhs.sequence < rhs.sequence
+        }
+
         return lhs.text < rhs.text
     }
 
     private struct TaggedLogLine: Sendable {
         let podName: String
+        let containerName: String?
         let text: String
         let timestamp: Date?
+        let sequence: Int
     }
 
     private enum UnifiedPodLogFetchResult: Sendable {
@@ -2529,6 +2718,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             qosClass: detail.qosClass ?? base.qosClass,
             containersReady: detail.containersReady ?? base.containersReady,
             containerNamesLine: detail.containerNamesLine ?? base.containerNamesLine,
+            initContainerNamesLine: detail.initContainerNamesLine ?? base.initContainerNamesLine,
+            ephemeralContainerNamesLine: detail.ephemeralContainerNamesLine ?? base.ephemeralContainerNamesLine,
             labels: detail.labels.isEmpty ? base.labels : detail.labels,
             containerImagesLine: detail.containerImagesLine ?? base.containerImagesLine,
             ownerReferencesLine: detail.ownerReferencesLine ?? base.ownerReferencesLine
@@ -2724,6 +2915,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 qosClass: pod.qosClass,
                 containersReady: pod.containersReady,
                 containerNamesLine: pod.containerNamesLine,
+                initContainerNamesLine: pod.initContainerNamesLine,
+                ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
                 ownerReferencesLine: pod.ownerReferencesLine
@@ -2752,6 +2945,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 qosClass: pod.qosClass,
                 containersReady: pod.containersReady,
                 containerNamesLine: pod.containerNamesLine,
+                initContainerNamesLine: pod.initContainerNamesLine,
+                ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
                 ownerReferencesLine: pod.ownerReferencesLine
@@ -3394,11 +3589,23 @@ private actor PortForwardRegistry {
     }
 }
 
-private actor TerminalSessionRegistry {
+actor TerminalSessionRegistry {
     private var handles: [String: any RunningCommandControlling] = [:]
+    private var generations: [String: UInt64] = [:]
 
-    func insert(handle: any RunningCommandControlling, id: String) {
+    func beginStart(id: String) -> UInt64 {
+        let generation = generations[id, default: 0] &+ 1
+        generations[id] = generation
+        return generation
+    }
+
+    func insert(handle: any RunningCommandControlling, id: String, generation: UInt64) -> Bool {
+        guard generations[id] == generation else {
+            handle.terminate()
+            return false
+        }
         handles[id] = handle
+        return true
     }
 
     func handle(id: String) -> (any RunningCommandControlling)? {
@@ -3406,6 +3613,7 @@ private actor TerminalSessionRegistry {
     }
 
     func remove(id: String) -> (any RunningCommandControlling)? {
-        handles.removeValue(forKey: id)
+        generations[id, default: 0] &+= 1
+        return handles.removeValue(forKey: id)
     }
 }

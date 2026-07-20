@@ -229,6 +229,10 @@ public struct KubernetesOutputParser {
         let containersReady = containersReadySummary(spec: spec, status: st)
         let names = spec?.containers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let containerNamesLine = names.map { $0.joined(separator: ", ") }
+        let initNames = spec?.initContainers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let initContainerNamesLine = initNames.map { $0.joined(separator: ", ") }
+        let ephemeralNames = spec?.ephemeralContainers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let ephemeralContainerNamesLine = ephemeralNames.map { $0.joined(separator: ", ") }
         let images = spec?.containers?.compactMap { nonEmpty($0.image) }
         let containerImagesLine = images.map { $0.joined(separator: ", ") }
         return PodSummary(
@@ -245,6 +249,8 @@ public struct KubernetesOutputParser {
             qosClass: nonEmpty(st?.qosClass),
             containersReady: containersReady,
             containerNamesLine: nonEmpty(containerNamesLine),
+            initContainerNamesLine: nonEmpty(initContainerNamesLine),
+            ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNamesLine),
             labels: item.metadata.labels ?? [:],
             containerImagesLine: nonEmpty(containerImagesLine),
             ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
@@ -261,7 +267,8 @@ public struct KubernetesOutputParser {
         guard let status else { return 0 }
         let regular = status.containerStatuses?.reduce(0) { $0 + ($1.restartCount ?? 0) } ?? 0
         let inits = status.initContainerStatuses?.reduce(0) { $0 + ($1.restartCount ?? 0) } ?? 0
-        return regular + inits
+        let ephemeral = status.ephemeralContainerStatuses?.reduce(0) { $0 + ($1.restartCount ?? 0) } ?? 0
+        return regular + inits + ephemeral
     }
 
     private func parsePodListJSONObject(namespace: String, from raw: String, allNamespaces: Bool) throws -> [PodSummary] {
@@ -313,8 +320,11 @@ public struct KubernetesOutputParser {
         let status = item["status"] as? [String: Any]
         let spec = item["spec"] as? [String: Any]
         let containers = spec?["containers"] as? [[String: Any]]
+        let initContainers = spec?["initContainers"] as? [[String: Any]]
+        let ephemeralContainers = spec?["ephemeralContainers"] as? [[String: Any]]
         let containerStatuses = status?["containerStatuses"] as? [[String: Any]]
         let initContainerStatuses = status?["initContainerStatuses"] as? [[String: Any]]
+        let ephemeralContainerStatuses = status?["ephemeralContainerStatuses"] as? [[String: Any]]
         let creationTimestamp = metadata["creationTimestamp"] as? String
         let labels = (metadata["labels"] as? [String: Any])?.compactMapValues { value in
             nonEmpty(value as? String)
@@ -334,6 +344,12 @@ public struct KubernetesOutputParser {
         let containerNames = containers?
             .compactMap { nonEmpty($0["name"] as? String) }
             .joined(separator: ", ")
+        let initContainerNames = initContainers?
+            .compactMap { nonEmpty($0["name"] as? String) }
+            .joined(separator: ", ")
+        let ephemeralContainerNames = ephemeralContainers?
+            .compactMap { nonEmpty($0["name"] as? String) }
+            .joined(separator: ", ")
         let containerImages = containers?
             .compactMap { nonEmpty($0["image"] as? String) }
             .joined(separator: ", ")
@@ -345,7 +361,9 @@ public struct KubernetesOutputParser {
             name: name,
             namespace: namespace,
             status: nonEmpty(status?["phase"] as? String) ?? "Unknown",
-            totalRestarts: restartSum(from: containerStatuses) + restartSum(from: initContainerStatuses),
+            totalRestarts: restartSum(from: containerStatuses)
+                + restartSum(from: initContainerStatuses)
+                + restartSum(from: ephemeralContainerStatuses),
             ageDescription: ageDescription,
             cpuUsage: nil,
             memoryUsage: nil,
@@ -355,6 +373,8 @@ public struct KubernetesOutputParser {
             qosClass: nonEmpty(status?["qosClass"] as? String),
             containersReady: containersReady,
             containerNamesLine: nonEmpty(containerNames),
+            initContainerNamesLine: nonEmpty(initContainerNames),
+            ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNames),
             labels: labels,
             containerImagesLine: nonEmpty(containerImages),
             ownerReferencesLine: nonEmpty(ownerReferences)
@@ -1013,6 +1033,8 @@ public struct KubernetesOutputParser {
     private struct KubePodSpec: Decodable {
         let nodeName: String?
         let containers: [KubePodSpecContainer]?
+        let initContainers: [KubePodSpecContainer]?
+        let ephemeralContainers: [KubePodSpecContainer]?
     }
 
     private struct KubePodSpecContainer: Decodable {
@@ -1040,6 +1062,7 @@ public struct KubernetesOutputParser {
         let qosClass: String?
         let containerStatuses: [KubePodContainerStatus]?
         let initContainerStatuses: [KubePodContainerStatus]?
+        let ephemeralContainerStatuses: [KubePodContainerStatus]?
     }
 
     private struct KubePodContainerStatus: Decodable {

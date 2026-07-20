@@ -177,8 +177,18 @@ public protocol GCPServiceAccountHTTPClient: Sendable {
 
 /// URLSession implementation used by the production provider. Redirects are
 /// rejected so a signed assertion is never forwarded to another origin.
-public struct GCPServiceAccountURLSessionHTTPClient: GCPServiceAccountHTTPClient, Sendable {
-    public init() {}
+public final class GCPServiceAccountURLSessionHTTPClient: GCPServiceAccountHTTPClient, @unchecked Sendable {
+    private let sessionConfiguration: URLSessionConfiguration
+
+    public init() {
+        self.sessionConfiguration = .ephemeral
+    }
+
+    /// Test-only transport seam. Credential validation still pins requests to
+    /// Google's HTTPS token endpoint; production callers use `init()`.
+    init(sessionConfiguration: URLSessionConfiguration) {
+        self.sessionConfiguration = sessionConfiguration
+    }
 
     public func send(_ request: GCPServiceAccountHTTPRequest) async throws -> GCPServiceAccountHTTPResponse {
         var urlRequest = URLRequest(url: request.url)
@@ -189,7 +199,7 @@ public struct GCPServiceAccountURLSessionHTTPClient: GCPServiceAccountHTTPClient
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
+        let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
         configuration.waitsForConnectivity = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil

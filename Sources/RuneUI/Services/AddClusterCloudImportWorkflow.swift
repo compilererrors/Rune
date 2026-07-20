@@ -34,6 +34,10 @@ public enum AddClusterCloudImportWorkflow {
         }
     }
 
+    public static func readyForReviewStatus(for provider: CloudKubeConfigProvider) -> String {
+        "\(providerTitle(provider)) kubeconfig is ready for review."
+    }
+
     public static func failedStatus() -> String {
         "Cloud import failed."
     }

@@ -904,6 +904,15 @@ public final class RuneAppState: ObservableObject {
         isLoadingResourceDetails = true
     }
 
+    /// Starts a refetch for the currently visible resource without blanking the
+    /// document or discarding the user's YAML baseline and undo history.
+    public func beginResourceDetailRefresh(scope: ResourceDetailScope?) {
+        resourceDetailScope = scope
+        lastResourceYAMLError = nil
+        lastResourceDescribeError = nil
+        isLoadingResourceDetails = true
+    }
+
     public func finishResourceDetailLoad() {
         isLoadingResourceDetails = false
     }
@@ -920,8 +929,20 @@ public final class RuneAppState: ObservableObject {
         lastResourceYAMLError = message
     }
 
+    /// Records a same-scope refresh failure while retaining the last fetched
+    /// document, its baseline, and any local undo history.
+    public func setResourceYAMLRefreshError(_ message: String?) {
+        lastResourceYAMLError = message
+    }
+
     public func setResourceDescribeError(_ message: String?) {
         resourceDescribe = ""
+        lastResourceDescribeError = message
+    }
+
+    /// Records a same-scope refresh failure while retaining the last visible
+    /// describe output.
+    public func setResourceDescribeRefreshError(_ message: String?) {
         lastResourceDescribeError = message
     }
 
@@ -963,6 +984,26 @@ public final class RuneAppState: ObservableObject {
         guard let session = terminalSessions.first(where: { $0.id == id }) else { return }
         activeTerminalSessionID = id
         terminalSession = session
+    }
+
+    @discardableResult
+    public func removeTerminalSessions(contextName: String, namespace: String? = nil) -> [PodTerminalSession] {
+        let removed = terminalSessions.filter {
+            $0.contextName == contextName && (namespace == nil || $0.namespace == namespace)
+        }
+        guard !removed.isEmpty else { return [] }
+
+        let removedIDs = Set(removed.map(\.id))
+        terminalSessions.removeAll { removedIDs.contains($0.id) }
+        if let activeTerminalSessionID,
+           !removedIDs.contains(activeTerminalSessionID),
+           let active = terminalSessions.first(where: { $0.id == activeTerminalSessionID }) {
+            terminalSession = active
+        } else {
+            activeTerminalSessionID = terminalSessions.first?.id
+            terminalSession = terminalSessions.first
+        }
+        return removed
     }
 
     public func appendTerminalSessionOutput(id: String, text: String) {

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import struct RuneSharedCore.RuneLargeTextIndex
 import RuneCore
@@ -8,17 +9,46 @@ enum ResourceLogsPresentationStyle: Hashable {
     case terminalCompact
 }
 
+struct ResourceLogsLayoutMetrics {
+    static let regularOutputMinimumHeight: CGFloat = 280
+    static let terminalCompactOutputMinimumHeight: CGFloat = 210
+    static let sourcePickerWidth: CGFloat = 166
+    static let podPickerWidth: CGFloat = 240
+    static let searchChromeHeight: CGFloat = 30
+    static let searchChromeMinimumWidth: CGFloat = 220
+    static let searchChromeIdealWidth: CGFloat = 420
+    static let searchChromeMaximumWidth: CGFloat = 460
+    static let searchFieldMinimumWidth: CGFloat = 112
+    static let searchFieldIdealWidth: CGFloat = 200
+    static let searchMatchStatusWidth: CGFloat = 68
+    static let compactSearchMatchStatusWidth: CGFloat = 52
+    static let insightsRowHeight: CGFloat = 28
+    static let querySearchDebounceNanoseconds: UInt64 = 25_000_000
+    static let streamedTextSearchDebounceNanoseconds: UInt64 = 80_000_000
+    static let streamedTextSummaryDebounceNanoseconds: UInt64 = 120_000_000
+
+    static func outputMinimumHeight(for presentationStyle: ResourceLogsPresentationStyle) -> CGFloat {
+        switch presentationStyle {
+        case .regular:
+            return regularOutputMinimumHeight
+        case .terminalCompact:
+            return terminalCompactOutputMinimumHeight
+        }
+    }
+
+    static func startsWithStructuredSummaryCollapsed(
+        for presentationStyle: ResourceLogsPresentationStyle
+    ) -> Bool {
+        presentationStyle == .terminalCompact
+    }
+}
+
 struct ResourceLogsToolbar: View {
     @Binding var selectedLogPreset: PodLogPreset
     @Binding var includePreviousLogs: Bool
     @Binding var selectedContainer: String
     @Binding var isTailModeEnabled: Bool
     @Binding var isStreamPaused: Bool
-    @Binding var searchQuery: String
-    @Binding var searchMatchCase: Bool
-    @Binding var selectedSearchMatchIndex: Int
-    let searchPulseID: Int
-    let searchSummary: ResourceLogSearchResult?
     let statusText: String
     var podOptions: [PodSummary] = []
     var selectedPodID: Binding<String>? = nil
@@ -27,6 +57,9 @@ struct ResourceLogsToolbar: View {
     var presentationStyle: ResourceLogsPresentationStyle = .regular
     var showsContainerPicker: Bool = true
     let containerOptions: [String]
+    var sourceSummaryTitle: String? = nil
+    var sourceSummaryValues: [String] = []
+    let visibleLogText: String
     let onReload: () -> Void
     let onSave: () -> Void
     var onSaveToExportFolder: () -> Void = {}
@@ -65,17 +98,6 @@ struct ResourceLogsToolbar: View {
                 toolbarActions
             }
             .controlSize(.small)
-
-            ResourceLogsSearchBar(
-                query: $searchQuery,
-                matchCase: $searchMatchCase,
-                selectedMatchIndex: $selectedSearchMatchIndex,
-                searchPulseID: searchPulseID,
-                searchSummary: searchSummary,
-                placeholder: t(.searchLogs),
-                findHelp: t(.findInLogs),
-                matchCaseHelp: t(.matchCase)
-            )
         }
     }
 
@@ -90,32 +112,21 @@ struct ResourceLogsToolbar: View {
                 toolbarActions
             }
             .controlSize(.small)
-
-            ResourceLogsSearchBar(
-                query: $searchQuery,
-                matchCase: $searchMatchCase,
-                selectedMatchIndex: $selectedSearchMatchIndex,
-                searchPulseID: searchPulseID,
-                searchSummary: searchSummary,
-                placeholder: t(.searchLogs),
-                findHelp: t(.findInLogs),
-                matchCaseHelp: t(.matchCase)
-            )
-            .frame(minWidth: 240, maxWidth: .infinity)
-            .layoutPriority(1)
         }
     }
 
     private var sourceControls: some View {
         LogToolbarGroup(role: .source) {
             LogToolbarPickerField(title: t(.window), role: .window) {
-                Picker("Log window", selection: $selectedLogPreset) {
-                    ForEach(PodLogPreset.allCases) { preset in
-                        Text(preset.title).tag(preset)
+                LogToolbarPopupPicker(
+                    "Log window",
+                    selection: $selectedLogPreset,
+                    options: PodLogPreset.allCases.map { preset in
+                        .init(value: preset, title: preset.title)
                     }
-                }
-                .labelsHidden()
-                .frame(width: 158)
+                )
+                .frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)
+                .runeMinimumInteractiveTarget()
             }
 
             if let selectedPodID, !podOptions.isEmpty {
@@ -136,16 +147,26 @@ struct ResourceLogsToolbar: View {
 
             if showsContainerPicker, !containerOptions.isEmpty {
                 LogToolbarPickerField(title: t(.container), role: .container) {
-                    Picker("Container", selection: $selectedContainer) {
-                        Text(t(.allContainers)).tag("")
-                        ForEach(containerOptions, id: \.self) { container in
-                            Text(container).tag(container)
+                    LogToolbarPopupPicker(
+                        "Container",
+                        selection: $selectedContainer,
+                        options: [
+                            .init(value: "", title: t(.allContainers))
+                        ] + containerOptions.map { container in
+                            .init(value: container, title: container)
                         }
-                    }
-                    .labelsHidden()
-                    .frame(width: 166)
+                    )
+                    .frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)
+                    .runeMinimumInteractiveTarget()
                     .help(t(.chooseContainerHelp))
                 }
+            }
+
+            if let sourceSummaryTitle, !sourceSummaryValues.isEmpty {
+                LogToolbarSourceSummary(
+                    title: sourceSummaryTitle,
+                    values: sourceSummaryValues
+                )
             }
         }
     }
@@ -262,17 +283,17 @@ struct ResourceLogsToolbar: View {
 
                 Menu {
                     Button {
-                        onSaveVisibleZip(searchSummary?.displayedText ?? "")
+                        onSaveVisibleZip(visibleLogText)
                     } label: {
                         Label("Save As...", systemImage: "doc.zipper")
                     }
                     Button {
-                        onSaveVisibleZipToExportFolder(searchSummary?.displayedText ?? "")
+                        onSaveVisibleZipToExportFolder(visibleLogText)
                     } label: {
                         Label("Save to Export Folder", systemImage: "folder.badge.plus")
                     }
                     Button {
-                        onSaveVisibleZipAndOpen(searchSummary?.displayedText ?? "")
+                        onSaveVisibleZipAndOpen(visibleLogText)
                     } label: {
                         Label("Save and Open", systemImage: "archivebox")
                     }
@@ -439,12 +460,13 @@ private struct LogToolbarPickerField<Content: View>: View {
     let title: String
     let role: Role
     @ViewBuilder let content: Content
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 .lineLimit(1)
                 .tracking(0.3)
             content
@@ -456,19 +478,85 @@ private struct LogToolbarPickerField<Content: View>: View {
     private var fieldWidth: CGFloat {
         switch role {
         case .pod:
-            return 240
-        case .container:
-            return 166
-        case .window:
-            return 158
+            return ResourceLogsLayoutMetrics.podPickerWidth
+        case .container, .window:
+            return ResourceLogsLayoutMetrics.sourcePickerWidth
         }
     }
 
 }
 
+private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
+    struct Option: Hashable {
+        let value: Value
+        let title: String
+    }
+
+    let accessibilityLabel: String
+    @Binding var selection: Value
+    let options: [Option]
+
+    init(
+        _ accessibilityLabel: String,
+        selection: Binding<Value>,
+        options: [Option]
+    ) {
+        self.accessibilityLabel = accessibilityLabel
+        _selection = selection
+        self.options = options
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.controlSize = .small
+        popup.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        popup.target = context.coordinator
+        popup.action = #selector(Coordinator.selectionChanged(_:))
+        return popup
+    }
+
+    func updateNSView(_ popup: NSPopUpButton, context: Context) {
+        context.coordinator.parent = self
+        let titles = options.map(\.title)
+        if popup.itemTitles != titles {
+            popup.removeAllItems()
+            popup.addItems(withTitles: titles)
+        }
+        if let selectedIndex = options.firstIndex(where: { $0.value == selection }) {
+            popup.selectItem(at: selectedIndex)
+        } else {
+            popup.select(nil)
+        }
+        popup.isEnabled = !options.isEmpty
+        popup.setAccessibilityLabel(accessibilityLabel)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: LogToolbarPopupPicker
+
+        init(parent: LogToolbarPopupPicker) {
+            self.parent = parent
+        }
+
+        @objc func selectionChanged(_ sender: NSPopUpButton) {
+            let index = sender.indexOfSelectedItem
+            guard parent.options.indices.contains(index) else { return }
+            parent.selection = parent.options[index].value
+        }
+    }
+}
+
 private struct LogToolbarStatusIndicator: View {
     let statusText: String
     let showsPreviousHint: Bool
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         ZStack {
@@ -496,124 +584,142 @@ private struct LogToolbarStatusIndicator: View {
     private var statusColor: Color {
         let normalized = statusText.lowercased()
         if normalized.contains("failed") || normalized.contains("error") {
-            return .red
+            return RuneSemanticColorRole.danger.color(in: runeThemePalette)
         }
         if normalized.contains("loading") || normalized.contains("reloading") {
-            return .blue
+            return RuneSemanticColorRole.info.color(in: runeThemePalette)
         }
         if normalized.contains("paused") {
-            return .yellow
+            return RuneSemanticColorRole.warning.color(in: runeThemePalette)
         }
-        return .green
+        return RuneSemanticColorRole.success.color(in: runeThemePalette)
     }
 }
 
-private struct ResourceLogsSourcePanel: View {
+private struct LogToolbarSourceSummary: View {
     let title: String
     let values: [String]
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "square.stack.3d.forward.dottedline")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-
+        VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                .lineLimit(1)
                 .tracking(0.3)
 
-            Text(values.joined(separator: ", "))
+            Label(values.joined(separator: ", "), systemImage: "square.stack.3d.forward.dottedline")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
+                .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-        }
+        .frame(width: 240, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel("\(title): \(values.joined(separator: ", "))")
     }
 }
 
-private struct ResourceStructuredLogSummaryPanel: View {
+struct ResourceStructuredLogSummaryPanel: View {
     let summary: ResourceStructuredLogSummary
     let onSearchFieldSample: (ResourceStructuredLogField, String) -> Void
     let onSearchDuplicate: (ResourceDuplicateLogLine) -> Void
+    var presentationStyle: ResourceLogsPresentationStyle = .regular
+    @State private var isCompactSummaryExpanded = false
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        if summary.isStructured || !summary.duplicateLines.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+        if hasInsights {
+            summaryContent
+                .accessibilityLabel(summarySubtitle)
+        }
+    }
+
+    var hasInsights: Bool {
+        summary.isStructured || !summary.duplicateLines.isEmpty
+    }
+
+    @ViewBuilder
+    private var summaryContent: some View {
+        if ResourceLogsLayoutMetrics.startsWithStructuredSummaryCollapsed(for: presentationStyle) {
+            RuneDisclosureSection(
+                "\(summary.isStructured ? "Structured logs" : "Repeated lines"), \(summarySubtitle)",
+                isExpanded: $isCompactSummaryExpanded
+            ) {
+                summaryDetails
+                    .padding(.top, 8)
+            } label: {
+                summaryHeader
+            }
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: summary.isStructured ? "curlybraces" : "text.line.first.and.arrowtriangle.forward")
+                    summaryHeader
+                    summaryControlContent
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(height: ResourceLogsLayoutMetrics.insightsRowHeight, alignment: .leading)
+        }
+    }
+
+    private var summaryHeader: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: summary.isStructured ? "curlybraces" : "text.line.first.and.arrowtriangle.forward")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                .frame(width: 14)
+
+            Text(summary.isStructured ? "Structured logs" : "Repeated lines")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
+
+            Text(summarySubtitle)
+                .font(.caption)
+                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(height: ResourceLogsLayoutMetrics.insightsRowHeight)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var summaryDetails: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 6) {
+                summaryControlContent
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(minHeight: ResourceLogsLayoutMetrics.insightsRowHeight, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var summaryControlContent: some View {
+        ForEach(summary.fields.prefix(6), id: \.key) { field in
+            fieldMenu(field)
+        }
+
+        if !summary.fields.isEmpty, !summary.duplicateLines.isEmpty {
+            Rectangle()
+                .fill(runeThemePalette?.divider ?? Color(nsColor: .separatorColor).opacity(0.35))
+                .frame(width: 1, height: 16)
+        }
+
+        ForEach(summary.duplicateLines.prefix(4), id: \.fingerprint) { duplicate in
+            Button {
+                onSearchDuplicate(duplicate)
+            } label: {
+                RuneChip(horizontalPadding: 7, verticalPadding: 2) {
+                    Label("\(duplicate.count)x", systemImage: "square.stack.3d.up")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14)
-
-                    Text(summary.isStructured ? "Structured logs" : "Repeated lines")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(summarySubtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Spacer(minLength: 0)
-                }
-
-                if !summary.fields.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(summary.fields.prefix(6), id: \.key) { field in
-                                fieldMenu(field)
-                            }
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-
-                if !summary.duplicateLines.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(summary.duplicateLines.prefix(4), id: \.fingerprint) { duplicate in
-                                Button {
-                                    onSearchDuplicate(duplicate)
-                                } label: {
-                                    Label("\(duplicate.count)x", systemImage: "square.stack.3d.up")
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .help("Search repeated log line: \(duplicate.fingerprint)")
-                            }
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
-                    }
+                        .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-            }
-            .accessibilityLabel(summarySubtitle)
+            .buttonStyle(.plain)
+            .runeMinimumInteractiveTarget()
+            .help("Search repeated log line: \(duplicate.fingerprint)")
         }
     }
 
@@ -639,10 +745,406 @@ private struct ResourceStructuredLogSummaryPanel: View {
             }
         } label: {
             Label("\(field.title) \(field.nonEmptyCount)", systemImage: "number")
+                .runeMinimumInteractiveTarget()
         }
         .menuStyle(.borderlessButton)
         .controlSize(.small)
         .help("Search structured field \(field.title)")
+    }
+}
+
+struct ResourceLogsPaneActions {
+    let onReload: () -> Void
+    let onSave: () -> Void
+    var onSaveToExportFolder: () -> Void = {}
+    var onSaveAndOpen: () -> Void = {}
+    let onSaveVisibleZip: (String) -> Void
+    var onSaveVisibleZipToExportFolder: (String) -> Void = { _ in }
+    var onSaveVisibleZipAndOpen: (String) -> Void = { _ in }
+    let onSaveFullZip: () -> Void
+    var onSaveFullZipToExportFolder: () -> Void = {}
+    var onSaveFullZipAndOpen: () -> Void = {}
+    let onSaveAllPodsZip: () -> Void
+    var onSaveAllPodsZipToExportFolder: () -> Void = {}
+    var onSaveAllPodsZipAndOpen: () -> Void = {}
+    let onCopySelection: () -> Void
+    let onCopyAll: () -> Void
+    let onToggleStreamPause: () -> Void
+}
+
+private struct ResourceLogsPaneSourceAdapter {
+    let selectedContainer: Binding<String>
+    let podOptions: [PodSummary]
+    let selectedPodID: Binding<String>?
+    let isFavoritePod: (PodSummary) -> Bool
+    let onToggleFavoritePod: (PodSummary) -> Void
+    let showsContainerPicker: Bool
+    let containerOptions: [String]
+    let sourcePanelTitle: String?
+    let sourcePanelValues: [String]
+    let emptyMessage: String
+    let noMatchesMessage: String
+
+    static func pod(
+        selectedContainer: Binding<String>,
+        podOptions: [PodSummary],
+        selectedPodID: Binding<String>?,
+        isFavoritePod: @escaping (PodSummary) -> Bool,
+        onToggleFavoritePod: @escaping (PodSummary) -> Void,
+        showsContainerPicker: Bool,
+        containerOptions: [String]
+    ) -> Self {
+        Self(
+            selectedContainer: selectedContainer,
+            podOptions: podOptions,
+            selectedPodID: selectedPodID,
+            isFavoritePod: isFavoritePod,
+            onToggleFavoritePod: onToggleFavoritePod,
+            showsContainerPicker: showsContainerPicker,
+            containerOptions: containerOptions,
+            sourcePanelTitle: nil,
+            sourcePanelValues: [],
+            emptyMessage: "The pod may be idle, or the current filter returned no lines.",
+            noMatchesMessage: "No log lines matched the current search."
+        )
+    }
+
+    static func unified(podNames: [String]) -> Self {
+        Self(
+            selectedContainer: .constant(""),
+            podOptions: [],
+            selectedPodID: nil,
+            isFavoritePod: { _ in false },
+            onToggleFavoritePod: { _ in },
+            showsContainerPicker: false,
+            containerOptions: [],
+            sourcePanelTitle: "Pods",
+            sourcePanelValues: podNames,
+            emptyMessage: "No lines were returned for the selected pods and the current filter. Pods may be idle or produce no output for this time window.",
+            noMatchesMessage: "No unified log lines matched the current search."
+        )
+    }
+}
+
+struct ResourceLogsExplorePanel: View {
+    @Binding var searchQuery: String
+    @Binding var searchMatchCase: Bool
+    @Binding var selectedSearchMatchIndex: Int
+    let searchFocusRequestID: Int
+    let searchResult: ResourceLogSearchResult?
+    let structuredSummary: ResourceStructuredLogSummary
+    let showsInsights: Bool
+    let presentationStyle: ResourceLogsPresentationStyle
+    let placeholder: String
+    let findHelp: String
+    let matchCaseHelp: String
+    let onSearchFieldSample: (ResourceStructuredLogField, String) -> Void
+    let onSearchDuplicate: (ResourceDuplicateLogLine) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ResourceLogsSearchBar(
+                query: $searchQuery,
+                matchCase: $searchMatchCase,
+                selectedMatchIndex: $selectedSearchMatchIndex,
+                focusRequestID: searchFocusRequestID,
+                searchSummary: searchResult,
+                placeholder: placeholder,
+                findHelp: findHelp,
+                matchCaseHelp: matchCaseHelp
+            )
+
+            if showsInsights && (structuredSummary.isStructured || !structuredSummary.duplicateLines.isEmpty) {
+                ResourceStructuredLogSummaryPanel(
+                    summary: structuredSummary,
+                    onSearchFieldSample: onSearchFieldSample,
+                    onSearchDuplicate: onSearchDuplicate,
+                    presentationStyle: presentationStyle
+                )
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RuneSurfaceBackground(kind: .inset))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Log search and insights")
+    }
+}
+
+actor ResourceLogsLatestWorkLane<Output: Sendable> {
+    private var generation: UInt64 = 0
+    private var currentTask: Task<Output, Error>?
+
+    func run(
+        priority: TaskPriority,
+        operation: @escaping @Sendable () throws -> Output
+    ) async throws -> Output {
+        generation &+= 1
+        let requestedGeneration = generation
+
+        if let currentTask {
+            currentTask.cancel()
+            _ = await currentTask.result
+        }
+
+        try Task.checkCancellation()
+        guard requestedGeneration == generation else { throw CancellationError() }
+
+        let workTask = Task.detached(priority: priority) {
+            try Task.checkCancellation()
+            let output = try operation()
+            try Task.checkCancellation()
+            return output
+        }
+        currentTask = workTask
+
+        let output = try await withTaskCancellationHandler {
+            try await workTask.value
+        } onCancel: {
+            workTask.cancel()
+        }
+
+        try Task.checkCancellation()
+        guard requestedGeneration == generation else { throw CancellationError() }
+        currentTask = nil
+        return output
+    }
+
+    func cancel() {
+        generation &+= 1
+        currentTask?.cancel()
+    }
+}
+
+private struct ResourceLogsInspectorPaneCore: View {
+    @Binding var selectedLogPreset: PodLogPreset
+    @Binding var includePreviousLogs: Bool
+    @Binding var isTailModeEnabled: Bool
+    @Binding var isStreamPaused: Bool
+    let isLoadingLogs: Bool
+    let isLoadingResources: Bool
+    let errorMessage: String?
+    let statusText: String
+    let source: ResourceLogsPaneSourceAdapter
+    let presentationStyle: ResourceLogsPresentationStyle
+    let logText: String
+    let readOnlyResetID: String
+    let actions: ResourceLogsPaneActions
+    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
+        RuneSettingsKeys.interfaceLanguageDefault
+    @State private var searchQuery = ""
+    @State private var searchMatchCase = false
+    @State private var selectedSearchMatchIndex = 0
+    @State private var searchNavigationSequence = 0
+    @State private var searchFocusRequestID = 0
+    @State private var searchResult = ResourceLogSearchResult.make(text: "", query: "")
+    @State private var searchTask: Task<Void, Never>?
+    @State private var searchWorkLane = ResourceLogsLatestWorkLane<ResourceLogSearchResult>()
+    @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
+    @State private var structuredSummaryTask: Task<Void, Never>?
+    @State private var structuredSummaryWorkLane = ResourceLogsLatestWorkLane<ResourceStructuredLogSummary>()
+
+    var body: some View {
+        let activeSearchResult = searchResult.isCurrent(
+            text: logText,
+            query: searchQuery,
+            matchCase: searchMatchCase
+        ) ? searchResult : nil
+        let renderSearchResult = searchResult.originalText == logText ? searchResult : nil
+        let resolvedSearchMatchIndex = activeSearchResult?.clampedMatchIndex(selectedSearchMatchIndex) ?? 0
+        let paneSpacing: CGFloat = presentationStyle == .terminalCompact ? 8 : 10
+
+        VStack(alignment: .leading, spacing: paneSpacing) {
+            ResourceLogsToolbar(
+                selectedLogPreset: $selectedLogPreset,
+                includePreviousLogs: $includePreviousLogs,
+                selectedContainer: source.selectedContainer,
+                isTailModeEnabled: $isTailModeEnabled,
+                isStreamPaused: $isStreamPaused,
+                statusText: statusText,
+                podOptions: source.podOptions,
+                selectedPodID: source.selectedPodID,
+                isFavoritePod: source.isFavoritePod,
+                onToggleFavoritePod: source.onToggleFavoritePod,
+                presentationStyle: presentationStyle,
+                showsContainerPicker: source.showsContainerPicker,
+                containerOptions: source.containerOptions,
+                sourceSummaryTitle: source.sourcePanelTitle,
+                sourceSummaryValues: source.sourcePanelValues,
+                visibleLogText: logText,
+                onReload: actions.onReload,
+                onSave: actions.onSave,
+                onSaveToExportFolder: actions.onSaveToExportFolder,
+                onSaveAndOpen: actions.onSaveAndOpen,
+                onSaveVisibleZip: actions.onSaveVisibleZip,
+                onSaveVisibleZipToExportFolder: actions.onSaveVisibleZipToExportFolder,
+                onSaveVisibleZipAndOpen: actions.onSaveVisibleZipAndOpen,
+                onSaveFullZip: actions.onSaveFullZip,
+                onSaveFullZipToExportFolder: actions.onSaveFullZipToExportFolder,
+                onSaveFullZipAndOpen: actions.onSaveFullZipAndOpen,
+                onSaveAllPodsZip: actions.onSaveAllPodsZip,
+                onSaveAllPodsZipToExportFolder: actions.onSaveAllPodsZipToExportFolder,
+                onSaveAllPodsZipAndOpen: actions.onSaveAllPodsZipAndOpen,
+                onCopySelection: actions.onCopySelection,
+                onCopyAll: actions.onCopyAll,
+                onToggleStreamPause: actions.onToggleStreamPause,
+                interfaceLanguageRaw: interfaceLanguageRaw
+            )
+            .id(interfaceLanguageRaw)
+
+            ResourceLogsExplorePanel(
+                searchQuery: $searchQuery,
+                searchMatchCase: $searchMatchCase,
+                selectedSearchMatchIndex: $selectedSearchMatchIndex,
+                searchFocusRequestID: searchFocusRequestID,
+                searchResult: activeSearchResult,
+                structuredSummary: structuredLogSummary,
+                showsInsights: !simpleMode,
+                presentationStyle: presentationStyle,
+                placeholder: t(.searchLogs),
+                findHelp: t(.findInLogs),
+                matchCaseHelp: t(.matchCase),
+                onSearchFieldSample: { field, value in
+                    applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
+                },
+                onSearchDuplicate: { duplicate in
+                    applyLogSearchQuery(duplicate.fingerprint)
+                }
+            )
+
+            ResourceLogsOutputSurface(
+                isLoadingLogs: isLoadingLogs,
+                isLoadingResources: isLoadingResources,
+                errorMessage: errorMessage,
+                logText: logText,
+                renderSearchResult: renderSearchResult,
+                navigationSearchResult: activeSearchResult,
+                selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                searchNavigationSequence: searchNavigationSequence,
+                emptyTitle: "No log output",
+                emptyMessage: source.emptyMessage,
+                noMatchesMessage: source.noMatchesMessage,
+                readOnlyResetID: readOnlyResetID,
+                onReload: actions.onReload,
+                presentationStyle: presentationStyle
+            )
+        }
+        .onChange(of: searchQuery) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+            scheduleSearch(
+                for: logText,
+                debounceNanoseconds: ResourceLogsLayoutMetrics.querySearchDebounceNanoseconds
+            )
+        }
+        .onChange(of: searchMatchCase) { _, _ in
+            selectedSearchMatchIndex = 0
+            searchNavigationSequence += 1
+            scheduleSearch(
+                for: logText,
+                debounceNanoseconds: ResourceLogsLayoutMetrics.querySearchDebounceNanoseconds
+            )
+        }
+        .onChange(of: logText) { _, newText in
+            scheduleSearch(
+                for: newText,
+                debounceNanoseconds: ResourceLogsLayoutMetrics.streamedTextSearchDebounceNanoseconds
+            )
+            scheduleStructuredSummary(for: newText, debounced: true)
+        }
+        .onChange(of: simpleMode) { _, _ in
+            scheduleStructuredSummary(for: logText, debounced: false)
+        }
+        .onAppear {
+            scheduleSearch(for: logText, debounceNanoseconds: 0)
+            scheduleStructuredSummary(for: logText, debounced: false)
+        }
+        .onDisappear {
+            searchTask?.cancel()
+            structuredSummaryTask?.cancel()
+            Task {
+                await searchWorkLane.cancel()
+                await structuredSummaryWorkLane.cancel()
+            }
+        }
+    }
+
+    private func scheduleStructuredSummary(for text: String, debounced: Bool) {
+        structuredSummaryTask?.cancel()
+        guard !simpleMode else {
+            structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
+            return
+        }
+
+        structuredSummaryTask = Task { @MainActor in
+            if debounced {
+                try? await Task.sleep(
+                    nanoseconds: ResourceLogsLayoutMetrics.streamedTextSummaryDebounceNanoseconds
+                )
+            }
+            guard !Task.isCancelled else { return }
+
+            guard let summary = try? await structuredSummaryWorkLane.run(
+                priority: .utility,
+                operation: {
+                    try ResourceStructuredLogAnalyzer.analyze(
+                        text: text,
+                        cancellationCheck: { try Task.checkCancellation() }
+                    )
+                }
+            ) else { return }
+            guard !Task.isCancelled, !simpleMode, logText == text else { return }
+            structuredLogSummary = summary
+        }
+    }
+
+    private func scheduleSearch(for text: String, debounceNanoseconds: UInt64) {
+        searchTask?.cancel()
+        let requestedQuery = searchQuery
+        let requestedMatchCase = searchMatchCase
+        let reusableTextIndex = searchResult.originalText == text ? searchResult.textIndex : nil
+        searchTask = Task { @MainActor in
+            if debounceNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+
+            guard let result = try? await searchWorkLane.run(
+                priority: .userInitiated,
+                operation: {
+                    try ResourceLogSearchResult.makeForInspector(
+                        text: text,
+                        textIndex: reusableTextIndex,
+                        query: requestedQuery,
+                        matchCase: requestedMatchCase,
+                        cancellationCheck: { try Task.checkCancellation() }
+                    )
+                }
+            ) else { return }
+
+            guard !Task.isCancelled,
+                  logText == text,
+                  searchQuery == requestedQuery,
+                  searchMatchCase == requestedMatchCase else {
+                return
+            }
+            searchResult = result
+            selectedSearchMatchIndex = result.clampedMatchIndex(selectedSearchMatchIndex)
+        }
+    }
+
+    private func applyLogSearchQuery(_ query: String) {
+        searchQuery = query
+        searchFocusRequestID += 1
+    }
+
+    private var language: RuneLanguage {
+        RuneLanguage.resolved(interfaceLanguageRaw)
+    }
+
+    private func t(_ key: RuneLocalizedStringKey) -> String {
+        RuneLocalizedStrings.shared.string(key, language: language)
     }
 }
 
@@ -681,122 +1183,52 @@ struct PodLogsInspectorPane: View {
     let onCopySelection: () -> Void
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
-    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
-    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
-        RuneSettingsKeys.interfaceLanguageDefault
-    @State private var searchQuery = ""
-    @State private var searchMatchCase = false
-    @State private var selectedSearchMatchIndex = 0
-    @State private var searchNavigationSequence = 0
-    @State private var searchPulseID = 0
-    @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.makeForInspector(
-            text: logText,
-            query: searchQuery,
-            matchCase: searchMatchCase
-        )
-        let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
-        let paneSpacing: CGFloat = presentationStyle == .terminalCompact ? 8 : 10
-
-        VStack(alignment: .leading, spacing: paneSpacing) {
-            ResourceLogsToolbar(
-                selectedLogPreset: $selectedLogPreset,
-                includePreviousLogs: $includePreviousLogs,
+        ResourceLogsInspectorPaneCore(
+            selectedLogPreset: $selectedLogPreset,
+            includePreviousLogs: $includePreviousLogs,
+            isTailModeEnabled: $isTailModeEnabled,
+            isStreamPaused: $isStreamPaused,
+            isLoadingLogs: isLoadingLogs,
+            isLoadingResources: isLoadingResources,
+            errorMessage: errorMessage,
+            statusText: statusText,
+            source: .pod(
                 selectedContainer: $selectedContainer,
-                isTailModeEnabled: $isTailModeEnabled,
-                isStreamPaused: $isStreamPaused,
-                searchQuery: $searchQuery,
-                searchMatchCase: $searchMatchCase,
-                selectedSearchMatchIndex: $selectedSearchMatchIndex,
-                searchPulseID: searchPulseID,
-                searchSummary: searchResult,
-                statusText: statusText,
                 podOptions: podOptions,
                 selectedPodID: selectedPodID,
                 isFavoritePod: isFavoritePod,
                 onToggleFavoritePod: onToggleFavoritePod,
-                presentationStyle: presentationStyle,
                 showsContainerPicker: showsContainerPicker,
-                containerOptions: containerOptions,
-                onReload: onReload,
-                onSave: onSave,
-                onSaveToExportFolder: onSaveToExportFolder,
-                onSaveAndOpen: onSaveAndOpen,
-                onSaveVisibleZip: onSaveVisibleZip,
-                onSaveVisibleZipToExportFolder: onSaveVisibleZipToExportFolder,
-                onSaveVisibleZipAndOpen: onSaveVisibleZipAndOpen,
-                onSaveFullZip: onSaveFullZip,
-                onSaveFullZipToExportFolder: onSaveFullZipToExportFolder,
-                onSaveFullZipAndOpen: onSaveFullZipAndOpen,
-                onSaveAllPodsZip: onSaveAllPodsZip,
-                onSaveAllPodsZipToExportFolder: onSaveAllPodsZipToExportFolder,
-                onSaveAllPodsZipAndOpen: onSaveAllPodsZipAndOpen,
-                onCopySelection: onCopySelection,
-                onCopyAll: onCopyAll,
-                onToggleStreamPause: onToggleStreamPause,
-                interfaceLanguageRaw: interfaceLanguageRaw
-            )
-            .id(interfaceLanguageRaw)
-
-            if !simpleMode {
-                ResourceStructuredLogSummaryPanel(
-                    summary: structuredLogSummary,
-                    onSearchFieldSample: { field, value in
-                        applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
-                    },
-                    onSearchDuplicate: { duplicate in
-                        applyLogSearchQuery(duplicate.fingerprint)
-                    }
-                )
-            }
-
-            ResourceLogsOutputSurface(
-                isLoadingLogs: isLoadingLogs,
-                isLoadingResources: isLoadingResources,
-                errorMessage: errorMessage,
-                searchResult: searchResult,
-                selectedSearchMatchIndex: resolvedSearchMatchIndex,
-                searchNavigationSequence: searchNavigationSequence,
-                emptyTitle: "No log output",
-                emptyMessage: "The pod may be idle, or the current filter returned no lines.",
-                noMatchesMessage: "No log lines matched the current search.",
-                readOnlyResetID: readOnlyResetID,
-                onReload: onReload
-            )
-        }
-        .onChange(of: searchQuery) { _, _ in
-            selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
-        }
-        .onChange(of: searchMatchCase) { _, _ in
-            selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
-        }
-        .onChange(of: logText) { _, _ in
-            selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
-        }
-        .task(id: "\(simpleMode):\(logText)") {
-            guard !simpleMode else {
-                structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
-                return
-            }
-            await refreshStructuredSummary(for: logText)
-        }
+                containerOptions: containerOptions
+            ),
+            presentationStyle: presentationStyle,
+            logText: logText,
+            readOnlyResetID: readOnlyResetID,
+            actions: actions
+        )
     }
 
-    private func refreshStructuredSummary(for text: String) async {
-        let summary = await Task.detached(priority: .utility) {
-            ResourceStructuredLogAnalyzer.analyze(text: text)
-        }.value
-        guard !Task.isCancelled else { return }
-        structuredLogSummary = summary
-    }
-
-    private func applyLogSearchQuery(_ query: String) {
-        searchQuery = query
-        searchPulseID += 1
+    private var actions: ResourceLogsPaneActions {
+        ResourceLogsPaneActions(
+            onReload: onReload,
+            onSave: onSave,
+            onSaveToExportFolder: onSaveToExportFolder,
+            onSaveAndOpen: onSaveAndOpen,
+            onSaveVisibleZip: onSaveVisibleZip,
+            onSaveVisibleZipToExportFolder: onSaveVisibleZipToExportFolder,
+            onSaveVisibleZipAndOpen: onSaveVisibleZipAndOpen,
+            onSaveFullZip: onSaveFullZip,
+            onSaveFullZipToExportFolder: onSaveFullZipToExportFolder,
+            onSaveFullZipAndOpen: onSaveFullZipAndOpen,
+            onSaveAllPodsZip: onSaveAllPodsZip,
+            onSaveAllPodsZipToExportFolder: onSaveAllPodsZipToExportFolder,
+            onSaveAllPodsZipAndOpen: onSaveAllPodsZipAndOpen,
+            onCopySelection: onCopySelection,
+            onCopyAll: onCopyAll,
+            onToggleStreamPause: onToggleStreamPause
+        )
     }
 }
 
@@ -828,130 +1260,54 @@ struct UnifiedResourceLogsInspectorPane: View {
     let onCopySelection: () -> Void
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
-    @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
-    @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
-        RuneSettingsKeys.interfaceLanguageDefault
-    @State private var searchQuery = ""
-    @State private var searchMatchCase = false
-    @State private var selectedSearchMatchIndex = 0
-    @State private var searchNavigationSequence = 0
-    @State private var searchPulseID = 0
-    @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
 
     var body: some View {
-        let searchResult = ResourceLogSearchResult.makeForInspector(
-            text: logText,
-            query: searchQuery,
-            matchCase: searchMatchCase
+        ResourceLogsInspectorPaneCore(
+            selectedLogPreset: $selectedLogPreset,
+            includePreviousLogs: $includePreviousLogs,
+            isTailModeEnabled: $isTailModeEnabled,
+            isStreamPaused: $isStreamPaused,
+            isLoadingLogs: isLoadingLogs,
+            isLoadingResources: isLoadingResources,
+            errorMessage: errorMessage,
+            statusText: statusText,
+            source: .unified(podNames: podNames),
+            presentationStyle: .regular,
+            logText: logText,
+            readOnlyResetID: readOnlyResetID,
+            actions: actions
         )
-        let resolvedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
-
-        VStack(alignment: .leading, spacing: 10) {
-            ResourceLogsToolbar(
-                selectedLogPreset: $selectedLogPreset,
-                includePreviousLogs: $includePreviousLogs,
-                selectedContainer: .constant(""),
-                isTailModeEnabled: $isTailModeEnabled,
-                isStreamPaused: $isStreamPaused,
-                searchQuery: $searchQuery,
-                searchMatchCase: $searchMatchCase,
-                selectedSearchMatchIndex: $selectedSearchMatchIndex,
-                searchPulseID: searchPulseID,
-                searchSummary: searchResult,
-                statusText: statusText,
-                podOptions: [],
-                selectedPodID: nil,
-                showsContainerPicker: false,
-                containerOptions: [],
-                onReload: onReload,
-                onSave: onSave,
-                onSaveToExportFolder: onSaveToExportFolder,
-                onSaveAndOpen: onSaveAndOpen,
-                onSaveVisibleZip: onSaveVisibleZip,
-                onSaveVisibleZipToExportFolder: onSaveVisibleZipToExportFolder,
-                onSaveVisibleZipAndOpen: onSaveVisibleZipAndOpen,
-                onSaveFullZip: onSaveFullZip,
-                onSaveFullZipToExportFolder: onSaveFullZipToExportFolder,
-                onSaveFullZipAndOpen: onSaveFullZipAndOpen,
-                onSaveAllPodsZip: onSaveAllPodsZip,
-                onSaveAllPodsZipToExportFolder: onSaveAllPodsZipToExportFolder,
-                onSaveAllPodsZipAndOpen: onSaveAllPodsZipAndOpen,
-                onCopySelection: onCopySelection,
-                onCopyAll: onCopyAll,
-                onToggleStreamPause: onToggleStreamPause,
-                interfaceLanguageRaw: interfaceLanguageRaw
-            )
-            .id(interfaceLanguageRaw)
-
-            if !podNames.isEmpty {
-                ResourceLogsSourcePanel(title: "Pods", values: podNames)
-            }
-
-            if !simpleMode {
-                ResourceStructuredLogSummaryPanel(
-                    summary: structuredLogSummary,
-                    onSearchFieldSample: { field, value in
-                        applyLogSearchQuery(ResourceStructuredLogFieldSearch.query(field: field, value: value))
-                    },
-                    onSearchDuplicate: { duplicate in
-                        applyLogSearchQuery(duplicate.fingerprint)
-                    }
-                )
-            }
-
-            ResourceLogsOutputSurface(
-                isLoadingLogs: isLoadingLogs,
-                isLoadingResources: isLoadingResources,
-                errorMessage: errorMessage,
-                searchResult: searchResult,
-                selectedSearchMatchIndex: resolvedSearchMatchIndex,
-                searchNavigationSequence: searchNavigationSequence,
-                emptyTitle: "No log output",
-                emptyMessage: "No lines were returned for the selected pods and the current filter. Pods may be idle or produce no output for this time window.",
-                noMatchesMessage: "No unified log lines matched the current search.",
-                readOnlyResetID: readOnlyResetID,
-                onReload: onReload
-            )
-        }
-        .onChange(of: searchQuery) { _, _ in
-            selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
-        }
-        .onChange(of: searchMatchCase) { _, _ in
-            selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
-        }
-        .onChange(of: logText) { _, _ in
-            selectedSearchMatchIndex = searchResult.clampedMatchIndex(selectedSearchMatchIndex)
-        }
-        .task(id: "\(simpleMode):\(logText)") {
-            guard !simpleMode else {
-                structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
-                return
-            }
-            await refreshStructuredSummary(for: logText)
-        }
     }
 
-    private func refreshStructuredSummary(for text: String) async {
-        let summary = await Task.detached(priority: .utility) {
-            ResourceStructuredLogAnalyzer.analyze(text: text)
-        }.value
-        guard !Task.isCancelled else { return }
-        structuredLogSummary = summary
-    }
-
-    private func applyLogSearchQuery(_ query: String) {
-        searchQuery = query
-        searchPulseID += 1
+    private var actions: ResourceLogsPaneActions {
+        ResourceLogsPaneActions(
+            onReload: onReload,
+            onSave: onSave,
+            onSaveToExportFolder: onSaveToExportFolder,
+            onSaveAndOpen: onSaveAndOpen,
+            onSaveVisibleZip: onSaveVisibleZip,
+            onSaveVisibleZipToExportFolder: onSaveVisibleZipToExportFolder,
+            onSaveVisibleZipAndOpen: onSaveVisibleZipAndOpen,
+            onSaveFullZip: onSaveFullZip,
+            onSaveFullZipToExportFolder: onSaveFullZipToExportFolder,
+            onSaveFullZipAndOpen: onSaveFullZipAndOpen,
+            onSaveAllPodsZip: onSaveAllPodsZip,
+            onSaveAllPodsZipToExportFolder: onSaveAllPodsZipToExportFolder,
+            onSaveAllPodsZipAndOpen: onSaveAllPodsZipAndOpen,
+            onCopySelection: onCopySelection,
+            onCopyAll: onCopyAll,
+            onToggleStreamPause: onToggleStreamPause
+        )
     }
 }
 
-private struct ResourceLogsOutputSurface: View {
+struct ResourceLogsOutputSurface: View {
     let isLoadingLogs: Bool
     let isLoadingResources: Bool
     let errorMessage: String?
-    let searchResult: ResourceLogSearchResult
+    let logText: String
+    let renderSearchResult: ResourceLogSearchResult?
+    let navigationSearchResult: ResourceLogSearchResult?
     let selectedSearchMatchIndex: Int
     let searchNavigationSequence: Int
     let emptyTitle: String
@@ -959,51 +1315,48 @@ private struct ResourceLogsOutputSurface: View {
     let noMatchesMessage: String
     let readOnlyResetID: String
     let onReload: () -> Void
+    let presentationStyle: ResourceLogsPresentationStyle
 
     var body: some View {
-        InspectorTextSurface(minHeight: 280) {
+        InspectorTextSurface(
+            minHeight: ResourceLogsLayoutMetrics.outputMinimumHeight(for: presentationStyle)
+        ) {
             Group {
                 if isLoadingLogs || isLoadingResources {
                     ResourceLogsLoadingPlaceholder()
                 } else if let errorMessage {
                     ResourceLogsErrorView(message: errorMessage, onReload: onReload)
-                } else if searchResult.originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                } else if logText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ResourceLogsEmptyPlaceholder(title: emptyTitle, message: emptyMessage)
                 } else {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if searchResult.isFiltering {
-                            ResourceLogsSearchSummaryBar(
-                                searchResult: searchResult,
-                                selectedMatchIndex: selectedSearchMatchIndex
-                            )
-                        }
-
-                        let outputResetID = "\(readOnlyResetID):\(searchResult.scrollIdentityToken)"
-                        let navigationRequest = searchResult.navigationRequest(
+                    let outputResetID = "\(readOnlyResetID):logs"
+                    let navigationRequest = navigationSearchResult?.navigationRequest(
+                        selectedIndex: selectedSearchMatchIndex,
+                        sequence: searchNavigationSequence
+                    )
+                    let usesLargeTextSurface = renderSearchResult.map {
+                        ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: $0)
+                    } ?? ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: logText)
+                    InspectorReadOnlyTextView(
+                        text: logText,
+                        resetID: outputResetID,
+                        resetScrollOnExternalChange: false,
+                        contentStyle: .ansiLogs,
+                        navigationRequest: usesLargeTextSurface ? nil : navigationRequest,
+                        usesLargeTextSurface: usesLargeTextSurface,
+                        allowsAutomaticLargeTextSurface: false,
+                        largeTextIndex: renderSearchResult?.textIndex,
+                        largeTextScrollTargetLine: navigationSearchResult?.matchLineNumber(selectedIndex: selectedSearchMatchIndex),
+                        largeTextScrollTargetRevision: navigationSearchResult?.largeTextNavigationRevision(
                             selectedIndex: selectedSearchMatchIndex,
                             sequence: searchNavigationSequence
-                        )
-                        let usesLargeTextSurface = ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: searchResult)
-                        InspectorReadOnlyTextView(
-                            text: searchResult.displayedText,
-                            resetID: outputResetID,
-                            resetScrollOnExternalChange: false,
-                            contentStyle: .ansiLogs,
-                            navigationRequest: usesLargeTextSurface ? nil : navigationRequest,
-                            usesLargeTextSurface: usesLargeTextSurface,
-                            allowsAutomaticLargeTextSurface: false,
-                            largeTextIndex: searchResult.textIndex,
-                            largeTextScrollTargetLine: searchResult.matchLineNumber(selectedIndex: selectedSearchMatchIndex),
-                            largeTextScrollTargetRevision: searchResult.largeTextNavigationRevision(
-                                selectedIndex: selectedSearchMatchIndex,
-                                sequence: searchNavigationSequence
-                            ),
-                            largeTextShowsLineNumbers: false
-                        )
-                    }
+                        ),
+                        largeTextShowsLineNumbers: false
+                    )
                 }
             }
         }
+        .layoutPriority(presentationStyle == .terminalCompact ? 1 : 0)
     }
 }
 
@@ -1015,209 +1368,289 @@ enum ResourceLogsDeferredRenderingPolicy {
         result.displayedText.utf8.count > deferredOutputThreshold
             && result.textIndex.lineCount >= deferredLineCountThreshold
     }
+
+    /// Matches the indexed policy while a fresh index is pending, so streaming text
+    /// cannot bounce between AppKit and the virtualized renderer.
+    static func shouldDeferOutputMount(for text: String) -> Bool {
+        guard text.utf8.count > deferredOutputThreshold, !text.isEmpty else { return false }
+
+        var lineCount = 1
+        var previousWasCarriageReturn = false
+        for byte in text.utf8 {
+            switch byte {
+            case 13:
+                lineCount += 1
+                previousWasCarriageReturn = true
+            case 10:
+                if !previousWasCarriageReturn {
+                    lineCount += 1
+                }
+                previousWasCarriageReturn = false
+            default:
+                previousWasCarriageReturn = false
+            }
+            if lineCount >= deferredLineCountThreshold {
+                return true
+            }
+        }
+        return false
+    }
 }
 
-private enum LogSearchBarMetrics {
-    static let widestBadgePlaceholder = "9,999,999 matches"
-    static let widestPositionPlaceholder = "9,999,999 of 9,999,999"
-}
-
-private struct ResourceLogsSearchBar: View {
+struct ResourceLogsSearchBar: View {
     @Binding var query: String
     @Binding var matchCase: Bool
     @Binding var selectedMatchIndex: Int
-    let searchPulseID: Int
+    let focusRequestID: Int
     let searchSummary: ResourceLogSearchResult?
     let placeholder: String
     let findHelp: String
     let matchCaseHelp: String
-    @State private var draftQuery = ""
-    @State private var queryCommitTask: Task<Void, Never>?
-    @State private var pulseOpacity = 0.0
     @State private var isJumpPopoverPresented = false
     @State private var jumpText = ""
+    @State private var jumpMatchCount = 0
     @FocusState private var isSearchFocused: Bool
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Button {
-                    isSearchFocused = true
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("f", modifiers: [.command])
-                .help(findHelp)
+        HStack(spacing: 2) {
+            RuneIconButton(findHelp, systemImage: "magnifyingglass") {
+                isSearchFocused = true
+            }
+            .keyboardShortcut("f", modifiers: [.command])
 
-                TextField(placeholder, text: $draftQuery)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .focused($isSearchFocused)
-                    .onSubmit {
-                        if let searchSummary {
-                            selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
-                        }
-                    }
-                if !draftQuery.isEmpty {
-                    Button {
-                        queryCommitTask?.cancel()
-                        draftQuery = ""
-                        query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Button {
-                    matchCase.toggle()
-                } label: {
-                    Text("Aa")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 24, height: 20)
-                }
-                .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(matchCase ? Color.accentColor.opacity(0.22) : Color.clear)
+            TextField(
+                "",
+                text: $query,
+                prompt: Text(placeholder)
+                    .foregroundStyle(runeThemePalette?.mutedText ?? Color.secondary)
+            )
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
+                .tint(runeThemePalette?.accent ?? Color.accentColor)
+                .focused($isSearchFocused)
+                .frame(
+                    minWidth: ResourceLogsLayoutMetrics.searchFieldMinimumWidth,
+                    idealWidth: ResourceLogsLayoutMetrics.searchFieldIdealWidth,
+                    maxWidth: .infinity
                 )
-                .help(matchCaseHelp)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.primary.opacity(0.05))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
-            }
-            .overlay {
-                LogSearchPulseOverlay(opacity: pulseOpacity)
-            }
-            .onAppear {
-                draftQuery = query
-            }
-            .onDisappear {
-                queryCommitTask?.cancel()
-            }
-            .onChange(of: draftQuery) { _, newValue in
-                queryCommitTask?.cancel()
-                queryCommitTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 85_000_000)
-                    guard !Task.isCancelled, query != newValue else { return }
-                    query = newValue
-                }
-            }
-            .onChange(of: query) { _, newValue in
-                guard draftQuery != newValue else { return }
-                draftQuery = newValue
-            }
-            .onChange(of: searchPulseID) { _, _ in
-                flashSearchPulse()
-            }
-
-            if let searchSummary, searchSummary.isFiltering {
-                HStack(spacing: 6) {
-                    Button {
-                        selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(searchSummary.matchRanges.isEmpty)
-                    .help("Previous match")
-
-                    Button {
+                .layoutPriority(1)
+                .accessibilityLabel(placeholder)
+                .accessibilityIdentifier("resource-log-search-input")
+                .onSubmit {
+                    if let searchSummary {
                         selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .disabled(searchSummary.matchRanges.isEmpty)
-                    .help("Next match")
+                }
 
-                    ZStack {
-                        Text(LogSearchBarMetrics.widestBadgePlaceholder)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .hidden()
-                        Text(searchSummary.badgeText)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(searchSummary.matchingLineCount == 0 ? .secondary : .primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                    .frame(height: 22)
+            ViewThatFits(in: .horizontal) {
+                regularSearchAccessories
+                compactSearchAccessories
+            }
+            .layoutPriority(2)
+        }
+        .frame(
+            minWidth: ResourceLogsLayoutMetrics.searchChromeMinimumWidth,
+            idealWidth: ResourceLogsLayoutMetrics.searchChromeIdealWidth,
+            maxWidth: ResourceLogsLayoutMetrics.searchChromeMaximumWidth,
+            minHeight: ResourceLogsLayoutMetrics.searchChromeHeight,
+            maxHeight: ResourceLogsLayoutMetrics.searchChromeHeight,
+            alignment: .leading
+        )
+        .padding(.horizontal, 4)
+        .background(RuneSurfaceBackground(kind: .editor))
+        .onChange(of: focusRequestID) { _, _ in
+            isSearchFocused = true
+        }
+        .onChange(of: query) { _, _ in
+            isJumpPopoverPresented = false
+        }
+        .onChange(of: matchCase) { _, _ in
+            isJumpPopoverPresented = false
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Log find controls")
+        .accessibilityIdentifier("resource-log-search-chrome")
+    }
 
-                    Button {
-                        prepareJumpPopover(for: searchSummary)
-                    } label: {
-                        ZStack {
-                            Text(LogSearchBarMetrics.widestPositionPlaceholder)
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
-                                .lineLimit(1)
-                                .hidden()
-                            Text(
-                                searchSummary.hasMatches
-                                    ? searchSummary.matchPositionText(selectedIndex: selectedMatchIndex)
-                                    : "\u{00a0}"
-                            )
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(searchSummary.hasMatches ? Color.secondary : Color.clear)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                        }
-                        .frame(height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!searchSummary.hasMatches)
-                    .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
-                        jumpToMatchPopover(searchSummary)
-                    }
-                    .help("Go to match number")
-                    .accessibilityLabel(
-                        searchSummary.hasMatches
-                            ? "Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))"
-                            : "Search match position"
+    private var regularSearchAccessories: some View {
+        HStack(spacing: 2) {
+            clearButton
+            RuneMatchCaseButton(isSelected: $matchCase, help: matchCaseHelp)
+
+            Rectangle()
+                .fill(runeThemePalette?.divider ?? Color(nsColor: .separatorColor).opacity(0.35))
+                .frame(width: 1, height: 16)
+                .padding(.horizontal, 2)
+
+            matchControls(statusWidth: ResourceLogsLayoutMetrics.searchMatchStatusWidth)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactSearchAccessories: some View {
+        HStack(spacing: 0) {
+            matchStatusButton(width: ResourceLogsLayoutMetrics.compactSearchMatchStatusWidth)
+
+            Menu {
+                Button("Clear search", systemImage: "xmark.circle") {
+                    query = ""
+                }
+                .disabled(normalizedQuery.isEmpty)
+
+                Button(matchCase ? "Disable Match Case" : "Enable Match Case", systemImage: "textformat") {
+                    matchCase.toggle()
+                }
+
+                Divider()
+
+                Button("Previous match", systemImage: "chevron.up") {
+                    selectPreviousMatch()
+                }
+                .disabled(searchSummary?.hasMatches != true)
+
+                Button("Next match", systemImage: "chevron.down") {
+                    selectNextMatch()
+                }
+                .disabled(searchSummary?.hasMatches != true)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                    .frame(
+                        width: RuneUILayoutMetrics.iconButtonSize,
+                        height: RuneUILayoutMetrics.iconButtonSize
                     )
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
-                }
-                .fixedSize(horizontal: true, vertical: false)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("Log search options")
+            .accessibilityLabel("Log search options")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityIdentifier("resource-log-search-compact-controls")
+    }
+
+    private var clearButton: some View {
+        RuneIconButton(
+            "Clear log search",
+            systemImage: "xmark.circle.fill",
+            isDisabled: normalizedQuery.isEmpty
+        ) {
+            query = ""
+        }
+        .opacity(normalizedQuery.isEmpty ? 0 : 1)
+        .allowsHitTesting(!normalizedQuery.isEmpty)
+        .accessibilityHidden(normalizedQuery.isEmpty)
+    }
+
+    private func matchControls(statusWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            matchStatusButton(width: statusWidth)
+
+            RuneIconButton(
+                "Previous match",
+                systemImage: "chevron.up",
+                isDisabled: searchSummary?.matchRanges.isEmpty != false
+            ) {
+                selectPreviousMatch()
+            }
+
+            RuneIconButton(
+                "Next match",
+                systemImage: "chevron.down",
+                isDisabled: searchSummary?.matchRanges.isEmpty != false
+            ) {
+                selectNextMatch()
             }
         }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("resource-log-search-match-controls")
+    }
+
+    private func matchStatusButton(width: CGFloat) -> some View {
+        Button {
+            guard let searchSummary else { return }
+            prepareJumpPopover(for: searchSummary)
+        } label: {
+            Text(matchStatusText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(matchStatusColor)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(
+                    width: width,
+                    height: RuneUILayoutMetrics.iconButtonSize,
+                    alignment: .trailing
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(searchSummary?.hasMatches != true)
+        .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
+            if jumpMatchCount > 0 {
+                jumpToMatchPopover(matchCount: jumpMatchCount)
+            }
+        }
+        .help("Go to match number")
+        .accessibilityLabel(matchStatusAccessibilityLabel)
+        .accessibilityIdentifier("resource-log-search-match-status")
+    }
+
+    private func selectPreviousMatch() {
+        guard let searchSummary else { return }
+        selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
+    }
+
+    private func selectNextMatch() {
+        guard let searchSummary else { return }
+        selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
+    }
+
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var matchStatusText: String {
+        guard !normalizedQuery.isEmpty else { return "\u{00a0}" }
+        guard let searchSummary else { return "…" }
+        guard searchSummary.hasMatches else { return "No results" }
+        return searchSummary.matchPositionText(selectedIndex: selectedMatchIndex)
+    }
+
+    private var matchStatusColor: Color {
+        guard !normalizedQuery.isEmpty else { return .clear }
+        guard let searchSummary else {
+            return runeThemePalette?.mutedText ?? Color.secondary.opacity(0.72)
+        }
+        if !searchSummary.hasMatches {
+            return RuneSemanticColorRole.danger.color(in: runeThemePalette)
+        }
+        return runeThemePalette?.secondaryText ?? Color.secondary
+    }
+
+    private var matchStatusAccessibilityLabel: String {
+        guard !normalizedQuery.isEmpty else { return "Search match position" }
+        guard let searchSummary else { return "Searching logs" }
+        guard searchSummary.hasMatches else { return "No search results" }
+        return "Search match \(searchSummary.matchPositionText(selectedIndex: selectedMatchIndex))"
     }
 
     private func prepareJumpPopover(for searchSummary: ResourceLogSearchResult) {
         guard searchSummary.hasMatches else { return }
         jumpText = "\(searchSummary.clampedMatchIndex(selectedMatchIndex) + 1)"
+        jumpMatchCount = searchSummary.matchRanges.count
         isJumpPopoverPresented = true
     }
 
-    private func jumpToMatchPopover(_ searchSummary: ResourceLogSearchResult) -> some View {
+    private func jumpToMatchPopover(matchCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Go to match")
                 .font(.headline)
@@ -1228,10 +1661,10 @@ private struct ResourceLogsSearchBar: View {
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .frame(width: 82)
                     .onSubmit {
-                        commitJump(to: searchSummary)
+                        commitJump(matchCount: matchCount)
                     }
 
-                Text("of \(searchSummary.matchRanges.count)")
+                Text("of \(matchCount)")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -1240,7 +1673,7 @@ private struct ResourceLogsSearchBar: View {
             HStack {
                 Spacer()
                 Button("Go") {
-                    commitJump(to: searchSummary)
+                    commitJump(matchCount: matchCount)
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -1249,68 +1682,16 @@ private struct ResourceLogsSearchBar: View {
         .frame(width: 180)
     }
 
-    private func commitJump(to searchSummary: ResourceLogSearchResult) {
-        guard searchSummary.hasMatches else { return }
+    private func commitJump(matchCount: Int) {
+        guard matchCount > 0 else { return }
         let requestedMatch = Int(jumpText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
-        selectedMatchIndex = min(max(requestedMatch, 1), searchSummary.matchRanges.count) - 1
+        selectedMatchIndex = min(max(requestedMatch, 1), matchCount) - 1
         isJumpPopoverPresented = false
     }
 
-    private func flashSearchPulse() {
-        withAnimation(.easeOut(duration: 0.08)) {
-            pulseOpacity = 1
-        }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 260_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.24)) {
-                pulseOpacity = 0
-            }
-        }
-    }
-
 }
 
-private struct LogSearchPulseOverlay: View {
-    let opacity: Double
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(Color.accentColor.opacity(0.32 * opacity), lineWidth: 2)
-            .shadow(color: Color.accentColor.opacity(0.18 * opacity), radius: 6)
-            .allowsHitTesting(false)
-    }
-}
-
-private struct ResourceLogsSearchSummaryBar: View {
-    let searchResult: ResourceLogSearchResult
-    let selectedMatchIndex: Int
-
-    var body: some View {
-        HStack {
-            Text(searchResult.summaryText)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
-            Spacer()
-            if searchResult.hasMatches {
-                Text(searchResult.matchPositionText(selectedIndex: selectedMatchIndex))
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.035))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.18))
-                .frame(height: 1)
-        }
-    }
-}
-
-struct ResourceLogSearchResult: Equatable {
+struct ResourceLogSearchResult: Equatable, Sendable {
     let originalText: String
     let displayedText: String
     let query: String
@@ -1337,6 +1718,12 @@ struct ResourceLogSearchResult: Equatable {
         !matchRanges.isEmpty
     }
 
+    func isCurrent(text: String, query: String, matchCase: Bool) -> Bool {
+        originalText == text
+            && self.query == query.trimmingCharacters(in: .whitespacesAndNewlines)
+            && self.matchCase == matchCase
+    }
+
     func matchPositionText(selectedIndex: Int) -> String {
         guard hasMatches else { return "0 of 0" }
         return "\(clampedMatchIndex(selectedIndex) + 1) of \(matchRanges.count)"
@@ -1354,8 +1741,32 @@ struct ResourceLogSearchResult: Equatable {
     }
 
     static func make(text: String, query: String, matchCase: Bool) -> ResourceLogSearchResult {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let textIndex = RuneLargeTextIndex(text: text)
+        return make(textIndex: textIndex, query: query, matchCase: matchCase)
+    }
+
+    static func make(
+        textIndex: RuneLargeTextIndex,
+        query: String,
+        matchCase: Bool
+    ) -> ResourceLogSearchResult {
+        make(
+            textIndex: textIndex,
+            query: query,
+            matchCase: matchCase,
+            cancellationCheck: {}
+        )
+    }
+
+    static func make(
+        textIndex: RuneLargeTextIndex,
+        query: String,
+        matchCase: Bool,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> ResourceLogSearchResult {
+        try cancellationCheck()
+        let text = textIndex.text
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedQuery.isEmpty else {
             return ResourceLogSearchResult(
@@ -1372,9 +1783,23 @@ struct ResourceLogSearchResult: Equatable {
         }
 
         let options: NSString.CompareOptions = matchCase ? [] : [.caseInsensitive, .diacriticInsensitive]
-        let searchResult = textIndex.search(query: trimmedQuery, options: options)
-        let matchRanges = searchResult.matches.map(\.range)
-        let matchLineNumbers = searchResult.matches.map(\.lineNumber)
+        let searchResult = try textIndex.search(
+            query: trimmedQuery,
+            options: options,
+            cancellationCheck: cancellationCheck
+        )
+        var matchRanges: [NSRange] = []
+        var matchLineNumbers: [Int] = []
+        matchRanges.reserveCapacity(searchResult.matches.count)
+        matchLineNumbers.reserveCapacity(searchResult.matches.count)
+        for (index, match) in searchResult.matches.enumerated() {
+            if index.isMultiple(of: 1_024) {
+                try cancellationCheck()
+            }
+            matchRanges.append(match.range)
+            matchLineNumbers.append(match.lineNumber)
+        }
+        try cancellationCheck()
 
         return ResourceLogSearchResult(
             originalText: text,
@@ -1426,22 +1851,60 @@ struct ResourceLogSearchResult: Equatable {
         return sequence &* 1_000_003 &+ clampedMatchIndex(selectedIndex)
     }
 
-    static func makeForInspector(text: String, query: String, matchCase: Bool = false) -> ResourceLogSearchResult {
+    static func makeForInspector(
+        text: String,
+        textIndex: RuneLargeTextIndex? = nil,
+        query: String,
+        matchCase: Bool = false
+    ) -> ResourceLogSearchResult {
+        makeForInspector(
+            text: text,
+            textIndex: textIndex,
+            query: query,
+            matchCase: matchCase,
+            cancellationCheck: {}
+        )
+    }
+
+    static func makeForInspector(
+        text: String,
+        textIndex: RuneLargeTextIndex? = nil,
+        query: String,
+        matchCase: Bool = false,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> ResourceLogSearchResult {
+        try cancellationCheck()
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return make(text: text, query: trimmedQuery, matchCase: matchCase)
+        if let textIndex, textIndex.text == text {
+            return try make(
+                textIndex: textIndex,
+                query: trimmedQuery,
+                matchCase: matchCase,
+                cancellationCheck: cancellationCheck
+            )
+        }
+        let textIndex = try RuneLargeTextIndex(
+            text: text,
+            cancellationCheck: cancellationCheck
+        )
+        return try make(
+            textIndex: textIndex,
+            query: trimmedQuery,
+            matchCase: matchCase,
+            cancellationCheck: cancellationCheck
+        )
     }
 }
 
 private struct ResourceLogsLoadingPlaceholder: View {
     var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Loading logs…")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(10)
+        RuneContentStateView(
+            .loading(
+                title: "Loading logs…",
+                message: "Fetching log output for the current selection."
+            ),
+            variant: .centered
+        )
     }
 }
 
@@ -1450,19 +1913,15 @@ private struct ResourceLogsErrorView: View {
     let onReload: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Could not load logs")
-                .font(.body.weight(.semibold))
-            Text(message)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("Retry", action: onReload)
-                .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(10)
+        RuneContentStateView(
+            .retryableError(title: "Could not load logs", message: message),
+            variant: .centered,
+            action: RuneContentStateAction(
+                "Retry",
+                systemImage: "arrow.clockwise",
+                perform: onReload
+            )
+        )
     }
 }
 
@@ -1471,16 +1930,9 @@ private struct ResourceLogsEmptyPlaceholder: View {
     let message: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(10)
+        RuneContentStateView(
+            .empty(title: title, message: message),
+            variant: .centered
+        )
     }
 }

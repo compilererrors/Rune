@@ -337,6 +337,19 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
                 && harness.state.lastLogFetchError == nil
         }
 
+        let searchResult = ResourceLogSearchResult.makeForInspector(
+            text: harness.state.podLogs,
+            query: "synthetic REST fake log"
+        )
+
+        XCTAssertGreaterThan(searchResult.matchRanges.count, 0)
+        XCTAssertTrue(searchResult.displayedText.contains("synthetic REST fake log"))
+        XCTAssertTrue(harness.state.podLogs.contains("[gate]"))
+        XCTAssertTrue(harness.state.podLogs.contains("[metrics]"))
+        let requestLines = harness.server.requestLines()
+        XCTAssertTrue(requestLines.contains { $0.contains("/log?") && $0.contains("container=gate") })
+        XCTAssertTrue(requestLines.contains { $0.contains("/log?") && $0.contains("container=metrics") })
+        XCTAssertFalse(requestLines.contains { $0.contains("allContainers") })
         XCTAssertNil(harness.state.lastResourceYAMLError)
         XCTAssertNil(harness.state.lastResourceDescribeError)
         XCTAssertNil(harness.state.lastError)
@@ -730,6 +743,105 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertTrue(requestLines.contains { $0.hasPrefix("GET /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens") })
         XCTAssertTrue(requestLines.contains { $0.hasPrefix("GET /apis/apps/v1/namespaces/alpha-zone/replicasets") })
         XCTAssertFalse(requestLines.contains { $0.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens") })
+    }
+
+    func testPendingProductionWriteKeepsArmedSourceContextAndNamespaceAfterActiveScopeChanges() async throws {
+        let previousProductionConfirmation = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation
+        )
+        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousPostActionVerification = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification
+        )
+        let previousCopyableCommand = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
+        UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = false
+        UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = false
+        UserDefaults.standard.runeWriteSafetyRequireCopyableCommand = true
+        defer {
+            restoreSetting(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+            restoreSetting(previousRolloutDryRun, forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+            restoreSetting(previousPostActionVerification, forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+            restoreSetting(previousCopyableCommand, forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        }
+
+        let armedContextName = "synthetic-production-a"
+        let activeContextName = "synthetic-dev-b"
+        let armedServer = try await RuneFakeK8sRESTServer.start(
+            fixture: renamedDefaultFixture(contextName: armedContextName),
+            contextName: armedContextName
+        )
+        let activeServer = try await RuneFakeK8sRESTServer.start(
+            fixture: renamedDefaultFixture(contextName: activeContextName),
+            contextName: activeContextName
+        )
+        let armedKubeconfig = try writeKubeconfig(armedServer.kubeconfigYAML())
+        let activeKubeconfig = try writeKubeconfig(activeServer.kubeconfigYAML())
+        defer {
+            armedServer.stop()
+            activeServer.stop()
+            try? FileManager.default.removeItem(at: armedKubeconfig)
+            try? FileManager.default.removeItem(at: activeKubeconfig)
+        }
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: armedKubeconfig)])
+        state.selectedContext = KubeContext(name: "synthetic-production-a")
+        state.selectedNamespace = "alpha-zone"
+        state.selectedWorkloadKind = .deployment
+        state.setSelectedDeployment(DeploymentSummary(
+            name: "orbit-lens",
+            namespace: "alpha-zone",
+            readyReplicas: 2,
+            desiredReplicas: 2,
+            selector: ["app": "orbit-lens"]
+        ))
+        let viewModel = RuneAppViewModel(
+            state: state,
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        viewModel.rolloutRevisionInput = "1"
+
+        viewModel.requestRolloutUndoSelectedDeployment()
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertEqual(
+            viewModel.pendingWriteActionKubectlCommand,
+            "kubectl --context synthetic-production-a --namespace alpha-zone rollout undo deployment orbit-lens --to-revision=1"
+        )
+
+        state.setSources([KubeConfigSource(url: activeKubeconfig)])
+        state.selectedContext = KubeContext(name: "synthetic-dev-b")
+        state.selectedNamespace = "bravo-zone"
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Review Production Action")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("PRODUCTION CONTEXT"))
+        XCTAssertTrue(viewModel.pendingWriteActionKubectlCommand.contains("synthetic-production-a --namespace alpha-zone"))
+
+        viewModel.confirmPendingWriteAction()
+
+        XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Rollback")
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("Final confirmation required"))
+        XCTAssertTrue(armedServer.requestLines().isEmpty)
+        XCTAssertTrue(activeServer.requestLines().isEmpty)
+
+        viewModel.confirmPendingWriteAction()
+
+        try await waitUntil {
+            state.writeAuditLog.contains { entry in
+                entry.action == "Rollout Undo"
+                    && entry.contextName == "synthetic-production-a"
+                    && entry.namespace == "alpha-zone"
+                    && entry.status == "Succeeded"
+            }
+        }
+
+        XCTAssertTrue(armedServer.requestLines().contains { line in
+            line.hasPrefix("PATCH /apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens ")
+        })
+        XCTAssertTrue(activeServer.requestLines().isEmpty)
+        XCTAssertEqual(state.selectedContext?.name, "synthetic-dev-b")
+        XCTAssertEqual(state.selectedNamespace, "bravo-zone")
     }
 
     func testRollbackSuccessAuditsPostActionReadinessVerificationAgainstFakeCluster() async throws {
@@ -1288,6 +1400,19 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
             .appendingPathComponent("rune-ui-fake-cluster-\(UUID().uuidString).yaml")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private func renamedDefaultFixture(contextName: String) -> RuneFakeK8sFixture {
+        let source = RuneFakeK8sFixture.defaultContexts[0]
+        return RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: contextName,
+                defaultNamespace: source.defaultNamespace,
+                namespaces: source.namespaces,
+                nodes: source.nodes,
+                operatorResources: source.operatorResources
+            )
+        ])
     }
 
     private func restoreDemoSetting(_ value: Any?) {

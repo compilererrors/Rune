@@ -11,21 +11,21 @@ enum TerminalStatusStyling {
         }
     }
 
-    static func color(_ status: PodTerminalSessionStatus) -> Color {
+    static func color(_ status: PodTerminalSessionStatus, palette: RuneThemePalette? = nil) -> Color {
         switch status {
-        case .connecting: return .orange
-        case .connected: return .green
+        case .connecting: return RuneSemanticColorRole.warning.color(in: palette)
+        case .connected: return RuneSemanticColorRole.success.color(in: palette)
         case .disconnected: return .secondary
-        case .failed: return .red
+        case .failed: return RuneSemanticColorRole.danger.color(in: palette)
         }
     }
 
-    static func color(_ status: PortForwardStatus) -> Color {
+    static func color(_ status: PortForwardStatus, palette: RuneThemePalette? = nil) -> Color {
         switch status {
-        case .starting: return .orange
-        case .active: return .green
+        case .starting: return RuneSemanticColorRole.warning.color(in: palette)
+        case .active: return RuneSemanticColorRole.success.color(in: palette)
         case .stopped: return .secondary
-        case .failed: return .red
+        case .failed: return RuneSemanticColorRole.danger.color(in: palette)
         }
     }
 }

@@ -119,9 +119,26 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         self.text = text
         let nsText = text as NSString
         self.utf16Length = nsText.length
-        let indexed = Self.buildLineIndex(nsText)
+        let indexed = Self.buildLineIndex(nsText, cancellationCheck: {})
         self.lineStartUTF16Offsets = indexed.starts
         self.lineContentEndUTF16Offsets = indexed.contentEnds
+    }
+
+    public init(
+        text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows {
+        try cancellationCheck()
+        self.text = text
+        let nsText = text as NSString
+        self.utf16Length = nsText.length
+        let indexed = try Self.buildLineIndex(
+            nsText,
+            cancellationCheck: cancellationCheck
+        )
+        self.lineStartUTF16Offsets = indexed.starts
+        self.lineContentEndUTF16Offsets = indexed.contentEnds
+        try cancellationCheck()
     }
 
     public var lineCount: Int {
@@ -188,6 +205,15 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         query: String,
         options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
     ) -> RuneLargeTextSearchResult {
+        search(query: query, options: options, cancellationCheck: {})
+    }
+
+    public func search(
+        query: String,
+        options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive],
+        cancellationCheck: () throws -> Void
+    ) rethrows -> RuneLargeTextSearchResult {
+        try cancellationCheck()
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedQuery.isEmpty, utf16Length > 0 else {
             return RuneLargeTextSearchResult(query: "", totalLineCount: lineCount, matches: [])
@@ -195,12 +221,26 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
 
         let nsText = text as NSString
         var matches: [RuneLargeTextMatch] = []
-        matches.reserveCapacity(min(utf16Length / max(1, normalizedQuery.utf16.count * 8), 4_096))
+        let queryUTF16Length = max(1, normalizedQuery.utf16.count)
+        matches.reserveCapacity(min(utf16Length / max(1, queryUTF16Length * 8), 4_096))
+        let primarySearchChunkLength = 262_144
+        let overlapLength = min(
+            utf16Length,
+            max(1_024, queryUTF16Length > Int.max / 4 ? Int.max : queryUTF16Length * 4)
+        )
         var searchLocation = 0
         while searchLocation < utf16Length {
-            let searchRange = NSRange(location: searchLocation, length: utf16Length - searchLocation)
+            try cancellationCheck()
+            let remainingLength = utf16Length - searchLocation
+            let primaryLength = min(primarySearchChunkLength, remainingLength)
+            let searchLength = primaryLength + min(overlapLength, remainingLength - primaryLength)
+            let searchRange = NSRange(location: searchLocation, length: searchLength)
             let matchRange = nsText.range(of: normalizedQuery, options: options, range: searchRange)
-            guard matchRange.location != NSNotFound else { break }
+            try cancellationCheck()
+            guard matchRange.location != NSNotFound else {
+                searchLocation += primaryLength
+                continue
+            }
 
             matches.append(RuneLargeTextMatch(
                 index: matches.count,
@@ -210,6 +250,8 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
             searchLocation = max(matchRange.location + max(matchRange.length, 1), matchRange.location + 1)
         }
 
+        try cancellationCheck()
+
         return RuneLargeTextSearchResult(
             query: normalizedQuery,
             totalLineCount: lineCount,
@@ -217,7 +259,11 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         )
     }
 
-    private static func buildLineIndex(_ nsText: NSString) -> (starts: [Int], contentEnds: [Int]) {
+    private static func buildLineIndex(
+        _ nsText: NSString,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> (starts: [Int], contentEnds: [Int]) {
+        try cancellationCheck()
         guard nsText.length > 0 else { return ([], []) }
 
         var starts: [Int] = []
@@ -229,6 +275,9 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         starts.append(0)
         var location = 0
         while location < nsText.length {
+            if starts.count.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             let lineRange = nsText.lineRange(for: NSRange(location: location, length: 0))
             let lineEnd = NSMaxRange(lineRange)
             contentEnds.append(contentEnd(in: nsText, lineRange: lineRange))
@@ -241,6 +290,8 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
                 contentEnds.append(nsText.length)
             }
         }
+
+        try cancellationCheck()
 
         return (starts, contentEnds)
     }

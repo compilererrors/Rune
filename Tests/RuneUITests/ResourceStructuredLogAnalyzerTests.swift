@@ -96,4 +96,30 @@ final class ResourceStructuredLogAnalyzerTests: XCTestCase {
         XCTAssertEqual(summary.duplicateLines.first?.count, 2)
         XCTAssertEqual(summary.duplicateLines.first?.sampleLine, "repeated line")
     }
+
+    func testLargeStructuredSummaryAnalysisCancelsCooperatively() {
+        enum SyntheticCancellation: Error {
+            case requested
+        }
+
+        let text = (0..<20_000)
+            .map { #"{"level":"info","message":"synthetic-\#($0)"}"# }
+            .joined(separator: "\n")
+        var cancellationChecks = 0
+
+        XCTAssertThrowsError(
+            try ResourceStructuredLogAnalyzer.analyze(
+                text: text,
+                cancellationCheck: {
+                    cancellationChecks += 1
+                    if cancellationChecks == 16 {
+                        throw SyntheticCancellation.requested
+                    }
+                }
+            )
+        ) { error in
+            XCTAssertTrue(error is SyntheticCancellation)
+        }
+        XCTAssertEqual(cancellationChecks, 16)
+    }
 }

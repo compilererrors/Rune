@@ -52,94 +52,11 @@ struct InspectorFindBar: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-
-            TextField(placeholder, text: $query)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
-                .frame(minWidth: 190, idealWidth: 240, maxWidth: 300)
-                .focused($isFocused)
-                .onSubmit {
-                    advanceSearch(by: 1)
-                }
-
-            Button {
-                prepareJumpPopover()
-            } label: {
-                Text(searchIndex.statusText(selectedIndex: selectedMatchIndex))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(minWidth: 74, alignment: .trailing)
-            }
-            .buttonStyle(.plain)
-            .disabled(searchIndex.ranges.isEmpty)
-            .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
-                jumpToMatchPopover
-            }
-            .help("Go to match number")
-
-            Button {
-                advanceSearch(by: -1)
-            } label: {
-                Image(systemName: "chevron.up")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .disabled(searchIndex.ranges.isEmpty)
-            .help("Previous match")
-
-            Button {
-                advanceSearch(by: 1)
-            } label: {
-                Image(systemName: "chevron.down")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .disabled(searchIndex.ranges.isEmpty)
-            .help("Next match")
-
-            Button {
-                matchCase.toggle()
-            } label: {
-                Text("Aa")
-                    .font(.caption.weight(.semibold))
-                    .frame(width: 24, height: 20)
-            }
-            .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(matchCase ? Color.accentColor.opacity(0.22) : Color.clear)
-            )
-            .help("Match case")
-
-            Button {
-                isPresented = false
-                query = ""
-            } label: {
-                Image(systemName: "xmark")
-                    .frame(
-                        width: RuneUILayoutMetrics.dialogIconButtonSize,
-                        height: RuneUILayoutMetrics.dialogIconButtonSize
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close find")
-            .accessibilityLabel("Close find")
+        RuneFindBarChrome("Inspector find controls") {
+            searchField
+        } secondary: {
+            navigationControls
         }
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(0.16), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 5)
-        .contentShape(Rectangle())
         .onAppear {
             isFocused = true
             DispatchQueue.main.async {
@@ -151,6 +68,71 @@ struct InspectorFindBar: View {
             query = ""
         }
         .accessibilityIdentifier("inspector-find-bar")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField(placeholder, text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+                .frame(
+                    minWidth: RuneFindBarMetrics.minimumSearchFieldWidth,
+                    idealWidth: RuneFindBarMetrics.idealSearchFieldWidth,
+                    maxWidth: .infinity
+                )
+                .focused($isFocused)
+                .onSubmit {
+                    advanceSearch(by: 1)
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var navigationControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                prepareJumpPopover()
+            } label: {
+                Text(searchIndex.statusText(selectedIndex: selectedMatchIndex))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .runeMinimumInteractiveTarget(minWidth: 74, alignment: .trailing)
+            }
+            .buttonStyle(.plain)
+            .disabled(searchIndex.ranges.isEmpty)
+            .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
+                jumpToMatchPopover
+            }
+            .help("Go to match number")
+
+            RuneIconButton(
+                "Previous match",
+                systemImage: "chevron.up",
+                isDisabled: searchIndex.ranges.isEmpty
+            ) {
+                advanceSearch(by: -1)
+            }
+
+            RuneIconButton(
+                "Next match",
+                systemImage: "chevron.down",
+                isDisabled: searchIndex.ranges.isEmpty
+            ) {
+                advanceSearch(by: 1)
+            }
+
+            RuneMatchCaseButton(isSelected: $matchCase)
+
+            RuneIconButton("Close find", systemImage: "xmark") {
+                isPresented = false
+                query = ""
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func advanceSearch(by delta: Int) {
@@ -227,24 +209,18 @@ struct FindableInspectorSurface<Content: View>: View {
                     )
                     .padding(10)
                 } else {
-                    Button {
+                    RuneIconButton(placeholder, systemImage: "magnifyingglass") {
                         isFindPresented = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .frame(width: 28, height: 24)
                     }
-                    .buttonStyle(.plain)
                     .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                             .fill(Color(nsColor: .controlBackgroundColor).opacity(0.76))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                             .stroke(Color.primary.opacity(0.16), lineWidth: 1)
                     )
                     .padding(10)
-                    .help(placeholder)
-                    .accessibilityLabel(placeholder)
                     .keyboardShortcut("f", modifiers: [.command])
                 }
             }

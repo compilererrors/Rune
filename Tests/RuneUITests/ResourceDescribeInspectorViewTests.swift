@@ -120,10 +120,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(describeSource.contains("placeholder: t(.findInDescribe)"))
         XCTAssertTrue(findSource.contains("struct InspectorFindBar"))
         XCTAssertTrue(findSource.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
-        XCTAssertTrue(findSource.contains("Text(\"Aa\")"))
-        XCTAssertTrue(findSource.contains("width: RuneUILayoutMetrics.dialogIconButtonSize"))
-        XCTAssertTrue(findSource.contains("height: RuneUILayoutMetrics.dialogIconButtonSize"))
-        XCTAssertTrue(findSource.contains(".accessibilityLabel(\"Close find\")"))
+        XCTAssertTrue(findSource.contains("RuneMatchCaseButton(isSelected: $matchCase)"))
+        XCTAssertTrue(findSource.contains("RuneIconButton(\"Close find\", systemImage: \"xmark\")"))
+        XCTAssertTrue(findSource.contains("RuneIconButton(\n                \"Previous match\""))
+        XCTAssertTrue(findSource.contains("RuneIconButton(\n                \"Next match\""))
         XCTAssertTrue(findSource.contains("@State private var isJumpPopoverPresented = false"))
         XCTAssertTrue(findSource.contains("prepareJumpPopover()"))
         XCTAssertTrue(findSource.contains("private var jumpToMatchPopover: some View"))
@@ -148,6 +148,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testYAMLAndDescribeUseGroupedManifestToolbarAndCompactStatus() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+        let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
 
         let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
             from: "struct ResourceYAMLInspectorPane",
@@ -155,37 +156,41 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         ))
         let describePaneSource = describeSource
 
-        XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarScrollRow"))
-        XCTAssertTrue(yamlPaneSource.contains("ManifestToolbarGroup"))
-        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupSpacing"))
-        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
-        XCTAssertTrue(yamlSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupMinHeight"))
-        XCTAssertTrue(yamlPaneSource.contains("ManifestStatusChip(text: statusText"))
+        XCTAssertTrue(yamlPaneSource.contains("ManifestActionToolbar("))
+        XCTAssertTrue(presentationSource.contains("ManifestToolbarScrollRow"))
+        XCTAssertTrue(presentationSource.contains("ManifestToolbarGroup(role: .action)"))
+        XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarGroupSpacing"))
+        XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
+        XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarActionGroupHeight"))
+        XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight"))
+        XCTAssertTrue(yamlPaneSource.contains("statusText: statusText"))
         XCTAssertTrue(yamlPaneSource.contains("ManifestInlineNote("))
         XCTAssertTrue(yamlPaneSource.contains("if isInlineEditing"))
         XCTAssertTrue(yamlPaneSource.contains("} else if hasUnsavedEdits {"))
         XCTAssertFalse(yamlPaneSource.contains("VStack(alignment: .leading, spacing: 6)"))
 
-        XCTAssertTrue(describePaneSource.contains("ManifestToolbarScrollRow"))
-        XCTAssertTrue(describePaneSource.contains("ManifestToolbarGroup"))
-        XCTAssertTrue(describePaneSource.contains("ManifestStatusChip(text: statusText"))
+        XCTAssertTrue(describePaneSource.contains("ManifestActionToolbar("))
+        XCTAssertTrue(describePaneSource.contains("statusText: statusText"))
         XCTAssertFalse(describePaneSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
-        XCTAssertTrue(describePaneSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
-        XCTAssertTrue(describePaneSource.contains("} status: {\n            EmptyView()"))
+        XCTAssertTrue(describePaneSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
+        XCTAssertFalse(describePaneSource.contains(".confirmationDialog("))
+        XCTAssertTrue(describePaneSource.contains("if let staleContentState = documentState.staleContentState"))
+        XCTAssertTrue(describePaneSource.contains("RuneContentStateView(staleContentState, variant: .inline)"))
 
         XCTAssertFalse(yamlPaneSource.contains("Text(statusText)"))
         XCTAssertFalse(describePaneSource.contains("Text(statusText)"))
     }
 
-    func testDescribeReadOnlyGuidanceIsDialogOnlyWhenOpeningYAMLEditor() throws {
+    func testDescribeOpensClearlyLabeledYAMLEditorWithoutRedundantConfirmation() throws {
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
 
         XCTAssertFalse(describeSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
-        XCTAssertTrue(describeSource.contains("@State private var isDescribeReadOnlyDialogPresented = false"))
-        XCTAssertTrue(describeSource.contains("isDescribeReadOnlyDialogPresented = true"))
-        XCTAssertTrue(describeSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
-        XCTAssertTrue(describeSource.contains("Button(\"\\(t(.yamlManifest))...\") {\n                onOpenYAMLEditor()"))
-        XCTAssertTrue(describeSource.contains("Text(t(.yamlEditsStayLocal))"))
+        XCTAssertTrue(describeSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
+        XCTAssertTrue(describeSource.contains(".accessibilityIdentifier(\"resource-describe-edit-yaml\")"))
+        XCTAssertTrue(describeSource.contains("onOpenYAMLEditor()"))
+        XCTAssertTrue(describeSource.contains("Changes stay local until you choose Apply."))
+        XCTAssertFalse(describeSource.contains("isDescribeReadOnlyDialogPresented"))
+        XCTAssertFalse(describeSource.contains(".confirmationDialog("))
     }
 
     func testYAMLPaneExposesManagedFieldsToggleWithoutHidingDuringEdit() throws {
@@ -243,17 +248,159 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
     func testYAMLToolbarConsolidatesSecondaryActionsIntoMenus() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
 
-        XCTAssertTrue(yamlSource.contains("Label(t(.draft), systemImage: \"clock.arrow.circlepath\")"))
-        XCTAssertTrue(yamlSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
-        XCTAssertTrue(yamlSource.contains("Button(\"Undo Draft Edit\""))
-        XCTAssertTrue(yamlSource.contains("Button(\"Revert Draft\""))
-        XCTAssertTrue(yamlSource.contains("Label(t(.file), systemImage: \"doc\")"))
-        XCTAssertTrue(yamlSource.contains("Button(\"Import YAML…\""))
-        XCTAssertTrue(yamlSource.contains("Button(\"Export YAML…\""))
-        XCTAssertTrue(yamlSource.contains("Button(\"Save YAML to Export Folder\", action: onExportToExportFolder)"))
-        XCTAssertTrue(yamlSource.contains("Button(\"Save YAML and Open\", action: onExportAndOpen)"))
-        XCTAssertFalse(yamlSource.contains("Re-apply Snapshot"))
+        XCTAssertEqual(yamlSource.occurrences(of: "ManifestYAMLActionMenus("), 2)
+        XCTAssertTrue(presentationSource.contains("Label(draftTitle, systemImage: \"clock.arrow.circlepath\")"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Undo Draft Edit\", action: onUndoEdit)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Revert Draft\", action: onRevert)"))
+        XCTAssertTrue(presentationSource.contains("Label(fileTitle, systemImage: \"doc\")"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Import YAML…\", action: onImport)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Export YAML…\", action: onExport)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Save YAML to Export Folder\", action: onExportToExportFolder)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Save YAML and Open\", action: onExportAndOpen)"))
+        XCTAssertFalse(presentationSource.contains("Re-apply Snapshot"))
+    }
+
+    func testInlineSheetAndDescribeShareManifestActionToolbarConstruction() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+
+        XCTAssertEqual(yamlSource.occurrences(of: "ManifestActionToolbar("), 2)
+        XCTAssertEqual(describeSource.occurrences(of: "ManifestActionToolbar("), 1)
+        XCTAssertFalse(yamlSource.contains("ScrollView(.horizontal"))
+        XCTAssertFalse(describeSource.contains("ScrollView(.horizontal"))
+    }
+
+    func testManifestDocumentSurfacesUseTypedOverlaysInsteadOfStateMessagesAsText() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+        let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
+
+        XCTAssertTrue(yamlSource.contains("ManifestDocumentSurface(state: resolvedDocumentState)"))
+        XCTAssertTrue(describeSource.contains("ManifestDocumentSurface(state: documentState)"))
+        XCTAssertTrue(presentationSource.contains("RuneContentStateView(contentState)"))
+        XCTAssertTrue(presentationSource.contains(".accessibilityHidden(state.contentState != nil)"))
+        XCTAssertFalse(yamlSource.contains("Text(yamlFooterText)"))
+    }
+
+    func testRootPassesRawManifestBuffersWithExplicitDocumentStates() throws {
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+
+        XCTAssertTrue(rootSource.contains("private var yamlManifestDocumentState: ManifestDocumentState"))
+        XCTAssertTrue(rootSource.contains("private var describeManifestDocumentState: ManifestDocumentState"))
+        XCTAssertTrue(rootSource.contains("yamlDisplayText: viewModel.state.resourceYAML"))
+        XCTAssertTrue(rootSource.contains("describeText: viewModel.state.resourceDescribe"))
+        XCTAssertEqual(rootSource.occurrences(of: "documentState: yamlManifestDocumentState"), 2)
+        XCTAssertEqual(rootSource.occurrences(of: "documentState: describeManifestDocumentState"), 1)
+        XCTAssertFalse(rootSource.contains("return \"Loading YAML for"))
+        XCTAssertFalse(rootSource.contains("return \"Loading describe output for"))
+    }
+
+    @MainActor
+    func testManifestToolbarGroupsUseCompactActionAndTallerSourceGeometry() {
+        let actionGroup = NSHostingView(
+            rootView: ManifestToolbarGroup(role: .action) {
+                Button("Apply") {}
+            }
+        )
+        let sourceGroup = NSHostingView(
+            rootView: ManifestToolbarGroup(role: .source) {
+                Picker("Namespace", selection: .constant("sample")) {
+                    Text("sample").tag("sample")
+                }
+            }
+        )
+
+        actionGroup.layoutSubtreeIfNeeded()
+        sourceGroup.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(
+            actionGroup.fittingSize.height,
+            RuneUILayoutMetrics.inspectorToolbarActionGroupHeight,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            sourceGroup.fittingSize.height,
+            RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight,
+            accuracy: 0.5
+        )
+        XCTAssertLessThan(actionGroup.fittingSize.height, sourceGroup.fittingSize.height)
+    }
+
+    @MainActor
+    func testManifestDocumentLoadingOverlayKeepsStatusOutOfEditorText() async throws {
+        let editorText = Binding.constant("")
+        let host = NSHostingController(
+            rootView: ManifestDocumentSurface(
+                state: .loading(
+                    title: "Loading manifest",
+                    message: "Retrieving the selected resource."
+                )
+            ) {
+                ResourceYAMLEditorSurface(
+                    text: editorText,
+                    displayText: "",
+                    readOnlyResetID: "typed-state-test",
+                    inlineEditing: false,
+                    implementation: .appKitTextView,
+                    validationIssues: [],
+                    navigationRequest: nil,
+                    searchQuery: "",
+                    searchMatchCase: false,
+                    selectedSearchMatchIndex: 0
+                )
+            }
+            .frame(width: 520, height: 320)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let textView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+        XCTAssertEqual(textView.string, "")
+        XCTAssertFalse(textView.string.contains("Loading manifest"))
+        XCTAssertFalse(textView.string.contains("Retrieving the selected resource"))
+    }
+
+    @MainActor
+    func testYAMLSheetValidationIssuesStayInsideBoundedScrollableRegion() {
+        let issues = (1...24).map { index in
+            YAMLValidationIssue(
+                source: .kubernetes,
+                severity: index.isMultiple(of: 2) ? .warning : .error,
+                message: "Synthetic validation issue \(index) with enough detail to wrap safely",
+                line: index,
+                column: 3
+            )
+        }
+        let host = NSHostingView(
+            rootView: YAMLValidationSummaryView(
+                issues: issues,
+                isValidating: false,
+                expandedListMaxHeight: RuneUILayoutMetrics.yamlSheetValidationListMaxHeight,
+                initiallyExpanded: true,
+                onSelectIssue: { _ in }
+            )
+            .frame(width: 520)
+        )
+
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(
+            host.fittingSize.height,
+            RuneUILayoutMetrics.yamlSheetValidationListMaxHeight + 70
+        )
+        XCTAssertTrue(containsScrollView(in: host))
     }
 
     func testManagedFieldsDisplayFilterRemovesNestedBlocksOnlyForDisplay() {
@@ -522,6 +669,13 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         return nil
     }
 
+    private func containsScrollView(in view: NSView) -> Bool {
+        if view is NSScrollView {
+            return true
+        }
+        return view.subviews.contains(where: containsScrollView)
+    }
+
     private func makeLongDescribeText() -> String {
         (1...220).map { index in
             """
@@ -575,6 +729,24 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceManifestInspectorLayout.swift").path
     }
 
+    private var resourceManifestPresentationPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceManifestPresentation.swift").path
+    }
+
+    private var runeRootViewPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
+    }
+
     private var inspectorTextViewsPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -604,6 +776,19 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 }
 
 private extension String {
+    func occurrences(of substring: String) -> Int {
+        guard !substring.isEmpty else { return 0 }
+        var count = 0
+        var searchRange = startIndex..<endIndex
+
+        while let match = range(of: substring, range: searchRange) {
+            count += 1
+            searchRange = match.upperBound..<endIndex
+        }
+
+        return count
+    }
+
     func slice(from start: String, to end: String) -> String? {
         guard let startRange = range(of: start),
               let endRange = range(of: end, range: startRange.upperBound..<endIndex) else {

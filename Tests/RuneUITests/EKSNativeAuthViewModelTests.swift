@@ -107,6 +107,214 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         )
     }
 
+    func testExplicitEKSRequestDoesNotDependOnGlobalSelectedContext() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfigURL = try writeKubeconfig(eksKubeconfig(from: server.kubeconfigYAML()))
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+        let source = KubeConfigSource(url: kubeconfigURL)
+        let request = try XCTUnwrap(
+            KubeConfigNativeAuthAnalyzer().analyze(source: source).contexts.first?.credentialRequest
+        )
+        let state = RuneAppState()
+        state.setSources([source])
+        state.setContexts([KubeContext(name: request.contextName)])
+        state.selectedContext = nil
+        let configurator = RecordingNativeAuthConfigurator()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: makeKubeClient(nativeProvider: configurator),
+            nativeAuthConfigurator: configurator
+        )
+
+        viewModel.connectEKSNativeAuth(
+            request: request,
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+
+        try await waitUntil { !viewModel.isConnectingNativeKubernetesAuth }
+        let recordedCall = await configurator.recordedCall()
+        let call = try XCTUnwrap(recordedCall)
+        XCTAssertEqual(call.request, request)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, "AWS native authentication is connected.")
+        XCTAssertNil(state.lastError)
+    }
+
+    func testExplicitNativeConnectOverloadsRejectProviderMismatchBeforeBindingOrSurfacingSecrets() async throws {
+        let gkeURL = try writeKubeconfig(gkeKubeconfig)
+        defer { try? FileManager.default.removeItem(at: gkeURL) }
+        let gkeRequest = try XCTUnwrap(
+            KubeConfigNativeAuthAnalyzer()
+                .analyze(source: KubeConfigSource(url: gkeURL))
+                .contexts.first?.credentialRequest
+        )
+        let eksRequest = KubernetesNativeCredentialRequest(
+            bindingID: "synthetic-eks-binding",
+            provider: .awsEKS,
+            contextName: "synthetic-eks",
+            clusterName: "synthetic-eks-cluster",
+            userName: "synthetic-eks-user",
+            server: "https://cluster.example.invalid",
+            exec: KubernetesNativeAuthExecDescriptor(
+                command: "aws",
+                arguments: ["eks", "get-token", "--cluster-name", "synthetic-cluster"]
+            ),
+            authProvider: nil
+        )
+        let state = RuneAppState()
+        let configurator = RecordingNativeAuthConfigurator()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: makeKubeClient(nativeProvider: configurator),
+            nativeAuthConfigurator: configurator
+        )
+        var surfacedMessages: [String?] = []
+
+        viewModel.connectEKSNativeAuth(
+            request: gkeRequest,
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-aws-secret",
+            sessionToken: "synthetic-session-secret"
+        )
+        surfacedMessages += [viewModel.nativeKubernetesAuthStatus, state.lastError]
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: The requested context uses Google GKE, not Amazon EKS."
+        )
+
+        viewModel.connectAKSNativeAuth(
+            request: gkeRequest,
+            clientSecret: "synthetic-azure-secret"
+        )
+        surfacedMessages += [viewModel.nativeKubernetesAuthStatus, state.lastError]
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: The requested context uses Google GKE, not Microsoft AKS."
+        )
+
+        viewModel.connectGKENativeAuth(
+            request: eksRequest,
+            serviceAccountJSON: Data(#"{"synthetic_secret":"synthetic-google-secret"}"#.utf8)
+        )
+        surfacedMessages += [viewModel.nativeKubernetesAuthStatus, state.lastError]
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: The requested context uses Amazon EKS, not Google GKE."
+        )
+
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        let recordedAWSCall = await configurator.recordedCall()
+        let recordedAKSCall = await configurator.recordedAKSCall()
+        let recordedGCPCall = await configurator.recordedGCPCall()
+        XCTAssertNil(recordedAWSCall)
+        XCTAssertNil(recordedAKSCall)
+        XCTAssertNil(recordedGCPCall)
+        assertSecretsAreAbsent(
+            [
+                "SYNTHETICACCESSKEY",
+                "synthetic-aws-secret",
+                "synthetic-session-secret",
+                "synthetic-azure-secret",
+                "synthetic-google-secret"
+            ],
+            from: surfacedMessages
+        )
+    }
+
+    func testProviderValidatedDisconnectRejectsMismatchAndRemovesOnlyMatchingBinding() async throws {
+        let kubeconfigURL = try writeKubeconfig(gkeKubeconfig)
+        defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
+        let request = try XCTUnwrap(
+            KubeConfigNativeAuthAnalyzer()
+                .analyze(source: KubeConfigSource(url: kubeconfigURL))
+                .contexts.first?.credentialRequest
+        )
+        let configurator = RecordingNativeAuthConfigurator()
+        let secretMarker = "synthetic-disconnect-secret"
+        try await configurator.bindGCPServiceAccount(
+            to: request,
+            serviceAccountJSON: Data(#"{"synthetic_secret":"synthetic-disconnect-secret"}"#.utf8),
+            displayName: "Synthetic GKE"
+        )
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: makeKubeClient(nativeProvider: configurator),
+            nativeAuthConfigurator: configurator
+        )
+
+        viewModel.disconnectNativeAuth(request: request, expectedProvider: .awsEKS)
+
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        let retainedGCPCall = await configurator.recordedGCPCall()
+        let rejectedRemovedBindingIDs = await configurator.recordedRemovedBindingIDs()
+        XCTAssertNotNil(retainedGCPCall)
+        XCTAssertEqual(rejectedRemovedBindingIDs, [])
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: The requested context uses Google GKE, not Amazon EKS."
+        )
+        assertSecretsAreAbsent(
+            [secretMarker],
+            from: [viewModel.nativeKubernetesAuthStatus, state.lastError]
+        )
+
+        viewModel.disconnectNativeAuth(request: request, expectedProvider: .googleGKE)
+        try await waitUntil { !viewModel.isConnectingNativeKubernetesAuth }
+
+        let removedGCPCall = await configurator.recordedGCPCall()
+        let acceptedRemovedBindingIDs = await configurator.recordedRemovedBindingIDs()
+        XCTAssertNil(removedGCPCall)
+        XCTAssertEqual(acceptedRemovedBindingIDs, [request.bindingID])
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, "Native authentication disconnected.")
+    }
+
+    func testExplicitGKEChooserRejectsProviderMismatchBeforeOpeningPanel() {
+        let request = nativeRequest(provider: .awsEKS, context: "synthetic-eks")
+        let state = RuneAppState()
+        let configurator = RecordingNativeAuthConfigurator()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: makeKubeClient(nativeProvider: configurator),
+            nativeAuthConfigurator: configurator
+        )
+
+        viewModel.chooseAndConnectGKENativeAuth(request: request)
+
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        XCTAssertEqual(
+            viewModel.nativeKubernetesAuthStatus,
+            "Google native authentication could not be connected."
+        )
+        XCTAssertEqual(
+            state.lastError,
+            "Invalid input: The requested context uses Amazon EKS, not Google GKE."
+        )
+    }
+
+    func testNativeAuthProfileStatusPassesThroughExplicitRequest() async throws {
+        let request = nativeRequest(provider: .azureKubelogin, context: "synthetic-aks")
+        let configurator = RecordingNativeAuthConfigurator()
+        let viewModel = RuneAppViewModel(
+            state: RuneAppState(),
+            kubeClient: makeKubeClient(nativeProvider: configurator),
+            nativeAuthConfigurator: configurator
+        )
+
+        let status = try await viewModel.nativeAuthProfileStatus(for: request)
+        let statusRequests = await configurator.recordedStatusRequests()
+
+        XCTAssertEqual(status.bindingID, request.bindingID)
+        XCTAssertEqual(status.provider, .azureKubelogin)
+        XCTAssertFalse(status.isConnected)
+        XCTAssertEqual(statusRequests, [request])
+    }
+
     func testConnectSelectedEKSNativeAuthExplainsUnsupportedContext() async throws {
         let kubeconfigURL = try writeKubeconfig(staticTokenKubeconfig)
         defer { try? FileManager.default.removeItem(at: kubeconfigURL) }
@@ -137,19 +345,23 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         )
     }
 
-    func testAppStoreEKSFlowUsesSecureFieldsClearsDraftAndKeepsImportAvailable() throws {
+    func testAppStoreEKSFlowUsesTypedPersistentFieldsClearsDraftAndKeepsImportAvailable() throws {
         let source = try String(contentsOf: runeRootViewURL, encoding: .utf8)
+        let fieldSource = try String(contentsOf: providerCredentialFieldURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("if !RuneExternalCommandPolicy.allowsExternalCommands"))
-        XCTAssertTrue(source.contains("SecureField(\"AWS access key ID\""))
-        XCTAssertTrue(source.contains("SecureField(\"AWS secret access key\""))
-        XCTAssertTrue(source.contains("SecureField(\"AWS session token (optional)\""))
-        XCTAssertTrue(source.contains("viewModel.connectSelectedEKSNativeAuth("))
+        XCTAssertTrue(source.contains("externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands"))
+        XCTAssertTrue(source.contains("case .awsAccessKeyID:"))
+        XCTAssertTrue(source.contains("case .awsSecretAccessKey:"))
+        XCTAssertTrue(source.contains("case .awsSessionToken:"))
+        XCTAssertTrue(fieldSource.contains("if field.input == .secureText"))
+        XCTAssertTrue(fieldSource.contains("TextField(\"\", text: $text)"))
+        XCTAssertTrue(fieldSource.contains("SecureField(\"\", text: $text)"))
+        XCTAssertTrue(source.contains("viewModel.connectEKSNativeAuth("))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSAccessKeyID = \"\""))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSSecretAccessKey = \"\""))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSSessionToken = \"\""))
         XCTAssertTrue(source.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")"))
-        XCTAssertTrue(source.contains("Import a provider kubeconfig before connecting native credentials."))
+        XCTAssertTrue(source.contains("Import a compatible provider kubeconfig before connecting native credentials."))
     }
 
     func testConnectSelectedAKSNativeAuthBindsOnlySecretToKubeloginDescriptor() async throws {
@@ -221,12 +433,14 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
 
     func testAppStoreAzureAndGoogleFlowsUseUserMediatedSecretsAndClearDrafts() throws {
         let source = try String(contentsOf: runeRootViewURL, encoding: .utf8)
+        let fieldSource = try String(contentsOf: providerCredentialFieldURL, encoding: .utf8)
         let viewModelSource = try String(contentsOf: runeAppViewModelURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("SecureField(\"Azure service-principal secret\""))
+        XCTAssertTrue(source.contains("case .azureClientSecret:"))
+        XCTAssertTrue(fieldSource.contains("SecureField(\"\", text: $text)"))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAKSClientSecret = \"\""))
-        XCTAssertTrue(source.contains("viewModel.connectSelectedAKSNativeAuth(clientSecret: secret)"))
-        XCTAssertTrue(source.contains("viewModel.chooseAndConnectSelectedGKENativeAuth()"))
+        XCTAssertTrue(source.contains("viewModel.connectAKSNativeAuth(request: nativeContext.request, clientSecret: secret)"))
+        XCTAssertTrue(source.contains("viewModel.chooseAndConnectGKENativeAuth(request: nativeContext.request)"))
         XCTAssertTrue(viewModelSource.contains("let panel = NSOpenPanel()"))
         XCTAssertTrue(viewModelSource.contains("panel.allowedContentTypes = [.json]"))
         XCTAssertTrue(viewModelSource.contains("read(upToCount: 1_048_577)"))
@@ -316,6 +530,22 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         return url
     }
 
+    private func nativeRequest(
+        provider: KubernetesNativeAuthProviderKind,
+        context: String
+    ) -> KubernetesNativeCredentialRequest {
+        KubernetesNativeCredentialRequest(
+            bindingID: "synthetic-binding-\(context)",
+            provider: provider,
+            contextName: context,
+            clusterName: "synthetic-cluster-\(context)",
+            userName: "synthetic-user-\(context)",
+            server: "https://cluster.example.invalid",
+            exec: KubernetesNativeAuthExecDescriptor(command: "synthetic-auth-plugin"),
+            authProvider: nil
+        )
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 5,
         file: StaticString = #filePath,
@@ -380,6 +610,11 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("ViewModels/RuneAppViewModel.swift")
     }
+
+    private var providerCredentialFieldURL: URL {
+        runeRootViewURL.deletingLastPathComponent()
+            .appendingPathComponent("AddClusterProviderCredentialField.swift")
+    }
 }
 
 private actor RecordingNativeAuthConfigurator: KubernetesNativeAuthConfiguring, KubernetesNativeCredentialProviding {
@@ -404,9 +639,12 @@ private actor RecordingNativeAuthConfigurator: KubernetesNativeAuthConfiguring, 
     private var call: Call?
     private var aksCall: AKSCall?
     private var gcpCall: GCPCall?
+    private var removedBindingIDs: [String] = []
+    private var statusRequests: [KubernetesNativeCredentialRequest] = []
 
     func status(for request: KubernetesNativeCredentialRequest) async throws -> KubernetesNativeAuthProfileStatus {
-        KubernetesNativeAuthProfileStatus(
+        statusRequests.append(request)
+        return KubernetesNativeAuthProfileStatus(
             bindingID: request.bindingID,
             provider: request.provider,
             isConnected: call?.request.bindingID == request.bindingID
@@ -454,6 +692,7 @@ private actor RecordingNativeAuthConfigurator: KubernetesNativeAuthConfiguring, 
     }
 
     func removeProfile(for bindingID: String) async throws {
+        removedBindingIDs.append(bindingID)
         if call?.request.bindingID == bindingID {
             call = nil
         }
@@ -467,4 +706,6 @@ private actor RecordingNativeAuthConfigurator: KubernetesNativeAuthConfiguring, 
 
     func recordedAKSCall() -> AKSCall? { aksCall }
     func recordedGCPCall() -> GCPCall? { gcpCall }
+    func recordedRemovedBindingIDs() -> [String] { removedBindingIDs }
+    func recordedStatusRequests() -> [KubernetesNativeCredentialRequest] { statusRequests }
 }

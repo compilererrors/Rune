@@ -3,19 +3,19 @@ import SwiftUI
 
 struct ResourceListFreshnessBadge: View {
     let freshness: RuneResourceListFreshness
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(ResourceListFreshnessPresentation.color(for: freshness.status))
-                .frame(width: 7, height: 7)
-            Text("List: \(ResourceListFreshnessPresentation.text(for: freshness.status))")
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-        .background(.thinMaterial, in: Capsule())
+        RuneHeaderCapsule(
+            "List: \(ResourceListFreshnessPresentation.text(for: freshness.status))",
+            role: .status,
+            indicatorColor: ResourceListFreshnessPresentation.color(
+                for: freshness.status,
+                palette: runeThemePalette
+            ),
+            foregroundColor: .primary,
+            accessibilityLabel: "Resource list status: \(ResourceListFreshnessPresentation.text(for: freshness.status))"
+        )
         .help(freshness.message)
     }
 }
@@ -32,14 +32,13 @@ enum ResourceListFreshnessPresentation {
         }
     }
 
-    static func color(for status: RuneSnapshotFreshnessStatus) -> Color {
+    static func color(for status: RuneSnapshotFreshnessStatus, palette: RuneThemePalette? = nil) -> Color {
         switch status {
         case .idle: return .secondary
-        case .refreshing: return .blue
-        case .reconnecting: return .blue
-        case .live: return .green
-        case .stale: return .orange
-        case .failed: return .red
+        case .refreshing, .reconnecting: return RuneSemanticColorRole.info.color(in: palette)
+        case .live: return RuneSemanticColorRole.success.color(in: palette)
+        case .stale: return RuneSemanticColorRole.warning.color(in: palette)
+        case .failed: return RuneSemanticColorRole.danger.color(in: palette)
         }
     }
 }

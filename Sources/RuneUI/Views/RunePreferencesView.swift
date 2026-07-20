@@ -6,22 +6,33 @@ import RuneStore
 import SwiftUI
 import UniformTypeIdentifiers
 
+private final class RuneSettingsWindowConfigurationView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.collectionBehavior.formUnion([.fullScreenAuxiliary, .moveToActiveSpace])
+    }
+}
+
+private struct RuneSettingsWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        RuneSettingsWindowConfigurationView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 private struct SettingsHelpButton: View {
     let text: String
     @State private var isPopoverPresented = false
 
     var body: some View {
-        Button {
+        RuneIconButton(
+            "More info",
+            systemImage: "questionmark.circle",
+            help: text
+        ) {
             isPopoverPresented.toggle()
-        } label: {
-            Image(systemName: "questionmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(2)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help(text)
         .popover(isPresented: $isPopoverPresented, arrowEdge: .top) {
             Text(text)
                 .font(.footnote)
@@ -29,12 +40,11 @@ private struct SettingsHelpButton: View {
                 .frame(width: 280, alignment: .leading)
                 .padding(10)
         }
-        .accessibilityLabel("More info")
         .accessibilityHint(text)
     }
 }
 
-private enum RuneSettingsMetrics {
+enum RuneSettingsMetrics {
     static let pageMaxWidth: CGFloat = 760
     static let pageHorizontalPadding: CGFloat = 20
     static let pageVerticalPadding: CGFloat = 16
@@ -44,8 +54,104 @@ private enum RuneSettingsMetrics {
     static let rowMinHeight: CGFloat = 38
     static let rowControlSpacing: CGFloat = 12
     static let rowControlColumnWidth: CGFloat = 260
+    static let rowLabelMinWidth: CGFloat = 240
+    static let stackedRowSpacing: CGFloat = 8
     static let compactControlHeight: CGFloat = 32
     static let textFieldWidth: CGFloat = 92
+}
+
+struct RuneSettingsAdaptiveRow<LabelContent: View, Control: View>: View {
+    @ViewBuilder let labelContent: LabelContent
+    @ViewBuilder let control: Control
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(
+        @ViewBuilder label: () -> LabelContent,
+        @ViewBuilder control: () -> Control
+    ) {
+        self.labelContent = label()
+        self.control = control()
+    }
+
+    var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                stackedLayout
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    horizontalLayout
+                    stackedLayout
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: RuneSettingsMetrics.rowMinHeight)
+    }
+
+    private var horizontalLayout: some View {
+        HStack(alignment: .top, spacing: RuneSettingsMetrics.rowControlSpacing) {
+            labelContent
+                .frame(
+                    minWidth: RuneSettingsMetrics.rowLabelMinWidth,
+                    maxWidth: .infinity,
+                    alignment: .leading
+                )
+
+            control
+                .frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)
+        }
+    }
+
+    private var stackedLayout: some View {
+        VStack(alignment: .leading, spacing: RuneSettingsMetrics.stackedRowSpacing) {
+            labelContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            control
+                .frame(
+                    maxWidth: RuneSettingsMetrics.rowControlColumnWidth,
+                    alignment: .leading
+                )
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct RuneSettingsAdaptiveActionGroup<Actions: View>: View {
+    @ViewBuilder let actions: Actions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(@ViewBuilder actions: () -> Actions) {
+        self.actions = actions()
+    }
+
+    var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                stackedLayout
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    horizontalLayout
+                    stackedLayout
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var horizontalLayout: some View {
+        HStack(spacing: 8) {
+            actions
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var stackedLayout: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            actions
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
 }
 
 private struct ExportOpenerRecommendation {
@@ -106,18 +212,20 @@ private struct RuneSettingsTokenButtonStyle: ButtonStyle {
         configuration.label
             .font(.subheadline.weight(.medium))
             .foregroundStyle(palette.accent)
-            .lineLimit(1)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
-            .frame(height: RuneSettingsMetrics.compactControlHeight)
+            .padding(.vertical, 6)
+            .frame(minHeight: RuneSettingsMetrics.compactControlHeight)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .fill((configuration.isPressed ? palette.accent.opacity(0.18) : palette.inset.opacity(0.94)))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .strokeBorder(palette.accent.opacity(configuration.isPressed ? 0.62 : 0.42), lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
     }
 }
 
@@ -144,12 +252,15 @@ private struct RuneThemeSelectorCard: View {
                         Text(presentation.title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(palette.foreground)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(presentation.sourceSummary)
                             .font(.caption)
                             .foregroundStyle(palette.secondaryText)
                             .lineLimit(1)
                     }
+
+                    Spacer(minLength: 8)
 
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
@@ -163,14 +274,14 @@ private struct RuneThemeSelectorCard: View {
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .fill(isSelected ? palette.selectionFill : palette.inset.opacity(0.82))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .strokeBorder(isSelected ? palette.focusRing : palette.stroke.opacity(0.44), lineWidth: isSelected ? 1.5 : 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(theme.title)
@@ -298,6 +409,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.verboseDebugTrace) private var verboseDebugTrace = false
     @AppStorage(RuneSettingsKeys.backgroundPrefetchOtherContexts) private var backgroundPrefetchOtherContexts = false
     @AppStorage(RuneSettingsKeys.enableDemoCluster) private var enableDemoCluster = true
+    @AppStorage(RuneSettingsKeys.skipClusterOnTabNavigationFromSections) private var skipClusterOnTabNavigationFromSections = false
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneMode) private var customOneModeRaw = RuneCustomLogPresetMode.lines.rawValue
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneLines) private var customOneLinesRaw = "5000"
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeValue) private var customOneTimeValueRaw = "15"
@@ -390,8 +502,8 @@ public struct RunePreferencesView: View {
                 }
         }
         .id(interfaceLanguageRaw)
-        .controlSize(.small)
         .frame(minWidth: 740, idealWidth: 820, minHeight: 540)
+        .background(RuneSettingsWindowConfigurator())
         .runeAppearanceTheme(selectedAppearanceTheme)
         .onAppear {
             refreshRecentAppearanceThemes(recordSelectedTheme: true)
@@ -577,7 +689,7 @@ public struct RunePreferencesView: View {
                     title: "Theme JSON files",
                     detail: "Add compatible theme files to Rune's Themes folder, then reload."
                 ) {
-                    HStack(spacing: 8) {
+                    RuneSettingsAdaptiveActionGroup {
                         Button {
                             revealThemeTemplate()
                         } label: {
@@ -672,14 +784,14 @@ public struct RunePreferencesView: View {
             .frame(height: 34)
             .frame(width: 170)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .fill(palette?.inset.opacity(0.96) ?? Color(nsColor: .controlBackgroundColor).opacity(0.72))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                     .strokeBorder(palette?.stroke.opacity(0.50) ?? Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("More Themes")
@@ -758,6 +870,14 @@ public struct RunePreferencesView: View {
                     resetKeyBindingShortcuts()
                 }
                 .buttonStyle(.bordered)
+            }
+
+            settingsSection("Navigation") {
+                settingsToggleRow(
+                    "Skip Cluster on Tab navigation from Sections",
+                    help: "Tab cycles Sections → middle panel → right panel → Sections without focusing the cluster list.",
+                    isOn: $skipClusterOnTabNavigationFromSections
+                )
             }
 
             settingsSection("Actions") {
@@ -1345,7 +1465,7 @@ public struct RunePreferencesView: View {
     @ViewBuilder
     private func settingsToggleRow(_ title: String, help: String, isOn: Binding<Bool>) -> some View {
         settingsGridRow {
-            settingRowLabel(title: title, detail: help, showsHelpIcon: true)
+            settingRowLabel(title: title, detail: help)
         } control: {
             Toggle(title, isOn: isOn)
                 .labelsHidden()
@@ -1371,27 +1491,14 @@ public struct RunePreferencesView: View {
         @ViewBuilder label: () -> LabelContent,
         @ViewBuilder control: () -> Control
     ) -> some View {
-        HStack(alignment: .top, spacing: RuneSettingsMetrics.rowControlSpacing) {
-            label()
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            control()
-                .frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: RuneSettingsMetrics.rowMinHeight)
+        RuneSettingsAdaptiveRow(label: label, control: control)
     }
 
     @ViewBuilder
-    private func settingRowLabel(title: String, detail: String?, showsHelpIcon: Bool = false) -> some View {
+    private func settingRowLabel(title: String, detail: String?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                if showsHelpIcon, let detail {
-                    helpIcon(detail)
-                }
-            }
+            Text(title)
+                .font(.subheadline.weight(.semibold))
 
             if let detail {
                 Text(detail)
@@ -1404,20 +1511,10 @@ public struct RunePreferencesView: View {
 
     @ViewBuilder
     private func helpInline(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "questionmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private func helpIcon(_ text: String) -> some View {
-        SettingsHelpButton(text: text)
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func enumBinding<T: RawRepresentable>(

@@ -546,7 +546,24 @@ private struct RuneFakeK8sRouter {
             if namespace.failingLogPodNames.contains(pod.name) {
                 return .json(status: 500, object: status(message: "Synthetic forced pod log failure for \(pod.name)."))
             }
-            return .text(status: 200, body: logLines(for: pod, namespace: namespace.name, container: query["container"]))
+            let requestedContainer = query["container"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pod.containers.count > 1, requestedContainer?.isEmpty != false {
+                return .json(
+                    status: 400,
+                    object: status(
+                        message: "a container name must be specified for pod \(pod.name), choose one of: [\(pod.containers.joined(separator: " "))]"
+                    )
+                )
+            }
+            if let requestedContainer,
+               !requestedContainer.isEmpty,
+               !pod.containers.contains(requestedContainer) {
+                return .json(
+                    status: 400,
+                    object: status(message: "container \(requestedContainer) is not valid for pod \(pod.name)")
+                )
+            }
+            return .text(status: 200, body: logLines(for: pod, namespace: namespace.name, container: requestedContainer))
         case "services" where pathParts.count == 5:
             return .json(status: 200, object: listObject(
                 apiVersion: "v1",

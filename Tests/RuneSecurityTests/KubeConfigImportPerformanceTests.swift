@@ -3,7 +3,7 @@ import XCTest
 @testable import RuneSecurity
 
 final class KubeConfigImportPerformanceTests: XCTestCase {
-    func testMaterializingTwentyExpandedKubeconfigsBenchmarkKPI() throws {
+    func testTransactionalBatchMaterializingTwentyExpandedKubeconfigsBenchmarkKPI() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("KubeConfigImportPerformanceTests.\(UUID().uuidString)", isDirectory: true)
         let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
@@ -55,31 +55,38 @@ final class KubeConfigImportPerformanceTests: XCTestCase {
         """
         let source = sourceDirectory.appendingPathComponent("config.yaml")
         let store = AppOwnedKubeConfigImportStore(rootDirectory: imports)
-
-        let start = ContinuousClock.now
-        var imported: [URL] = []
-        for index in 0..<20 {
-            imported.append(try store.saveImportedKubeConfig(
+        let payloads = (0..<20).map { index in
+            KubeConfigImportStorePayload(
                 raw: raw,
                 sourceName: "synthetic-\(index).yaml",
                 sourceURL: source
-            ))
+            )
         }
+
+        let start = ContinuousClock.now
+        let imported = try store.saveImportedKubeConfigs(payloads)
         let elapsed = ContinuousClock.now - start
         let seconds = Double(elapsed.components.seconds)
             + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
 
         XCTAssertEqual(imported.count, 20)
         XCTAssertTrue(imported.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        XCTAssertEqual(
+            Set(imported.map { $0.deletingLastPathComponent().deletingLastPathComponent() }).count,
+            1
+        )
+        let publishedEntries = try FileManager.default.contentsOfDirectory(atPath: imports.path)
+        XCTAssertEqual(publishedEntries.count, 1)
+        XCTAssertFalse(publishedEntries.contains { $0.contains("staging") })
         #if DEBUG
-        let maximumSeconds = 1.2
+        let maximumSeconds = 0.65
         #else
-        let maximumSeconds = 0.6
+        let maximumSeconds = 0.32
         #endif
         XCTAssertLessThan(
             seconds,
             maximumSeconds,
-            "KPI: materializing 20 kubeconfigs with 40 cluster/user entries and four credential files should stay below 1.2s in debug and 600ms in release."
+            "KPI: transactionally staging and publishing 20 kubeconfigs with 40 cluster/user entries and four credential files should stay below 650ms in debug and 320ms in release."
         )
     }
 }

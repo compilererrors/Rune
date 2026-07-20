@@ -1,3 +1,5 @@
+import AppKit
+import CoreGraphics
 import XCTest
 
 final class RuneAppBundleInfoPlistTests: XCTestCase {
@@ -166,7 +168,7 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertFalse(contents.contains("static let bundleIdentifier = \""))
     }
 
-    func testBuildScriptOnlyBuildsLocalUnsignedAppBundle() throws {
+    func testBuildScriptOnlyBuildsLocallySealedAppBundleWithoutDistributionPackaging() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)
 
@@ -174,11 +176,12 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("cp \"${BIN_PATH}\" \"${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}\""))
         XCTAssertFalse(contents.contains("LOCAL_BUILD_HOOK"))
         XCTAssertFalse(contents.contains("source \"${LOCAL_BUILD_HOOK}\""))
+        XCTAssertTrue(contents.contains("codesign --verify --deep --strict"))
 
         let forbiddenDistributionFragments = [
-            "code" + "sign",
             "product" + "build",
             "xcrun " + "altool",
+            "xcrun " + "notarytool",
             "PROVISIONING_" + "PROFILE",
         ]
 
@@ -197,7 +200,8 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("Contents/Resources/rune_logo_main.png"))
     }
 
-    func testBuiltAppBundleLaunchSmokeWhenExplicitlyProvided() throws {
+    @MainActor
+    func testBuiltAppBundleLaunchSmokeWhenExplicitlyProvided() async throws {
         guard let bundlePath = ProcessInfo.processInfo.environment["RUNE_APP_BUNDLE_SMOKE_PATH"],
               !bundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -224,27 +228,90 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         try FileManager.default.createDirectory(at: smokeHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: smokeHome) }
 
-        let process = Process()
-        process.executableURL = executableURL
-        process.environment = [
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.createsNewApplicationInstance = true
+        configuration.arguments = ["-rune.settings.enableDemoCluster", "false"]
+        configuration.environment = [
             "HOME": smokeHome.path,
+            "CFFIXED_USER_HOME": smokeHome.path,
+            "RUNE_DISABLE_DEFAULT_KUBECONFIG_DISCOVERY": "1",
+            "RUNE_DISABLE_BOOKMARKED_KUBECONFIGS": "1",
+            "RUNE_K8S_AGENT": "",
             "RUNE_LOG_TO_STDERR": "1",
             "RUNE_DIAGNOSTICS_LOGGING": "0",
             "RUNE_VERBOSE_DEBUG_TRACE": "0"
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
 
-        try process.run()
-        Thread.sleep(forTimeInterval: 3)
-
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-        } else {
-            process.waitUntilExit()
-            XCTFail("Rune app bundle exited during launch smoke with status \(process.terminationStatus).")
+        let application = try await withCheckedThrowingContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { application, error in
+                if let application {
+                    continuation.resume(returning: application)
+                } else {
+                    continuation.resume(throwing: error ?? NSError(
+                        domain: "RuneAppBundleLaunchSmoke",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "LaunchServices returned no Rune application."]
+                    ))
+                }
+            }
         }
+        defer {
+            if !application.isTerminated {
+                application.forceTerminate()
+            }
+        }
+
+        try await Task.sleep(for: .seconds(3))
+        XCTAssertFalse(application.isTerminated, "Rune exited during LaunchServices smoke.")
+        XCTAssertEqual(
+            visibleWindowCount(ownedBy: application.processIdentifier),
+            1,
+            "Rune must present exactly one visible main window after launch."
+        )
+
+        try await Task.sleep(for: .seconds(2))
+        XCTAssertFalse(application.isTerminated, "Rune exited after initially presenting its main window.")
+        XCTAssertEqual(
+            visibleWindowCount(ownedBy: application.processIdentifier),
+            1,
+            "Rune's single main window must remain stable after launch-time state restoration."
+        )
+
+        application.forceTerminate()
+        for _ in 0..<40 where !application.isTerminated {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(application.isTerminated, "Rune launch smoke left its isolated app process running.")
+    }
+
+    func testAppUsesIdentifiedWindowGroupAndRecoversHeadlessOrCrossSpaceRelaunch() throws {
+        let app = repositoryRoot.appendingPathComponent("Sources/RuneApp/RuneApp.swift")
+        let contents = try String(contentsOf: app, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("WindowGroup(\"Rune\", id: RuneApplicationIdentifiers.mainWindowScene)"))
+        XCTAssertTrue(contents.contains("openWindow(id: RuneApplicationIdentifiers.mainWindowScene)"))
+        XCTAssertTrue(contents.contains("applicationShouldHandleReopen"))
+        XCTAssertTrue(contents.contains("NSApplication.didFinishRestoringWindowsNotification"))
+        XCTAssertTrue(contents.contains("window restoration completion inferred after launch"))
+        XCTAssertTrue(contents.contains("windowRecoveryTask: Task<Void, Never>?"))
+        XCTAssertTrue(contents.contains("windowRecoveryGeneration: UInt = 0"))
+        XCTAssertTrue(contents.contains("scheduleMainWindowRecovery(allowsInitialWindowGrace: true)"))
+        XCTAssertTrue(contents.contains("scheduleMainWindowRecovery(allowsInitialWindowGrace: false)"))
+        XCTAssertTrue(contents.contains("guard !allowsInitialWindowGrace else { return }"))
+        XCTAssertTrue(contents.contains("windowRecoveryTask?.cancel()"))
+        XCTAssertTrue(contents.contains("var didRequestWindow = false"))
+        XCTAssertTrue(contents.contains("initialWindowGraceAttempts = 40"))
+        XCTAssertTrue(contents.contains("if allowsInitialWindowGrace"))
+        XCTAssertTrue(contents.contains("if !didRequestWindow,"))
+        XCTAssertTrue(contents.contains("didRequestWindow = true"))
+        XCTAssertTrue(contents.contains("let candidates = NSApp.windows.filter { !("))
+        XCTAssertFalse(contents.contains("window.isVisible\n                && window.isOnActiveSpace"))
+        XCTAssertTrue(contents.contains("if !window.isOnActiveSpace"))
+        XCTAssertTrue(contents.contains("window.orderOut(nil)"))
+        XCTAssertTrue(contents.contains("window.collectionBehavior.insert(.moveToActiveSpace)"))
+        XCTAssertTrue(contents.contains("window.makeKeyAndOrderFront(nil)"))
     }
 
     func testAppRegistersDefaultsBeforeConstructingRootViewModel() throws {
@@ -267,5 +334,29 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
             initBlock.range(of: "RuneSettingsKeys.registerDefaults()")!.lowerBound,
             initBlock.range(of: "_viewModel = StateObject(")!.lowerBound
         )
+    }
+
+    private func visibleWindowCount(ownedBy processIdentifier: pid_t) -> Int {
+        guard let windows = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return 0
+        }
+
+        return windows.reduce(into: 0) { count, window in
+            guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == processIdentifier,
+                  (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  (window[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? NSNumber,
+                  let height = bounds["Height"] as? NSNumber
+            else {
+                return
+            }
+            if width.doubleValue > 100 && height.doubleValue > 100 {
+                count += 1
+            }
+        }
     }
 }

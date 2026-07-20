@@ -281,8 +281,20 @@ public final class URLSessionAKSServicePrincipalTokenHTTPClient: AKSServicePrinc
     private let session: URLSession
     private let maximumResponseBytes: Int
 
-    public init(maximumResponseBytes: Int = 1_048_576) {
-        let configuration = URLSessionConfiguration.ephemeral
+    public convenience init(maximumResponseBytes: Int = 1_048_576) {
+        self.init(
+            maximumResponseBytes: maximumResponseBytes,
+            sessionConfiguration: .ephemeral
+        )
+    }
+
+    /// Test-only transport seam. The request URL remains validated as HTTPS by
+    /// `send(_:)`; production callers use the public initializer above.
+    init(
+        maximumResponseBytes: Int = 1_048_576,
+        sessionConfiguration: URLSessionConfiguration
+    ) {
+        let configuration = sessionConfiguration
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 15

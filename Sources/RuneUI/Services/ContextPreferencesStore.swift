@@ -56,6 +56,22 @@ public struct ContextDisplayMetadata: Codable, Equatable, Sendable {
     }
 }
 
+public struct KubeConfigImportPreferenceBatch: Equatable, Sendable {
+    public let preferredNamespaces: [String: String]
+    public let contextDisplayMetadata: [String: ContextDisplayMetadata]
+    public let favoriteContextNames: Set<String>?
+
+    public init(
+        preferredNamespaces: [String: String],
+        contextDisplayMetadata: [String: ContextDisplayMetadata],
+        favoriteContextNames: Set<String>?
+    ) {
+        self.preferredNamespaces = preferredNamespaces
+        self.contextDisplayMetadata = contextDisplayMetadata
+        self.favoriteContextNames = favoriteContextNames
+    }
+}
+
 public protocol ContextPreferencesStoring {
     func loadFavoriteContextNames() -> Set<String>
     func saveFavoriteContextNames(_ names: Set<String>)
@@ -73,6 +89,7 @@ public protocol ContextPreferencesStoring {
     func saveContextDisplayMetadata(_ metadata: ContextDisplayMetadata?, for contextName: String)
     func loadHiddenOperatorPrinterColumnFamilies() -> Set<String>
     func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>)
+    func applyKubeConfigImportPreferenceBatch(_ batch: KubeConfigImportPreferenceBatch)
 }
 
 public extension ContextPreferencesStoring {
@@ -117,6 +134,18 @@ public extension ContextPreferencesStoring {
     }
 
     func saveManualProductionContextIDs(_ ids: Set<String>) {}
+
+    func applyKubeConfigImportPreferenceBatch(_ batch: KubeConfigImportPreferenceBatch) {
+        for (contextName, namespace) in batch.preferredNamespaces {
+            savePreferredNamespace(namespace, for: contextName)
+        }
+        for (contextName, metadata) in batch.contextDisplayMetadata {
+            saveContextDisplayMetadata(metadata, for: contextName)
+        }
+        if let favoriteContextNames = batch.favoriteContextNames {
+            saveFavoriteContextNames(favoriteContextNames)
+        }
+    }
 }
 
 public final class UserDefaultsContextPreferencesStore: ContextPreferencesStoring {
@@ -428,6 +457,34 @@ public final class FileBackedContextPreferencesStore: ContextPreferencesStoring 
     public func saveHiddenOperatorPrinterColumnFamilies(_ families: Set<String>) {
         updateDocument { document in
             document.hiddenOperatorPrinterColumnFamilies = Self.normalizedStrings(Array(families))
+        }
+    }
+
+    public func applyKubeConfigImportPreferenceBatch(_ batch: KubeConfigImportPreferenceBatch) {
+        updateDocument { document in
+            for (rawContext, rawNamespace) in batch.preferredNamespaces {
+                let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                let namespace = rawNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !context.isEmpty else { continue }
+                if namespace.isEmpty {
+                    document.preferredNamespaces.removeValue(forKey: context)
+                } else {
+                    document.preferredNamespaces[context] = namespace
+                }
+            }
+            for (rawContext, metadata) in batch.contextDisplayMetadata {
+                let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !context.isEmpty else { continue }
+                let normalized = metadata.normalized()
+                if normalized.isEmpty {
+                    document.contextDisplayMetadata.removeValue(forKey: context)
+                } else {
+                    document.contextDisplayMetadata[context] = normalized
+                }
+            }
+            if let favorites = batch.favoriteContextNames {
+                document.favoriteContextNames = Self.normalizedStrings(Array(favorites))
+            }
         }
     }
 

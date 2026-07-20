@@ -291,6 +291,16 @@ else
   fi
 
   if [[ "$DOCKER_READY" == "1" ]] && safe_docker_kubeconfig_check; then
+    run_step docker_compose_single_context_namespace_test env \
+      RUNE_ALLOW_LIVE_K8S_TESTS=1 \
+      RUNE_LIVE_KUBECONFIG="$MERGED_KUBECONFIG" \
+      RUNE_LIVE_K8S_CONTEXT=fake-orbit-mesh \
+      swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testLiveKubeconfigContextListsNamespacesWhenExplicitlyEnabled
+    run_step docker_compose_multi_context_namespace_test env \
+      RUNE_ALLOW_LIVE_K8S_TESTS=1 \
+      RUNE_LIVE_KUBECONFIG="$MERGED_KUBECONFIG" \
+      RUNE_LIVE_K8S_CONTEXTS=fake-orbit-mesh,fake-lattice-spark \
+      swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testLiveKubeconfigContextsListNamespacesWhenExplicitlyEnabled
     run_step docker_compose_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter LocalKubernetesIntegrationTests/testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable
@@ -300,13 +310,19 @@ else
     run_step docker_compose_terminal_smoke_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallback
+    run_step docker_compose_add_cluster_import_integration_test env \
+      RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
+      swift test --disable-sandbox --filter RuneDockerComposeKubeConfigImportIntegrationTests/testAddClusterImportPublishesAndActivatesBothDockerComposeContexts
     run_step docker_compose_view_model_feature_integration_test env \
       RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 \
       swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests
   else
+    skip_step docker_compose_single_context_namespace_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
+    skip_step docker_compose_multi_context_namespace_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_read_write_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_terminal_smoke_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
+    skip_step docker_compose_add_cluster_import_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
     skip_step docker_compose_view_model_feature_integration_test "Skipped because Docker Compose stack or kubeconfig safety gate did not pass."
   fi
 fi
@@ -317,6 +333,19 @@ if [[ $FAILURES -ne 0 ]]; then
 fi
 ENDED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
+if [[ "$SKIP_DOCKER" == "1" ]]; then
+  RERUN_COMMAND="RUNE_SKIP_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh"
+  RERUN_NOTE='This run skipped Docker Compose k3s. Set `RUNE_SKIP_DOCKER_FAKE_K8S=0` to include it.'
+else
+  if [[ "$RESET_DOCKER" == "1" ]]; then
+    RERUN_RESET_DOCKER=1
+  else
+    RERUN_RESET_DOCKER=0
+  fi
+  RERUN_COMMAND="RUNE_SKIP_DOCKER_FAKE_K8S=0 RUNE_RESET_DOCKER_FAKE_K8S=$RERUN_RESET_DOCKER scripts/run-local-k8s-integration-report.sh"
+  RERUN_NOTE='This run included Docker Compose k3s. Set `RUNE_RESET_DOCKER_FAKE_K8S=0` to reuse an existing local stack.'
+fi
+
 cat >> "$REPORT_MD" <<EOF
 
 ## Result
@@ -326,11 +355,10 @@ cat >> "$REPORT_MD" <<EOF
 ## Rerun
 
 \`\`\`bash
-scripts/run-local-k8s-integration-report.sh
+$RERUN_COMMAND
 \`\`\`
 
-Docker Compose k3s is skipped by default to avoid kubelet/cgroup noise. Use \`RUNE_SKIP_DOCKER_FAKE_K8S=0\` when you explicitly need the k3s integration stack.
-Use \`RUNE_RESET_DOCKER_FAKE_K8S=0\` to reuse an existing Docker Compose stack.
+$RERUN_NOTE
 
 ## Machine Report
 

@@ -2,6 +2,7 @@ import Foundation
 
 public enum RuneApplicationIdentifiers {
     public static let localBundleIdentifier = "app.rune.local"
+    public static let mainWindowScene = "main"
 
     public static var bundleIdentifier: String {
         let identifier = Bundle.main.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -7,8 +7,12 @@ import XCTest
 final class ResourceLogsInspectorViewTests: XCTestCase {
     func testLogToolbarUsesStableRowsInsteadOfBreakpointWrapping() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let toolbarSource = try XCTUnwrap(source.slice(
+            from: "struct ResourceLogsToolbar: View",
+            to: "private enum LogToolbarGroupRole"
+        ))
 
-        XCTAssertFalse(source.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertFalse(toolbarSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(source.contains("LogToolbarScrollRow"))
         XCTAssertTrue(source.contains("private var sourceControls: some View"))
         XCTAssertTrue(source.contains("private var primaryControls: some View"))
@@ -22,9 +26,18 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("LogToolbarGroup(spacing: 6)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.window), role: .window)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.container), role: .container)"))
+        XCTAssertTrue(source.contains("static let sourcePickerWidth: CGFloat = 166"))
+        XCTAssertEqual(
+            source.components(separatedBy: ".frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)").count - 1,
+            2
+        )
+        XCTAssertEqual(source.components(separatedBy: "LogToolbarPopupPicker(").count - 1, 2)
+        XCTAssertTrue(source.contains("func makeNSView(context: Context) -> NSPopUpButton"))
         XCTAssertTrue(source.contains("LogToolbarStatusIndicator("))
         XCTAssertTrue(source.contains("private struct LogToolbarStatusIndicator"))
-        XCTAssertTrue(source.contains("ResourceLogsSourcePanel(title: \"Pods\""))
+        XCTAssertTrue(source.contains("sourcePanelTitle: \"Pods\""))
+        XCTAssertTrue(source.contains("LogToolbarSourceSummary("))
+        XCTAssertTrue(source.contains("sourceSummaryTitle: source.sourcePanelTitle"))
         XCTAssertTrue(source.contains(".toggleStyle(.button)"))
         XCTAssertTrue(source.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(source.contains(".frame(height: role.height)"))
@@ -46,9 +59,9 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("t(.exportVisibleResultsZip)"))
         XCTAssertTrue(source.contains("t(.exportFullUnfilteredZip)"))
         XCTAssertTrue(source.contains("t(.exportAllPodsFullZip)"))
-        XCTAssertTrue(source.contains("onSaveVisibleZip(searchSummary?.displayedText ?? \"\")"))
-        XCTAssertTrue(source.contains("onSaveVisibleZipToExportFolder(searchSummary?.displayedText ?? \"\")"))
-        XCTAssertTrue(source.contains("onSaveVisibleZipAndOpen(searchSummary?.displayedText ?? \"\")"))
+        XCTAssertTrue(source.contains("onSaveVisibleZip(visibleLogText)"))
+        XCTAssertTrue(source.contains("onSaveVisibleZipToExportFolder(visibleLogText)"))
+        XCTAssertTrue(source.contains("onSaveVisibleZipAndOpen(visibleLogText)"))
         XCTAssertTrue(source.contains("Button(action: onSaveFullZip)"))
         XCTAssertTrue(source.contains("Button(action: onSaveFullZipToExportFolder)"))
         XCTAssertTrue(source.contains("Button(action: onSaveFullZipAndOpen)"))
@@ -64,6 +77,37 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains(".font(.caption.weight(.semibold))"))
     }
 
+    func testPodAndUnifiedLogsShareOneStatefulPaneEngine() throws {
+        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let podPane = try XCTUnwrap(source.slice(
+            from: "struct PodLogsInspectorPane: View",
+            to: "struct UnifiedResourceLogsInspectorPane: View"
+        ))
+        let unifiedPane = try XCTUnwrap(source.slice(
+            from: "struct UnifiedResourceLogsInspectorPane: View",
+            to: "struct ResourceLogsOutputSurface: View"
+        ))
+
+        XCTAssertTrue(source.contains("private struct ResourceLogsInspectorPaneCore: View"))
+        XCTAssertTrue(source.contains("private struct ResourceLogsPaneSourceAdapter"))
+        XCTAssertTrue(source.contains("static func pod("))
+        XCTAssertTrue(source.contains("static func unified(podNames: [String])"))
+        XCTAssertTrue(podPane.contains("ResourceLogsInspectorPaneCore("))
+        XCTAssertTrue(podPane.contains("source: .pod("))
+        XCTAssertTrue(unifiedPane.contains("ResourceLogsInspectorPaneCore("))
+        XCTAssertTrue(unifiedPane.contains("source: .unified(podNames: podNames)"))
+        XCTAssertEqual(
+            source.components(separatedBy: "@State private var searchQuery = \"\"").count - 1,
+            1,
+            "Pod and unified logs must not drift into separate search/navigation state engines."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "private func scheduleStructuredSummary(for text: String, debounced: Bool)").count - 1,
+            1,
+            "Structured-log analysis should be wired once and configured by the source adapter."
+        )
+    }
+
     func testLogToolbarStatusAndControlsUseGroupedNativeChrome() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let toolbarGroupSource = try XCTUnwrap(source.slice(
@@ -73,34 +117,301 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains("LogToolbarGroup"))
         XCTAssertTrue(source.contains("LogToolbarStatusIndicator"))
-        XCTAssertTrue(source.contains("private struct ResourceLogsSourcePanel"))
+        XCTAssertTrue(source.contains("private struct LogToolbarSourceSummary"))
         XCTAssertTrue(source.contains("statusColor"))
         XCTAssertTrue(source.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
-        XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: 8, style: .continuous)"))
         XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)"))
+        XCTAssertTrue(source.contains("LogToolbarPopupPicker("))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.row.opacity(0.42)"))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.stroke.opacity(0.28)"))
         XCTAssertFalse(toolbarGroupSource.contains("RoundedRectangle(cornerRadius: 9, style: .continuous)"))
-        XCTAssertTrue(source.contains("Text(title)"))
         XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: 5)"))
         XCTAssertTrue(source.contains("Text(title.uppercased())"))
         XCTAssertFalse(source.contains("Circle()\\n                    .fill(statusText.lowercased()"))
     }
 
-    func testLogSearchUsesDraftInputAndExternalSearchPulseFeedback() throws {
+    func testAdjustedLogControlsConsumeResolvedThemeTokens() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let findControls = try String(contentsOfFile: runeFindBarControlsPath, encoding: .utf8)
+        let searchBarSource = try XCTUnwrap(source.slice(
+            from: "struct ResourceLogsSearchBar: View",
+            to: "struct ResourceLogSearchResult"
+        ))
+        let insightsSource = try XCTUnwrap(source.slice(
+            from: "struct ResourceStructuredLogSummaryPanel: View",
+            to: "struct ResourceLogsPaneActions"
+        ))
+        let pickerFieldSource = try XCTUnwrap(source.slice(
+            from: "private struct LogToolbarPickerField",
+            to: "private struct LogToolbarPopupPicker"
+        ))
+        let matchCaseStart = try XCTUnwrap(findControls.range(of: "struct RuneMatchCaseButton: View"))
+        let matchCaseSource = String(findControls[matchCaseStart.lowerBound...])
 
-        XCTAssertTrue(source.contains("@State private var searchPulseID = 0"))
+        XCTAssertTrue(searchBarSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
+        XCTAssertTrue(searchBarSource.contains("RuneSurfaceBackground(kind: .editor)"))
+        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.divider"))
+        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.secondaryText"))
+        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.foreground"))
+        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.mutedText"))
+        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.accent"))
+        XCTAssertTrue(searchBarSource.contains("RuneSemanticColorRole.danger.color(in: runeThemePalette)"))
+        XCTAssertFalse(searchBarSource.contains(".regularMaterial"))
+
+        XCTAssertTrue(source.contains(".background(RuneSurfaceBackground(kind: .inset))"))
+        XCTAssertTrue(insightsSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
+        XCTAssertTrue(insightsSource.contains("runeThemePalette?.foreground"))
+        XCTAssertTrue(insightsSource.contains("runeThemePalette?.secondaryText"))
+        XCTAssertTrue(insightsSource.contains("RuneChip("))
+        XCTAssertTrue(pickerFieldSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
+        XCTAssertTrue(pickerFieldSource.contains("runeThemePalette?.secondaryText"))
+        XCTAssertTrue(matchCaseSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
+        XCTAssertTrue(matchCaseSource.contains("runeThemePalette?.accent"))
+        XCTAssertTrue(matchCaseSource.contains("runeThemePalette?.secondaryText"))
+    }
+
+    @MainActor
+    func testAdjustedLogPanelRendersBuiltInAndDecodedCustomThemes() async throws {
+        let customThemeData = Data(
+            """
+            {
+              "name": "Synthetic Themes",
+              "themes": [
+                {
+                  "name": "Synthetic Dark",
+                  "appearance": "dark",
+                  "style": {
+                    "background": "#102030ff",
+                    "panel.background": "#182838ff",
+                    "element.background": "#213141ff",
+                    "element.selected": "#345678ff",
+                    "editor.background": "#0b1b2bff",
+                    "border": "#6f8090ff",
+                    "text": "#f4f8fbff",
+                    "text.muted": "#b6c4d1ff",
+                    "text.placeholder": "#8ea0adff",
+                    "text.accent": "#ff4fb3ff",
+                    "error": "#ff6677ff"
+                  }
+                }
+              ]
+            }
+            """.utf8
+        )
+        let customTheme = try XCTUnwrap(
+            RuneZedThemeDecoder.decode(data: customThemeData, sourceID: "synthetic-test").first
+        )
+        let model = ResourceLogAdjustedThemeModel(theme: RuneAppearanceTheme.paper.resolvedTheme)
+        let host = NSHostingController(
+            rootView: ResourceLogAdjustedThemeHarness(model: model)
+                .frame(width: 700, height: 220, alignment: .topLeading)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 220),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        let themes = [
+            RuneAppearanceTheme.paper.resolvedTheme,
+            RuneAppearanceTheme.graphiteBlue.resolvedTheme,
+            customTheme,
+            RuneAppearanceTheme.paper.resolvedTheme
+        ]
+        var renderedImages: [Data] = []
+        for (index, theme) in themes.enumerated() {
+            model.theme = theme
+            try await settle(window: window)
+            let popups = findPopUpButtons(in: host.view)
+            let sourcePopups = popups.filter {
+                $0.accessibilityLabel() == "Log window" || $0.accessibilityLabel() == "Container"
+            }
+            XCTAssertEqual(sourcePopups.count, 2)
+            let expectedAppearance: NSAppearance.Name = theme.preferredColorScheme == .light ? .aqua : .darkAqua
+            for popup in sourcePopups {
+                XCTAssertEqual(
+                    popup.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]),
+                    expectedAppearance,
+                    "Popup appearance must follow theme at transition \(index)."
+                )
+            }
+            let png = try renderedPNG(from: host.view)
+            XCTAssertGreaterThan(png.count, 10_000)
+            renderedImages.append(png)
+            if let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] {
+                let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try png.write(to: directory.appendingPathComponent("logs-theme-\(index)-\(theme.id).png"))
+            }
+        }
+
+        XCTAssertEqual(Set(renderedImages.prefix(3)).count, 3, "Paper, Graphite and custom palette must render distinctly.")
+        XCTAssertEqual(renderedImages.first, renderedImages.last, "Returning to Paper must clear all custom-theme rendering.")
+    }
+
+    @MainActor
+    func testLogSearchAccessoriesStayInlineAndContainedAtNestedInspectorWidths() async throws {
+        let text = "INFO ready\nINFO retry\nERROR failed\n"
+        let result = ResourceLogSearchResult.make(text: text, query: "INFO")
+
+        for width in [CGFloat(248), 520] {
+            let host = NSHostingController(
+                rootView: ResourceLogsSearchBar(
+                    query: .constant("INFO"),
+                    matchCase: .constant(false),
+                    selectedMatchIndex: .constant(0),
+                    focusRequestID: 0,
+                    searchSummary: result,
+                    placeholder: "Search logs",
+                    findHelp: "Find in logs",
+                    matchCaseHelp: "Match case"
+                )
+                .frame(width: width, height: 60, alignment: .topLeading)
+                .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: width, height: 60),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer { closeTestWindow(window) }
+            try await settle(window: window)
+
+            let searchField = try XCTUnwrap(findEditableTextFields(in: host.view).first)
+            let localSearchFrame = host.view.convert(searchField.bounds, from: searchField)
+            let searchFrame = searchField.accessibilityFrame()
+            XCTAssertGreaterThanOrEqual(searchFrame.minX, window.frame.minX - 0.5)
+            XCTAssertLessThanOrEqual(searchFrame.maxX, window.frame.maxX + 0.5)
+            XCTAssertGreaterThanOrEqual(searchFrame.width, width == 248 ? 100 : 160)
+
+            let compactMenus = findPopUpButtons(in: host.view)
+            if width == 248 {
+                let optionsButton = try XCTUnwrap(compactMenus.only)
+                let optionsFrame = host.view.convert(optionsButton.bounds, from: optionsButton)
+                XCTAssertGreaterThanOrEqual(optionsFrame.minX, localSearchFrame.maxX - 1)
+                XCTAssertLessThanOrEqual(optionsFrame.maxX, width + 0.5)
+            } else {
+                XCTAssertTrue(compactMenus.isEmpty, "The wide find row should expose direct Previous/Next actions.")
+            }
+            if let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] {
+                let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try renderedPNG(from: host.view).write(
+                    to: directory.appendingPathComponent("logs-search-width-\(Int(width)).png")
+                )
+            }
+        }
+    }
+
+    @MainActor
+    func testLogWindowAndContainerPickersShareWidthHeightAndBaseline() async throws {
+        let model = ResourceLogToolbarPickerModel()
+        let host = NSHostingController(
+            rootView: ResourceLogToolbarPickerHarness(model: model)
+            .frame(width: 700, height: 140, alignment: .topLeading)
+            .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 140),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+
+        let popups = findPopUpButtons(in: host.view)
+        let windowPopup = try XCTUnwrap(
+            popups.first { $0.accessibilityLabel() == "Log window" },
+            "Expected the explicitly labelled Window popup."
+        )
+        let containerPopup = try XCTUnwrap(
+            popups.first { $0.accessibilityLabel() == "Container" },
+            "Expected the explicitly labelled Container popup."
+        )
+        let windowFrame = host.view.convert(windowPopup.bounds, from: windowPopup)
+        let containerFrame = host.view.convert(containerPopup.bounds, from: containerPopup)
+        XCTAssertEqual(windowFrame.width, containerFrame.width, accuracy: 0.5)
+        XCTAssertEqual(windowFrame.height, containerFrame.height, accuracy: 0.5)
+        XCTAssertEqual(windowFrame.minY, containerFrame.minY, accuracy: 0.5)
+        XCTAssertEqual(ResourceLogsLayoutMetrics.sourcePickerWidth, 166)
+
+        windowPopup.selectItem(at: 1)
+        windowPopup.sendAction(windowPopup.action, to: windowPopup.target)
+        containerPopup.selectItem(withTitle: "app")
+        containerPopup.sendAction(containerPopup.action, to: containerPopup.target)
+        try await settle(window: window)
+        XCTAssertEqual(model.selectedLogPreset, .last5Minutes)
+        XCTAssertEqual(model.selectedContainer, "app")
+
+        model.selectedLogPreset = .lastHour
+        model.selectedContainer = "sidecar"
+        try await settle(window: window)
+        XCTAssertEqual(windowPopup.titleOfSelectedItem, PodLogPreset.lastHour.title)
+        XCTAssertEqual(containerPopup.titleOfSelectedItem, "sidecar")
+
+        model.containerOptions = ["app"]
+        try await settle(window: window)
+        XCTAssertEqual(model.selectedContainer, "sidecar")
+        XCTAssertEqual(containerPopup.indexOfSelectedItem, -1, "A stale binding must not display a different container.")
+    }
+
+    func testLogSearchRunsOffMainThreadAndKeepsStableInputIdentity() throws {
+        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let searchBarSource = try XCTUnwrap(source.slice(
+            from: "struct ResourceLogsSearchBar: View",
+            to: "struct ResourceLogSearchResult"
+        ))
+
+        XCTAssertTrue(source.contains("@State private var searchFocusRequestID = 0"))
         XCTAssertTrue(source.contains("applyLogSearchQuery"))
-        XCTAssertTrue(source.contains("searchPulseID: searchPulseID"))
-        XCTAssertTrue(source.contains("@State private var draftQuery = \"\""))
-        XCTAssertTrue(source.contains("@State private var queryCommitTask: Task<Void, Never>?"))
-        XCTAssertTrue(source.contains("try? await Task.sleep(nanoseconds: 85_000_000)"))
+        XCTAssertTrue(source.contains("searchFocusRequestID: searchFocusRequestID"))
+        XCTAssertEqual(searchBarSource.components(separatedBy: "TextField(").count - 1, 2)
+        XCTAssertTrue(searchBarSource.contains("prompt: Text(placeholder)"))
+        XCTAssertTrue(source.contains("@State private var searchTask: Task<Void, Never>?"))
+        XCTAssertTrue(source.contains("querySearchDebounceNanoseconds: UInt64 = 25_000_000"))
+        XCTAssertTrue(source.contains("streamedTextSearchDebounceNanoseconds: UInt64 = 80_000_000"))
+        XCTAssertTrue(source.contains("streamedTextSummaryDebounceNanoseconds: UInt64 = 120_000_000"))
+        XCTAssertTrue(source.contains("actor ResourceLogsLatestWorkLane<Output: Sendable>"))
+        XCTAssertTrue(source.contains("Task.detached(priority: priority)"))
+        XCTAssertTrue(source.contains("withTaskCancellationHandler"))
+        XCTAssertTrue(source.contains("currentTask.cancel()"))
+        XCTAssertTrue(source.contains("_ = await currentTask.result"))
+        XCTAssertTrue(source.contains("cancellationCheck: { try Task.checkCancellation() }"))
+        XCTAssertTrue(source.contains("let reusableTextIndex = searchResult.originalText == text ? searchResult.textIndex : nil"))
+        XCTAssertTrue(source.contains("struct ResourceLogsExplorePanel"))
+        XCTAssertFalse(source.contains("RuneFindBarChrome(\"Log find controls\")"))
+        XCTAssertTrue(searchBarSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(searchBarSource.contains("compactSearchAccessories"))
+        XCTAssertFalse(searchBarSource.contains("LogSearchPulseOverlay"))
+        XCTAssertFalse(searchBarSource.contains("flashSearchPulse"))
+        XCTAssertFalse(searchBarSource.contains("Text(searchSummary.badgeText)"))
+        XCTAssertFalse(searchBarSource.contains("Spacer(minLength:"))
+        XCTAssertTrue(searchBarSource.contains("private func matchControls(statusWidth: CGFloat)"))
+        XCTAssertTrue(searchBarSource.contains(".fixedSize(horizontal: true, vertical: false)"))
+        XCTAssertTrue(searchBarSource.contains("ResourceLogsLayoutMetrics.searchMatchStatusWidth"))
+        XCTAssertTrue(searchBarSource.contains("transaction.animation = nil"))
         XCTAssertTrue(source.contains("@FocusState private var isSearchFocused"))
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
-        XCTAssertTrue(source.contains("matchCase.toggle()"))
-        XCTAssertTrue(source.contains("Text(\"Aa\")"))
-        XCTAssertTrue(source.contains("LogSearchPulseOverlay"))
+        XCTAssertTrue(source.contains("RuneMatchCaseButton(isSelected: $matchCase, help: matchCaseHelp)"))
+        XCTAssertTrue(source.contains("let renderSearchResult = searchResult.originalText == logText ? searchResult : nil"))
+        XCTAssertTrue(source.contains("renderSearchResult: renderSearchResult"))
+        XCTAssertTrue(source.contains("navigationSearchResult: activeSearchResult"))
+        XCTAssertTrue(source.contains("private func scheduleStructuredSummary(for text: String, debounced: Bool)"))
+        XCTAssertFalse(source.contains(".task(id: \"\\(simpleMode):\\(logText)\")"))
     }
 
     func testLogSearchSupportsMatchCase() {
@@ -121,12 +432,349 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(sensitive.matchCase)
     }
 
+    func testLogSearchReusesExistingTextIndexAcrossQueries() {
+        let text = "INFO ready\nERROR failed\n"
+        let initial = ResourceLogSearchResult.make(text: text, query: "")
+        let searched = ResourceLogSearchResult.makeForInspector(
+            text: text,
+            textIndex: initial.textIndex,
+            query: "error"
+        )
+
+        XCTAssertEqual(searched.textIndex, initial.textIndex)
+        XCTAssertEqual(searched.matchRanges.count, 1)
+    }
+
+    @MainActor
+    func testLogSearchKeepsNativeFieldEditorAndFrameAcrossEveryQueryResultAndThemeUpdate() async throws {
+        let model = ResourceLogSearchFocusModel()
+        let host = NSHostingController(
+            rootView: ResourceLogSearchFocusHarness(model: model)
+                .frame(width: 520, height: 100, alignment: .topLeading)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 100),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+
+        let searchField = try XCTUnwrap(
+            findEditableTextFields(in: host.view).first,
+            "Expected the native editable search field."
+        )
+        window.makeFirstResponder(searchField)
+        searchField.selectText(nil)
+        let originalFieldEditor = try XCTUnwrap(searchField.currentEditor() as? NSTextView)
+        originalFieldEditor.setSelectedRange(NSRange(location: 0, length: 0))
+        let originalFrame = host.view.convert(searchField.bounds, from: searchField)
+        XCTAssertTrue(window.firstResponder === originalFieldEditor)
+
+        var expectedQuery = ""
+        for fragment in ["i", "n", "f", "o"] {
+            originalFieldEditor.insertText(
+                fragment,
+                replacementRange: NSRange(location: originalFieldEditor.string.utf16.count, length: 0)
+            )
+            expectedQuery += fragment
+            try await settle(window: window)
+            XCTAssertEqual(model.query, expectedQuery)
+            try assertStableLogSearchInput(
+                in: host.view,
+                window: window,
+                expectedField: searchField,
+                expectedEditor: originalFieldEditor,
+                expectedFrame: originalFrame
+            )
+
+            model.searchSummary = ResourceLogSearchResult.make(
+                text: model.text,
+                query: expectedQuery
+            )
+            try await settle(window: window)
+            try assertStableLogSearchInput(
+                in: host.view,
+                window: window,
+                expectedField: searchField,
+                expectedEditor: originalFieldEditor,
+                expectedFrame: originalFrame
+            )
+        }
+
+        for appearance in RuneAppearanceTheme.allCases {
+            model.appearance = appearance
+            try await settle(window: window)
+            try assertStableLogSearchInput(
+                in: host.view,
+                window: window,
+                expectedField: searchField,
+                expectedEditor: originalFieldEditor,
+                expectedFrame: originalFrame
+            )
+        }
+
+        XCTAssertEqual(originalFieldEditor.selectedRange().location, expectedQuery.utf16.count)
+    }
+
+    @MainActor
+    func testRapidTypingThroughLogPanePublishesOnlyTheLatestSearchWithoutLosingFocus() async throws {
+        let text = "info ready\nINFO retry\nnoise\ninformation only\n"
+        let host = NSHostingController(
+            rootView: PodLogsInspectorPane(
+                selectedLogPreset: .constant(.recentLines),
+                includePreviousLogs: .constant(false),
+                selectedContainer: .constant(""),
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                isLoadingLogs: false,
+                isLoadingResources: false,
+                errorMessage: nil,
+                statusText: "Ready",
+                containerOptions: ["app"],
+                logText: text,
+                readOnlyResetID: "rapid-search-pane",
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+            .frame(width: 760, height: 620)
+            .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        let searchField = try XCTUnwrap(findEditableTextFields(in: host.view).first)
+        window.makeFirstResponder(searchField)
+        searchField.selectText(nil)
+        let fieldEditor = try XCTUnwrap(searchField.currentEditor() as? NSTextView)
+        fieldEditor.setSelectedRange(NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        let originalFrame = host.view.convert(searchField.bounds, from: searchField)
+
+        for fragment in ["i", "n", "f", "o"] {
+            fieldEditor.insertText(fragment, replacementRange: fieldEditor.selectedRange())
+        }
+        try await Task.sleep(nanoseconds: 160_000_000)
+        try await settle(window: window)
+
+        XCTAssertEqual(fieldEditor.string, "info")
+        try assertStableLogSearchInput(
+            in: host.view,
+            window: window,
+            expectedField: searchField,
+            expectedEditor: fieldEditor,
+            expectedFrame: originalFrame
+        )
+        XCTAssertEqual(fieldEditor.selectedRange().location, 4)
+        let logTextView = try XCTUnwrap(findTextViews(in: host.view).first { $0.string == text })
+        XCTAssertEqual(
+            logTextView.selectedRange(),
+            NSRange(location: 0, length: 4),
+            "The completed result must navigate using only the final 'info' query, never an older prefix."
+        )
+    }
+
+    func testLargeTextRapidSearchLaneRunsAtMostOneJobAndPublishesLatestOnly() async throws {
+        let text = (0..<30_000)
+            .map { index in
+                index.isMultiple(of: 3)
+                    ? "line-\(index) level=INFO"
+                    : "line-\(index) level=debug"
+            }
+            .joined(separator: "\n")
+        let tracker = ResourceLogsWorkLaneTracker()
+        let lane = ResourceLogsLatestWorkLane<ResourceLogSearchResult>()
+
+        let first = Task {
+            try await lane.run(priority: .userInitiated) {
+                tracker.begin(query: "i")
+                defer { tracker.end() }
+                while !Task.isCancelled {}
+                throw CancellationError()
+            }
+        }
+        guard tracker.waitUntilStarted(query: "i") else {
+            first.cancel()
+            await lane.cancel()
+            return XCTFail("The first synthetic large-text request never started.")
+        }
+
+        let second = Task {
+            try await lane.run(priority: .userInitiated) {
+                tracker.begin(query: "in")
+                defer { tracker.end() }
+                while !Task.isCancelled {}
+                throw CancellationError()
+            }
+        }
+        guard tracker.waitUntilStarted(query: "in") else {
+            first.cancel()
+            second.cancel()
+            await lane.cancel()
+            return XCTFail("The replacement request never started after cancelling the first.")
+        }
+
+        let latest = Task {
+            try await lane.run(priority: .userInitiated) {
+                tracker.begin(query: "info")
+                defer { tracker.end() }
+                return try ResourceLogSearchResult.makeForInspector(
+                    text: text,
+                    query: "info",
+                    cancellationCheck: { try Task.checkCancellation() }
+                )
+            }
+        }
+
+        let latestResult = try await latest.value
+        XCTAssertEqual(latestResult.query, "info")
+        XCTAssertEqual(latestResult.matchRanges.count, 10_000)
+        XCTAssertEqual(tracker.startedQueries, ["i", "in", "info"])
+        XCTAssertEqual(tracker.maximumActiveCount, 1)
+
+        let firstResult = await first.result
+        let secondResult = await second.result
+        for result in [firstResult, secondResult] {
+            switch result {
+            case .success:
+                XCTFail("A superseded search request must never publish a result.")
+            case let .failure(error):
+                XCTAssertTrue(error is CancellationError)
+            }
+        }
+    }
+
+    @MainActor
+    func testPendingSearchNeverRemountsWideLogRenderer() async throws {
+        let text = Self.makeMockWidePodLogTranscript(lineCount: 150)
+        let renderResult = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+        XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: renderResult))
+
+        let model = ResourceLogRenderStabilityModel(text: text, renderResult: renderResult)
+        let host = NSHostingController(
+            rootView: ResourceLogRenderStabilityHarness(model: model)
+                .frame(width: 760, height: 520)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        let originalRenderers = findTextViews(in: host.view).filter { $0.string == text }
+        let originalTextView = try XCTUnwrap(originalRenderers.only)
+        let originalScrollView = try XCTUnwrap(originalTextView.enclosingScrollView)
+        let originalDocumentView = try XCTUnwrap(originalScrollView.documentView)
+
+        for query in ["m", "mo", "moc", "mock"] {
+            model.navigationResult = nil
+            try await settle(window: window)
+            XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == text }.only) === originalTextView)
+
+            let completedResult = ResourceLogSearchResult.makeForInspector(
+                text: text,
+                textIndex: renderResult.textIndex,
+                query: query
+            )
+            let scrollOriginBeforePublication = originalScrollView.contentView.bounds.origin
+            model.renderResult = completedResult
+            try await settle(window: window)
+            let rendererAfterPublication = try XCTUnwrap(
+                findTextViews(in: host.view).filter { $0.string == text }.only,
+                "Completed search publication must leave exactly one log renderer."
+            )
+            XCTAssertTrue(rendererAfterPublication === originalTextView)
+            XCTAssertTrue(rendererAfterPublication.enclosingScrollView === originalScrollView)
+            XCTAssertTrue(originalScrollView.documentView === originalDocumentView)
+            XCTAssertEqual(originalScrollView.contentView.bounds.origin.x, scrollOriginBeforePublication.x, accuracy: 0.5)
+            XCTAssertEqual(originalScrollView.contentView.bounds.origin.y, scrollOriginBeforePublication.y, accuracy: 0.5)
+
+            model.navigationResult = completedResult
+            model.navigationSequence += 1
+            try await settle(window: window)
+            XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == text }.only) === originalTextView)
+        }
+    }
+
+    @MainActor
+    func testStreamedWideLogAppendKeepsTheSameRendererBeforeAndAfterIndexing() async throws {
+        let initialText = Self.makeMockWidePodLogTranscript(lineCount: 149)
+        let appendedText = Self.makeMockWidePodLogTranscript(lineCount: 150)
+        let initialResult = ResourceLogSearchResult.makeForInspector(text: initialText, query: "")
+        let appendedResult = ResourceLogSearchResult.makeForInspector(text: appendedText, query: "")
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: initialText))
+        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedText))
+        XCTAssertEqual(
+            ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedText),
+            ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedResult)
+        )
+
+        let model = ResourceLogRenderStabilityModel(text: initialText, renderResult: initialResult)
+        let host = NSHostingController(
+            rootView: ResourceLogRenderStabilityHarness(model: model)
+                .frame(width: 760, height: 520)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        let originalTextView = try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == initialText }.only)
+        let originalScrollView = try XCTUnwrap(originalTextView.enclosingScrollView)
+
+        model.text = appendedText
+        model.renderResult = nil
+        try await settle(window: window)
+        XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == appendedText }.only) === originalTextView)
+        XCTAssertTrue(originalTextView.enclosingScrollView === originalScrollView)
+
+        model.renderResult = appendedResult
+        try await settle(window: window)
+        XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == appendedText }.only) === originalTextView)
+        XCTAssertTrue(originalTextView.enclosingScrollView === originalScrollView)
+    }
+
     func testLogInspectorShowsInterruptedStreamStateInsideOutputSurface() throws {
         let logsViewSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
         XCTAssertTrue(logsViewSource.contains("ResourceLogsErrorView(message: errorMessage, onReload: onReload)"))
-        XCTAssertTrue(logsViewSource.contains("Button(\"Retry\", action: onReload)"))
+        XCTAssertTrue(logsViewSource.contains("RuneContentStateAction("))
+        XCTAssertTrue(logsViewSource.contains("\"Retry\","))
+        XCTAssertTrue(logsViewSource.contains("perform: onReload"))
         XCTAssertTrue(logsViewSource.contains("Label(t(.reload), systemImage: \"arrow.clockwise\")"))
         XCTAssertTrue(rootViewSource.contains("errorMessage: viewModel.state.lastLogFetchError"))
         XCTAssertTrue(rootViewSource.contains("return \"Reconnect failed\""))
@@ -137,7 +785,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         let statusPanelSource = try XCTUnwrap(source.slice(
             from: "private struct LogToolbarStatusIndicator",
-            to: "private struct ResourceLogsSourcePanel"
+            to: "private struct LogToolbarSourceSummary"
         ))
 
         XCTAssertTrue(statusPanelSource.contains(".frame(width: 20, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)"))
@@ -244,7 +892,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let indicatorSource = try XCTUnwrap(source.slice(
             from: "private struct LogToolbarStatusIndicator",
-            to: "private struct ResourceLogsSourcePanel"
+            to: "private struct LogToolbarSourceSummary"
         ))
 
         XCTAssertTrue(indicatorSource.contains(".help(helpText)"))
@@ -276,17 +924,21 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(tabBarSource.contains("Text(\"\\(number) \\(tab.title)\")"))
         XCTAssertTrue(tabBarSource.contains(".help(tab.helpText)"))
         XCTAssertTrue(tabBarSource.contains("Text(subtitle)"))
-        XCTAssertTrue(tabBarSource.contains(".help(\"Close log tab for \\(tab.title)\")"))
+        XCTAssertTrue(tabBarSource.contains("\"Close log tab for \\(tab.title)\""))
+        XCTAssertTrue(tabBarSource.contains("RuneIconButton("))
     }
 
     func testTerminalLogTabsUseRuneSurfaceChrome() throws {
         let tabBarSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
+        let tabStripSource = try String(contentsOfFile: terminalTabStripPath, encoding: .utf8)
         let logsInspectorSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
-        XCTAssertTrue(tabBarSource.contains("RuneSurfaceBackground(kind: .inset)"))
-        XCTAssertTrue(tabBarSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
-        XCTAssertTrue(tabBarSource.contains("Capsule()"))
-        XCTAssertTrue(tabBarSource.contains(".frame(width: 3, height: 16)"))
+        XCTAssertTrue(tabBarSource.contains("TerminalTabStrip("))
+        XCTAssertTrue(tabBarSource.contains(".terminalTabChrome(isActive: tab.id == activeTabID)"))
+        XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .inset)"))
+        XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
+        XCTAssertTrue(tabStripSource.contains("Capsule()"))
+        XCTAssertTrue(tabStripSource.contains(".frame(width: 3, height: 16)"))
         XCTAssertFalse(tabBarSource.contains("RuneSurfaceBackground(kind: .editor)"))
         XCTAssertFalse(tabBarSource.contains(".frame(height: 2)"))
         XCTAssertFalse(logsInspectorSource.contains("struct TerminalLogTabBar: View"))
@@ -384,7 +1036,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains("ResourceStructuredLogAnalyzer.analyze(text:"))
         XCTAssertTrue(source.contains("ResourceStructuredLogSummaryPanel("))
-        XCTAssertTrue(source.contains("summary: structuredLogSummary"))
+        XCTAssertTrue(source.contains("structuredSummary: structuredLogSummary"))
         XCTAssertTrue(source.contains("ResourceStructuredLogFieldSearch.query(field: field, value: value)"))
         XCTAssertTrue(source.contains("onSearchFieldSample"))
         XCTAssertTrue(source.contains("onSearchDuplicate"))
@@ -394,8 +1046,9 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
-        XCTAssertTrue(source.contains("if !simpleMode"))
-        XCTAssertTrue(source.contains(".task(id: \"\\(simpleMode):\\(logText)\")"))
+        XCTAssertTrue(source.contains("showsInsights: !simpleMode"))
+        XCTAssertTrue(source.contains(".onChange(of: simpleMode)"))
+        XCTAssertTrue(source.contains("scheduleStructuredSummary(for: logText, debounced: false)"))
         XCTAssertTrue(source.contains("guard !simpleMode else"))
         XCTAssertTrue(source.contains("structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: \"\")"))
     }
@@ -404,16 +1057,18 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("matchPositionText(selectedIndex: selectedMatchIndex)"))
-        XCTAssertTrue(source.contains("ResourceLogsSearchSummaryBar("))
-        XCTAssertTrue(source.contains("selectedMatchIndex: selectedSearchMatchIndex"))
+        XCTAssertTrue(source.contains("Text(matchStatusText)"))
+        XCTAssertTrue(source.contains("guard searchSummary.hasMatches else { return \"No results\" }"))
+        XCTAssertFalse(source.contains("ResourceLogsSearchSummaryBar("))
+        XCTAssertTrue(source.contains("selectedSearchMatchIndex: $selectedSearchMatchIndex"))
         XCTAssertTrue(source.contains(".monospacedDigit()"))
         XCTAssertTrue(source.contains("@State private var isJumpPopoverPresented = false"))
         XCTAssertTrue(source.contains("prepareJumpPopover(for: searchSummary)"))
-        XCTAssertTrue(source.contains("jumpToMatchPopover(searchSummary)"))
-        XCTAssertTrue(source.contains("private func commitJump(to searchSummary: ResourceLogSearchResult)"))
+        XCTAssertTrue(source.contains("jumpToMatchPopover(matchCount: jumpMatchCount)"))
+        XCTAssertTrue(source.contains("private func commitJump(matchCount: Int)"))
         XCTAssertTrue(source.contains("Button(\"Go\")"))
         XCTAssertTrue(source.contains("Go to match"))
-        XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: 9, style: .continuous)"))
+        XCTAssertTrue(source.contains(".background(RuneSurfaceBackground(kind: .editor))"))
     }
 
     func testLogScrollIdentityIgnoresTailContentChanges() {
@@ -453,6 +1108,26 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let result = ResourceLogSearchResult.make(text: "INFO ready\nINFO steady", query: "")
 
         XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+    }
+
+    func testPendingRendererPolicyMatchesIndexedPolicyAcrossCommonLineEndings() {
+        let payload = String(repeating: "x", count: 280)
+        for separator in ["\n", "\r\n", "\r"] {
+            for lineCount in [999, 1_000] {
+                let text = (0..<lineCount)
+                    .map { "synthetic-\($0)-\(payload)" }
+                    .joined(separator: separator)
+                let indexed = ResourceLogSearchResult.makeForInspector(text: text, query: "")
+
+                XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
+                XCTAssertEqual(indexed.textIndex.lineCount, lineCount)
+                XCTAssertEqual(
+                    ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: text),
+                    ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: indexed),
+                    "Pending and indexed renderer selection must agree for \(lineCount) lines."
+                )
+            }
+        }
     }
 
     func testLargeSearchedLogsUseVirtualizedTextSurfaceWithoutCappingData() {
@@ -749,6 +1424,15 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalLogTabBar.swift").path
     }
 
+    private var terminalTabStripPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalTabStrip.swift").path
+    }
+
     private var runeRootViewPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
@@ -765,6 +1449,15 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/InspectorTextViews.swift").path
+    }
+
+    private var runeFindBarControlsPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneFindBarControls.swift").path
     }
 
     private var largeTextSurfacePath: String {
@@ -815,6 +1508,63 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         return matches
     }
 
+    @MainActor
+    private func findEditableTextFields(in view: NSView) -> [NSTextField] {
+        var matches: [NSTextField] = []
+        if let textField = view as? NSTextField, textField.isEditable {
+            matches.append(textField)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: findEditableTextFields(in: subview))
+        }
+        return matches
+    }
+
+    @MainActor
+    private func findPopUpButtons(in view: NSView) -> [NSPopUpButton] {
+        var matches: [NSPopUpButton] = []
+        if let popup = view as? NSPopUpButton {
+            matches.append(popup)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: findPopUpButtons(in: subview))
+        }
+        return matches
+    }
+
+    @MainActor
+    private func renderedPNG(from view: NSView) throws -> Data {
+        view.layoutSubtreeIfNeeded()
+        let bounds = view.bounds
+        let representation = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: bounds))
+        view.cacheDisplay(in: bounds, to: representation)
+        return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+    }
+
+    @MainActor
+    private func assertStableLogSearchInput(
+        in hostView: NSView,
+        window: NSWindow,
+        expectedField: NSTextField,
+        expectedEditor: NSTextView,
+        expectedFrame: NSRect,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let fields = findEditableTextFields(in: hostView)
+        XCTAssertEqual(fields.count, 1, "Search updates must not create duplicate native fields.", file: file, line: line)
+        let field = try XCTUnwrap(fields.first, file: file, line: line)
+        XCTAssertTrue(field === expectedField, "Search updates must preserve the native field instance.", file: file, line: line)
+        XCTAssertTrue(field.currentEditor() === expectedEditor, "Search updates must preserve the field editor.", file: file, line: line)
+        XCTAssertTrue(window.firstResponder === expectedEditor, "Typing must retain first responder.", file: file, line: line)
+
+        let frame = hostView.convert(field.bounds, from: field)
+        XCTAssertEqual(frame.minX, expectedFrame.minX, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(frame.minY, expectedFrame.minY, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(frame.width, expectedFrame.width, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(frame.height, expectedFrame.height, accuracy: 0.5, file: file, line: line)
+    }
+
     private static func makeMockWidePodLogTranscript(lineCount: Int) -> String {
         // Keep each row wide enough that the merged UTF-8 crosses the inspector’s “large payload” threshold
         // (same shape as multi-field service logs) without referencing any real workload.
@@ -838,6 +1588,213 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 }
 
+private final class ResourceLogsWorkLaneTracker: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var activeCount = 0
+    private var maximumActiveCountStorage = 0
+    private var startedQueriesStorage: [String] = []
+
+    func begin(query: String) {
+        condition.lock()
+        activeCount += 1
+        maximumActiveCountStorage = max(maximumActiveCountStorage, activeCount)
+        startedQueriesStorage.append(query)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func end() {
+        condition.lock()
+        activeCount -= 1
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilStarted(query: String, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !startedQueriesStorage.contains(query) {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    var startedQueries: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return startedQueriesStorage
+    }
+
+    var maximumActiveCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveCountStorage
+    }
+}
+
+@MainActor
+private final class ResourceLogSearchFocusModel: ObservableObject {
+    let text = "INFO ready\nERROR failed\ninfo retried\nINFOrmational\n"
+    @Published var query = ""
+    @Published var matchCase = false
+    @Published var selectedMatchIndex = 0
+    @Published var focusRequestID = 0
+    @Published var searchSummary: ResourceLogSearchResult?
+    @Published var appearance = RuneAppearanceTheme.aurora
+}
+
+private struct ResourceLogSearchFocusHarness: View {
+    @ObservedObject var model: ResourceLogSearchFocusModel
+
+    var body: some View {
+        let activeSummary = model.searchSummary?.isCurrent(
+            text: model.text,
+            query: model.query,
+            matchCase: model.matchCase
+        ) == true ? model.searchSummary : nil
+
+        ResourceLogsSearchBar(
+            query: $model.query,
+            matchCase: $model.matchCase,
+            selectedMatchIndex: $model.selectedMatchIndex,
+            focusRequestID: model.focusRequestID,
+            searchSummary: activeSummary,
+            placeholder: "Search logs",
+            findHelp: "Find in logs",
+            matchCaseHelp: "Match case"
+        )
+        .runeAppearanceTheme(model.appearance.resolvedTheme)
+    }
+}
+
+@MainActor
+private final class ResourceLogAdjustedThemeModel: ObservableObject {
+    let text = (0..<12).map { _ in "synthetic repeated error" }.joined(separator: "\n")
+    @Published var theme: RuneResolvedTheme
+    @Published var query = "error"
+    @Published var matchCase = false
+    @Published var selectedMatchIndex = 0
+    @Published var selectedLogPreset = PodLogPreset.recentLines
+    @Published var selectedContainer = ""
+
+    init(theme: RuneResolvedTheme) {
+        self.theme = theme
+    }
+}
+
+private struct ResourceLogAdjustedThemeHarness: View {
+    @ObservedObject var model: ResourceLogAdjustedThemeModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ResourceLogsToolbar(
+                selectedLogPreset: $model.selectedLogPreset,
+                includePreviousLogs: .constant(false),
+                selectedContainer: $model.selectedContainer,
+                isTailModeEnabled: .constant(false),
+                isStreamPaused: .constant(false),
+                statusText: "Ready",
+                containerOptions: ["app", "sidecar"],
+                visibleLogText: model.text,
+                onReload: {},
+                onSave: {},
+                onSaveVisibleZip: { _ in },
+                onSaveFullZip: {},
+                onSaveAllPodsZip: {},
+                onCopySelection: {},
+                onCopyAll: {},
+                onToggleStreamPause: {}
+            )
+
+            ResourceLogsExplorePanel(
+                searchQuery: $model.query,
+                searchMatchCase: $model.matchCase,
+                selectedSearchMatchIndex: $model.selectedMatchIndex,
+                searchFocusRequestID: 0,
+                searchResult: ResourceLogSearchResult.make(text: model.text, query: model.query),
+                structuredSummary: ResourceStructuredLogAnalyzer.analyze(text: model.text),
+                showsInsights: true,
+                presentationStyle: .regular,
+                placeholder: "Search logs",
+                findHelp: "Find in logs",
+                matchCaseHelp: "Match case",
+                onSearchFieldSample: { _, _ in },
+                onSearchDuplicate: { _ in }
+            )
+        }
+        .runeAppearanceTheme(model.theme)
+    }
+}
+
+@MainActor
+private final class ResourceLogToolbarPickerModel: ObservableObject {
+    @Published var selectedLogPreset = PodLogPreset.recentLines
+    @Published var selectedContainer = ""
+    @Published var containerOptions = ["app", "sidecar"]
+}
+
+private struct ResourceLogToolbarPickerHarness: View {
+    @ObservedObject var model: ResourceLogToolbarPickerModel
+
+    var body: some View {
+        ResourceLogsToolbar(
+            selectedLogPreset: $model.selectedLogPreset,
+            includePreviousLogs: .constant(false),
+            selectedContainer: $model.selectedContainer,
+            isTailModeEnabled: .constant(false),
+            isStreamPaused: .constant(false),
+            statusText: "Ready",
+            containerOptions: model.containerOptions,
+            visibleLogText: "",
+            onReload: {},
+            onSave: {},
+            onSaveVisibleZip: { _ in },
+            onSaveFullZip: {},
+            onSaveAllPodsZip: {},
+            onCopySelection: {},
+            onCopyAll: {},
+            onToggleStreamPause: {}
+        )
+    }
+}
+
+@MainActor
+private final class ResourceLogRenderStabilityModel: ObservableObject {
+    @Published var text: String
+    @Published var renderResult: ResourceLogSearchResult?
+    @Published var navigationResult: ResourceLogSearchResult?
+    @Published var navigationSequence = 0
+
+    init(text: String, renderResult: ResourceLogSearchResult?) {
+        self.text = text
+        self.renderResult = renderResult
+    }
+}
+
+private struct ResourceLogRenderStabilityHarness: View {
+    @ObservedObject var model: ResourceLogRenderStabilityModel
+
+    var body: some View {
+        ResourceLogsOutputSurface(
+            isLoadingLogs: false,
+            isLoadingResources: false,
+            errorMessage: nil,
+            logText: model.text,
+            renderSearchResult: model.renderResult,
+            navigationSearchResult: model.navigationResult,
+            selectedSearchMatchIndex: 0,
+            searchNavigationSequence: model.navigationSequence,
+            emptyTitle: "No output",
+            emptyMessage: "No synthetic output.",
+            noMatchesMessage: "No synthetic matches.",
+            readOnlyResetID: "renderer-stability",
+            onReload: {},
+            presentationStyle: .regular
+        )
+    }
+}
+
 private extension String {
     func slice(from start: String, to end: String) -> String? {
         guard let startRange = range(of: start),
@@ -845,5 +1802,11 @@ private extension String {
             return nil
         }
         return String(self[startRange.lowerBound..<endRange.lowerBound])
+    }
+}
+
+private extension Array {
+    var only: Element? {
+        count == 1 ? first : nil
     }
 }

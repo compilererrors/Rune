@@ -13,9 +13,13 @@ struct OverviewRecentEventsPanelView: View {
                 .runeHelp(overviewRecentEventsHelp, enabled: showHoverTooltips)
 
             if events.isEmpty {
-                Text("No events loaded")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+                RuneContentStateView(
+                    .empty(
+                        title: "No events loaded",
+                        message: "Events from the current snapshot will appear here."
+                    ),
+                    variant: .inline
+                )
             } else {
                 ForEach(Array(events.prefix(8))) { event in
                     Button {

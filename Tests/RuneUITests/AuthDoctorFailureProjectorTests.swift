@@ -149,6 +149,16 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertTrue(connectivity.message.contains("DNS"))
     }
 
+    func testClassificationIsASCIICaseInsensitiveAlongsideUnicodeDiagnosticText() throws {
+        let check = try XCTUnwrap(AuthDoctorFailureProjector.checks(
+            for: "Åtgärd krävs: TLS HANDSHAKE FAILED, X509 CERTIFICATE SIGNED BY UNKNOWN AUTHORITY"
+        ).first)
+
+        XCTAssertEqual(check.id, "transport")
+        XCTAssertEqual(check.status, .failed)
+        XCTAssertTrue(check.message.contains("TLS or custom CA"))
+    }
+
     func testReturnsNoChecksForUnknownFailures() {
         XCTAssertTrue(AuthDoctorFailureProjector.checks(for: "synthetic parse failure").isEmpty)
     }

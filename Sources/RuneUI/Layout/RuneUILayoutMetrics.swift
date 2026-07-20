@@ -13,6 +13,8 @@ enum RuneUILayoutMetrics {
     static let interactiveRowCornerRadius: CGFloat = 8
     /// Small metadata chips and inline badges.
     static let compactGlyphCornerRadius: CGFloat = 6
+    /// Compact terminal/log tab chrome; deliberately distinct from general interactive rows.
+    static let tabCornerRadius: CGFloat = 7
 
     /// Root content lives in the window content area below the unified toolbar. Keep this at zero:
     /// adding a synthetic inset makes the workspace drift down and hides the bottom of sidebars,
@@ -35,15 +37,20 @@ enum RuneUILayoutMetrics {
     static let splitSidebarMaxWidth: CGFloat = 460
     static let headerChipHeight: CGFloat = 28
     static let headerChipHorizontalPadding: CGFloat = 10
+    static let headerCapsuleMinimumHeight: CGFloat = 28
+    static let headerCapsuleHorizontalPadding: CGFloat = 10
+    static let headerCapsuleVerticalPadding: CGFloat = 4
+    static let headerCapsuleAccessibilityVerticalPadding: CGFloat = 8
     static let contentHeaderMinimumScrollableWidth: CGFloat = 640
     static let inspectorToolbarGroupSpacing: CGFloat = 8
     static let inspectorToolbarControlSpacing: CGFloat = 8
     static let inspectorToolbarGroupHorizontalPadding: CGFloat = 10
     static let inspectorToolbarGroupVerticalPadding: CGFloat = 8
-    static let inspectorToolbarGroupMinHeight: CGFloat = 58
     static let inspectorToolbarSourceGroupHeight: CGFloat = 58
     static let inspectorToolbarActionGroupHeight: CGFloat = 44
     static let inspectorToolbarControlMinHeight: CGFloat = 30
+    static let yamlSheetValidationListMaxHeight: CGFloat = 150
+    static let iconButtonSize: CGFloat = 28
 
     // Modal sheets and custom dialogs. Native alerts, confirmation dialogs and
     // open/save panels keep the system-provided macOS metrics.
@@ -53,17 +60,24 @@ enum RuneUILayoutMetrics {
     static let dialogButtonMinHeight: CGFloat = 30
     static let dialogButtonLabelMinHeight: CGFloat = 22
     static let dialogFooterButtonLabelMinWidth: CGFloat = 72
-    static let dialogIconButtonSize: CGFloat = 28
+    static let dialogIconButtonSize: CGFloat = iconButtonSize
     static let compactDialogWidth: CGFloat = 420
     static let standardDialogWidth: CGFloat = 560
     static let wideDialogWidth: CGFloat = 760
     static let wideDialogHeight: CGFloat = 560
-    static let commandPaletteWidth: CGFloat = 720
-    static let commandPaletteHeight: CGFloat = 520
+    static let commandPaletteMinWidth: CGFloat = 560
+    static let commandPaletteIdealWidth: CGFloat = 720
+    static let commandPaletteMaxWidth: CGFloat = 880
+    static let commandPaletteMinHeight: CGFloat = 420
+    static let commandPaletteIdealHeight: CGFloat = 520
+    static let commandPaletteMaxHeight: CGFloat = 600
     static let providerDialogBodyMinHeight: CGFloat = 220
     static let providerDialogBodyIdealHeight: CGFloat = 300
     static let providerDialogBodyMaxHeight: CGFloat = 430
     static let providerDialogMaxHeight: CGFloat = 600
+    static let addClusterPopoverWidth: CGFloat = 400
+    static let addClusterPopoverPadding: CGFloat = 14
+    static let addClusterActionCardMinHeight: CGFloat = 62
     static let addClusterPopoverMaxHeight: CGFloat = 560
 
     static let minWindowContentTopInset: CGFloat = 0

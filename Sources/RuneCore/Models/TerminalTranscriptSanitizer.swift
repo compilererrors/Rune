@@ -7,153 +7,167 @@ public enum TerminalTranscriptSanitizer {
     }
 
     public static func sanitize(_ text: String, pendingEscape: inout String) -> String {
-        let combined = pendingEscape + text
+        // Avoid copying the complete transcript for the overwhelmingly common case where
+        // the previous chunk did not end halfway through an escape sequence.
+        let combined = pendingEscape.isEmpty ? text : pendingEscape + text
         pendingEscape = ""
 
-        var output = String.UnicodeScalarView()
-        var index = combined.unicodeScalars.startIndex
+        // Terminal control syntax is byte-oriented. Walking UTF-8 directly avoids the
+        // grapheme/scalar indexing overhead that otherwise dominates large transcripts,
+        // while copying non-control UTF-8 bytes without changing their Unicode content.
+        let input = Array(combined.utf8)
+        var output: [UInt8] = []
+        output.reserveCapacity(input.count)
+        var index = 0
 
-        while index < combined.unicodeScalars.endIndex {
-            let scalar = combined.unicodeScalars[index]
+        while index < input.count {
+            let byte = input[index]
 
-            if scalar.value == 0x1B {
+            if byte == 0x1B {
                 let escapeStart = index
-                combined.unicodeScalars.formIndex(after: &index)
-                guard index < combined.unicodeScalars.endIndex else {
-                    pendingEscape = String(combined.unicodeScalars[escapeStart...])
+                index += 1
+                guard index < input.count else {
+                    pendingEscape = String(decoding: input[escapeStart...], as: UTF8.self)
                     break
                 }
 
-                let introducer = combined.unicodeScalars[index]
-                combined.unicodeScalars.formIndex(after: &index)
+                let introducer = input[index]
+                index += 1
 
-                if introducer == "[" {
+                if introducer == 0x5B { // [ — Control Sequence Introducer
                     var foundTerminator = false
-                    var terminator: UnicodeScalar?
-                    var parameters = String.UnicodeScalarView()
-                    while index < combined.unicodeScalars.endIndex {
-                        let value = combined.unicodeScalars[index].value
-                        let current = combined.unicodeScalars[index]
-                        combined.unicodeScalars.formIndex(after: &index)
-                        if (0x40...0x7E).contains(value) {
+                    var terminator: UInt8?
+                    let parameterStart = index
+                    while index < input.count {
+                        let current = input[index]
+                        index += 1
+                        if (0x40...0x7E).contains(current) {
                             terminator = current
                             foundTerminator = true
                             break
                         }
-                        parameters.append(current)
                     }
                     if !foundTerminator {
-                        pendingEscape = String(combined.unicodeScalars[escapeStart...])
+                        pendingEscape = String(decoding: input[escapeStart...], as: UTF8.self)
                         break
                     }
-                    if terminator == "K" {
+                    if terminator == 0x4B { // K — erase line
                         removeCurrentLine(from: &output)
-                    } else if terminator == "J" {
+                    } else if terminator == 0x4A { // J — erase display
                         output.removeAll(keepingCapacity: true)
-                    } else if terminator == "D" {
-                        removeScalarsFromCurrentLine(parseFirstPositiveInteger(parameters) ?? 1, from: &output)
+                    } else if terminator == 0x44 { // D — cursor left
+                        let parameterEnd = max(parameterStart, index - 1)
+                        let count = parseFirstPositiveInteger(input[parameterStart..<parameterEnd]) ?? 1
+                        removeScalarsFromCurrentLine(count, from: &output)
                     }
                     continue
                 }
 
-                if introducer == "]" {
+                if introducer == 0x5D { // ] — Operating System Command
                     var foundTerminator = false
-                    while index < combined.unicodeScalars.endIndex {
-                        let value = combined.unicodeScalars[index].value
-                        if value == 0x07 {
-                            combined.unicodeScalars.formIndex(after: &index)
+                    while index < input.count {
+                        let current = input[index]
+                        if current == 0x07 {
+                            index += 1
                             foundTerminator = true
                             break
                         }
-                        if value == 0x1B {
-                            let maybeTerminator = combined.unicodeScalars.index(after: index)
-                            if maybeTerminator < combined.unicodeScalars.endIndex,
-                               combined.unicodeScalars[maybeTerminator] == "\\" {
-                                index = combined.unicodeScalars.index(after: maybeTerminator)
+                        if current == 0x1B,
+                           index + 1 < input.count,
+                           input[index + 1] == 0x5C {
+                                index += 2
                                 foundTerminator = true
                                 break
-                            }
                         }
-                        combined.unicodeScalars.formIndex(after: &index)
+                        index += 1
                     }
                     if !foundTerminator {
-                        pendingEscape = String(combined.unicodeScalars[escapeStart...])
+                        pendingEscape = String(decoding: input[escapeStart...], as: UTF8.self)
                         break
                     }
                     continue
                 }
 
                 if Self.isCharsetEscapeIntroducer(introducer) {
-                    guard index < combined.unicodeScalars.endIndex else {
-                        pendingEscape = String(combined.unicodeScalars[escapeStart...])
+                    guard index < input.count else {
+                        pendingEscape = String(decoding: input[escapeStart...], as: UTF8.self)
                         break
                     }
-                    combined.unicodeScalars.formIndex(after: &index)
+                    index += 1
                     continue
                 }
 
                 continue
             }
 
-            switch scalar.value {
+            switch byte {
             case 0x08:
-                if !output.isEmpty {
-                    output.removeLast()
-                }
+                removeLastUnicodeScalar(from: &output)
             case 0x09, 0x0A:
-                output.append(scalar)
+                output.append(byte)
             case 0x0D:
-                let nextIndex = combined.unicodeScalars.index(after: index)
-                if nextIndex < combined.unicodeScalars.endIndex,
-                   combined.unicodeScalars[nextIndex].value == 0x0A {
+                if index + 1 < input.count, input[index + 1] == 0x0A {
                     break
                 } else {
-                    while !output.isEmpty, output.last?.value != 0x0A {
-                        output.removeLast()
-                    }
+                    removeCurrentLine(from: &output)
                 }
             case 0x00..<0x20:
                 break
             default:
-                output.append(scalar)
+                output.append(byte)
             }
 
-            combined.unicodeScalars.formIndex(after: &index)
+            index += 1
         }
 
-        return String(output)
+        return String(decoding: output, as: UTF8.self)
     }
 
-    private static func isCharsetEscapeIntroducer(_ scalar: UnicodeScalar) -> Bool {
-        switch scalar {
-        case "(", ")", "*", "+", "-", ".", "/":
+    private static func isCharsetEscapeIntroducer(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 0x28, 0x29, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F:
             return true
         default:
             return false
         }
     }
 
-    private static func removeCurrentLine(from output: inout String.UnicodeScalarView) {
-        while !output.isEmpty, output.last?.value != 0x0A {
+    private static func removeCurrentLine(from output: inout [UInt8]) {
+        while output.last != 0x0A, !output.isEmpty {
             output.removeLast()
         }
     }
 
-    private static func removeScalarsFromCurrentLine(_ count: Int, from output: inout String.UnicodeScalarView) {
+    private static func removeScalarsFromCurrentLine(_ count: Int, from output: inout [UInt8]) {
         guard count > 0 else { return }
         var remaining = count
-        while remaining > 0, !output.isEmpty, output.last?.value != 0x0A {
-            output.removeLast()
+        while remaining > 0, output.last != 0x0A, !output.isEmpty {
+            removeLastUnicodeScalar(from: &output)
             remaining -= 1
         }
     }
 
-    private static func parseFirstPositiveInteger(_ scalars: String.UnicodeScalarView) -> Int? {
-        let value = String(scalars)
-            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-            .first
-            .flatMap { Int($0) }
-        guard let value, value > 0 else { return nil }
+    private static func removeLastUnicodeScalar(from output: inout [UInt8]) {
+        guard let last = output.popLast() else { return }
+        guard last & 0xC0 == 0x80 else { return }
+        while let continuation = output.last, continuation & 0xC0 == 0x80 {
+            output.removeLast()
+        }
+        if output.last != 0x0A {
+            _ = output.popLast()
+        }
+    }
+
+    private static func parseFirstPositiveInteger(_ bytes: ArraySlice<UInt8>) -> Int? {
+        var value = 0
+        var foundDigit = false
+        for byte in bytes {
+            if byte == 0x3B { break }
+            guard (0x30...0x39).contains(byte) else { return nil }
+            foundDigit = true
+            value = value * 10 + Int(byte - 0x30)
+        }
+        guard foundDigit, value > 0 else { return nil }
         return value
     }
 }

@@ -2,6 +2,15 @@ import SwiftUI
 import RuneCore
 
 struct TerminalShellPodSelectionPolicy {
+    static func sessions(
+        in sessions: [PodTerminalSession],
+        contextName: String?,
+        namespace: String
+    ) -> [PodTerminalSession] {
+        guard let contextName else { return [] }
+        return sessions.filter { $0.contextName == contextName && $0.namespace == namespace }
+    }
+
     static func preferredPodIDForNewShell(
         selectedPod: PodSummary?,
         availablePods: [PodSummary],
@@ -31,6 +40,7 @@ struct ResourceTerminalWorkspaceView: View {
     let sessions: [PodTerminalSession]
     let activeSessionID: String?
     let contextName: String?
+    let namespace: String
     let selectedPod: PodSummary?
     let availablePods: [PodSummary]
     let portForwardSessions: [PortForwardSession]
@@ -67,20 +77,41 @@ struct ResourceTerminalWorkspaceView: View {
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
 
+    private var scopedSessions: [PodTerminalSession] {
+        TerminalShellPodSelectionPolicy.sessions(
+            in: sessions,
+            contextName: contextName,
+            namespace: namespace
+        )
+    }
+
+    private var scopedSession: PodTerminalSession? {
+        guard let session,
+              session.contextName == contextName,
+              session.namespace == namespace else { return nil }
+        return session
+    }
+
+    private var scopedActiveSessionID: String? {
+        guard let activeSessionID,
+              scopedSessions.contains(where: { $0.id == activeSessionID }) else { return nil }
+        return activeSessionID
+    }
+
     private var shellPod: PodSummary? {
         pod(for: selectedShellPodID) ?? selectedPod ?? availablePods.first
     }
 
     private var isShowingNewShellDraft: Bool {
-        isComposingNewShellTab || sessions.isEmpty
+        isComposingNewShellTab || scopedSessions.isEmpty
     }
 
     private var visibleShellSession: PodTerminalSession? {
-        isShowingNewShellDraft ? nil : session
+        isShowingNewShellDraft ? nil : scopedSession
     }
 
     private var visibleActiveSessionID: String? {
-        isShowingNewShellDraft ? nil : activeSessionID
+        isShowingNewShellDraft ? nil : scopedActiveSessionID
     }
 
     private var portForwardPod: PodSummary? {
@@ -114,7 +145,7 @@ struct ResourceTerminalWorkspaceView: View {
 
                     TerminalShellPanelView(
                         session: visibleShellSession,
-                        sessions: sessions,
+                        sessions: scopedSessions,
                         activeSessionID: visibleActiveSessionID,
                         isComposingNewSession: isShowingNewShellDraft,
                         selectedPod: shellPod,
@@ -153,7 +184,7 @@ struct ResourceTerminalWorkspaceView: View {
             .background(Color.clear)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: activeSessionID) { _, newValue in
+        .onChange(of: scopedActiveSessionID) { _, newValue in
             if newValue != nil {
                 isComposingNewShellTab = false
             }
@@ -187,7 +218,7 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     private func closeShellSession(_ id: String) {
-        if sessions.count <= 1 {
+        if scopedSessions.count <= 1 {
             isComposingNewShellTab = true
         }
         onCloseSession(id)
@@ -203,7 +234,7 @@ struct ResourceTerminalWorkspaceView: View {
         TerminalShellPodSelectionPolicy.preferredPodIDForNewShell(
             selectedPod: selectedPod,
             availablePods: availablePods,
-            sessions: sessions,
+            sessions: scopedSessions,
             currentSelectionID: selectedShellPodID
         )
     }
@@ -225,6 +256,57 @@ struct TerminalSessionDetailPresentation: Hashable, Sendable {
             statusTitle: session.status.rawValue.capitalized,
             lastExitCodeTitle: session.lastExitCode.map(String.init)
         )
+    }
+}
+
+struct ResourceTerminalCommonCommandRow: View {
+    static let minimumHeight: CGFloat = 28
+
+    let command: String
+    let copyHelp: String
+    let onInsert: (String) -> Void
+    let onCopy: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: insertCommand) {
+                HStack(spacing: 8) {
+                    Text(command)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.turn.down.left")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: Self.minimumHeight,
+                    alignment: .leading
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.bordered)
+            .help("Insert into terminal prompt")
+            .accessibilityLabel("Insert \(command) into terminal prompt")
+
+            Button(action: copyCommand) {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 14)
+            }
+            .buttonStyle(.bordered)
+            .help(copyHelp)
+            .accessibilityLabel(copyHelp)
+        }
+        .controlSize(.small)
+    }
+
+    func insertCommand() {
+        onInsert(command)
+    }
+
+    func copyCommand() {
+        onCopy()
     }
 }
 
@@ -287,32 +369,12 @@ struct ResourceTerminalDetailsView: View {
                     .font(.headline)
 
                 ForEach(commonCommands, id: \.self) { command in
-                    HStack(spacing: 8) {
-                        Button {
-                            onFillCommand(command)
-                        } label: {
-                            Text(command)
-                                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button {
-                            onFillCommand(command)
-                        } label: {
-                            Image(systemName: "paperplane")
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Insert into terminal prompt")
-
-                        Button {
-                            copySuggestedCommand(command)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .buttonStyle(.bordered)
-                        .help(session == nil ? "Copy shell command" : "Copy kubectl exec command")
-                    }
+                    ResourceTerminalCommonCommandRow(
+                        command: command,
+                        copyHelp: session == nil ? "Copy shell command" : "Copy kubectl exec command",
+                        onInsert: onFillCommand,
+                        onCopy: { copySuggestedCommand(command) }
+                    )
                 }
             }
 
@@ -325,7 +387,7 @@ struct ResourceTerminalDetailsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Use the command buttons to prefill the prompt, then edit before sending if needed.")
+                Text("Select a command row to prefill the prompt, then edit before sending if needed.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

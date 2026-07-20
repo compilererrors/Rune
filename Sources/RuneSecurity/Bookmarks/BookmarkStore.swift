@@ -16,6 +16,11 @@ public protocol BookmarkStore: Sendable {
     func saveRecords(_ records: [BookmarkRecord]) throws
 }
 
+public enum KubeConfigBookmarkPlacement: Sendable, Equatable {
+    case append
+    case prependNewestFirst
+}
+
 public final class UserDefaultsBookmarkStore: BookmarkStore, @unchecked Sendable {
     private let defaults: UserDefaults
     private let storageKey: String
@@ -41,45 +46,112 @@ public final class UserDefaultsBookmarkStore: BookmarkStore, @unchecked Sendable
 
 public final class BookmarkManager: @unchecked Sendable {
     private let store: BookmarkStore
+    private let transactionLock = NSLock()
+    private let createBookmarkData: (URL) throws -> Data
+    private let resolveBookmarkData: (Data) throws -> (url: URL, isStale: Bool)
 
     public init(store: BookmarkStore) {
         self.store = store
-    }
-
-    public func addKubeConfig(url: URL) throws {
-        let bookmark = try url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
-
-        var records = try store.loadRecords()
-        records.removeAll { $0.path == url.path }
-        records.append(BookmarkRecord(path: url.path, bookmarkData: bookmark))
-        try store.saveRecords(records)
-    }
-
-    public func loadKubeConfigSources() throws -> [KubeConfigSource] {
-        let records = try store.loadRecords()
-        var sources: [KubeConfigSource] = []
-
-        for record in records {
+        self.createBookmarkData = { url in
+            try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        }
+        self.resolveBookmarkData = { data in
             var isStale = false
             let url = try URL(
-                resolvingBookmarkData: record.bookmarkData,
+                resolvingBookmarkData: data,
                 options: [.withSecurityScope],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             )
+            return (url, isStale)
+        }
+    }
 
-            if isStale {
-                try addKubeConfig(url: url)
+    init(
+        store: BookmarkStore,
+        createBookmarkData: @escaping (URL) throws -> Data,
+        resolveBookmarkData: @escaping (Data) throws -> (url: URL, isStale: Bool)
+    ) {
+        self.store = store
+        self.createBookmarkData = createBookmarkData
+        self.resolveBookmarkData = resolveBookmarkData
+    }
+
+    public func addKubeConfig(url: URL) throws {
+        try addKubeConfigs(urls: [url])
+    }
+
+    public func addKubeConfigs(
+        urls: [URL],
+        placement: KubeConfigBookmarkPlacement = .append
+    ) throws {
+        guard !urls.isEmpty else { return }
+        try transactionLock.withLock {
+            let newRecords = try urls.map { url in
+                BookmarkRecord(
+                    path: url.path,
+                    bookmarkData: try createBookmarkData(url)
+                )
             }
 
-            sources.append(KubeConfigSource(url: url))
+            let originalRecords = try store.loadRecords()
+            var records = originalRecords
+            let newPaths = Set(newRecords.map(\.path))
+            records.removeAll { newPaths.contains($0.path) }
+            switch placement {
+            case .append:
+                records.append(contentsOf: newRecords)
+            case .prependNewestFirst:
+                records.insert(contentsOf: newRecords.reversed(), at: 0)
+            }
+            try saveWithRollback(records, originalRecords: originalRecords)
         }
+    }
 
-        return sources
+    public func loadKubeConfigSources() throws -> [KubeConfigSource] {
+        try transactionLock.withLock {
+            let originalRecords = try store.loadRecords()
+            var refreshedRecords = originalRecords
+            var sources: [KubeConfigSource] = []
+            var didRefreshStaleBookmark = false
+            sources.reserveCapacity(originalRecords.count)
+
+            for (index, record) in originalRecords.enumerated() {
+                let resolved = try resolveBookmarkData(record.bookmarkData)
+                if resolved.isStale {
+                    refreshedRecords[index] = BookmarkRecord(
+                        path: resolved.url.path,
+                        bookmarkData: try createBookmarkData(resolved.url)
+                    )
+                    didRefreshStaleBookmark = true
+                }
+                sources.append(KubeConfigSource(url: resolved.url))
+            }
+
+            if didRefreshStaleBookmark {
+                try saveWithRollback(refreshedRecords, originalRecords: originalRecords)
+            }
+            return sources
+        }
+    }
+
+    private func saveWithRollback(
+        _ records: [BookmarkRecord],
+        originalRecords: [BookmarkRecord]
+    ) throws {
+        do {
+            try store.saveRecords(records)
+        } catch {
+            // Stores should replace their value atomically. The rollback also protects
+            // custom stores that mutate before reporting a failed write. It stays inside
+            // the same manager transaction so another load cannot observe partial state.
+            try? store.saveRecords(originalRecords)
+            throw error
+        }
     }
 }
 
@@ -90,6 +162,10 @@ public final class SecurityScopedAccess {
     public init() {}
 
     deinit {
+        releaseAll()
+    }
+
+    public func releaseAll() {
         lock.lock()
         let urls = Array(retainedURLs.values)
         retainedURLs.removeAll()
@@ -98,6 +174,14 @@ public final class SecurityScopedAccess {
         for url in urls {
             url.stopAccessingSecurityScopedResource()
         }
+    }
+
+    public func releaseAccess(to url: URL) {
+        let path = url.standardizedFileURL.path
+        lock.lock()
+        let retained = retainedURLs.removeValue(forKey: path)
+        lock.unlock()
+        retained?.stopAccessingSecurityScopedResource()
     }
 
     public func retainAccess(to url: URL) {

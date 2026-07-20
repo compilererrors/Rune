@@ -52,6 +52,14 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         )
     }
 
+    func testCornerRadiusFamilyKeepsIntentionalHierarchy() {
+        XCTAssertEqual(RuneUILayoutMetrics.paneShellCornerRadius, 12)
+        XCTAssertEqual(RuneUILayoutMetrics.groupedContentCornerRadius, 10)
+        XCTAssertEqual(RuneUILayoutMetrics.interactiveRowCornerRadius, 8)
+        XCTAssertEqual(RuneUILayoutMetrics.tabCornerRadius, 7)
+        XCTAssertEqual(RuneUILayoutMetrics.compactGlyphCornerRadius, 6)
+    }
+
     func testDetailPaneCanExpandFurtherWhenSidebarIsHidden() {
         XCTAssertGreaterThan(
             RuneUILayoutMetrics.splitDetailColumnExpandedMaxWidth,
@@ -98,7 +106,19 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         }
     }
 
+    func testAddClusterPopoverKeepsBoundedProfessionalDensity() {
+        XCTAssertEqual(RuneUILayoutMetrics.addClusterPopoverWidth, 400)
+        XCTAssertEqual(RuneUILayoutMetrics.addClusterPopoverPadding, 14)
+        XCTAssertEqual(RuneUILayoutMetrics.addClusterActionCardMinHeight, 62)
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.addClusterPopoverMaxHeight,
+            RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+    }
+
     func testDialogMetricsRemainComfortableAtMinimumWindowSize() {
+        XCTAssertEqual(RuneUILayoutMetrics.iconButtonSize, 28)
+        XCTAssertEqual(RuneUILayoutMetrics.dialogIconButtonSize, RuneUILayoutMetrics.iconButtonSize)
         XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogButtonMinHeight, 30)
         XCTAssertLessThan(RuneUILayoutMetrics.dialogButtonLabelMinHeight, RuneUILayoutMetrics.dialogButtonMinHeight)
         XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogIconButtonSize, 28)
@@ -110,6 +130,30 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             RuneUILayoutMetrics.wideDialogWidth,
             RuneWindowLayoutDefaults.minimumWidth - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.commandPaletteMaxWidth,
+            RuneWindowLayoutDefaults.minimumWidth - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThanOrEqual(
+            RuneUILayoutMetrics.commandPaletteMaxHeight,
+            RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.commandPaletteMinWidth,
+            RuneUILayoutMetrics.commandPaletteIdealWidth
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.commandPaletteIdealWidth,
+            RuneUILayoutMetrics.commandPaletteMaxWidth
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.commandPaletteMinHeight,
+            RuneUILayoutMetrics.commandPaletteIdealHeight
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.commandPaletteIdealHeight,
+            RuneUILayoutMetrics.commandPaletteMaxHeight
         )
         XCTAssertLessThanOrEqual(
             RuneUILayoutMetrics.wideDialogHeight,
@@ -135,10 +179,10 @@ final class RuneUILayoutMetricsTests: XCTestCase {
 
     @MainActor
     func testSharedDialogControlsRenderAtMinimumProfessionalHitSizes() {
-        let labelHost = NSHostingView(rootView: RuneDialogButtonLabel("Close"))
-        let closeHost = NSHostingView(rootView: RuneDialogCloseButton(action: {}))
+        let labelHost = NSHostingView(rootView: RuneDialogButtonLabel("Import"))
+        let closeHost = NSHostingView(rootView: RuneDialogCloseButton("Cancel kubeconfig import", action: {}))
         let buttonHost = NSHostingView(rootView: Button(action: {}) {
-            RuneDialogButtonLabel("Close")
+            RuneDialogButtonLabel("Import")
         }.buttonStyle(.bordered).controlSize(.regular))
 
         XCTAssertGreaterThanOrEqual(
@@ -162,6 +206,107 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             RuneUILayoutMetrics.dialogButtonMinHeight
         )
         XCTAssertLessThanOrEqual(buttonHost.fittingSize.height, 32)
+    }
+
+    @MainActor
+    func testKubeConfigImportReviewSheetFitsProfessionalDialogBounds() {
+        let review = KubeConfigImportReview(
+            contexts: [
+                KubeConfigImportContextPreview(
+                    name: "synthetic-context",
+                    clusterName: "synthetic-cluster",
+                    userName: "synthetic-user",
+                    namespace: "synthetic-namespace",
+                    serverHost: "synthetic.invalid",
+                    authType: "exec",
+                    providerHint: nil
+                )
+            ],
+            issues: [],
+            redactedPreview: "",
+            sourceName: "synthetic-kubeconfig"
+        )
+        let host = NSHostingView(rootView: KubeConfigImportReviewSheet(
+            review: review,
+            duplicateHandlingChoice: .constant(.skipDuplicate),
+            metadataDrafts: [:],
+            isCommitInProgress: false,
+            canConfirm: true,
+            onUpdateMetadata: { _, _ in },
+            onConfirm: {},
+            onCancel: {}
+        ))
+
+        XCTAssertGreaterThanOrEqual(host.fittingSize.width, 520)
+        XCTAssertLessThanOrEqual(host.fittingSize.width, 720)
+        XCTAssertGreaterThanOrEqual(host.fittingSize.height, 360)
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 720)
+    }
+
+    @MainActor
+    func testKubeConfigImportReviewKeepsHeaderAndActionsOutsideItsOnlyScrollViewport() throws {
+        let contexts = (0..<12).map { index in
+            KubeConfigImportContextPreview(
+                name: "synthetic-context-\(index)",
+                clusterName: "synthetic-cluster-\(index)",
+                userName: "synthetic-user-\(index)",
+                namespace: "synthetic-namespace",
+                serverHost: "synthetic.invalid",
+                authType: "exec",
+                providerHint: "Synthetic provider"
+            )
+        }
+        let issues = (0..<8).map { index in
+            KubeConfigImportIssue(
+                id: "synthetic-warning-\(index)",
+                severity: .warning,
+                message: "Synthetic import warning \(index) with enough detail to exercise compact wrapping."
+            )
+        }
+        let review = KubeConfigImportReview(
+            contexts: contexts,
+            issues: issues,
+            redactedPreview: (0..<80).map { "synthetic-redacted-line-\($0)" }.joined(separator: "\n"),
+            sourceName: "synthetic-kubeconfig",
+            hasDuplicateConflicts: true
+        )
+        var latestSnapshot: KubeConfigImportReviewLayoutSnapshot?
+        let host = NSHostingView(rootView: KubeConfigImportReviewSheet(
+            review: review,
+            duplicateHandlingChoice: .constant(.skipDuplicate),
+            metadataDrafts: [:],
+            isCommitInProgress: false,
+            canConfirm: true,
+            onUpdateMetadata: { _, _ in },
+            onConfirm: {},
+            onCancel: {},
+            onLayoutSnapshotChange: { latestSnapshot = $0 }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 360)
+
+        settle(host, until: { latestSnapshot != nil })
+
+        let snapshot = try XCTUnwrap(latestSnapshot)
+        let header = try XCTUnwrap(snapshot[.header])
+        let contentViewport = try XCTUnwrap(snapshot[.contentViewport])
+        let actions = try XCTUnwrap(snapshot[.actions])
+
+        XCTAssertGreaterThan(header.height, 0)
+        XCTAssertGreaterThan(contentViewport.height, 0)
+        XCTAssertGreaterThanOrEqual(actions.height, RuneUILayoutMetrics.dialogButtonMinHeight)
+        XCTAssertLessThanOrEqual(header.maxY, contentViewport.minY + 0.5)
+        XCTAssertLessThanOrEqual(contentViewport.maxY, actions.minY + 0.5)
+        XCTAssertGreaterThanOrEqual(header.minY, -0.5)
+        XCTAssertLessThanOrEqual(
+            actions.maxY,
+            360 - 32 + 0.5,
+            "The fixed action bar must remain inside the sheet's 16pt vertical insets at minimum height."
+        )
+        XCTAssertEqual(
+            scrollViews(in: host).count,
+            1,
+            "The preflight sheet should have one vertical owner: its central review viewport."
+        )
     }
 
     func testCloudCredentialDraftRequiredFieldsGateProviderRunAction() {
@@ -223,5 +368,26 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             regionOrLocation: "europe-north1",
             projectID: "synthetic-project"
         ).missingRequiredFieldSummary(for: .gke))
+    }
+
+    @MainActor
+    private func scrollViews(in view: NSView) -> [NSScrollView] {
+        var result = view is NSScrollView ? [view as! NSScrollView] : []
+        for subview in view.subviews {
+            result.append(contentsOf: scrollViews(in: subview))
+        }
+        return result
+    }
+
+    @MainActor
+    private func settle(
+        _ host: NSView,
+        until condition: () -> Bool
+    ) {
+        for _ in 0..<50 {
+            host.layoutSubtreeIfNeeded()
+            if condition() { return }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+        }
     }
 }

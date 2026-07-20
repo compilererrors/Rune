@@ -234,12 +234,12 @@ public struct CloudKubeConfigCLIImporter: CloudKubeConfigImporting {
     }
 
     private func discoveredCandidateFiles(for request: CloudKubeConfigImportRequest) -> [URL] {
-        var urls: [URL] = []
         let target = request.targetKubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if !target.isEmpty {
-            urls.append(URL(fileURLWithPath: NSString(string: target).expandingTildeInPath))
+            let url = URL(fileURLWithPath: NSString(string: target).expandingTildeInPath)
+            return FileManager.default.fileExists(atPath: url.standardizedFileURL.path) ? [url] : []
         }
-        urls.append(contentsOf: discoverer.discoverCandidateFiles())
+        let urls = discoverer.discoverCandidateFiles()
 
         var seen = Set<String>()
         return urls.filter { url in

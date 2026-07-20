@@ -102,13 +102,14 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(source.contains("Label(t(.saveLogs), systemImage: \"square.and.arrow.down\")"))
         XCTAssertTrue(source.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\""))
         XCTAssertTrue(source.contains("placeholder: t(.searchLogs)"))
-        XCTAssertTrue(source.contains(".help(findHelp)"))
+        XCTAssertTrue(source.contains("RuneIconButton(findHelp, systemImage: \"magnifyingglass\")"))
     }
 
     func testRootAndManifestChromeReadInterfaceLanguageFromSettings() throws {
         let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
+        let manifestPresentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
 
         XCTAssertTrue(rootSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
         XCTAssertTrue(rootSource.contains("private func appString(_ key: RuneLocalizedStringKey) -> String"))
@@ -120,13 +121,24 @@ final class RuneLocalizationTests: XCTestCase {
 
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
         XCTAssertTrue(yamlSource.contains("ManifestInlineNote(t(.yamlEditsStayLocal))"))
-        XCTAssertTrue(yamlSource.contains("Button(t(.applyYAML), action: onApply)"))
+        XCTAssertTrue(yamlSource.contains("applyTitle: t(.applyYAML)"))
         XCTAssertTrue(yamlSource.contains("Label(t(.hideManaged), systemImage: \"eye.slash\")"))
 
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
-        XCTAssertTrue(describeSource.contains(".confirmationDialog(\n            t(.describeReadOnlyNote)"))
-        XCTAssertTrue(describeSource.contains("Button(t(.apply), action: onApply)"))
+        XCTAssertTrue(describeSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
+        XCTAssertFalse(describeSource.contains(".confirmationDialog("))
+        XCTAssertTrue(describeSource.contains("applyTitle: t(.apply)"))
         XCTAssertTrue(describeSource.contains("placeholder: t(.findInDescribe)"))
+        XCTAssertTrue(manifestPresentationSource.contains("Button(applyTitle, action: onApply)"))
+    }
+
+    func testKubeConfigPickerUsesOneConsistentEnglishPromptFlow() throws {
+        let source = try String(contentsOfFile: kubeConfigPickerPath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("panel.prompt = \"Import\""))
+        XCTAssertTrue(source.contains("panel.prompt = \"Add Folder\""))
+        XCTAssertTrue(source.contains("panel.prompt = \"Use Config\""))
+        XCTAssertFalse(source.contains("Importera"))
     }
 
     func testSettingsLanguagePickerUsesSharedRightAlignedSettingsGrid() throws {
@@ -148,10 +160,12 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(source.contains("settingsSection(settingsString(.settingsAppearance))"))
         XCTAssertTrue(source.contains("static let rowControlColumnWidth: CGFloat = 260"))
         XCTAssertTrue(source.contains("private func settingsGridRow"))
+        XCTAssertTrue(source.contains("RuneSettingsAdaptiveRow(label: label, control: control)"))
         XCTAssertTrue(source.contains(".frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)"))
         XCTAssertTrue(source.contains(".frame(width: RuneSettingsMetrics.rowControlColumnWidth)"))
         XCTAssertTrue(source.contains("HStack(alignment: .top, spacing: RuneSettingsMetrics.rowControlSpacing)"))
-        XCTAssertFalse(source.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(source.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(source.contains("dynamicTypeSize.isAccessibilitySize"))
         XCTAssertFalse(source.contains("languagePickerWidth"))
         XCTAssertTrue(source.contains("Toggle(title, isOn: isOn)"))
         XCTAssertTrue(source.contains(".labelsHidden()"))
@@ -188,6 +202,16 @@ final class RuneLocalizationTests: XCTestCase {
             .path
     }
 
+    private var resourceManifestPresentationPath: String {
+        let current = URL(fileURLWithPath: #filePath)
+        return current
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/RuneUI/Views/ResourceManifestPresentation.swift")
+            .path
+    }
+
     private var runeRootViewPath: String {
         let current = URL(fileURLWithPath: #filePath)
         return current
@@ -195,6 +219,16 @@ final class RuneLocalizationTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift")
+            .path
+    }
+
+    private var kubeConfigPickerPath: String {
+        let current = URL(fileURLWithPath: #filePath)
+        return current
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/RuneUI/Services/KubeConfigPicker.swift")
             .path
     }
 }

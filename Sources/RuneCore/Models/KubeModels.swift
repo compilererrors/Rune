@@ -361,6 +361,10 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let containersReady: String?
     /// Comma-separated `spec.containers[].name` for quick reference.
     public let containerNamesLine: String?
+    /// Comma-separated `spec.initContainers[].name`; optional for backward-compatible decoded snapshots.
+    public let initContainerNamesLine: String?
+    /// Comma-separated `spec.ephemeralContainers[].name`; optional for backward-compatible decoded snapshots.
+    public let ephemeralContainerNamesLine: String?
     /// Sorted pod metadata labels for quick-copy and relationship hints.
     public let labels: [String: String]
     /// Comma-separated `spec.containers[].image` values for quick reference.
@@ -382,6 +386,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         qosClass: String? = nil,
         containersReady: String? = nil,
         containerNamesLine: String? = nil,
+        initContainerNamesLine: String? = nil,
+        ephemeralContainerNamesLine: String? = nil,
         labels: [String: String] = [:],
         containerImagesLine: String? = nil,
         ownerReferencesLine: String? = nil
@@ -399,6 +405,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         self.qosClass = qosClass
         self.containersReady = containersReady
         self.containerNamesLine = containerNamesLine
+        self.initContainerNamesLine = initContainerNamesLine
+        self.ephemeralContainerNamesLine = ephemeralContainerNamesLine
         self.labels = labels
         self.containerImagesLine = containerImagesLine
         self.ownerReferencesLine = ownerReferencesLine
@@ -409,7 +417,24 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
     public var containerNames: [String] {
-        containerNamesLine?
+        Self.names(from: containerNamesLine)
+    }
+    public var initContainerNames: [String] {
+        Self.names(from: initContainerNamesLine)
+    }
+    public var ephemeralContainerNames: [String] {
+        Self.names(from: ephemeralContainerNamesLine)
+    }
+    /// Containers whose logs Kubernetes can expose. Main containers stay first so
+    /// existing default log selection remains stable; terminal/exec uses `containerNames`.
+    public var logContainerNames: [String] {
+        var seen = Set<String>()
+        return (containerNames + initContainerNames + ephemeralContainerNames).filter {
+            seen.insert($0).inserted
+        }
+    }
+    private static func names(from line: String?) -> [String] {
+        line?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty } ?? []
@@ -437,6 +462,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
             qosClass: detail.qosClass ?? qosClass,
             containersReady: detail.containersReady ?? containersReady,
             containerNamesLine: detail.containerNamesLine ?? containerNamesLine,
+            initContainerNamesLine: detail.initContainerNamesLine ?? initContainerNamesLine,
+            ephemeralContainerNamesLine: detail.ephemeralContainerNamesLine ?? ephemeralContainerNamesLine,
             labels: detail.labels.isEmpty ? labels : detail.labels,
             containerImagesLine: detail.containerImagesLine ?? containerImagesLine,
             ownerReferencesLine: detail.ownerReferencesLine ?? ownerReferencesLine
@@ -922,6 +949,18 @@ public struct PodTerminalSession: Identifiable, Hashable, Codable, Sendable {
         self.status = status
         self.lastExitCode = lastExitCode
         self.lastDiagnostic = lastDiagnostic
+    }
+
+    public func targets(
+        contextName: String,
+        namespace: String,
+        podName: String,
+        containerName: String?
+    ) -> Bool {
+        self.contextName == contextName
+            && self.namespace == namespace
+            && self.podName == podName
+            && self.containerName == containerName
     }
 }
 

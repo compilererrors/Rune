@@ -95,6 +95,15 @@ private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
             return false
         }
     }
+
+    var requiresExternalInteractionAcknowledgement: Bool {
+        switch self {
+        case .overview, .workloadPodLogs, .workloadPodDescribe, .configConfigMapPrepare:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 private struct RuneRootLayoutProbeFrame: Equatable {
@@ -135,6 +144,9 @@ private enum RuneRootLayoutDebug {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     static let liveScenarioNamespace = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_NAMESPACE"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let liveScenarioInteractionAcknowledgementDirectory =
+        ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_INTERACTION_ACK_DIR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     static let initialDetailWidth: CGFloat? = {
         guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_DETAIL_WIDTH"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -302,6 +314,7 @@ enum DeploymentInspectorTab: String, CaseIterable, Identifiable {
 }
 
 enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
+    case overview
     case describe
     case yaml
 
@@ -309,6 +322,7 @@ enum GenericResourceManifestTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .overview: return "Overview"
         case .describe: return "Describe"
         case .yaml: return "YAML"
         }
@@ -339,59 +353,9 @@ enum RuneAddClusterProviderActionLayout {
     }
 }
 
-private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
-    case aks
-    case eks
-    case gke
-    case local
+private typealias RuneAddClusterProvider = AddClusterProviderIdentifier
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .aks: return "Microsoft AKS"
-        case .eks: return "Amazon EKS"
-        case .gke: return "Google GKE"
-        case .local: return "Local Cluster"
-        }
-    }
-
-    var shortTitle: String {
-        switch self {
-        case .aks: return "AKS"
-        case .eks: return "EKS"
-        case .gke: return "GKE"
-        case .local: return "Local"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .aks: return "Azure CLI or kubelogin"
-        case .eks: return "AWS CLI"
-        case .gke: return "gcloud auth plugin"
-        case .local: return "kind, k3s, k3d, minikube, Docker, OpenShift"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .aks: return "square.grid.3x3.fill"
-        case .eks: return "shippingbox.fill"
-        case .gke: return "hexagon.fill"
-        case .local: return "laptopcomputer"
-        }
-    }
-
-    var accent: Color {
-        switch self {
-        case .aks: return .blue
-        case .eks: return .orange
-        case .gke: return .indigo
-        case .local: return .green
-        }
-    }
-
+private extension AddClusterProviderIdentifier {
     var cloudProvider: CloudKubeConfigProvider? {
         switch self {
         case .aks: return .aks
@@ -434,16 +398,12 @@ private enum RuneAddClusterProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    var note: String {
+    var nativeAuthProvider: KubernetesNativeAuthProviderKind? {
         switch self {
-        case .aks:
-            return "Runs Azure CLI locally, validates the resulting kubeconfig, and refreshes contexts."
-        case .eks:
-            return "Runs AWS CLI locally, validates the resulting kubeconfig, and refreshes contexts."
-        case .gke:
-            return "Runs gcloud locally, validates the resulting kubeconfig, and refreshes contexts."
-        case .local:
-            return "Copies local-cluster commands and refreshes detected contexts after the local tool writes kubeconfig."
+        case .aks: return .azureKubelogin
+        case .eks: return .awsEKS
+        case .gke: return .googleGKE
+        case .local: return nil
         }
     }
 }
@@ -534,7 +494,7 @@ struct CloudCredentialDraft {
     }
 }
 
-private enum HelmInspectorTab: String, CaseIterable, Identifiable {
+enum HelmInspectorTab: String, CaseIterable, Identifiable, Sendable {
     case overview
     case values
     case manifest
@@ -552,7 +512,7 @@ private enum HelmInspectorTab: String, CaseIterable, Identifiable {
     }
 }
 
-private enum HelmBrowserTab: String, CaseIterable, Identifiable {
+enum HelmBrowserTab: String, CaseIterable, Identifiable, Sendable {
     case releases
     case operatorResources
 
@@ -570,6 +530,125 @@ private enum HelmBrowserTab: String, CaseIterable, Identifiable {
         case .releases: return "Releases"
         case .operatorResources: return "Operator resources"
         }
+    }
+}
+
+enum RuneHelmInspectorMode: Equatable, Sendable {
+    case none
+    case release
+    case operatorResource
+
+    static func resolve(hasRelease: Bool, hasOperatorResource: Bool) -> RuneHelmInspectorMode {
+        if hasOperatorResource {
+            return .operatorResource
+        }
+        if hasRelease {
+            return .release
+        }
+        return .none
+    }
+
+    var browserTab: HelmBrowserTab? {
+        switch self {
+        case .none: return nil
+        case .release: return .releases
+        case .operatorResource: return .operatorResources
+        }
+    }
+}
+
+enum RuneInspectorRefreshRoute: Equatable, Sendable {
+    case currentView
+    case resourceInspector
+    case logs
+    case helmInspector
+}
+
+struct RuneInspectorRefreshRouting {
+    static func route(
+        section: RuneSection,
+        workloadKind: KubeResourceKind,
+        podTab: PodInspectorTab,
+        deploymentTab: DeploymentInspectorTab,
+        serviceTab: ServiceInspectorTab,
+        genericTab: GenericResourceManifestTab,
+        helmTab: HelmInspectorTab,
+        helmMode: RuneHelmInspectorMode
+    ) -> RuneInspectorRefreshRoute {
+        switch section {
+        case .workloads:
+            switch workloadKind {
+            case .pod:
+                switch podTab {
+                case .logs: return .logs
+                case .describe, .yaml: return .resourceInspector
+                case .overview, .exec, .portForward: return .currentView
+                }
+            case .deployment:
+                switch deploymentTab {
+                case .unifiedLogs: return .logs
+                case .describe, .yaml: return .resourceInspector
+                case .overview, .rollout: return .currentView
+                }
+            default:
+                return genericRoute(for: genericTab)
+            }
+
+        case .networking:
+            if workloadKind == .service {
+                switch serviceTab {
+                case .unifiedLogs: return .logs
+                case .describe, .yaml: return .resourceInspector
+                case .overview, .portForward: return .currentView
+                }
+            }
+            return genericRoute(for: genericTab)
+
+        case .config, .storage, .rbac:
+            return genericRoute(for: genericTab)
+
+        case .helm:
+            switch helmMode {
+            case .operatorResource:
+                return genericTab == .overview ? .currentView : .helmInspector
+            case .release:
+                return helmTab == .overview ? .currentView : .helmInspector
+            case .none:
+                return .currentView
+            }
+
+        case .overview, .events, .terminal:
+            return .currentView
+        }
+    }
+
+    private static func genericRoute(
+        for tab: GenericResourceManifestTab
+    ) -> RuneInspectorRefreshRoute {
+        tab == .overview ? .currentView : .resourceInspector
+    }
+}
+
+private struct RuneHelmSelectionIdentity: Equatable {
+    let releaseID: String?
+    let operatorResourceID: String?
+}
+
+private struct RuneHelmSelectionSyncModifier: ViewModifier {
+    let restoreRequest: SavedWorkspaceInspectorRestoreRequest?
+    let selectionIdentity: RuneHelmSelectionIdentity
+    let applyRestore: (SavedWorkspaceInspectorState?) -> Void
+    let syncBrowserSelection: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: restoreRequest) { _, request in
+                applyRestore(request?.inspectorState)
+                syncBrowserSelection()
+            }
+            .onChange(of: selectionIdentity) { _, _ in
+                syncBrowserSelection()
+            }
     }
 }
 
@@ -670,6 +749,7 @@ private extension DeploymentInspectorTab {
 private extension GenericResourceManifestTab {
     func localizedTitle(_ string: (RuneLocalizedStringKey) -> String) -> String {
         switch self {
+        case .overview: return string(.overview)
         case .describe: return string(.describe)
         case .yaml: return string(.yaml)
         }
@@ -769,19 +849,61 @@ enum PodTableLayout {
     }
 }
 
-private enum RuneRootKeyboardPane: CaseIterable {
+enum RuneRootKeyboardPane: CaseIterable, Equatable {
     case sidebarSections
     case sidebarContexts
     case content
     case detail
+}
 
-    func advanced(forward: Bool) -> RuneRootKeyboardPane {
-        let all = Self.allCases
-        guard let index = all.firstIndex(of: self) else { return self }
-        if forward {
-            return all[(index + 1) % all.count]
+struct RuneRootKeyboardPaneNavigation {
+    static func availablePanes(
+        sidebarVisible: Bool,
+        detailVisible: Bool,
+        skipsClusterPane: Bool
+    ) -> [RuneRootKeyboardPane] {
+        var panes: [RuneRootKeyboardPane] = []
+        if sidebarVisible {
+            panes.append(.sidebarSections)
+            if !skipsClusterPane {
+                panes.append(.sidebarContexts)
+            }
         }
-        return all[(index + all.count - 1) % all.count]
+        panes.append(.content)
+        if detailVisible {
+            panes.append(.detail)
+        }
+        return panes
+    }
+
+    static func advanced(
+        from current: RuneRootKeyboardPane,
+        forward: Bool,
+        in panes: [RuneRootKeyboardPane]
+    ) -> RuneRootKeyboardPane {
+        guard let index = panes.firstIndex(of: current) else {
+            return panes.first ?? .content
+        }
+        if forward {
+            return panes[(index + 1) % panes.count]
+        }
+        return panes[(index + panes.count - 1) % panes.count]
+    }
+}
+
+struct RuneRootKeyboardWindowScope {
+    static func owns(
+        eventWindowNumber: Int,
+        workspaceWindowNumber: Int?,
+        keyWindowNumber: Int?
+    ) -> Bool {
+        guard let workspaceWindowNumber else { return false }
+        if eventWindowNumber == workspaceWindowNumber {
+            return true
+        }
+        // Quartz/Accessibility-posted key events can arrive without a window number.
+        // In that case, only the workspace that owns the key window may handle them.
+        return eventWindowNumber == 0 && keyWindowNumber == workspaceWindowNumber
     }
 }
 
@@ -790,12 +912,52 @@ private enum RuneRootTextInputFocus: Hashable {
     case resourceFilter
 }
 
+/// Keeps the hosting window identity out of SwiftUI's render state. Window attachment can
+/// happen after the first layout pass; publishing that identity as `@State` needlessly
+/// invalidates the entire three-pane workspace while it is settling.
+private final class RuneWorkspaceWindowReference {
+    var windowNumber: Int?
+    var measuredTopInset: CGFloat?
+}
+
+struct RuneRootKeyboardNavigationContext {
+    let commandPalettePresented: Bool
+    let yamlEditorSheetPresented: Bool
+    let yamlManifestIsEditing: Bool
+    let kubeConfigImportReviewPresented: Bool
+    let addClusterPopoverPresented: Bool
+    let addClusterProviderPresented: Bool
+    let manualNamespaceSheetPresented: Bool
+    let pendingWriteConfirmationPresented: Bool
+    let launchExperiencePresented: Bool
+    let appSheetAttached: Bool
+    let editableTextResponderActive: Bool
+
+    var hasBlockingPresentation: Bool {
+        commandPalettePresented
+            || yamlEditorSheetPresented
+            || yamlManifestIsEditing
+            || kubeConfigImportReviewPresented
+            || addClusterPopoverPresented
+            || addClusterProviderPresented
+            || manualNamespaceSheetPresented
+            || pendingWriteConfirmationPresented
+            || launchExperiencePresented
+            || appSheetAttached
+    }
+
+    var isSuspended: Bool {
+        hasBlockingPresentation || editableTextResponderActive
+    }
+}
+
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject private var viewModel: RuneAppViewModel
 
     private let onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?
     private let debugDisableBootstrap: Bool
+    private let debugDisableLayoutPersistence: Bool
     private let forcedShellVariant: RuneRootShellVariant?
     private let forcedManifestInlineEditorImplementation: ManifestInlineEditorImplementation?
     private let forcedInitialSidebarWidth: Double?
@@ -805,14 +967,13 @@ public struct RuneRootView: View {
     @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
     @AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth) private var persistedPodNameColumnWidth = Double(PodTableLayout.nameColumnDefaultWidth)
-    @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
+    @AppStorage(RuneSettingsKeys.skipClusterOnTabNavigationFromSections) private var skipClusterOnTabNavigationFromSections = false
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
-    @State private var measuredWindowContentTopInset: CGFloat?
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
     @State private var lastLayoutSnapshot: RuneRootLayoutSnapshot?
@@ -822,7 +983,7 @@ public struct RuneRootView: View {
     @State private var showsHistoricalDeploymentReplicaSets = false
     @State private var helmInspectorTab: HelmInspectorTab = .overview
     @State private var helmBrowserTab: HelmBrowserTab = .releases
-    @State private var genericResourceManifestTab: GenericResourceManifestTab = .describe
+    @State private var genericResourceManifestTab: GenericResourceManifestTab = .overview
     @State private var yamlManifestIsEditing = false
     @State private var isYAMLEditorSheetPresented = false
     @State private var terminalShellPodID = ""
@@ -832,13 +993,23 @@ public struct RuneRootView: View {
     @State private var hasRestoredTerminalWorkspaceState = false
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
+    @State private var isGenericResourceComparisonPresented = false
+    @State private var didCopyGenericResourceComparison = false
     @State private var overviewCardSelectionIndex = 0
     @State private var expandedOverviewInsightPanels: Set<OverviewInsightPanelID> = []
     @State private var localKeyEventMonitor: Any?
+    @State private var workspaceWindowReference = RuneWorkspaceWindowReference()
     @State private var addClusterPopoverPresented = false
     @State private var selectedAddClusterProvider: RuneAddClusterProvider?
     @State private var cloudCredentialDraft = CloudCredentialDraft()
+    @State private var addClusterNativeContextOptions: [AddClusterNativeContextOption] = []
+    @State private var selectedAddClusterNativeContextBindingID: String?
+    @State private var connectedAddClusterNativeContextBindingIDs: Set<String> = []
+    @State private var isCheckingAddClusterNativeProfiles = false
+    @State private var addClusterNativeContextAnalysisMessage: String?
     @State private var isManualAddClusterExpanded = false
+    @State private var isAddClusterProviderCommandDetailsExpanded = false
+    @State private var isAddClusterProviderLoginOutputExpanded = false
     @State private var hasMountedWorkspaceChrome = false
     @State private var isManualNamespaceSheetPresented = false
     @State private var manualNamespaceInput = ""
@@ -865,7 +1036,7 @@ public struct RuneRootView: View {
             initialPodInspectorTab: .overview,
             initialServiceInspectorTab: .overview,
             initialDeploymentInspectorTab: .overview,
-            initialGenericResourceManifestTab: .describe,
+            initialGenericResourceManifestTab: .overview,
             shellVariant: nil,
             manifestInlineEditorImplementation: nil
         )
@@ -875,10 +1046,11 @@ public struct RuneRootView: View {
         viewModel: RuneAppViewModel,
         onLayoutSnapshotChange: ((RuneRootLayoutSnapshot) -> Void)?,
         debugDisableBootstrap: Bool,
+        debugDisableLayoutPersistence: Bool? = nil,
         initialPodInspectorTab: PodInspectorTab = .overview,
         initialServiceInspectorTab: ServiceInspectorTab = .overview,
         initialDeploymentInspectorTab: DeploymentInspectorTab = .overview,
-        initialGenericResourceManifestTab: GenericResourceManifestTab = .describe,
+        initialGenericResourceManifestTab: GenericResourceManifestTab = .overview,
         shellVariant: RuneRootShellVariant? = nil,
         manifestInlineEditorImplementation: ManifestInlineEditorImplementation? = nil,
         initialYAMLInlineEditing: Bool = false,
@@ -888,6 +1060,7 @@ public struct RuneRootView: View {
         self.viewModel = viewModel
         self.onLayoutSnapshotChange = onLayoutSnapshotChange
         self.debugDisableBootstrap = debugDisableBootstrap
+        self.debugDisableLayoutPersistence = debugDisableLayoutPersistence ?? debugDisableBootstrap
         self.forcedShellVariant = shellVariant
         self.forcedManifestInlineEditorImplementation = manifestInlineEditorImplementation
         self.forcedInitialSidebarWidth = initialSidebarWidthOverride
@@ -902,12 +1075,21 @@ public struct RuneRootView: View {
     public var body: some View {
         ZStack(alignment: .topLeading) {
             background
-            WindowChromeConfigurator(measuredTopInset: $measuredWindowContentTopInset)
+            WindowChromeConfigurator(
+                onMeasuredTopInsetChange: { inset in
+                    workspaceWindowReference.measuredTopInset = inset
+                },
+                onOwningWindowChange: { windowNumber in
+                    workspaceWindowReference.windowNumber = windowNumber
+                }
+            )
                 .frame(width: 0, height: 0)
             keyboardNavigationBridge
 
             GeometryReader { geometry in
-                let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
+                let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(
+                    measuredInset: workspaceWindowReference.measuredTopInset
+                )
                 let viewportHeight = max(0, geometry.size.height - resolvedTopInset)
 
                 if shouldMountWorkspaceChrome {
@@ -925,21 +1107,40 @@ public struct RuneRootView: View {
             }
         }
         .coordinateSpace(name: RuneRootLayoutDebug.coordinateSpaceName)
-        .dynamicTypeSize(appDynamicTypeSize)
         .onAppear {
             handleRootAppear()
         }
         .onDisappear {
             handleRootDisappear()
         }
+        .sheet(isPresented: kubeConfigImportReviewPresentedBinding) {
+            if let review = pendingKubeConfigImportReview {
+                KubeConfigImportReviewSheet(
+                    review: review,
+                    duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
+                    metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
+                    isCommitInProgress: viewModel.isCommittingKubeConfigImport,
+                    canConfirm: viewModel.canConfirmKubeConfigImport,
+                    onUpdateMetadata: { contextName, metadata in
+                        viewModel.setKubeConfigImportContextMetadata(
+                            contextName: contextName,
+                            alias: metadata.alias,
+                            colorKey: metadata.colorKey,
+                            iconName: metadata.iconName,
+                            tags: metadata.tags,
+                            group: metadata.group
+                        )
+                    },
+                    onConfirm: viewModel.confirmKubeConfigImport,
+                    onCancel: viewModel.cancelKubeConfigImport
+                )
+            }
+        }
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
             layoutProbeFrames = frames.compactMapValues { frame in
                 guard frame.generation == layoutGeneration else { return nil }
                 return frame.rect
             }
-            emitLayoutSnapshotIfNeeded()
-        }
-        .onChange(of: measuredWindowContentTopInset) { _, _ in
             emitLayoutSnapshotIfNeeded()
         }
         .onChange(of: viewModel.state.selectedSection) { _, section in
@@ -950,9 +1151,7 @@ public struct RuneRootView: View {
         .onChange(of: viewModel.state.selectedWorkloadKind) { _, _ in
             advanceLayoutGeneration()
         }
-        .onChange(of: viewModel.savedWorkspaceInspectorRestoreRequest) { _, request in
-            applySavedWorkspaceInspectorState(request?.inspectorState)
-        }
+        .modifier(helmSelectionSyncModifier)
         .onChange(of: podInspectorTab) { _, tab in
             syncSavedWorkspaceInspectorState()
             if tab == .logs {
@@ -996,6 +1195,11 @@ public struct RuneRootView: View {
                 keyboardPaneFocus = .content
             }
         }
+        .onChange(of: skipClusterOnTabNavigationFromSections) { _, shouldSkip in
+            if shouldSkip, keyboardPaneFocus == .sidebarContexts {
+                keyboardPaneFocus = .sidebarSections
+            }
+        }
         .onPreferenceChange(RuneRootPaneWidthPreferenceKey.self) { paneWidths in
             persistPaneWidthsIfNeeded(paneWidths)
         }
@@ -1008,20 +1212,31 @@ public struct RuneRootView: View {
         RuneAppearanceTheme.resolved(appearanceThemeRaw)
     }
 
-    private var appDynamicTypeSize: DynamicTypeSize {
-        switch Int(RuneSettingsKeys.clampedTerminalFontSize(appFontSize).rounded()) {
-        case ...10: return .small
-        case 11: return .medium
-        case 12: return .large
-        case 13: return .xLarge
-        case 14: return .xxLarge
-        case 15: return .xxxLarge
-        case 16: return .accessibility1
-        case 17: return .accessibility2
-        case 18: return .accessibility3
-        case 19: return .accessibility4
-        default: return .accessibility5
-        }
+    private var helmSelectionSyncModifier: RuneHelmSelectionSyncModifier {
+        RuneHelmSelectionSyncModifier(
+            restoreRequest: viewModel.savedWorkspaceInspectorRestoreRequest,
+            selectionIdentity: RuneHelmSelectionIdentity(
+                releaseID: viewModel.state.selectedHelmRelease?.id,
+                operatorResourceID: viewModel.state.selectedOperatorResource?.id
+            ),
+            applyRestore: applySavedWorkspaceInspectorState,
+            syncBrowserSelection: syncHelmBrowserTabWithSelection
+        )
+    }
+
+    private var kubeConfigImportReviewPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.isKubeConfigImportConfirmationPending },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.cancelKubeConfigImport()
+                }
+            }
+        )
+    }
+
+    private var pendingKubeConfigImportReview: KubeConfigImportReview? {
+        KubeConfigImportReviewAggregator.aggregate(viewModel.kubeConfigImportReviews)
     }
 
     private var shouldShowLaunchExperience: Bool {
@@ -1047,6 +1262,7 @@ public struct RuneRootView: View {
         }
         startLiveDebugScenarioIfNeeded()
         syncSavedWorkspaceInspectorState()
+        syncHelmBrowserTabWithSelection()
         restoreTerminalWorkspaceStateIfNeeded()
         handlePendingLaunchActionIfNeeded()
         guard !debugDisableBootstrap else { return }
@@ -1128,6 +1344,19 @@ public struct RuneRootView: View {
             terminalTabID: terminalInspectorTab.rawValue,
             isYAMLInlineEditing: yamlManifestIsEditing
         )
+    }
+
+    private var selectedHelmInspectorMode: RuneHelmInspectorMode {
+        RuneHelmInspectorMode.resolve(
+            hasRelease: viewModel.state.selectedHelmRelease != nil,
+            hasOperatorResource: viewModel.state.selectedOperatorResource != nil
+        )
+    }
+
+    private func syncHelmBrowserTabWithSelection() {
+        guard let browserTab = selectedHelmInspectorMode.browserTab else { return }
+        helmBrowserTab = browserTab
+        viewModel.setHelmBrowserResourceFamily(browserTab.resourceListFamily)
     }
 
     private func syncSavedWorkspaceInspectorState() {
@@ -1422,33 +1651,17 @@ public struct RuneRootView: View {
             }
             .sheet(isPresented: $isYAMLEditorSheetPresented) {
                 yamlManifestEditorSheet()
-                    .confirmationDialog(
-                        viewModel.pendingWriteActionTitle,
+                    .runePendingWriteConfirmation(
                         isPresented: pendingWriteActionPresentedBinding,
-                        titleVisibility: .visible
-                    ) {
-                        if viewModel.pendingWriteActionIsDestructive {
-                            Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                                confirmPendingWriteActionFromDialog()
-                            }
-                        } else {
-                            Button(viewModel.pendingWriteActionConfirmLabel) {
-                                confirmPendingWriteActionFromDialog()
-                            }
-                        }
-
-                        Button("Cancel", role: .cancel) {
-                            cancelPendingWriteActionFromDialog()
-                        }
-
-                        if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
-                            Button("Copy kubectl command") {
-                                viewModel.copyPendingWriteActionKubectlCommand()
-                            }
-                        }
-                    } message: {
-                        Text(pendingWriteActionDialogMessage)
-                    }
+                        title: viewModel.pendingWriteActionTitle,
+                        confirmLabel: viewModel.pendingWriteActionConfirmLabel,
+                        isDestructive: viewModel.pendingWriteActionIsDestructive,
+                        message: pendingWriteActionDialogMessage,
+                        showsCopyCommandAction: !viewModel.pendingWriteActionKubectlCommand.isEmpty,
+                        onConfirm: confirmPendingWriteActionFromDialog,
+                        onCancel: cancelPendingWriteActionFromDialog,
+                        onCopyCommand: viewModel.copyPendingWriteActionKubectlCommand
+                    )
             }
             .sheet(item: $selectedAddClusterProvider) { provider in
                 addClusterProviderSheet(provider)
@@ -1456,33 +1669,17 @@ public struct RuneRootView: View {
             .sheet(isPresented: $isManualNamespaceSheetPresented) {
                 manualNamespaceSheet
             }
-            .confirmationDialog(
-                viewModel.pendingWriteActionTitle,
+            .runePendingWriteConfirmation(
                 isPresented: pendingWriteActionPresentedBinding,
-                titleVisibility: .visible
-            ) {
-                if viewModel.pendingWriteActionIsDestructive {
-                    Button(viewModel.pendingWriteActionConfirmLabel, role: .destructive) {
-                        confirmPendingWriteActionFromDialog()
-                    }
-                } else {
-                    Button(viewModel.pendingWriteActionConfirmLabel) {
-                        confirmPendingWriteActionFromDialog()
-                    }
-                }
-
-                Button("Cancel", role: .cancel) {
-                    cancelPendingWriteActionFromDialog()
-                }
-
-                if !viewModel.pendingWriteActionKubectlCommand.isEmpty {
-                    Button("Copy kubectl command") {
-                        viewModel.copyPendingWriteActionKubectlCommand()
-                    }
-                }
-            } message: {
-                Text(pendingWriteActionDialogMessage)
-            }
+                title: viewModel.pendingWriteActionTitle,
+                confirmLabel: viewModel.pendingWriteActionConfirmLabel,
+                isDestructive: viewModel.pendingWriteActionIsDestructive,
+                message: pendingWriteActionDialogMessage,
+                showsCopyCommandAction: !viewModel.pendingWriteActionKubectlCommand.isEmpty,
+                onConfirm: confirmPendingWriteActionFromDialog,
+                onCancel: cancelPendingWriteActionFromDialog,
+                onCopyCommand: viewModel.copyPendingWriteActionKubectlCommand
+            )
     }
 
     private var pendingWriteActionDialogMessage: String {
@@ -1632,7 +1829,31 @@ public struct RuneRootView: View {
         } else {
             RuneRootLayoutDebug.logScenario(step, status: "snapshot-missing")
         }
-        try? await Task.sleep(nanoseconds: RuneRootLayoutDebug.liveScenarioSnapshotHoldNanoseconds)
+        await waitForLiveDebugScenarioInteractionAcknowledgement(step)
+    }
+
+    @MainActor
+    private func waitForLiveDebugScenarioInteractionAcknowledgement(
+        _ step: RuneRootLiveDebugScenarioStep
+    ) async {
+        guard step.requiresExternalInteractionAcknowledgement,
+              let directory = RuneRootLayoutDebug.liveScenarioInteractionAcknowledgementDirectory,
+              !directory.isEmpty else {
+            try? await Task.sleep(nanoseconds: RuneRootLayoutDebug.liveScenarioSnapshotHoldNanoseconds)
+            return
+        }
+
+        let acknowledgementURL = URL(fileURLWithPath: directory, isDirectory: true)
+            .appendingPathComponent("\(step.rawValue).ack", isDirectory: false)
+        let timeout = Date().addingTimeInterval(45)
+        while Date() < timeout {
+            if FileManager.default.fileExists(atPath: acknowledgementURL.path) {
+                RuneRootLayoutDebug.logScenario(step, status: "interaction-acknowledged")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        RuneRootLayoutDebug.logScenario(step, status: "interaction-ack-timeout")
     }
 
     @MainActor
@@ -2132,8 +2353,10 @@ public struct RuneRootView: View {
                 .font(.headline)
                 .foregroundStyle(keyboardPaneFocus == .sidebarSections ? Color.accentColor : .secondary)
 
-            ForEach(RuneSection.allCases) { section in
-                sectionRow(section)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(RuneSection.allCases) { section in
+                    sectionRow(section)
+                }
             }
 
             Divider()
@@ -2144,24 +2367,30 @@ public struct RuneRootView: View {
                     .font(.headline)
                     .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
                 Spacer(minLength: 0)
-                if !viewModel.visibleContexts.isEmpty {
-                    addClusterButton
-                }
+                addClusterButton
             }
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if viewModel.visibleContexts.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("No kubeconfigs loaded")
-                                .font(.subheadline.weight(.semibold))
-                            Text("Rune discovers kubeconfig files automatically. You can also import files with the system file picker.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-
-                            addClusterButton
-                        }
-                        .runePanelCard(padding: 10)
+                LazyVStack(alignment: .leading, spacing: 5) {
+                    if !hasAvailableKubernetesContexts {
+                        RuneContentStateView(
+                            .empty(
+                                title: "No contexts yet",
+                                message: "Connect from Overview or use Add Cluster above."
+                            ),
+                            variant: .inline
+                        )
+                    } else if viewModel.visibleContexts.isEmpty {
+                        RuneContentStateView(
+                            .filteredEmpty(
+                                title: "No matching contexts",
+                                message: "Clear the search to show all loaded contexts."
+                            ),
+                            variant: .inline,
+                            action: RuneContentStateAction("Clear", systemImage: "xmark.circle") {
+                                viewModel.setContextSearchQuery("")
+                            }
+                        )
                     } else {
                         ForEach(viewModel.visibleContexts) { context in
                             contextRow(context)
@@ -2205,9 +2434,14 @@ public struct RuneRootView: View {
             HStack(spacing: 8) {
                 Image(systemName: section.symbolName)
                     .frame(width: 16)
-                Text(section.localizedTitle(appString) + "    ⌘" + String(section.commandShortcut))
+                Text(section.localizedTitle(appString))
                     .font(.body.weight(.medium))
-                Spacer()
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text("⌘" + String(section.commandShortcut))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Command " + String(section.commandShortcut))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -2226,9 +2460,11 @@ public struct RuneRootView: View {
                 .lineLimit(1)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
+                .frame(minHeight: RuneUILayoutMetrics.iconButtonSize)
                 .background(Capsule().fill(Color.accentColor.opacity(0.16)))
                 .foregroundStyle(Color.accentColor)
         }
+        .accessibilityIdentifier("rune.add-cluster.button")
         .buttonStyle(.plain)
         .help("Add cluster or kubeconfig")
         .popover(isPresented: $addClusterPopoverPresented, arrowEdge: .trailing) {
@@ -2237,367 +2473,50 @@ public struct RuneRootView: View {
         .onChange(of: addClusterPopoverPresented) { _, isPresented in
             guard !isPresented else { return }
             isManualAddClusterExpanded = false
+            viewModel.clearManualKubeConfigSecret()
         }
     }
 
     private var addClusterPopover: some View {
-        ZStack {
-            RuneGlassPaneSurface(role: .content)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 13) {
-                    HStack(spacing: 9) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 24, height: 24)
-                            .background(Circle().fill(Color.accentColor.opacity(0.12)))
-                        Text("Add Cluster")
-                            .font(.headline)
-                            .accessibilityAddTraits(.isHeader)
-                        Spacer(minLength: 0)
-                    }
-
-                    addClusterDiscoveryStatus
-
-                VStack(alignment: .leading, spacing: 8) {
-                    addClusterSectionLabel("Standard")
-
-                    addClusterQuickAction(
-                        title: "Auto-detect Clusters",
-                        subtitle: "On - click to refresh detected contexts",
-                        symbolName: "checkmark.circle.fill",
-                        isActive: true
-                    ) {
-                        viewModel.refreshKubeConfigSourcesFromDiscovery()
-                    }
-
-                    LazyVGrid(
-                        columns: addClusterGridColumns,
-                        spacing: 8
-                    ) {
-                        addClusterQuickAction(
-                            title: "Paste",
-                            subtitle: "Clipboard",
-                            symbolName: "doc.on.clipboard"
-                        ) {
-                            addClusterPopoverPresented = false
-                            viewModel.importKubeConfigFromPasteboard()
-                        }
-
-                        addClusterQuickAction(
-                            title: "Use Default",
-                            subtitle: "~/.kube/config",
-                            symbolName: "folder.badge.gearshape"
-                        ) {
-                            addClusterPopoverPresented = false
-                            viewModel.addDefaultKubeConfig()
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    addClusterSectionLabel("Provider Login")
-
-                    LazyVGrid(
-                        columns: addClusterGridColumns,
-                        spacing: 8
-                    ) {
-                        ForEach(RuneAddClusterProvider.allCases) { provider in
-                            providerTileButton(provider)
-                        }
-                    }
-                }
-
-                DisclosureGroup(isExpanded: $isManualAddClusterExpanded) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
-
-                            Menu {
-                                Button {
-                                    addClusterPopoverPresented = false
-                                    viewModel.importKubeConfig()
-                                } label: {
-                                    Label("Import File", systemImage: "doc.badge.plus")
-                                }
-
-                                Button {
-                                    addClusterPopoverPresented = false
-                                    viewModel.importKubeConfigFromPasteboard()
-                                } label: {
-                                    Label("Paste Kubeconfig", systemImage: "doc.on.clipboard")
-                                }
-
-                                Button {
-                                    addClusterPopoverPresented = false
-                                    viewModel.importKubeConfigFolder()
-                                } label: {
-                                    Label("Import Folder…", systemImage: "folder.badge.plus")
-                                }
-                            } label: {
-                                Label("Import Options", systemImage: "square.and.arrow.down")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .menuStyle(.borderlessButton)
-                            .buttonStyle(.bordered)
-                        }
-                        .padding(.top, 2)
-
-                        DisclosureGroup {
-                            VStack(alignment: .leading, spacing: 8) {
-                                TextField("Context name", text: $viewModel.manualKubeConfigName)
-                                    .textFieldStyle(.roundedBorder)
-                                TextField("https://cluster.example.invalid", text: $viewModel.manualKubeConfigServer)
-                                    .textFieldStyle(.roundedBorder)
-                                TextField("Namespace", text: $viewModel.manualKubeConfigNamespace)
-                                    .textFieldStyle(.roundedBorder)
-                                SecureField("Bearer token", text: $viewModel.manualKubeConfigToken)
-                                    .textFieldStyle(.roundedBorder)
-
-                                Button {
-                                    addClusterPopoverPresented = false
-                                    viewModel.importManualTokenKubeConfig()
-                                } label: {
-                                    Label("Add Manual Token Cluster", systemImage: "key")
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.regular)
-                            }
-                            .padding(.top, 6)
-                        } label: {
-                            Label("Manual Token Server", systemImage: "key")
-                                .font(.caption.weight(.semibold))
-                        }
-                    }
-                    .padding(.top, 8)
-                } label: {
-                    Label("Advanced", systemImage: "slider.horizontal.3")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(10)
-                .background(RuneSurfaceBackground(kind: .inset))
-
-                    if let review = viewModel.kubeConfigImportReviews.last {
-                        KubeConfigImportReviewPanel(
-                            review: review,
-                            duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
-                            metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
-                            onUpdateMetadata: { contextName, metadata in
-                                viewModel.setKubeConfigImportContextMetadata(
-                                    contextName: contextName,
-                                    alias: metadata.alias,
-                                    colorKey: metadata.colorKey,
-                                    iconName: metadata.iconName,
-                                    tags: metadata.tags,
-                                    group: metadata.group
-                                )
-                            },
-                            onClear: viewModel.clearKubeConfigImportReviews,
-                            showsAuthDoctorAction: !simpleMode,
-                            onRunAuthDoctor: {
-                                addClusterPopoverPresented = false
-                                viewModel.runAuthDoctor()
-                            }
-                        )
-                    }
-                }
-                .padding(14)
-            }
-        }
-        .frame(width: 400)
-        .frame(maxHeight: RuneUILayoutMetrics.addClusterPopoverMaxHeight)
-        .animation(.snappy(duration: 0.18), value: isManualAddClusterExpanded)
-        .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-        }
-        .onAppear {
-            viewModel.refreshKubeConfigSourcesFromDiscovery()
-        }
-    }
-
-    private var addClusterGridColumns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 8),
-            GridItem(.flexible(), spacing: 8)
-        ]
-    }
-
-    private func addClusterSectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-    }
-
-    private var addClusterDiscoveryStatus: some View {
-        let sourceCount = viewModel.state.kubeConfigSources.count
-        let contextCount = viewModel.state.contexts.filter { $0.name != "rune-demo" }.count
-        let isLoading = viewModel.state.isLoading || viewModel.isLaunchExperienceVisible
-        let statusText: String = {
-            if isLoading {
-                return "Reading cluster contexts..."
-            }
-            if contextCount > 0 {
-                return "\(contextCount) context\(contextCount == 1 ? "" : "s") available from \(sourceCount) source\(sourceCount == 1 ? "" : "s")"
-            }
-            if sourceCount > 0 {
-                return "\(sourceCount) kubeconfig source\(sourceCount == 1 ? "" : "s") loaded"
-            }
-            return "Watching for kubeconfig sources"
-        }()
-
-        return HStack(spacing: 8) {
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: contextCount > 0 || sourceCount > 0 ? "checkmark.circle.fill" : "dot.radiowaves.left.and.right")
-                    .foregroundStyle(contextCount > 0 || sourceCount > 0 ? Color.green : Color.accentColor)
-            }
-
-            Text(statusText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            Button {
+        AddClusterPopoverView(
+            kubeConfigSourceCount: viewModel.state.kubeConfigSources.count,
+            contextCount: viewModel.state.contexts.filter { $0.name != "rune-demo" }.count,
+            isLoading: viewModel.state.isLoading || viewModel.isLaunchExperienceVisible,
+            externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands,
+            favoriteImportedContexts: $viewModel.favoriteImportedKubeConfigContexts,
+            isManualTokenExpanded: $isManualAddClusterExpanded,
+            manualContextName: $viewModel.manualKubeConfigName,
+            manualServerURL: $viewModel.manualKubeConfigServer,
+            manualNamespace: $viewModel.manualKubeConfigNamespace,
+            manualBearerToken: $viewModel.manualKubeConfigToken,
+            onRefresh: {
                 viewModel.refreshKubeConfigSourcesFromDiscovery()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Color(nsColor: .controlBackgroundColor).opacity(0.72)))
+            },
+            onImportFile: {
+                addClusterPopoverPresented = false
+                viewModel.importKubeConfig()
+            },
+            onPasteKubeconfig: {
+                addClusterPopoverPresented = false
+                viewModel.importKubeConfigFromPasteboard()
+            },
+            onImportFolder: {
+                addClusterPopoverPresented = false
+                viewModel.importKubeConfigFolder()
+            },
+            onUseDefaultKubeconfig: {
+                addClusterPopoverPresented = false
+                viewModel.addDefaultKubeConfig()
+            },
+            onSelectProvider: { provider in
+                openAddClusterProviderSheet(provider)
+            },
+            onImportManualToken: {
+                addClusterPopoverPresented = false
+                viewModel.importManualTokenKubeConfig()
             }
-            .buttonStyle(.borderless)
-            .help("Refresh detected contexts")
-            .accessibilityLabel("Refresh detected contexts")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(RuneSurfaceBackground(kind: .inset))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-        }
+        )
     }
-
-    private func addClusterQuickAction(
-        title: String,
-        subtitle: String,
-        symbolName: String,
-        isActive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            addClusterActionContent(
-                title: title,
-                subtitle: subtitle,
-                symbolName: symbolName,
-                isActive: isActive
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func addClusterMenuLabel(
-        title: String,
-        subtitle: String,
-        symbolName: String
-    ) -> some View {
-        addClusterActionContent(title: title, subtitle: subtitle, symbolName: symbolName)
-    }
-
-    private func addClusterActionContent(
-        title: String,
-        subtitle: String,
-        symbolName: String,
-        isActive: Bool = false
-    ) -> some View {
-        let accent = isActive ? Color.green : Color.accentColor
-
-        return HStack(spacing: 10) {
-            Image(systemName: symbolName)
-                .font(.body.weight(.semibold))
-                .frame(width: 24, height: 24)
-                .foregroundStyle(accent)
-                .background(Circle().fill(accent.opacity(0.11)))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
-        .background {
-            ZStack {
-                RuneSurfaceBackground(kind: .inset)
-                if isActive {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.green.opacity(0.045))
-                }
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isActive ? Color.green.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-        }
-    }
-
-    private func providerTileButton(_ provider: RuneAddClusterProvider) -> some View {
-        Button {
-            openAddClusterProviderSheet(provider)
-        } label: {
-            HStack(alignment: .center, spacing: 9) {
-                Image(systemName: provider.symbolName)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(provider.accent)
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(provider.accent.opacity(0.12)))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(provider.shortTitle)
-                        .font(.subheadline.weight(.semibold))
-                    Text(provider.subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
-            .background {
-                ZStack {
-                    RuneSurfaceBackground(kind: .inset)
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(provider.accent.opacity(0.045))
-                }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(provider.accent.opacity(0.20), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .help(provider.title)
-    }
-
     private func contextRow(_ context: KubeContext) -> some View {
         let displayName = viewModel.contextDisplayName(for: context)
         let secondaryText = viewModel.contextSecondaryDisplayText(for: context)
@@ -2624,6 +2543,15 @@ public struct RuneRootView: View {
     }
 
     private func addClusterProviderSheet(_ provider: RuneAddClusterProvider) -> some View {
+        let selectedNativeContext = selectedAddClusterNativeContextOption
+        let isNativeProfileConnected = selectedNativeContext.map {
+            connectedAddClusterNativeContextBindingIDs.contains($0.id)
+        } ?? false
+        let presentation = AddClusterProviderPresentation.resolve(
+            provider: provider,
+            externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands,
+            isNativeProfileConnected: isNativeProfileConnected
+        )
         let canRunCredentialImport = canRunProviderCredentialImport(provider)
         let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
         let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
@@ -2645,16 +2573,16 @@ public struct RuneRootView: View {
                 .help("Back to Add Cluster")
                 .accessibilityLabel("Back to Add Cluster")
 
-                Image(systemName: provider.symbolName)
+                Image(systemName: presentation.symbolName)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(provider.accent)
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(provider.accent.opacity(0.14)))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.title)
+                    Text(presentation.title)
                         .font(.title3.weight(.semibold))
                         .accessibilityAddTraits(.isHeader)
-                    Text(provider.subtitle)
+                    Text(presentation.subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -2668,67 +2596,43 @@ public struct RuneRootView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
-                    if provider != .local {
-                        providerCredentialFields(provider)
+                    Text(presentation.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if presentation.requiresCompatibleImportedContext {
+                        AddClusterNativeContextSection(
+                            options: addClusterNativeContextOptions,
+                            selectedBindingID: $selectedAddClusterNativeContextBindingID,
+                            connectedBindingIDs: connectedAddClusterNativeContextBindingIDs,
+                            isCheckingProfiles: isCheckingAddClusterNativeProfiles,
+                            analysisMessage: addClusterNativeContextAnalysisMessage
+                        )
+                    }
+
+                    if provider != .local
+                        && (!presentation.requiresCompatibleImportedContext || selectedNativeContext != nil) {
+                        providerCredentialFields(presentation.fields)
                     }
 
                     LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
-                        if !RuneExternalCommandPolicy.allowsExternalCommands, provider.cloudProvider != nil {
-                            Button {
-                                viewModel.importKubeConfig()
-                            } label: {
-                                Label("Import…", systemImage: "doc.badge.plus")
-                                    .frame(maxWidth: .infinity)
+                        ForEach(presentation.utilityActions) { action in
+                            if action.id != .runAuthDoctor || !simpleMode {
+                                addClusterProviderUtilityAction(
+                                    action,
+                                    provider: provider,
+                                    credentialCommand: credentialCommand,
+                                    selectedNativeContext: selectedNativeContext
+                                )
                             }
-                            .buttonStyle(.bordered)
-                            .help("Import a provider kubeconfig before connecting native credentials.")
-
-                            Button(role: .destructive) {
-                                viewModel.disconnectSelectedNativeAuth()
-                            } label: {
-                                Label("Disconnect", systemImage: "key.slash")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(viewModel.isConnectingNativeKubernetesAuth)
-                            .help("Remove the native credentials for the selected context from Keychain.")
-                        }
-
-                        Button {
-                            copyToPasteboard(credentialCommand)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Copy the provider CLI command.")
-
-                        Button {
-                            viewModel.refreshKubeConfigSourcesFromDiscovery()
-                        } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .help(provider == .local
-                            ? "Refresh detected contexts after your local cluster tool writes kubeconfig."
-                            : "Refresh contexts after running or editing kubeconfig outside Rune.")
-
-                        if !simpleMode {
-                            Button {
-                                viewModel.runAuthDoctor()
-                            } label: {
-                                Label("Doctor", systemImage: "stethoscope")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(viewModel.state.isRunningAuthDoctor)
-                            .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
                         }
                     }
                     .controlSize(.regular)
 
-                    if provider.cloudProvider != nil, let status = viewModel.cloudKubeConfigImportStatus {
+                    if presentation.executionMode == .externalCLI,
+                       provider.cloudProvider != nil,
+                       let status = viewModel.cloudKubeConfigImportStatus {
                         Text(status)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -2742,56 +2646,65 @@ public struct RuneRootView: View {
                             .accessibilityLabel("Authentication status: \(nativeStatus)")
                     }
 
-                    if provider.cloudProvider != nil, !viewModel.cloudKubeConfigImportOutput.isEmpty {
+                    if presentation.executionMode == .externalCLI,
+                       provider.cloudProvider != nil,
+                       !viewModel.cloudKubeConfigImportOutput.isEmpty {
                         addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
                     }
 
-                    if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                    if presentation.executionMode == .externalCLI,
+                       let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
                         addClusterCloudImportDiagnosticView(diagnostic)
                     }
 
-                    DisclosureGroup {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(credentialCommand)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .padding(10)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(RuneSurfaceBackground(kind: .inset))
+                    if presentation.showsCommandDetails {
+                        RuneDisclosureSection(
+                            "Command Details",
+                            isExpanded: $isAddClusterProviderCommandDetailsExpanded,
+                            accessibilityIdentifier: "rune.add-cluster.provider.command-details"
+                        ) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(credentialCommand)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(RuneSurfaceBackground(kind: .inset))
 
-                            ForEach(provider.auxiliaryCommands, id: \.title) { item in
-                                HStack(spacing: 8) {
-                                    Text(item.title)
-                                        .font(.caption.weight(.semibold))
-                                        .frame(width: 54, alignment: .leading)
-                                    Text(item.command)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .textSelection(.enabled)
-                                    Spacer(minLength: 0)
-                                    Button {
-                                        copyToPasteboard(item.command)
-                                    } label: {
-                                        Image(systemName: "doc.on.doc")
-                                            .frame(
-                                                width: RuneUILayoutMetrics.dialogIconButtonSize,
-                                                height: RuneUILayoutMetrics.dialogIconButtonSize
-                                            )
-                                            .contentShape(Rectangle())
+                                ForEach(provider.auxiliaryCommands, id: \.title) { item in
+                                    HStack(spacing: 8) {
+                                        Text(item.title)
+                                            .font(.caption.weight(.semibold))
+                                            .frame(width: 54, alignment: .leading)
+                                        Text(item.command)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .textSelection(.enabled)
+                                        Spacer(minLength: 0)
+                                        Button {
+                                            copyToPasteboard(item.command)
+                                        } label: {
+                                            Image(systemName: "doc.on.doc")
+                                                .frame(
+                                                    width: RuneUILayoutMetrics.dialogIconButtonSize,
+                                                    height: RuneUILayoutMetrics.dialogIconButtonSize
+                                                )
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Copy \(item.title.lowercased()) command")
+                                        .accessibilityLabel("Copy \(item.title) command")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Copy \(item.title.lowercased()) command")
-                                    .accessibilityLabel("Copy \(item.title) command")
+                                    .padding(8)
+                                    .background(RuneSurfaceBackground(kind: .inset))
                                 }
-                                .padding(8)
-                                .background(RuneSurfaceBackground(kind: .inset))
                             }
+                            .padding(.top, 8)
+                        } label: {
+                            Label("Command Details", systemImage: "terminal")
+                                .font(.caption.weight(.semibold))
                         }
-                        .padding(.top, 8)
-                    } label: {
-                        Label("Command Details", systemImage: "terminal")
-                            .font(.caption.weight(.semibold))
                     }
                 }
                 .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
@@ -2824,10 +2737,17 @@ public struct RuneRootView: View {
         }
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
         .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
+        .task(id: "\(provider.rawValue)-\(viewModel.isConnectingNativeKubernetesAuth)") {
+            await refreshAddClusterNativeContexts(for: provider)
+        }
     }
 
     private func addClusterCloudImportOutputView(_ output: String) -> some View {
-        DisclosureGroup {
+        RuneDisclosureSection(
+            "Login Output",
+            isExpanded: $isAddClusterProviderLoginOutputExpanded,
+            accessibilityIdentifier: "rune.add-cluster.provider.login-output"
+        ) {
             ScrollView {
                 Text(output)
                     .font(.system(.caption2, design: .monospaced))
@@ -2891,17 +2811,188 @@ public struct RuneRootView: View {
         )]
     }
 
+    private var selectedAddClusterNativeContextOption: AddClusterNativeContextOption? {
+        guard let selectedAddClusterNativeContextBindingID else { return nil }
+        return addClusterNativeContextOptions.first { $0.id == selectedAddClusterNativeContextBindingID }
+    }
+
+    @ViewBuilder
+    private func addClusterProviderUtilityAction(
+        _ action: AddClusterProviderAction,
+        provider: RuneAddClusterProvider,
+        credentialCommand: String,
+        selectedNativeContext: AddClusterNativeContextOption?
+    ) -> some View {
+        switch action.id {
+        case .importKubeconfig:
+            Button {
+                closeAddClusterProviderSheet()
+                viewModel.importKubeConfig()
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .help("Import a compatible provider kubeconfig before connecting native credentials.")
+
+        case .copyExternalCommand, .copyLocalSetupCommand:
+            Button {
+                copyToPasteboard(credentialCommand)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .help(action.id == .copyLocalSetupCommand
+                ? "Copy the local cluster setup command."
+                : "Copy the provider CLI command.")
+
+        case .refreshContexts:
+            Button {
+                viewModel.refreshKubeConfigSourcesFromDiscovery()
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    await refreshAddClusterNativeContexts(for: provider)
+                }
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .help(provider == .local
+                ? "Refresh detected contexts after your local cluster tool writes kubeconfig."
+                : "Refresh imported contexts and native credential status.")
+
+        case .runAuthDoctor:
+            Button {
+                viewModel.runAuthDoctor()
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(viewModel.state.isRunningAuthDoctor)
+            .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
+
+        case .disconnectNativeCredentials:
+            if let selectedNativeContext, let expectedProvider = provider.nativeAuthProvider {
+                Button(role: .destructive) {
+                    viewModel.disconnectNativeAuth(
+                        request: selectedNativeContext.request,
+                        expectedProvider: expectedProvider
+                    )
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isConnectingNativeKubernetesAuth)
+                .help("Remove native credentials only for \(selectedNativeContext.contextName).")
+            }
+
+        case .runExternalCLI, .connectNativeCredentials, .chooseServiceAccountJSON:
+            EmptyView()
+        }
+    }
+
+    @MainActor
+    private func refreshAddClusterNativeContexts(for provider: RuneAddClusterProvider) async {
+        guard !RuneExternalCommandPolicy.allowsExternalCommands,
+              let nativeProvider = provider.nativeAuthProvider else {
+            addClusterNativeContextOptions = []
+            selectedAddClusterNativeContextBindingID = nil
+            connectedAddClusterNativeContextBindingIDs = []
+            addClusterNativeContextAnalysisMessage = nil
+            isCheckingAddClusterNativeProfiles = false
+            return
+        }
+
+        isCheckingAddClusterNativeProfiles = true
+        addClusterNativeContextAnalysisMessage = nil
+        defer {
+            if selectedAddClusterProvider == provider {
+                isCheckingAddClusterNativeProfiles = false
+            }
+        }
+
+        do {
+            let sources = viewModel.state.kubeConfigSources
+            let analysis = try await Task.detached(priority: .userInitiated) {
+                try KubeConfigNativeAuthAnalyzer().analyze(sources: sources)
+            }.value
+            try Task.checkCancellation()
+            guard selectedAddClusterProvider == provider else { return }
+
+            let options = AddClusterNativeContextResolver.compatibleOptions(
+                provider: nativeProvider,
+                analysis: analysis
+            )
+            addClusterNativeContextOptions = options
+
+            if let selectedAddClusterNativeContextBindingID,
+               options.contains(where: { $0.id == selectedAddClusterNativeContextBindingID }) {
+                // Preserve an explicit picker choice while refreshing profile status.
+            } else {
+                switch AddClusterNativeContextResolver.resolve(
+                    provider: nativeProvider,
+                    analysis: analysis,
+                    currentContextName: viewModel.state.selectedContext?.name
+                ) {
+                case .selected(let option):
+                    selectedAddClusterNativeContextBindingID = option.id
+                case .requiresChoice, .unavailable:
+                    selectedAddClusterNativeContextBindingID = nil
+                }
+            }
+
+            var connected = Set<String>()
+            for option in options {
+                try Task.checkCancellation()
+                if let status = try? await viewModel.nativeAuthProfileStatus(for: option.request),
+                   status.isConnected {
+                    connected.insert(option.id)
+                }
+            }
+            guard selectedAddClusterProvider == provider else { return }
+            connectedAddClusterNativeContextBindingIDs = connected
+            if options.isEmpty {
+                addClusterNativeContextAnalysisMessage = "No compatible imported \(provider.title) context was found."
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard selectedAddClusterProvider == provider else { return }
+            addClusterNativeContextOptions = []
+            selectedAddClusterNativeContextBindingID = nil
+            connectedAddClusterNativeContextBindingIDs = []
+            addClusterNativeContextAnalysisMessage = "Imported contexts could not be analyzed for native authentication."
+        }
+    }
+
     private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider) {
+        viewModel.clearManualKubeConfigSecret()
         if !viewModel.isRunningCloudKubeConfigImport {
             viewModel.clearCloudKubeConfigImportStatus()
         }
         viewModel.clearNativeKubernetesAuthStatus()
+        addClusterNativeContextOptions = []
+        selectedAddClusterNativeContextBindingID = nil
+        connectedAddClusterNativeContextBindingIDs = []
+        addClusterNativeContextAnalysisMessage = nil
+        isAddClusterProviderCommandDetailsExpanded = false
+        isAddClusterProviderLoginOutputExpanded = false
         addClusterPopoverPresented = false
         selectedAddClusterProvider = provider
     }
 
     private func closeAddClusterProviderSheet(showPopover: Bool = false) {
         selectedAddClusterProvider = nil
+        addClusterNativeContextOptions = []
+        selectedAddClusterNativeContextBindingID = nil
+        connectedAddClusterNativeContextBindingIDs = []
+        addClusterNativeContextAnalysisMessage = nil
+        isAddClusterProviderCommandDetailsExpanded = false
+        isAddClusterProviderLoginOutputExpanded = false
         if !showPopover {
             resetAddClusterProviderSheetStateIfIdle()
         }
@@ -2918,59 +3009,45 @@ public struct RuneRootView: View {
     }
 
     @ViewBuilder
-    private func providerCredentialFields(_ provider: RuneAddClusterProvider) -> some View {
-        VStack(spacing: 8) {
-            if RuneExternalCommandPolicy.allowsExternalCommands {
-                TextField("Cluster name", text: $cloudCredentialDraft.clusterName)
-                    .textFieldStyle(.roundedBorder)
+    private func providerCredentialFields(_ fields: [AddClusterProviderField]) -> some View {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+            ForEach(fields) { field in
+                providerCredentialInput(field)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            switch provider {
-            case .aks:
-                if RuneExternalCommandPolicy.allowsExternalCommands {
-                    TextField("Resource group", text: $cloudCredentialDraft.resourceGroup)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Subscription ID or name (optional)", text: $cloudCredentialDraft.profileOrSubscription)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    SecureField("Azure service-principal secret", text: $cloudCredentialDraft.nativeAKSClientSecret)
-                        .textFieldStyle(.roundedBorder)
-                    Text("Select an imported kubelogin service-principal context. Tenant, server, and client IDs stay in kubeconfig; the secret is stored only in Keychain.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            case .eks:
-                if RuneExternalCommandPolicy.allowsExternalCommands {
-                    TextField("Region", text: $cloudCredentialDraft.regionOrLocation)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("AWS profile (optional)", text: $cloudCredentialDraft.profileOrSubscription)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Role ARN (optional)", text: $cloudCredentialDraft.roleARN)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    SecureField("AWS access key ID", text: $cloudCredentialDraft.nativeAWSAccessKeyID)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("AWS secret access key", text: $cloudCredentialDraft.nativeAWSSecretAccessKey)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("AWS session token (optional)", text: $cloudCredentialDraft.nativeAWSSessionToken)
-                        .textFieldStyle(.roundedBorder)
-                    Text("Select an imported EKS context, then connect credentials. Secrets are stored only in Keychain.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            case .gke:
-                if RuneExternalCommandPolicy.allowsExternalCommands {
-                    TextField("Location, region or zone", text: $cloudCredentialDraft.regionOrLocation)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Project ID", text: $cloudCredentialDraft.projectID)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    Text("Select an imported GKE context, then choose a Google service-account JSON file. Rune validates it and stores it only in Keychain.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            case .local:
-                EmptyView()
+    @ViewBuilder
+    private func providerCredentialInput(_ field: AddClusterProviderField) -> some View {
+        switch field.id {
+        case .clusterName:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.clusterName)
+        case .resourceGroup:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.resourceGroup)
+        case .subscription, .profile:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.profileOrSubscription)
+        case .region, .location:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.regionOrLocation)
+        case .roleARN:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.roleARN)
+        case .projectID:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.projectID)
+        case .awsAccessKeyID:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAWSAccessKeyID)
+        case .awsSecretAccessKey:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAWSSecretAccessKey)
+        case .awsSessionToken:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAWSSessionToken)
+        case .azureClientSecret:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAKSClientSecret)
+        case .googleServiceAccountJSON:
+            AddClusterProviderCredentialField(field: field) {
+                Label("Choose the JSON document with the primary action below.", systemImage: "doc.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityValue("Choose with the primary action below")
             }
         }
     }
@@ -3025,14 +3102,15 @@ public struct RuneRootView: View {
         switch provider {
         case .eks:
             Button {
-                guard viewModel.validateSelectedNativeAuthContext(for: .awsEKS) else { return }
+                guard let nativeContext = selectedAddClusterNativeContextOption else { return }
                 let accessKeyID = cloudCredentialDraft.nativeAWSAccessKeyID
                 let secretAccessKey = cloudCredentialDraft.nativeAWSSecretAccessKey
                 let sessionToken = cloudCredentialDraft.nativeAWSSessionToken
                 cloudCredentialDraft.nativeAWSAccessKeyID = ""
                 cloudCredentialDraft.nativeAWSSecretAccessKey = ""
                 cloudCredentialDraft.nativeAWSSessionToken = ""
-                viewModel.connectSelectedEKSNativeAuth(
+                viewModel.connectEKSNativeAuth(
+                    request: nativeContext.request,
                     accessKeyID: accessKeyID,
                     secretAccessKey: secretAccessKey,
                     sessionToken: sessionToken
@@ -3046,14 +3124,18 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(!cloudCredentialDraft.hasNativeAWSCredentials || viewModel.isConnectingNativeKubernetesAuth)
-            .help("Bind AWS credentials to the selected imported EKS context.")
+            .disabled(
+                selectedAddClusterNativeContextOption == nil
+                    || !cloudCredentialDraft.hasNativeAWSCredentials
+                    || viewModel.isConnectingNativeKubernetesAuth
+            )
+            .help("Bind AWS credentials to the compatible imported EKS context selected above.")
         case .aks:
             Button {
-                guard viewModel.validateSelectedNativeAuthContext(for: .azureKubelogin) else { return }
+                guard let nativeContext = selectedAddClusterNativeContextOption else { return }
                 let secret = cloudCredentialDraft.nativeAKSClientSecret
                 cloudCredentialDraft.nativeAKSClientSecret = ""
-                viewModel.connectSelectedAKSNativeAuth(clientSecret: secret)
+                viewModel.connectAKSNativeAuth(request: nativeContext.request, clientSecret: secret)
             } label: {
                 Label(viewModel.isConnectingNativeKubernetesAuth ? "Connecting" : "Connect", systemImage: "key.fill")
                     .frame(
@@ -3063,11 +3145,16 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(!cloudCredentialDraft.hasNativeAKSClientSecret || viewModel.isConnectingNativeKubernetesAuth)
-            .help("Bind an Azure service-principal secret to the selected imported AKS context.")
+            .disabled(
+                selectedAddClusterNativeContextOption == nil
+                    || !cloudCredentialDraft.hasNativeAKSClientSecret
+                    || viewModel.isConnectingNativeKubernetesAuth
+            )
+            .help("Bind an Azure service-principal secret to the compatible imported AKS context selected above.")
         case .gke:
             Button {
-                viewModel.chooseAndConnectSelectedGKENativeAuth()
+                guard let nativeContext = selectedAddClusterNativeContextOption else { return }
+                viewModel.chooseAndConnectGKENativeAuth(request: nativeContext.request)
             } label: {
                 Label(viewModel.isConnectingNativeKubernetesAuth ? "Connecting" : "Choose JSON…", systemImage: "key.fill")
                     .frame(
@@ -3077,8 +3164,8 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(viewModel.isConnectingNativeKubernetesAuth)
-            .help("Choose and bind a Google service-account JSON file to the selected imported GKE context.")
+            .disabled(selectedAddClusterNativeContextOption == nil || viewModel.isConnectingNativeKubernetesAuth)
+            .help("Choose and bind a Google service-account JSON file to the compatible imported GKE context selected above.")
         case .local:
             EmptyView()
         }
@@ -3122,6 +3209,13 @@ public struct RuneRootView: View {
 
     private var contentPane: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let notice = viewModel.state.activeNotice {
+                RuneNoticeBanner(notice: notice) {
+                    viewModel.state.clearError()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             if viewModel.isProductionContext {
                 HStack {
                     productionBanner
@@ -3166,45 +3260,50 @@ public struct RuneRootView: View {
     }
 
     private var contentHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(viewModel.state.selectedSection.localizedTitle(appString))
-                    .font(.title2.weight(.bold))
-                    .lineLimit(1)
-
-                if viewModel.visibleContexts.isEmpty == false, viewModel.state.selectedSection != .terminal {
-                    Button {
-                        viewModel.refreshCurrentView(debounced: false)
-                    } label: {
-                        if viewModel.state.isLoading {
-                            ProgressView()
-                                .scaleEffect(0.75)
-                                .frame(width: 22, height: 22)
-                        } else {
-                            Image(systemName: "arrow.clockwise.circle")
-                                .font(.title3)
-                                .symbolRenderingMode(.hierarchical)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Refresh data for this section (same as ⌘R)")
-                    .accessibilityLabel("Refresh section")
-                }
-
-                Spacer()
-
-                if let context = viewModel.state.selectedContext, viewModel.state.selectedSection != .terminal {
-                    Label(context.name, systemImage: "network")
-                        .font(.caption.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
-                        .imageScale(.small)
+        VStack(alignment: .leading, spacing: 8) {
+            RuneAdaptiveToolbar("Content header") {
+                HStack(spacing: 8) {
+                    Text(viewModel.state.selectedSection.localizedTitle(appString))
+                        .font(.title2.weight(.bold))
                         .lineLimit(1)
-                        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-                        .background(.thinMaterial, in: Capsule())
-                        .help(context.name)
-                }
 
+                    if hasAvailableKubernetesContexts, viewModel.state.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Loading section")
+                    }
+                }
+            } secondary: {
+                contentHeaderPrimaryAction
+            }
+
+            if hasAvailableKubernetesContexts {
+                contentHeaderStatusStrip
+            }
+
+            if hasAvailableKubernetesContexts, showsResourceFilterControls {
+                resourceFilterControls
+            }
+
+            sectionSpecificControls
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RuneRootLayoutProbe(kind: .header, generation: layoutGeneration))
+    }
+
+    @ViewBuilder
+    private var contentHeaderPrimaryAction: some View {
+        if viewModel.state.selectedSection == .events, hasAvailableKubernetesContexts {
+            Button("Save Events") {
+                viewModel.saveVisibleEvents()
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var contentHeaderStatusStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
                 if viewModel.state.selectedSection != .terminal {
                     contextUsageBadge(label: "CPU", value: contextUsageValue(viewModel.state.overviewClusterCPUPercent))
                     contextUsageBadge(label: "MEM", value: contextUsageValue(viewModel.state.overviewClusterMemoryPercent))
@@ -3214,50 +3313,23 @@ public struct RuneRootView: View {
                 }
 
                 if viewModel.state.isReadOnlyMode {
-                    Label("Read-only", systemImage: "lock.fill")
-                        .font(.caption.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
-                        .imageScale(.small)
-                        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-                        .background(Color.orange.opacity(0.16), in: Capsule())
-                }
-
-                if viewModel.state.selectedSection == .events {
-                    Button("Save Events") {
-                        viewModel.saveVisibleEvents()
-                    }
-                    .buttonStyle(.bordered)
+                    RuneHeaderCapsule(
+                        "Read-only",
+                        role: .status,
+                        systemImage: "lock.fill",
+                        tint: .orange,
+                        foregroundColor: .orange,
+                        fill: Color.orange.opacity(0.16),
+                        accessibilityLabel: "Mode: Read-only"
+                    )
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if viewModel.visibleContexts.isEmpty {
-                HStack(spacing: 10) {
-                    Button("Import Kubeconfig…") {
-                        viewModel.importKubeConfig()
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Command Palette") {
-                        viewModel.presentCommandPalette()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Spacer()
-                }
-                .controlSize(.large)
-            } else if showsNamespaceAndFilterControls {
-                namespaceAndFilterControls
-            }
-
-            sectionSpecificControls
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RuneRootLayoutProbe(kind: .header, generation: layoutGeneration))
+        .accessibilityLabel("Section status")
     }
 
-    private var showsNamespaceAndFilterControls: Bool {
+    private var showsResourceFilterControls: Bool {
         switch viewModel.state.selectedSection {
         case .overview, .terminal:
             return false
@@ -3266,54 +3338,30 @@ public struct RuneRootView: View {
         }
     }
 
-    private var namespaceAndFilterControls: some View {
-        HStack(spacing: 10) {
-            Label(viewModel.state.selectedNamespace.isEmpty ? "Namespace" : viewModel.state.selectedNamespace, systemImage: "square.stack.3d.up")
-                .font(.caption.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .imageScale(.small)
-                .lineLimit(1)
-                .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-                .frame(height: RuneUILayoutMetrics.headerChipHeight)
-                .background(.thinMaterial, in: Capsule())
-                .help("Change namespace from the toolbar menu or Command Palette (:ns).")
+    private var resourceFilterControls: some View {
+        HStack(spacing: 4) {
+            TextField("/ filter resources", text: Binding(get: {
+                viewModel.state.resourceSearchQuery
+            }, set: { newValue in
+                viewModel.setResourceSearchQuery(newValue)
+            }))
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+            .controlSize(.small)
+            .frame(maxWidth: 280)
+            .focused($textInputFocus, equals: .resourceFilter)
 
-            HStack(spacing: 4) {
-                TextField("/ filter resources", text: Binding(get: {
-                    viewModel.state.resourceSearchQuery
-                }, set: { newValue in
-                    viewModel.setResourceSearchQuery(newValue)
-                }))
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .controlSize(.small)
-                .frame(maxWidth: 280)
-                .focused($textInputFocus, equals: .resourceFilter)
-
-                Button {
-                    viewModel.setResourceSearchQuery("")
-                    textInputFocus = .resourceFilter
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .frame(width: 22, height: RuneUILayoutMetrics.headerChipHeight, alignment: .center)
-                .contentShape(Rectangle())
-                .opacity(viewModel.state.resourceSearchQuery.isEmpty ? 0 : 1)
-                .disabled(viewModel.state.resourceSearchQuery.isEmpty)
-                .accessibilityLabel("Clear resource filter")
-                .help("Clear resource filter")
+            RuneIconButton(
+                "Clear resource filter",
+                systemImage: "xmark.circle.fill",
+                isDisabled: viewModel.state.resourceSearchQuery.isEmpty
+            ) {
+                viewModel.setResourceSearchQuery("")
+                textInputFocus = .resourceFilter
             }
-            .frame(maxWidth: 306, alignment: .leading)
-
-            if viewModel.state.isLoading {
-                ProgressView()
-                    .scaleEffect(0.8)
-                    .frame(height: RuneUILayoutMetrics.headerChipHeight)
-            }
+            .opacity(viewModel.state.resourceSearchQuery.isEmpty ? 0 : 1)
         }
+        .frame(maxWidth: 312, alignment: .leading)
     }
 
     @ViewBuilder
@@ -3395,6 +3443,7 @@ public struct RuneRootView: View {
                 .disabled(viewModel.state.isLoadingResourceDetails)
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
+                    .runeMinimumInteractiveTarget()
             }
             .disabled(viewModel.selectedPodCount == 0)
             .help("Export selected pods")
@@ -3409,12 +3458,16 @@ public struct RuneRootView: View {
             onToggleVisibleSelection: viewModel.toggleAllVisibleGenericResourcesForBulkActions
         ) {
             Button {
-                viewModel.copySelectedGenericResourceComparisonToClipboard()
+                didCopyGenericResourceComparison = false
+                isGenericResourceComparisonPresented = true
             } label: {
                 Label("Compare", systemImage: "rectangle.split.2x1")
             }
             .disabled(!viewModel.canCopySelectedGenericResourceComparison)
-            .help("Copy a quick compare summary for selected resources")
+            .help("Compare the selected resources")
+            .popover(isPresented: $isGenericResourceComparisonPresented, arrowEdge: .bottom) {
+                genericResourceComparisonPopover
+            }
 
             Button(role: .destructive) {
                 viewModel.requestDeleteSelectedGenericResources()
@@ -3424,6 +3477,55 @@ public struct RuneRootView: View {
             .disabled(!viewModel.canApplyClusterMutations || viewModel.selectedGenericResourceCount == 0)
             .help("Delete selected resources in the active context and namespace scope")
         }
+    }
+
+    private var genericResourceComparisonPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.split.2x1")
+                    .foregroundStyle(Color.accentColor)
+                Text("Compare selected resources")
+                    .font(.headline)
+            }
+
+            Text("Review key fields for the selected resources in one place. Copy the summary when you want to share it.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView([.vertical, .horizontal]) {
+                Text(viewModel.selectedGenericResourceComparisonText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(10)
+            }
+            .background(RuneSurfaceBackground(kind: .editor))
+
+            HStack(spacing: 8) {
+                if didCopyGenericResourceComparison {
+                    Label("Copied", systemImage: "checkmark")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Done") {
+                    isGenericResourceComparisonPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Copy Summary") {
+                    viewModel.copySelectedGenericResourceComparisonToClipboard()
+                    didCopyGenericResourceComparison = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
+        .frame(width: 430, height: 340)
     }
 
     private var overviewCardModules: [OverviewModule] {
@@ -3443,156 +3545,119 @@ public struct RuneRootView: View {
     private var overviewPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if viewModel.visibleContexts.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Connect Kubernetes")
-                            .font(.title3.weight(.bold))
-                        Text("Rune is GUI-first. After a kubeconfig is loaded, contexts, namespaces, and resources appear here.")
-                            .foregroundStyle(.secondary)
-
-                        Toggle("Favorite imported contexts", isOn: $viewModel.favoriteImportedKubeConfigContexts)
-                            .toggleStyle(.checkbox)
-                            .controlSize(.small)
-                            .font(.caption)
-
-                        HStack(spacing: 10) {
-                            Button("Import Kubeconfig…") {
-                                viewModel.importKubeConfig()
-                            }
-                            .buttonStyle(.borderedProminent)
-
-                            Button("Paste Kubeconfig") {
-                                viewModel.importKubeConfigFromPasteboard()
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button("Add Folder") {
-                                viewModel.importKubeConfigFolder()
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button("Open Command Palette") {
-                                viewModel.presentCommandPalette()
-                            }
+                if !hasAvailableKubernetesContexts {
+                    KubernetesConnectionOnboardingView(
+                        favoriteImportedContexts: $viewModel.favoriteImportedKubeConfigContexts,
+                        onImportFile: viewModel.importKubeConfig,
+                        onPaste: viewModel.importKubeConfigFromPasteboard,
+                        onImportFolder: viewModel.importKubeConfigFolder,
+                        onUseDefault: viewModel.addDefaultKubeConfig,
+                        onShowMoreOptions: {
+                            addClusterPopoverPresented = true
                         }
-
-                        if let review = viewModel.kubeConfigImportReviews.last {
-                            KubeConfigImportReviewPanel(
-                                review: review,
-                                duplicateHandlingChoice: $viewModel.kubeConfigDuplicateHandlingChoice,
-                                metadataDrafts: viewModel.kubeConfigImportContextMetadataDrafts,
-                                onUpdateMetadata: { contextName, metadata in
-                                    viewModel.setKubeConfigImportContextMetadata(
-                                        contextName: contextName,
-                                        alias: metadata.alias,
-                                        colorKey: metadata.colorKey,
-                                        iconName: metadata.iconName,
-                                        tags: metadata.tags,
-                                        group: metadata.group
-                                    )
-                                },
-                                onClear: viewModel.clearKubeConfigImportReviews,
-                                showsAuthDoctorAction: !simpleMode,
-                                onRunAuthDoctor: viewModel.runAuthDoctor
-                            )
-                        }
+                    )
+                } else {
+                    overviewStatusBanner
+                    manualNamespaceBanner
+                    if !simpleMode {
+                        authDoctorPanel
                     }
-                    .runePanelCard(padding: 14)
-                }
 
-                overviewStatusBanner
-                manualNamespaceBanner
-                if !simpleMode {
-                    authDoctorPanel
-                }
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                    overviewStatCard(
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
+                    OverviewStatCard(
                         title: "Pods",
                         count: viewModel.state.overviewPods.count,
                         symbol: "cube.box.fill",
                         tint: .cyan,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(0)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(0),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 0
                         viewModel.openOverviewModule(.pods)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "Deployments",
                         count: viewModel.state.overviewDeploymentsCount,
                         symbol: "shippingbox.fill",
                         tint: .blue,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(1)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(1),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 1
                         viewModel.openOverviewModule(.deployments)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "Services",
                         count: viewModel.state.overviewServicesCount,
                         symbol: "point.3.connected.trianglepath.dotted",
                         tint: .purple,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(2)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(2),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 2
                         viewModel.openOverviewModule(.services)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "Ingresses",
                         count: viewModel.state.overviewIngressesCount,
                         symbol: "network",
                         tint: .indigo,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(3)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(3),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 3
                         viewModel.openOverviewModule(.ingresses)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "ConfigMaps",
                         count: viewModel.state.overviewConfigMapsCount,
                         symbol: "doc.text.fill",
                         tint: .teal,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(4)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(4),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 4
                         viewModel.openOverviewModule(.configMaps)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "CronJobs",
                         count: viewModel.state.overviewCronJobsCount,
                         symbol: "calendar.badge.clock",
                         tint: .mint,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(5)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(5),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 5
                         viewModel.openOverviewModule(.cronJobs)
                     }
-                    overviewStatCard(
+                    OverviewStatCard(
                         title: "Nodes",
                         count: viewModel.state.overviewNodesCount,
                         symbol: "server.rack",
                         tint: .gray,
                         isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(6)
+                        isKeyboardFocused: isOverviewCardKeyboardFocused(6),
+                        showsHoverHelp: showHoverTooltips
                     ) {
                         overviewCardSelectionIndex = 6
                         viewModel.openOverviewModule(.nodes)
                     }
                     if !simpleMode {
-                        overviewStatCard(
+                        OverviewStatCard(
                             title: "Events",
                             count: viewModel.state.overviewEvents.count,
                             symbol: "bolt.badge.clock.fill",
                             tint: .orange,
                             isLoading: viewModel.state.isLoading,
                             isKeyboardFocused: isOverviewCardKeyboardFocused(7),
-                            help: overviewEventsCardHelp
+                            help: overviewEventsCardHelp,
+                            showsHoverHelp: showHoverTooltips
                         ) {
                             overviewCardSelectionIndex = 7
                             viewModel.openOverviewModule(.events)
@@ -3600,37 +3665,38 @@ public struct RuneRootView: View {
                     }
                 }
 
-                if !simpleMode {
-                    OverviewClusterSignalsPanelView(
-                        unhealthy: viewModel.overviewUnhealthyItems,
-                        gitOpsRollups: viewModel.overviewGitOpsRollupItems,
-                        incidents: viewModel.overviewIncidentTimelineItems,
-                        dependencies: viewModel.overviewDependencyItems,
-                        expandedPanels: $expandedOverviewInsightPanels,
-                        onOpenSignal: viewModel.openOverviewSignal,
-                        onOpenGitOpsRollup: viewModel.openOverviewGitOpsRollup,
-                        onOpenDependency: viewModel.openOverviewDependency
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Pod Health")
-                        .font(.headline)
-
-                    HStack(spacing: 8) {
-                        healthBadge(label: "Running", value: podStatusCount("running"), color: .green)
-                        healthBadge(label: "Pending", value: podStatusCount("pending"), color: .orange)
-                        healthBadge(label: "Failed", value: podStatusCount("failed"), color: .red)
-                        healthBadge(label: "Other", value: max(0, viewModel.state.overviewPods.count - podStatusCount("running") - podStatusCount("pending") - podStatusCount("failed")), color: .gray)
+                    if !simpleMode {
+                        OverviewClusterSignalsPanelView(
+                            unhealthy: viewModel.overviewUnhealthyItems,
+                            gitOpsRollups: viewModel.overviewGitOpsRollupItems,
+                            incidents: viewModel.overviewIncidentTimelineItems,
+                            dependencies: viewModel.overviewDependencyItems,
+                            expandedPanels: $expandedOverviewInsightPanels,
+                            onOpenSignal: viewModel.openOverviewSignal,
+                            onOpenGitOpsRollup: viewModel.openOverviewGitOpsRollup,
+                            onOpenDependency: viewModel.openOverviewDependency
+                        )
                     }
-                }
-                .runePanelCard()
 
-                if !simpleMode {
-                    OverviewRecentEventsPanelView(
-                        events: viewModel.state.overviewEvents,
-                        onOpenEventSource: viewModel.openEventSource
-                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Pod Health")
+                            .font(.headline)
+
+                        HStack(spacing: 8) {
+                            healthBadge(label: "Running", value: podStatusCount("running"), color: .green)
+                            healthBadge(label: "Pending", value: podStatusCount("pending"), color: .orange)
+                            healthBadge(label: "Failed", value: podStatusCount("failed"), color: .red)
+                            healthBadge(label: "Other", value: max(0, viewModel.state.overviewPods.count - podStatusCount("running") - podStatusCount("pending") - podStatusCount("failed")), color: .gray)
+                        }
+                    }
+                    .runePanelCard()
+
+                    if !simpleMode {
+                        OverviewRecentEventsPanelView(
+                            events: viewModel.state.overviewEvents,
+                            onOpenEventSource: viewModel.openEventSource
+                        )
+                    }
                 }
             }
         }
@@ -3650,68 +3716,67 @@ public struct RuneRootView: View {
         switch viewModel.state.selectedWorkloadKind {
         case .pod:
             VStack(alignment: .leading, spacing: 8) {
-                if !viewModel.visiblePods.isEmpty || viewModel.selectedPodCount > 0 {
+                if viewModel.selectedPodCount > 0 {
                     podBulkSelectionControls
                 }
 
-                if viewModel.visiblePods.isEmpty {
-                    ScrollView {
-                        resourceFilterEmptyState(kindTitle: "Pods", totalCount: viewModel.state.pods.count)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(.top, 4)
-                    }
-                } else {
-                    AppKitPodTableView(
-                        pods: viewModel.visiblePods,
-                        selectedPodID: viewModel.state.selectedPod?.id,
-                        selectedPodIDs: viewModel.state.selectedPodIDs,
-                        sortColumn: viewModel.podSortColumn,
-                        sortAscending: viewModel.podSortAscending,
-                        nameColumnWidth: podNameColumnWidth,
-                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
-                        isFavorite: { pod in
-                            viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
-                        },
-                        onSelectPod: viewModel.selectPod,
-                        onToggleBulkSelection: viewModel.togglePodBulkSelection,
-                        onToggleSort: viewModel.togglePodSort,
-                        onNameColumnWidthChanged: commitPodNameColumnWidth,
-                        onToggleFavorite: { pod in
-                            viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
-                        },
-                        onOpenLogs: { pod in
-                            viewModel.selectPod(pod)
-                            podInspectorTab = .logs
-                            viewModel.reloadLogsForSelection()
-                        },
-                        onOpenExec: { pod in
-                            viewModel.selectPod(pod)
-                            podInspectorTab = .exec
-                        },
-                        onOpenDescribe: { pod in
-                            viewModel.selectPod(pod)
-                            podInspectorTab = .describe
-                        },
-                        onOpenYAML: { pod in
-                            viewModel.selectPod(pod)
-                            podInspectorTab = .yaml
-                        },
-                        onDelete: { pod in
-                            viewModel.requestDeleteResource(kind: .pod, name: pod.name)
+                resourceListGate(kindTitle: "Pods", visibleCount: viewModel.visiblePods.count) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if viewModel.selectedPodCount == 0 {
+                            podBulkSelectionControls
                         }
-                    )
-                    .transaction { transaction in
-                        transaction.animation = nil
+
+                        AppKitPodTableView(
+                            pods: viewModel.visiblePods,
+                            selectedPodID: viewModel.state.selectedPod?.id,
+                            selectedPodIDs: viewModel.state.selectedPodIDs,
+                            sortColumn: viewModel.podSortColumn,
+                            sortAscending: viewModel.podSortAscending,
+                            nameColumnWidth: podNameColumnWidth,
+                            canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                            isFavorite: { pod in
+                                viewModel.isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                            },
+                            onSelectPod: viewModel.selectPod,
+                            onToggleBulkSelection: viewModel.togglePodBulkSelection,
+                            onToggleSort: viewModel.togglePodSort,
+                            onNameColumnWidthChanged: commitPodNameColumnWidth,
+                            onToggleFavorite: { pod in
+                                viewModel.toggleFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name)
+                            },
+                            onOpenLogs: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .logs
+                                viewModel.reloadLogsForSelection()
+                            },
+                            onOpenExec: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .exec
+                            },
+                            onOpenDescribe: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .describe
+                            },
+                            onOpenYAML: { pod in
+                                viewModel.selectPod(pod)
+                                podInspectorTab = .yaml
+                            },
+                            onDelete: { pod in
+                                viewModel.requestDeleteResource(kind: .pod, name: pod.name)
+                            }
+                        )
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
 
         case .deployment:
-            if viewModel.visibleDeployments.isEmpty {
-                resourceFilterEmptyState(kindTitle: "Deployments", totalCount: viewModel.state.deployments.count)
-            } else {
+            resourceListGate(kindTitle: "Deployments", visibleCount: viewModel.visibleDeployments.count) {
                 AppKitDeploymentListView(
                     deployments: viewModel.visibleDeployments,
                     selectedDeploymentID: viewModel.state.selectedDeployment?.id,
@@ -3783,9 +3848,7 @@ public struct RuneRootView: View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
             case .service:
-                if viewModel.visibleServices.isEmpty {
-                    resourceFilterEmptyState(kindTitle: "Services", totalCount: viewModel.state.services.count)
-                } else {
+                resourceListGate(kindTitle: "Services", visibleCount: viewModel.visibleServices.count) {
                     AppKitServiceListView(
                         services: viewModel.visibleServices,
                         selectedServiceID: viewModel.state.selectedService?.id,
@@ -3946,24 +4009,22 @@ public struct RuneRootView: View {
     }
 
     private var helmReleaseBrowser: some View {
-        Group {
-            if viewModel.state.isLoading, viewModel.visibleHelmReleases.isEmpty {
-                inspectorEmptyState("Loading Helm releases", symbol: "hourglass")
-            } else if viewModel.visibleHelmReleases.isEmpty {
-                inspectorEmptyState("No Helm releases found", symbol: "ferry")
-            } else {
-                AppKitHelmReleaseListView(
-                    releases: viewModel.visibleHelmReleases,
-                    selectedReleaseID: viewModel.state.selectedHelmRelease?.id,
-                    sortColumn: viewModel.helmReleaseSortColumn,
-                    sortAscending: viewModel.helmReleaseSortAscending,
-                    onSelectRelease: { release in
-                        helmBrowserTab = .releases
-                        viewModel.selectHelmRelease(release)
-                    },
-                    onToggleSort: viewModel.toggleHelmReleaseSort
-                )
-            }
+        resourceListGate(
+            kindTitle: "Helm releases",
+            visibleCount: viewModel.visibleHelmReleases.count,
+            scopeDescription: viewModel.state.isHelmAllNamespaces ? "all namespaces" : resourceListScopeDescription
+        ) {
+            AppKitHelmReleaseListView(
+                releases: viewModel.visibleHelmReleases,
+                selectedReleaseID: viewModel.state.selectedHelmRelease?.id,
+                sortColumn: viewModel.helmReleaseSortColumn,
+                sortAscending: viewModel.helmReleaseSortAscending,
+                onSelectRelease: { release in
+                    helmBrowserTab = .releases
+                    viewModel.selectHelmRelease(release)
+                },
+                onToggleSort: viewModel.toggleHelmReleaseSort
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3991,31 +4052,32 @@ public struct RuneRootView: View {
                 Spacer()
             }
 
-            if viewModel.visibleOperatorResources.isEmpty {
-                inspectorEmptyState(
-                    viewModel.operatorResourceFocus == .gitOps
-                        ? "No GitOps resources found"
-                        : "No operator resources found",
-                    symbol: viewModel.operatorResourceFocus == .gitOps ? "arrow.triangle.2.circlepath" : "square.stack.3d.up"
-                )
-            } else {
+            resourceListGate(
+                kindTitle: viewModel.operatorResourceFocus == .all
+                    ? "Operator resources"
+                    : "\(viewModel.operatorResourceFocus.title) operator resources",
+                visibleCount: viewModel.visibleOperatorResources.count,
+                scopeDescription: "the selected operator focus"
+            ) {
                 HStack(spacing: 8) {
                     Text(viewModel.operatorResourcePageSummary)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button {
+                    RuneIconButton(
+                        "Previous operator resource page",
+                        systemImage: "chevron.left",
+                        isDisabled: !viewModel.canPageOperatorResourcesBackward
+                    ) {
                         viewModel.pageOperatorResourcesBackward()
-                    } label: {
-                        Image(systemName: "chevron.left")
                     }
-                    .disabled(!viewModel.canPageOperatorResourcesBackward)
-                    Button {
+                    RuneIconButton(
+                        "Next operator resource page",
+                        systemImage: "chevron.right",
+                        isDisabled: !viewModel.canPageOperatorResourcesForward
+                    ) {
                         viewModel.pageOperatorResourcesForward()
-                    } label: {
-                        Image(systemName: "chevron.right")
                     }
-                    .disabled(!viewModel.canPageOperatorResourcesForward)
 
                     if let family = viewModel.operatorPrinterColumnFamilyForCustomization {
                         Menu {
@@ -4024,6 +4086,7 @@ public struct RuneRootView: View {
                             }
                         } label: {
                             Label("Columns", systemImage: "tablecolumns")
+                                .runeMinimumInteractiveTarget()
                         }
                         .controlSize(.small)
                     }
@@ -4039,7 +4102,7 @@ public struct RuneRootView: View {
                     onSelectResource: { resource in
                         helmBrowserTab = .operatorResources
                         viewModel.selectOperatorResource(resource)
-                        genericResourceManifestTab = .describe
+                        genericResourceManifestTab = .overview
                         yamlManifestIsEditing = false
                     },
                     onToggleSort: viewModel.toggleOperatorResourceSort,
@@ -4064,21 +4127,17 @@ public struct RuneRootView: View {
     }
 
     private var eventsPane: some View {
-        Group {
-            if viewModel.visibleEvents.isEmpty {
-                resourceFilterEmptyState(kindTitle: "Events", totalCount: 0)
-            } else {
-                AppKitEventListView(
-                    events: viewModel.visibleEvents,
-                    selectedEventID: viewModel.state.selectedEvent?.id,
-                    sortColumn: viewModel.eventSortColumn,
-                    sortAscending: viewModel.eventSortAscending,
-                    onSelectEvent: viewModel.selectEvent,
-                    onToggleSort: viewModel.toggleEventSort
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "", enabled: showHoverTooltips)
-            }
+        resourceListGate(kindTitle: "Events", visibleCount: viewModel.visibleEvents.count) {
+            AppKitEventListView(
+                events: viewModel.visibleEvents,
+                selectedEventID: viewModel.state.selectedEvent?.id,
+                sortColumn: viewModel.eventSortColumn,
+                sortAscending: viewModel.eventSortAscending,
+                onSelectEvent: viewModel.selectEvent,
+                onToggleSort: viewModel.toggleEventSort
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "", enabled: showHoverTooltips)
         }
         .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -4098,12 +4157,6 @@ public struct RuneRootView: View {
 
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let notice = viewModel.state.activeNotice {
-                RuneNoticeBanner(notice: notice) {
-                    viewModel.state.clearError()
-                }
-            }
-
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
                     .fill(panelFill)
@@ -4196,6 +4249,7 @@ public struct RuneRootView: View {
                         }
                     } label: {
                         Label("Save Bundle", systemImage: "square.and.arrow.down")
+                            .runeMinimumInteractiveTarget()
                     }
                 }
             }
@@ -4221,6 +4275,7 @@ public struct RuneRootView: View {
                         }
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
+                            .runeMinimumInteractiveTarget()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -4298,19 +4353,16 @@ public struct RuneRootView: View {
     }
 
     private var replicaSetDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedReplicaSet) {
             let relatedPods = viewModel.selectedReplicaSetRelatedPods
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openReplicaSetRelatedPod)
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedReplicaSet)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var statefulSetDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedStatefulSet) {
             if viewModel.state.selectedStatefulSet != nil,
                let replicas = viewModel.selectedStatefulSetReplicaCounts {
                 HStack(spacing: 8) {
@@ -4343,26 +4395,20 @@ public struct RuneRootView: View {
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openStatefulSetRelatedPod)
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedStatefulSet)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var daemonSetDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedDaemonSet) {
             let relatedPods = viewModel.selectedDaemonSetRelatedPods
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openDaemonSetRelatedPod)
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedDaemonSet)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var cronJobInspectorContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedCronJob) {
             if viewModel.state.selectedCronJob != nil {
                 HStack(spacing: 10) {
                     if viewModel.state.selectedCronJob?.secondaryText == "Suspended" {
@@ -4384,7 +4430,7 @@ public struct RuneRootView: View {
             }
             let relatedJobs = viewModel.selectedCronJobRelatedJobs
             if !relatedJobs.isEmpty {
-                ResourceRelationshipSection(title: "Related Jobs") {
+                ResourceRelationshipSection(title: "Related Jobs", rowCount: relatedJobs.count) {
                     ForEach(relatedJobs) { job in
                         ResourceRelationshipLinkButton(
                             title: job.name,
@@ -4396,24 +4442,20 @@ public struct RuneRootView: View {
                     }
                 }
             }
-            genericResourceDetails(resource: viewModel.state.selectedCronJob)
         }
     }
 
     private var jobDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedJob) {
             let relatedPods = viewModel.selectedJobRelatedPods
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openJobRelatedPod)
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedJob)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var horizontalPodAutoscalerDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedHorizontalPodAutoscaler) {
             if let target = viewModel.selectedHorizontalPodAutoscalerScaleTarget {
                 ResourceRelationshipSection(title: "Scale Target") {
                     ResourceRelationshipLinkButton(
@@ -4425,10 +4467,7 @@ public struct RuneRootView: View {
                     }
                 }
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedHorizontalPodAutoscaler)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var networkingDetails: some View {
@@ -4449,10 +4488,10 @@ public struct RuneRootView: View {
     }
 
     private var ingressDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedIngress) {
             let relatedServices = viewModel.selectedIngressRelatedServices
             if !relatedServices.isEmpty {
-                ResourceRelationshipSection(title: "Related Services") {
+                ResourceRelationshipSection(title: "Related Services", rowCount: relatedServices.count) {
                     ForEach(relatedServices) { service in
                         ResourceRelationshipLinkButton(
                             title: service.name,
@@ -4464,10 +4503,7 @@ public struct RuneRootView: View {
                     }
                 }
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedIngress)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var configDetails: some View {
@@ -4501,7 +4537,7 @@ public struct RuneRootView: View {
     }
 
     private var persistentVolumeClaimDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedPersistentVolumeClaim) {
             if let persistentVolume = viewModel.selectedPersistentVolumeClaimRelatedPersistentVolume {
                 ResourceRelationshipSection(title: "Related PersistentVolume") {
                     ResourceRelationshipLinkButton(
@@ -4513,17 +4549,14 @@ public struct RuneRootView: View {
                     }
                 }
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedPersistentVolumeClaim)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var persistentVolumeDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedPersistentVolume) {
             let relatedClaims = viewModel.selectedPersistentVolumeRelatedPersistentVolumeClaims
             if !relatedClaims.isEmpty {
-                ResourceRelationshipSection(title: "Related PVCs") {
+                ResourceRelationshipSection(title: "Related PVCs", rowCount: relatedClaims.count) {
                     ForEach(relatedClaims) { pvc in
                         ResourceRelationshipLinkButton(
                             title: pvc.name,
@@ -4535,26 +4568,20 @@ public struct RuneRootView: View {
                     }
                 }
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedPersistentVolume)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var nodeDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedNode) {
             let relatedPods = viewModel.selectedNodeRelatedPods
             if !relatedPods.isEmpty {
                 RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openNodeRelatedPod)
             }
-
-            genericResourceDetails(resource: viewModel.state.selectedNode)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var rbacDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        genericResourceDetails(resource: viewModel.state.selectedRBACResource) {
             if let role = viewModel.selectedRBACBindingReferencedRole {
                 ResourceRelationshipSection(title: "Referenced Role") {
                     ResourceRelationshipLinkButton(
@@ -4569,7 +4596,7 @@ public struct RuneRootView: View {
 
             let relatedBindings = viewModel.selectedRBACRoleRelatedBindings
             if !relatedBindings.isEmpty {
-                ResourceRelationshipSection(title: "Related Bindings") {
+                ResourceRelationshipSection(title: "Related Bindings", rowCount: relatedBindings.count) {
                     ForEach(relatedBindings) { binding in
                         ResourceRelationshipLinkButton(
                             title: binding.name,
@@ -4587,10 +4614,7 @@ public struct RuneRootView: View {
             }
 
             Divider()
-
-            genericResourceDetails(resource: viewModel.state.selectedRBACResource)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var helmDetails: some View {
@@ -4598,148 +4622,219 @@ public struct RuneRootView: View {
             if let resource = viewModel.state.selectedOperatorResource {
                 operatorResourceDetails(resource: resource)
             } else if let release = viewModel.state.selectedHelmRelease {
-                VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(release.name, label: "Helm release name")
-
-                    RuneSegmentedPickerInScroll(
-                        "",
-                        selection: $helmInspectorTab,
-                        labelsHidden: true
-                    ) {
-                        ForEach(HelmInspectorTab.allCases) { tab in
-                            Text(tab.localizedTitle(appString)).tag(tab)
+                RuneInspectorScaffold(
+                    title: release.name,
+                    copyAccessibilityLabel: "Copy Helm release name",
+                    bodyScrollBehavior: helmInspectorTab == .overview || helmInspectorTab == .history
+                        ? .vertical
+                        : .selfManaged,
+                    showsActions: helmInspectorTab != .overview,
+                    onCopy: { copyToClipboard(release.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        helmReleaseCoreInfo(release)
+                    },
+                    tabs: {
+                        RuneSegmentedPickerInScroll(
+                            "",
+                            selection: $helmInspectorTab,
+                            labelsHidden: true
+                        ) {
+                            ForEach(HelmInspectorTab.allCases) { tab in
+                                Text(tab.localizedTitle(appString)).tag(tab)
+                            }
+                        }
+                        .accessibilityLabel("Helm inspector")
+                    },
+                    actions: {
+                        helmInspectorActions
+                    },
+                    content: {
+                        switch helmInspectorTab {
+                        case .overview:
+                            inspectorInfoRow("Updated", value: release.updated, symbol: "calendar.badge.clock")
+                        case .values:
+                            exportableTextPane(
+                                text: viewModel.state.helmValues,
+                                emptyText: "No values loaded"
+                            )
+                        case .manifest:
+                            exportableTextPane(
+                                text: viewModel.state.helmManifest,
+                                emptyText: "No manifest loaded"
+                            )
+                        case .history:
+                            helmHistoryPane
                         }
                     }
-                    .accessibilityLabel("Helm inspector")
-
-                    switch helmInspectorTab {
-                    case .overview:
-                        VStack(alignment: .leading, spacing: 10) {
-                            if shouldShowResourceNamespaceLabel(release.namespace) {
-                                HStack(spacing: 6) {
-                                    Label("Namespace: \(release.namespace)", systemImage: "square.stack.3d.up")
-                                    copyButton(value: release.namespace, label: "namespace")
-                                }
-                            }
-                            Label("Status: \(release.status.capitalized)", systemImage: "checkmark.seal")
-                            Label("Chart: \(release.chart)", systemImage: "shippingbox")
-                            Label("App Version: \(release.appVersion)", systemImage: "tag")
-                            Label("Revision: \(release.revision)", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                            Text(release.updated)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.subheadline.weight(.medium))
-
-                    case .values:
-                        exportableTextPane(
-                            text: viewModel.state.helmValues,
-                            emptyText: "No values loaded",
-                            saveAction: viewModel.saveCurrentHelmValues
-                        )
-
-                    case .manifest:
-                        exportableTextPane(
-                            text: viewModel.state.helmManifest,
-                            emptyText: "No manifest loaded",
-                            saveAction: viewModel.saveCurrentHelmManifest
-                        )
-
-                    case .history:
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Button("Save History") {
-                                    viewModel.saveCurrentHelmHistory()
-                                }
-                                Spacer()
-                            }
-
-                            if viewModel.state.helmHistory.isEmpty {
-                                inspectorEmptyState("No history loaded", symbol: "clock.arrow.circlepath")
-                            } else {
-                                HelmRollbackOptionsView(
-                                    wait: $viewModel.helmRollbackWait,
-                                    timeout: $viewModel.helmRollbackTimeoutInput,
-                                    cleanupOnFail: $viewModel.helmRollbackCleanupOnFail
-                                )
-                                .padding(10)
-                                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-
-                                ScrollView {
-                                    LazyVStack(alignment: .leading, spacing: 10) {
-                                        ForEach(viewModel.state.helmHistory) { entry in
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack {
-                                                    Text("Revision \(entry.revision)")
-                                                        .font(.subheadline.weight(.semibold))
-                                                    Spacer()
-                                                    Button("Rollback") {
-                                                        viewModel.requestHelmRollback(revision: entry.revision)
-                                                    }
-                                                    .disabled(!viewModel.canApplyClusterMutations)
-                                                    Text(entry.status.capitalized)
-                                                        .font(.caption.weight(.semibold))
-                                                        .foregroundStyle(statusColor(for: entry.status))
-                                                }
-                                                Text(entry.chart + " • " + entry.appVersion)
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                                Text(entry.description)
-                                                    .font(.footnote)
-                                                Text(entry.updated)
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            .padding(10)
-                                            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                )
             } else {
-                inspectorEmptyState("Select a Helm release", symbol: "ferry")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select a Helm release",
+                        message: "Select an item in the center list to inspect details and actions here."
+                    ),
+                    symbol: "ferry"
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func operatorResourceDetails(resource: OperatorResourceSummary) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            copyableInspectorTitle(resource.name, label: "\(resource.kind) name")
-
-            VStack(alignment: .leading, spacing: 8) {
-                inspectorInfoRow("Family", value: resource.family, symbol: "shippingbox")
-                if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                    inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
-                } else if resource.namespace == nil {
-                    inspectorInfoRow("Scope", value: "Cluster", symbol: "square.stack.3d.up")
-                }
-                inspectorInfoRow("Status", value: resource.status, symbol: "checkmark.seal")
-                inspectorInfoRow("API Path", value: resource.apiPath, symbol: "curlybraces")
+    private func helmReleaseCoreInfo(_ release: HelmReleaseSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if shouldShowResourceNamespaceLabel(release.namespace) {
+                inspectorInfoRow("Namespace", value: release.namespace, symbol: "square.stack.3d.up")
             }
-
-            RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
-                ForEach(GenericResourceManifestTab.allCases) { tab in
-                    Text(tab.localizedTitle(appString)).tag(tab)
-                }
-            }
-
-            manifestInspectorPane(activeTab: genericResourceManifestTab)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            inspectorInfoRow("Status", value: release.status.capitalized, symbol: "checkmark.seal")
+            inspectorInfoRow("Chart", value: release.chart, symbol: "shippingbox")
+            inspectorInfoRow("App Version", value: release.appVersion, symbol: "tag")
+            inspectorInfoRow("Revision", value: String(release.revision), symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var helmInspectorActions: some View {
+        switch helmInspectorTab {
+        case .values:
+            Button("Save Values…", action: viewModel.saveCurrentHelmValues)
+                .buttonStyle(.bordered)
+        case .manifest:
+            Button("Save Manifest…", action: viewModel.saveCurrentHelmManifest)
+                .buttonStyle(.bordered)
+        case .history:
+            Button("Save History…", action: viewModel.saveCurrentHelmHistory)
+                .buttonStyle(.bordered)
+        case .overview:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var helmHistoryPane: some View {
+        if viewModel.state.helmHistory.isEmpty {
+            inspectorEmptyState(
+                .empty(
+                    title: "No history loaded",
+                    message: "Revision history will appear after it is returned by the cluster."
+                ),
+                symbol: "clock.arrow.circlepath"
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HelmRollbackOptionsView(
+                    wait: $viewModel.helmRollbackWait,
+                    timeout: $viewModel.helmRollbackTimeoutInput,
+                    cleanupOnFail: $viewModel.helmRollbackCleanupOnFail
+                )
+                .padding(10)
+                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(viewModel.state.helmHistory) { entry in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Revision \(entry.revision)")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Button("Rollback") {
+                                    viewModel.requestHelmRollback(revision: entry.revision)
+                                }
+                                .disabled(!viewModel.canApplyClusterMutations)
+                                Text(entry.status.capitalized)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(statusColor(for: entry.status))
+                            }
+                            Text(entry.chart + " • " + entry.appVersion)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(entry.description)
+                                .font(.footnote)
+                            Text(entry.updated)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(10)
+                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    private func operatorResourceDetails(resource: OperatorResourceSummary) -> some View {
+        RuneInspectorScaffold(
+            title: resource.name,
+            copyAccessibilityLabel: "Copy \(resource.kind) name",
+            bodyScrollBehavior: genericResourceManifestTab == .overview ? .vertical : .selfManaged,
+            showsActions: false,
+            onCopy: { copyToClipboard(resource.name) },
+            onRefresh: refreshDetailPane,
+            info: {
+                VStack(alignment: .leading, spacing: 6) {
+                    inspectorInfoRow("Family", value: resource.family, symbol: "shippingbox")
+                    if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
+                        inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+                    } else if resource.namespace == nil {
+                        inspectorInfoRow("Scope", value: "Cluster", symbol: "square.stack.3d.up")
+                    }
+                    inspectorInfoRow("Status", value: resource.status, symbol: "checkmark.seal")
+                    inspectorInfoRow("API Path", value: resource.apiPath, symbol: "curlybraces")
+                }
+            },
+            tabs: {
+                RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
+                    ForEach(GenericResourceManifestTab.allCases) { tab in
+                        Text(tab.localizedTitle(appString)).tag(tab)
+                    }
+                }
+            },
+            actions: {
+                EmptyView()
+            },
+            content: {
+                switch genericResourceManifestTab {
+                case .overview:
+                    operatorResourceOverview(resource)
+                case .describe, .yaml:
+                    manifestInspectorPane(activeTab: genericResourceManifestTab)
+                }
+            }
+        )
+    }
+
+    private func operatorResourceOverview(_ resource: OperatorResourceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !resource.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(resource.message)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+            }
+
+            ForEach(Array(resource.printerColumns.enumerated()), id: \.offset) { _, column in
+                inspectorInfoRow(column.title, value: column.value, symbol: "list.bullet.rectangle")
+            }
+        }
     }
 
     private var podDetails: some View {
         Group {
             if let pod = viewModel.state.selectedPod {
-                VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(pod.name, label: "Pod name")
-
+                RuneInspectorScaffold(
+                    title: pod.name,
+                    copyAccessibilityLabel: "Copy Pod name",
+                    bodyScrollBehavior: podInspectorTab == .overview ? .vertical : .selfManaged,
+                    showsActions: podInspectorTab == .overview,
+                    onCopy: { copyToClipboard(pod.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        podInspectorCoreInfo(pod)
+                    },
+                    tabs: {
                     RuneSegmentedPickerInScroll(
                         "",
                         selection: $podInspectorTab,
@@ -4750,7 +4845,14 @@ public struct RuneRootView: View {
                         }
                     }
                     .accessibilityLabel("Inspector")
-
+                    },
+                    actions: {
+                        Button("Delete", role: .destructive) {
+                            viewModel.requestDeleteSelectedResource()
+                        }
+                        .disabled(!viewModel.canApplyClusterMutations)
+                    },
+                    content: {
                     Group {
                         switch podInspectorTab {
                         case .overview:
@@ -4804,10 +4906,16 @@ public struct RuneRootView: View {
                     .transaction { transaction in
                         transaction.animation = nil
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                )
             } else {
-                inspectorEmptyState("Select a pod", symbol: "cube.box")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select a pod",
+                        message: "Select an item in the center list to inspect details and actions here."
+                    ),
+                    symbol: "cube.box"
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -4816,9 +4924,17 @@ public struct RuneRootView: View {
     private var deploymentDetails: some View {
         Group {
             if let deployment = viewModel.state.selectedDeployment {
-                VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(deployment.name, label: "Deployment name")
-
+                RuneInspectorScaffold(
+                    title: deployment.name,
+                    copyAccessibilityLabel: "Copy Deployment name",
+                    bodyScrollBehavior: deploymentInspectorTab == .overview ? .vertical : .selfManaged,
+                    showsActions: deploymentInspectorTab == .overview,
+                    onCopy: { copyToClipboard(deployment.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        deploymentInspectorCoreInfo(deployment)
+                    },
+                    tabs: {
                     RuneSegmentedPickerInScroll(
                         "",
                         selection: $deploymentInspectorTab,
@@ -4829,7 +4945,11 @@ public struct RuneRootView: View {
                         }
                     }
                     .accessibilityLabel("Inspector")
-
+                    },
+                    actions: {
+                        deploymentInspectorActions
+                    },
+                    content: {
                     Group {
                         switch deploymentInspectorTab {
                         case .overview:
@@ -4868,21 +4988,21 @@ public struct RuneRootView: View {
 
                         case .rollout:
                             VStack(alignment: .leading, spacing: 10) {
-                                HStack(spacing: 10) {
+                                RuneAdaptiveToolbar("Deployment rollout actions") {
                                     TextField("Revision (optional)", text: $viewModel.rolloutRevisionInput)
                                         .textFieldStyle(.roundedBorder)
                                         .frame(maxWidth: 160)
+                                } secondary: {
+                                    HStack(spacing: 8) {
+                                        Button("Rollback") {
+                                            viewModel.requestRolloutUndoSelectedDeployment()
+                                        }
+                                        .disabled(!viewModel.canApplyClusterMutations)
 
-                                    Button("Rollback") {
-                                        viewModel.requestRolloutUndoSelectedDeployment()
+                                        Button("Save History") {
+                                            viewModel.saveCurrentRolloutHistory()
+                                        }
                                     }
-                                    .disabled(!viewModel.canApplyClusterMutations)
-
-                                    Button("Save History") {
-                                        viewModel.saveCurrentRolloutHistory()
-                                    }
-
-                                    Spacer()
                                 }
 
                                 DeploymentRolloutHistoryView(history: viewModel.state.deploymentRolloutHistory)
@@ -4898,10 +5018,16 @@ public struct RuneRootView: View {
                     .transaction { transaction in
                         transaction.animation = nil
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                )
             } else {
-                inspectorEmptyState("Select a deployment", symbol: "shippingbox")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select a deployment",
+                        message: "Select an item in the center list to inspect details and actions here."
+                    ),
+                    symbol: "shippingbox"
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -4910,9 +5036,17 @@ public struct RuneRootView: View {
     private var serviceDetails: some View {
         Group {
             if let service = viewModel.state.selectedService {
-                VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(service.name, label: "Service name")
-
+                RuneInspectorScaffold(
+                    title: service.name,
+                    copyAccessibilityLabel: "Copy Service name",
+                    bodyScrollBehavior: serviceInspectorTab == .overview ? .vertical : .selfManaged,
+                    showsActions: serviceInspectorTab == .overview,
+                    onCopy: { copyToClipboard(service.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        serviceInspectorCoreInfo(service)
+                    },
+                    tabs: {
                     RuneSegmentedPickerInScroll(
                         "",
                         selection: $serviceInspectorTab,
@@ -4923,25 +5057,22 @@ public struct RuneRootView: View {
                         }
                     }
                     .accessibilityLabel("Inspector")
-
+                    },
+                    actions: {
+                        serviceInspectorActions
+                    },
+                    content: {
                     Group {
                         switch serviceInspectorTab {
                         case .overview:
                             VStack(alignment: .leading, spacing: 12) {
-                                if shouldShowResourceNamespaceLabel(service.namespace) {
-                                    inspectorInfoRow("Namespace", value: service.namespace, symbol: "square.stack.3d.up")
-                                }
-
-                                inspectorInfoRow("Type", value: service.type, symbol: "point.3.connected.trianglepath.dotted")
-                                inspectorInfoRow("Cluster IP", value: service.clusterIP, symbol: "network")
-                                Divider().opacity(0.45)
                                 let relatedPods = viewModel.selectedServiceRelatedPods
                                 if !relatedPods.isEmpty {
                                     RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openServiceRelatedPod)
                                 }
                                 let relatedIngresses = viewModel.selectedServiceRelatedIngresses
                                 if !relatedIngresses.isEmpty {
-                                    ResourceRelationshipSection(title: "Related Ingresses") {
+                                    ResourceRelationshipSection(title: "Related Ingresses", rowCount: relatedIngresses.count) {
                                         ForEach(relatedIngresses) { ingress in
                                             ResourceRelationshipLinkButton(
                                                 title: ingress.name,
@@ -4956,18 +5087,6 @@ public struct RuneRootView: View {
                                 let relatedEvents = viewModel.selectedServiceRelatedEvents
                                 if !relatedEvents.isEmpty {
                                     RelatedEventsRelationshipSection(events: relatedEvents, open: viewModel.openRelatedEvent)
-                                }
-                                inspectorActionButtonRow {
-                                    Button(appString(.applyYAML)) { viewModel.requestApplySelectedResourceYAML() }
-                                        .buttonStyle(.bordered)
-                                        .disabled(!viewModel.canApplyClusterMutations)
-                                    Button("Export…") { viewModel.saveCurrentResourceYAML() }
-                                        .buttonStyle(.bordered)
-                                    Button("Delete", role: .destructive) {
-                                        viewModel.requestDeleteSelectedResource()
-                                    }
-                                    .disabled(!viewModel.canApplyClusterMutations)
-                                    Spacer(minLength: 0)
                                 }
                             }
 
@@ -5015,67 +5134,112 @@ public struct RuneRootView: View {
                     .transaction { transaction in
                         transaction.animation = nil
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                )
             } else {
-                inspectorEmptyState("Select a service", symbol: "point.3.connected.trianglepath.dotted")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select a service",
+                        message: "Select an item in the center list to inspect details and actions here."
+                    ),
+                    symbol: "point.3.connected.trianglepath.dotted"
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func serviceInspectorCoreInfo(_ service: ServiceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if shouldShowResourceNamespaceLabel(service.namespace) {
+                inspectorInfoRow("Namespace", value: service.namespace, symbol: "square.stack.3d.up")
+            }
+            inspectorInfoRow("Type", value: service.type, symbol: "point.3.connected.trianglepath.dotted")
+            inspectorInfoRow("Cluster IP", value: service.clusterIP, symbol: "network")
+        }
+    }
+
+    @ViewBuilder
+    private var serviceInspectorActions: some View {
+        Button(appString(.applyYAML)) {
+            viewModel.requestApplySelectedResourceYAML()
+        }
+        .buttonStyle(.bordered)
+        .disabled(!viewModel.canApplyClusterMutations)
+
+        Button("Export…") {
+            viewModel.saveCurrentResourceYAML()
+        }
+        .buttonStyle(.bordered)
+
+        Button("Delete", role: .destructive) {
+            viewModel.requestDeleteSelectedResource()
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
+    }
+
     private var eventDetails: some View {
         Group {
             if let event = viewModel.state.selectedEvent {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(event.reason)
-                        .font(.title2.weight(.bold))
-
-                    if let ts = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !ts.isEmpty {
-                        Text("Time: \(ts)")
-                            .font(.subheadline.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("Type: \(event.type)")
-
-                    Group {
-                        if let k = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines), !k.isEmpty {
-                            copyableInlineText("Object: \(k) / \(event.objectName)", copyValue: event.objectName, label: "object name")
-                        } else {
-                            copyableInlineText("Object: \(event.objectName)", copyValue: event.objectName, label: "object name")
-                        }
-                    }
-
-                    if let ns = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines), !ns.isEmpty {
-                        Label("Namespace: \(ns)", systemImage: "square.stack.3d.up")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if !event.objectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                RuneInspectorScaffold(
+                    title: event.reason,
+                    copyAccessibilityLabel: "Copy event reason",
+                    bodyScrollBehavior: .vertical,
+                    showsTabs: false,
+                    showsActions: !event.objectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    onCopy: { copyToClipboard(event.reason) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        eventInspectorCoreInfo(event)
+                    },
+                    tabs: {
+                        EmptyView()
+                    },
+                    actions: {
                         Button(eventGoToResourceButtonTitle(for: event)) {
                             viewModel.openEventSource(event)
                         }
                         .buttonStyle(.borderedProminent)
                         .help("Switches section and selects the involved object when it appears in the list.")
-                    }
-
-                    ScrollView {
-                        Text(event.message)
+                    },
+                    content: {
+                        Text(event.message.isEmpty ? "No event message" : event.message)
                             .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
                             .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                )
             } else {
-                inspectorEmptyState("Select an event", symbol: "bolt.badge.clock")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select an event",
+                        message: "Select an item in the center list to inspect details and actions here."
+                    ),
+                    symbol: "bolt.badge.clock"
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func eventInspectorCoreInfo(_ event: EventSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let timestamp = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !timestamp.isEmpty {
+                inspectorInfoRow("Time", value: timestamp, symbol: "clock")
+            }
+            inspectorInfoRow("Type", value: event.type, symbol: "exclamationmark.bubble")
+
+            let kind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let object = kind.isEmpty ? event.objectName : "\(kind) / \(event.objectName)"
+            inspectorInfoRow("Object", value: object, symbol: "cube")
+
+            if let namespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines), !namespace.isEmpty {
+                inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+            }
+        }
     }
 
     private func eventGoToResourceButtonTitle(for event: EventSummary) -> String {
@@ -5096,26 +5260,42 @@ public struct RuneRootView: View {
     }
 
     private func genericResourceDetails(resource: ClusterResourceSummary?) -> some View {
+        genericResourceDetails(resource: resource) {
+            EmptyView()
+        }
+    }
+
+    private func genericResourceDetails<Supplementary: View>(
+        resource: ClusterResourceSummary?,
+        @ViewBuilder supplementary: () -> Supplementary
+    ) -> some View {
         Group {
             if let resource {
-                VStack(alignment: .leading, spacing: 12) {
-                    copyableInspectorTitle(resource.name, label: "\(resource.kind.localizedTitle(appString)) name")
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                            inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+                RuneInspectorScaffold(
+                    title: resource.name,
+                    copyAccessibilityLabel: "Copy \(resource.kind.localizedTitle(appString)) name",
+                    bodyScrollBehavior: genericResourceManifestTab == .overview ? .vertical : .selfManaged,
+                    showsActions: genericResourceManifestTab == .overview && resource.kind == .configMap,
+                    onCopy: { copyToClipboard(resource.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
+                                inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+                            }
+                            inspectorInfoRow("Primary", value: resource.primaryText, symbol: "info.circle")
+                            inspectorInfoRow("Status", value: resource.secondaryText, symbol: "text.alignleft")
                         }
-                        inspectorInfoRow("Primary", value: resource.primaryText, symbol: "info.circle")
-                        inspectorInfoRow("Status", value: resource.secondaryText, symbol: "text.alignleft")
-                    }
-
-                    let relatedEvents = viewModel.relatedEvents(for: resource)
-                    if !relatedEvents.isEmpty {
-                        RelatedEventsRelationshipSection(events: relatedEvents, open: viewModel.openRelatedEvent)
-                    }
-
-                    if resource.kind == .configMap {
-                        inspectorActionButtonRow {
+                    },
+                    tabs: {
+                        RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
+                            ForEach(GenericResourceManifestTab.allCases) { tab in
+                                Text(tab.localizedTitle(appString)).tag(tab)
+                            }
+                        }
+                    },
+                    actions: {
+                        if resource.kind == .configMap {
                             Button("Edit ConfigMap YAML") {
                                 genericResourceManifestTab = .yaml
                                 yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
@@ -5123,53 +5303,63 @@ public struct RuneRootView: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(!viewModel.canApplyClusterMutations)
                             .help("Switches to YAML and enables inline editing for this ConfigMap.")
-
-                            Spacer(minLength: 0)
+                        }
+                    },
+                    content: {
+                        switch genericResourceManifestTab {
+                        case .overview:
+                            genericResourceOverview(resource: resource, supplementary: supplementary)
+                        case .describe, .yaml:
+                            manifestInspectorPane(activeTab: genericResourceManifestTab)
                         }
                     }
-
-                    if resource.kind == .statefulSet || resource.kind == .daemonSet {
-                        HStack(spacing: 10) {
-                            TextField("Revision (optional)", text: $viewModel.rolloutRevisionInput)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(maxWidth: 160)
-
-                            Button("Rollback") {
-                                viewModel.requestRolloutUndoSelectedController()
-                            }
-                            .disabled(!viewModel.canApplyClusterMutations)
-
-                            Spacer()
-                        }
-                    }
-
-                    RuneSegmentedPickerInScroll(appString(.manifest), selection: $genericResourceManifestTab) {
-                        ForEach(GenericResourceManifestTab.allCases) { tab in
-                            Text(tab.localizedTitle(appString)).tag(tab)
-                        }
-                    }
-
-                    manifestInspectorPane(activeTab: genericResourceManifestTab)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                )
             } else {
                 genericResourceEmptyState
             }
         }
     }
 
-    private var yamlDisplayText: String {
-        if !viewModel.state.resourceYAML.isEmpty {
-            return viewModel.state.resourceYAML
+    private func genericResourceOverview<Supplementary: View>(
+        resource: ClusterResourceSummary,
+        @ViewBuilder supplementary: () -> Supplementary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            supplementary()
+
+            let relatedEvents = viewModel.relatedEvents(for: resource)
+            if !relatedEvents.isEmpty {
+                RelatedEventsRelationshipSection(events: relatedEvents, open: viewModel.openRelatedEvent)
+            }
+
+            if resource.kind == .statefulSet || resource.kind == .daemonSet {
+                HStack(spacing: 10) {
+                    TextField("Revision (optional)", text: $viewModel.rolloutRevisionInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 160)
+
+                    Button("Rollback") {
+                        viewModel.requestRolloutUndoSelectedController()
+                    }
+                    .disabled(!viewModel.canApplyClusterMutations)
+
+                    Spacer(minLength: 0)
+                }
+            }
         }
-        if viewModel.state.isLoadingResourceDetails {
-            return "Loading YAML for \(manifestResourceReference)…"
-        }
-        if let error = viewModel.state.lastResourceYAMLError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
-            return error
-        }
-        return "No YAML available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or the cluster returned an empty manifest."
+    }
+
+    private var yamlManifestDocumentState: ManifestDocumentState {
+        ManifestDocumentState.resolved(
+            content: viewModel.state.resourceYAML,
+            isLoading: viewModel.state.isLoadingResourceDetails,
+            error: viewModel.state.lastResourceYAMLError,
+            loadingTitle: "Loading YAML",
+            loadingMessage: "Fetching \(manifestResourceReference) from the cluster.",
+            failureTitle: "YAML could not be refreshed",
+            emptyTitle: "No YAML available",
+            emptyMessage: "The cluster returned no manifest for \(manifestResourceReference)."
+        )
     }
 
     private var yamlFooterText: String {
@@ -5182,17 +5372,17 @@ public struct RuneRootView: View {
         return "No YAML was returned for the current selection yet. You can also use Import… to paste YAML from a file."
     }
 
-    private var describeDisplayText: String {
-        if !viewModel.state.resourceDescribe.isEmpty {
-            return viewModel.state.resourceDescribe
-        }
-        if viewModel.state.isLoadingResourceDetails {
-            return "Loading describe output for \(manifestResourceReference)…"
-        }
-        if let error = viewModel.state.lastResourceDescribeError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
-            return error
-        }
-        return "No describe output available for \(manifestResourceReference).\n\nThe resource may still be loading, may not exist in the active namespace, or describe returned no output."
+    private var describeManifestDocumentState: ManifestDocumentState {
+        ManifestDocumentState.resolved(
+            content: viewModel.state.resourceDescribe,
+            isLoading: viewModel.state.isLoadingResourceDetails,
+            error: viewModel.state.lastResourceDescribeError,
+            loadingTitle: "Loading describe output",
+            loadingMessage: "Fetching \(manifestResourceReference) from the cluster.",
+            failureTitle: "Describe could not be refreshed",
+            emptyTitle: "No describe output",
+            emptyMessage: "The cluster returned no describe content for \(manifestResourceReference)."
+        )
     }
 
     private var logStatusText: String {
@@ -5297,9 +5487,11 @@ public struct RuneRootView: View {
         if viewModel.state.isLoading || viewModel.state.isLoadingResourceDetails {
             return AnyView(
                 inspectorEmptyState(
-                    "Loading \(viewModel.state.selectedWorkloadKind.title)",
-                    symbol: "hourglass",
-                    detail: "Loading resources and manifest details for the active namespace."
+                    .loading(
+                        title: "Loading \(viewModel.state.selectedWorkloadKind.title)",
+                        message: "Loading resources and manifest details for the active namespace."
+                    ),
+                    symbol: "hourglass"
                 )
             )
         }
@@ -5329,14 +5521,24 @@ public struct RuneRootView: View {
         if availableCount == 0 {
             return AnyView(
                 inspectorEmptyState(
-                    "No \(viewModel.state.selectedWorkloadKind.title.lowercased()) found",
-                    symbol: "tray",
-                    detail: "Nothing is available in the current namespace yet. YAML and describe will appear here when a resource is selected."
+                    .empty(
+                        title: "No \(viewModel.state.selectedWorkloadKind.title.lowercased()) found",
+                        message: "Nothing is available in the current namespace yet. YAML and describe will appear here when a resource is selected."
+                    ),
+                    symbol: "tray"
                 )
             )
         }
 
-        return AnyView(inspectorEmptyState("Select a resource", symbol: "list.bullet.rectangle"))
+        return AnyView(
+            inspectorEmptyState(
+                .unselected(
+                    title: "Select a resource",
+                    message: "Select an item in the center list to inspect details and actions here."
+                ),
+                symbol: "list.bullet.rectangle"
+            )
+        )
     }
 
     private func openYAMLEditorSheet() {
@@ -5363,7 +5565,8 @@ public struct RuneRootView: View {
             onExport: { viewModel.saveCurrentResourceYAML() },
             onExportToExportFolder: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true) },
-            onClose: { isYAMLEditorSheetPresented = false }
+            onClose: { isYAMLEditorSheetPresented = false },
+            documentState: yamlManifestDocumentState
         )
     }
 
@@ -5371,7 +5574,7 @@ public struct RuneRootView: View {
         ResourceYAMLInspectorPane(
             resourceReference: manifestResourceReference,
             yamlText: yamlDraftBinding,
-            yamlDisplayText: yamlDisplayText,
+            yamlDisplayText: viewModel.state.resourceYAML,
             yamlFooterText: yamlFooterText,
             baseline: viewModel.state.resourceYAMLBaseline,
             hasUnsavedEdits: viewModel.state.resourceYAMLHasUnsavedEdits,
@@ -5392,7 +5595,8 @@ public struct RuneRootView: View {
             onExport: { viewModel.saveCurrentResourceYAML() },
             onExportToExportFolder: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true) },
-            readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
+            readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)",
+            documentState: yamlManifestDocumentState
         )
     }
 
@@ -5400,6 +5604,8 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func manifestInspectorPane(activeTab: GenericResourceManifestTab) -> some View {
         switch activeTab {
+        case .overview:
+            EmptyView()
         case .yaml:
             yamlBlock
         case .describe:
@@ -5410,7 +5616,7 @@ public struct RuneRootView: View {
     /// Describe tab: read-only describe output; cluster updates use the YAML manifest (same buffer as the YAML tab) and Apply.
     private var describeBlock: some View {
         ResourceDescribeInspectorPane(
-            describeText: describeDisplayText,
+            describeText: viewModel.state.resourceDescribe,
             resourceReference: manifestResourceReference,
             canApplyMutations: viewModel.canApplyClusterMutations && viewModel.state.selectedOperatorResource == nil,
             yamlText: viewModel.state.resourceYAML,
@@ -5422,27 +5628,17 @@ public struct RuneRootView: View {
             onExport: { viewModel.saveCurrentResourceDescribe() },
             onExportToExportFolder: { viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: true) },
-            readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)"
+            readOnlyResetID: "describe:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)",
+            documentState: describeManifestDocumentState
         )
     }
 
-    private func exportableTextPane(text: String, emptyText: String, saveAction: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button("Save…") {
-                    saveAction()
-                }
-                Spacer()
-            }
-
-            ScrollView {
-                InspectorReadOnlyTextView(
-                    text: text.isEmpty ? emptyText : text,
-                    resetID: "export:\(emptyText):\((text.isEmpty ? emptyText : text).count)"
-                )
-                .padding(10)
-                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
-            }
+    private func exportableTextPane(text: String, emptyText: String) -> some View {
+        InspectorTextSurface(minHeight: 220) {
+            InspectorReadOnlyTextView(
+                text: text.isEmpty ? emptyText : text,
+                resetID: "export:\(emptyText):\((text.isEmpty ? emptyText : text).count)"
+            )
         }
     }
 
@@ -5496,45 +5692,42 @@ public struct RuneRootView: View {
     }
 
     private func portForwardPane(targetKind: PortForwardTargetKind, targetName: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                TextField("Local Port", text: $viewModel.portForwardLocalPortInput)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 120)
+        let matchingNamespace = viewModel.state.selectedNamespace
+        let matchingSessions = viewModel.state.portForwardSessions.filter {
+            $0.targetKind == targetKind
+                && $0.targetName == targetName
+                && $0.namespace == matchingNamespace
+        }
+        let activeSession = matchingSessions.first {
+            $0.contextName == viewModel.state.selectedContext?.name && $0.isActiveOrStarting
+        }
 
-                Text("->")
-                    .foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 12) {
+            PortForwardEndpointFields(
+                localPort: $viewModel.portForwardLocalPortInput,
+                remotePort: $viewModel.portForwardRemotePortInput,
+                address: $viewModel.portForwardAddressInput
+            )
 
-                TextField("Remote Port", text: $viewModel.portForwardRemotePortInput)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 120)
+            PortForwardPrimaryActionLayout {
+                PortForwardPrimaryActionButton(
+                    activeSession: activeSession,
+                    startTitle: "Start Port Forward",
+                    isStartDisabled: viewModel.state.isStartingPortForward,
+                    onStart: viewModel.startPortForwardForSelection,
+                    onStop: viewModel.stopPortForward
+                )
+            } utilities: {
+                HStack(spacing: 8) {
+                    if viewModel.state.isStartingPortForward {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
 
-                TextField("Address", text: $viewModel.portForwardAddressInput)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
-            }
-
-            HStack(spacing: 10) {
-                Button("Start Port Forward") {
-                    viewModel.startPortForwardForSelection()
+                    Button("Open Terminal") {
+                        viewModel.setSection(.terminal)
+                    }
                 }
-                .disabled(viewModel.state.isStartingPortForward)
-
-                if viewModel.state.isStartingPortForward {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                Button("Open Terminal") {
-                    viewModel.setSection(.terminal)
-                }
-            }
-
-            let matchingNamespace = viewModel.state.selectedNamespace
-            let matchingSessions = viewModel.state.portForwardSessions.filter {
-                $0.targetKind == targetKind
-                    && $0.targetName == targetName
-                    && $0.namespace == matchingNamespace
             }
 
             if matchingSessions.isEmpty {
@@ -5570,6 +5763,7 @@ public struct RuneRootView: View {
             sessions: viewModel.state.terminalSessions,
             activeSessionID: viewModel.state.activeTerminalSessionID,
             contextName: viewModel.state.selectedContext?.name,
+            namespace: viewModel.state.selectedNamespace,
             selectedPod: viewModel.state.selectedPod,
             availablePods: viewModel.state.pods,
             portForwardSessions: viewModel.state.portForwardSessions,
@@ -5776,7 +5970,13 @@ public struct RuneRootView: View {
                     onToggleFavoriteTab: toggleFavoriteTerminalLogTab,
                     onAddTab: addTerminalLogTab
                 )
-                inspectorEmptyState("Select a pod for logs", symbol: "doc.text.magnifyingglass")
+                inspectorEmptyState(
+                    .unselected(
+                        title: "Select a pod for logs",
+                        message: "Choose a pod from the center list before opening its logs."
+                    ),
+                    symbol: "doc.text.magnifyingglass"
+                )
             }
         }
     }
@@ -5886,7 +6086,13 @@ public struct RuneRootView: View {
                     viewModel.focusTerminalPodInspector(pod, loadDetails: shouldReloadTerminalPodDetails(for: pod))
                 }
         } else {
-            inspectorEmptyState("Select a pod for YAML", symbol: "curlybraces")
+            inspectorEmptyState(
+                .unselected(
+                    title: "Select a pod for YAML",
+                    message: "Choose a pod from the center list before opening its manifest."
+                ),
+                symbol: "curlybraces"
+            )
         }
     }
 
@@ -5942,7 +6148,7 @@ public struct RuneRootView: View {
                     .textSelection(.enabled)
             }
 
-            if session.isActiveOrStarting || session.isInactive {
+            if (session.status == .active && session.browserURL != nil) || session.isInactive {
                 HStack(spacing: 8) {
                     if session.status == .active, session.browserURL != nil {
                         Button {
@@ -5953,12 +6159,7 @@ public struct RuneRootView: View {
                         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
                     }
 
-                    if session.isActiveOrStarting {
-                        Button(session.status == .starting ? "Cancel" : "Stop") {
-                            viewModel.stopPortForward(session)
-                        }
-                        .help(session.status == .starting ? "Cancel this port-forward" : "Stop this port-forward")
-                    } else if session.status == .failed {
+                    if session.status == .failed {
                         Button {
                             viewModel.retryPortForward(session)
                         } label: {
@@ -5987,48 +6188,47 @@ public struct RuneRootView: View {
         selection: ClusterResourceSummary?,
         action: @escaping (ClusterResourceSummary?) -> Void
     ) -> some View {
-        Group {
-            if resources.isEmpty {
-                resourceFilterEmptyState(kindTitle: viewModel.state.selectedWorkloadKind.title, totalCount: 0)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    genericResourceBulkSelectionControls
+        resourceListGate(
+            kindTitle: viewModel.state.selectedWorkloadKind.title,
+            visibleCount: resources.count
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                genericResourceBulkSelectionControls
 
-                    AppKitGenericResourceListView(
-                        resources: resources,
-                        selectedResourceID: selection?.id,
-                        selectedResourceIDs: viewModel.state.selectedGenericResourceIDs,
-                        sortColumn: viewModel.genericResourceSortColumn,
-                        sortAscending: viewModel.genericResourceSortAscending,
-                        canApplyClusterMutations: viewModel.canApplyClusterMutations,
-                        isFavorite: { resource in
-                            viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
-                        },
-                        onSelectResource: { resource in
-                            action(resource)
-                        },
-                        onToggleBulkSelection: viewModel.toggleGenericResourceBulkSelection,
-                        onToggleSort: viewModel.toggleGenericResourceSort,
-                        onToggleFavorite: { resource in
-                            viewModel.toggleFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
-                        },
-                        onOpenDescribe: { resource in
-                            action(resource)
-                            genericResourceManifestTab = .describe
-                        },
-                        onOpenYAML: { resource in
-                            action(resource)
-                            genericResourceManifestTab = .yaml
-                        },
-                        onDelete: { resource in
-                            viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
-                        }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.vertical, 2)
+                AppKitGenericResourceListView(
+                    resources: resources,
+                    selectedResourceID: selection?.id,
+                    selectedResourceIDs: viewModel.state.selectedGenericResourceIDs,
+                    sortColumn: viewModel.genericResourceSortColumn,
+                    sortAscending: viewModel.genericResourceSortAscending,
+                    canApplyClusterMutations: viewModel.canApplyClusterMutations,
+                    isFavorite: { resource in
+                        viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+                    },
+                    onSelectResource: { resource in
+                        action(resource)
+                    },
+                    onToggleBulkSelection: viewModel.toggleGenericResourceBulkSelection,
+                    onToggleSort: viewModel.toggleGenericResourceSort,
+                    onToggleFavorite: { resource in
+                        viewModel.toggleFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
+                    },
+                    onOpenDescribe: { resource in
+                        action(resource)
+                        genericResourceManifestTab = .describe
+                    },
+                    onOpenYAML: { resource in
+                        action(resource)
+                        genericResourceManifestTab = .yaml
+                    },
+                    onDelete: { resource in
+                        viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.vertical, 2)
         }
         .padding(.horizontal, 2)
         .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\(genericResourceListIdentity(resources))")
@@ -6037,37 +6237,48 @@ public struct RuneRootView: View {
         }
     }
 
-    private func resourceFilterEmptyState(kindTitle: String, totalCount: Int) -> some View {
-        let query = viewModel.state.resourceSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let namespace = viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scope = namespace.isEmpty ? "the current namespace scope" : "namespace \(namespace)"
+    @ViewBuilder
+    private func resourceListGate<Content: View>(
+        kindTitle: String,
+        visibleCount: Int,
+        scopeDescription: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let presentation = ResourceListPresentation.project(
+            isLoading: viewModel.state.isLoading,
+            visibleCount: visibleCount,
+            kindTitle: kindTitle,
+            filterQuery: viewModel.state.resourceSearchQuery,
+            scopeDescription: scopeDescription ?? resourceListScopeDescription,
+            freshness: currentResourceListFreshness
+        )
 
-        return VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: query.isEmpty ? "tray" : "magnifyingglass")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(query.isEmpty ? "No \(kindTitle.lowercased()) loaded" : "No \(kindTitle.lowercased()) match \"\(query)\"")
-                .font(.headline)
-
-            Text(query.isEmpty
-                ? "Rune has no \(kindTitle.lowercased()) to show for \(scope)."
-                : "This filter only searches \(kindTitle.lowercased()) loaded for \(scope). Clear the filter, switch namespace, or choose another kind.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if !query.isEmpty {
-                Button("Clear Filter") {
-                    viewModel.setResourceSearchQuery("")
+        switch presentation {
+        case .content:
+            content()
+        case let .state(state, action):
+            RunePaneContentStateView(
+                state,
+                style: .card,
+                action: action.map { action in
+                    switch action {
+                    case .clearFilter:
+                        return RuneContentStateAction("Clear Filter", systemImage: "xmark.circle") {
+                            viewModel.setResourceSearchQuery("")
+                        }
+                    case .retry:
+                        return RuneContentStateAction("Retry", systemImage: "arrow.clockwise") {
+                            viewModel.refreshCurrentView(debounced: false)
+                        }
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+            )
         }
-        .runePanelCard(padding: 14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .accessibilityElement(children: .combine)
+    }
+
+    private var resourceListScopeDescription: String {
+        let namespace = viewModel.state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        return namespace.isEmpty ? "the current namespace scope" : "namespace \(namespace)"
     }
 
     @ViewBuilder
@@ -6144,36 +6355,54 @@ public struct RuneRootView: View {
         }
     }
 
+    private var keyboardNavigationContext: RuneRootKeyboardNavigationContext {
+        let keyWindow = NSApp.keyWindow
+        let editableTextResponderActive = (keyWindow?.firstResponder as? NSTextView)?.isEditable == true
+        return RuneRootKeyboardNavigationContext(
+            commandPalettePresented: viewModel.state.isCommandPalettePresented,
+            yamlEditorSheetPresented: isYAMLEditorSheetPresented,
+            yamlManifestIsEditing: yamlManifestIsEditing,
+            kubeConfigImportReviewPresented: viewModel.isKubeConfigImportConfirmationPending,
+            addClusterPopoverPresented: addClusterPopoverPresented,
+            addClusterProviderPresented: selectedAddClusterProvider != nil,
+            manualNamespaceSheetPresented: isManualNamespaceSheetPresented,
+            pendingWriteConfirmationPresented: viewModel.pendingWriteAction != nil,
+            launchExperiencePresented: shouldShowLaunchExperience,
+            appSheetAttached: keyWindow?.sheetParent != nil || keyWindow?.attachedSheet != nil,
+            editableTextResponderActive: editableTextResponderActive
+        )
+    }
+
     private var keyboardNavigationSuspended: Bool {
-        if viewModel.state.isCommandPalettePresented || isYAMLEditorSheetPresented || yamlManifestIsEditing {
-            return true
-        }
-        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView, textView.isEditable {
-            return true
-        }
-        return false
+        keyboardNavigationContext.isSuspended
     }
 
     private func focusNextKeyboardPane() {
-        guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
+        let navigationContext = keyboardNavigationContext
+        guard !navigationContext.hasBlockingPresentation else { return }
         if textInputFocus != nil {
             textInputFocus = nil
             keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: true)
+            NSApp.keyWindow?.makeFirstResponder(nil)
             return
         }
-        guard !keyboardNavigationSuspended else { return }
+        guard !navigationContext.isSuspended else { return }
         keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: true)
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func focusPreviousKeyboardPane() {
-        guard !viewModel.state.isCommandPalettePresented, !isYAMLEditorSheetPresented, !yamlManifestIsEditing else { return }
+        let navigationContext = keyboardNavigationContext
+        guard !navigationContext.hasBlockingPresentation else { return }
         if textInputFocus != nil {
             textInputFocus = nil
             keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: false)
+            NSApp.keyWindow?.makeFirstResponder(nil)
             return
         }
-        guard !keyboardNavigationSuspended else { return }
+        guard !navigationContext.isSuspended else { return }
         keyboardPaneFocus = advancedKeyboardPane(from: keyboardPaneFocus, forward: false)
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func moveKeyboardSelection(_ direction: MoveCommandDirection) {
@@ -6207,26 +6436,19 @@ public struct RuneRootView: View {
     }
 
     private var availableKeyboardPanes: [RuneRootKeyboardPane] {
-        var panes: [RuneRootKeyboardPane] = []
-        if viewModel.isSidebarVisible {
-            panes += [.sidebarSections, .sidebarContexts]
-        }
-        panes.append(.content)
-        if viewModel.isDetailPaneVisible {
-            panes.append(.detail)
-        }
-        return panes
+        RuneRootKeyboardPaneNavigation.availablePanes(
+            sidebarVisible: viewModel.isSidebarVisible,
+            detailVisible: viewModel.isDetailPaneVisible,
+            skipsClusterPane: skipClusterOnTabNavigationFromSections
+        )
     }
 
     private func advancedKeyboardPane(from current: RuneRootKeyboardPane, forward: Bool) -> RuneRootKeyboardPane {
-        let panes = availableKeyboardPanes
-        guard let index = panes.firstIndex(of: current) else {
-            return panes.first ?? .content
-        }
-        if forward {
-            return panes[(index + 1) % panes.count]
-        }
-        return panes[(index + panes.count - 1) % panes.count]
+        RuneRootKeyboardPaneNavigation.advanced(
+            from: current,
+            forward: forward,
+            in: availableKeyboardPanes
+        )
     }
 
     private func moveSectionSelection(_ direction: MoveCommandDirection) {
@@ -6433,6 +6655,12 @@ public struct RuneRootView: View {
     }
 
     private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent? {
+        guard RuneRootKeyboardWindowScope.owns(
+            eventWindowNumber: event.windowNumber,
+            workspaceWindowNumber: workspaceWindowReference.windowNumber,
+            keyWindowNumber: NSApp.keyWindow?.windowNumber
+        ) else { return event }
+
         if shouldHandleTabNavigation(event) {
             if event.modifierFlags.contains(.shift) {
                 focusPreviousKeyboardPane()
@@ -6458,9 +6686,16 @@ public struct RuneRootView: View {
 
     private func shouldHandleTabNavigation(_ event: NSEvent) -> Bool {
         guard event.keyCode == 48 else { return false }
+        guard RuneRootKeyboardWindowScope.owns(
+            eventWindowNumber: event.windowNumber,
+            workspaceWindowNumber: workspaceWindowReference.windowNumber,
+            keyWindowNumber: NSApp.keyWindow?.windowNumber
+        ) else { return false }
+        let navigationContext = keyboardNavigationContext
+        guard !navigationContext.hasBlockingPresentation else { return false }
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .function]
         guard event.modifierFlags.isDisjoint(with: disallowedModifiers) else { return false }
-        return textInputFocus == .contextSearch || textInputFocus == .resourceFilter
+        return textInputFocus != nil || !navigationContext.editableTextResponderActive
     }
 
     private func shouldHandleConfiguredActionKey(_ event: NSEvent) -> Bool {
@@ -6615,7 +6850,7 @@ public struct RuneRootView: View {
     }
 
     private func focusResourceFilterFromKeyBinding() -> Bool {
-        guard showsNamespaceAndFilterControls else { return false }
+        guard showsResourceFilterControls else { return false }
         textInputFocus = .resourceFilter
         keyboardPaneFocus = .content
         return true
@@ -6647,7 +6882,10 @@ public struct RuneRootView: View {
         case .config, .storage, .rbac:
             guard hasGenericManifestSelection else { return false }
             genericResourceManifestTab = .describe
-        case .overview, .events, .helm, .terminal:
+        case .helm:
+            guard selectedHelmInspectorMode == .operatorResource else { return false }
+            genericResourceManifestTab = .describe
+        case .overview, .events, .terminal:
             return false
         }
 
@@ -6682,7 +6920,10 @@ public struct RuneRootView: View {
         case .config, .storage, .rbac:
             guard hasGenericManifestSelection else { return false }
             genericResourceManifestTab = .yaml
-        case .overview, .events, .helm, .terminal:
+        case .helm:
+            guard selectedHelmInspectorMode == .operatorResource else { return false }
+            genericResourceManifestTab = .yaml
+        case .overview, .events, .terminal:
             return false
         }
 
@@ -6767,6 +7008,8 @@ public struct RuneRootView: View {
                     viewModel.saveCurrentResourceDescribe()
                 case .yaml:
                     viewModel.saveCurrentResourceYAML()
+                case .overview:
+                    return false
                 }
             }
         case .networking:
@@ -6790,6 +7033,8 @@ public struct RuneRootView: View {
                     viewModel.saveCurrentResourceDescribe()
                 case .yaml:
                     viewModel.saveCurrentResourceYAML()
+                case .overview:
+                    return false
                 }
             }
         case .config, .storage, .rbac:
@@ -6799,17 +7044,32 @@ public struct RuneRootView: View {
                 viewModel.saveCurrentResourceDescribe()
             case .yaml:
                 viewModel.saveCurrentResourceYAML()
+            case .overview:
+                return false
             }
         case .helm:
-            guard viewModel.state.selectedHelmRelease != nil else { return false }
-            switch helmInspectorTab {
-            case .values:
-                viewModel.saveCurrentHelmValues()
-            case .manifest:
-                viewModel.saveCurrentHelmManifest()
-            case .history:
-                viewModel.saveCurrentHelmHistory()
-            case .overview:
+            switch selectedHelmInspectorMode {
+            case .operatorResource:
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribe()
+                case .yaml:
+                    viewModel.saveCurrentResourceYAML()
+                case .overview:
+                    return false
+                }
+            case .release:
+                switch helmInspectorTab {
+                case .values:
+                    viewModel.saveCurrentHelmValues()
+                case .manifest:
+                    viewModel.saveCurrentHelmManifest()
+                case .history:
+                    viewModel.saveCurrentHelmHistory()
+                case .overview:
+                    return false
+                }
+            case .none:
                 return false
             }
         case .overview, .events, .terminal:
@@ -7032,8 +7292,14 @@ public struct RuneRootView: View {
             guard viewModel.state.selectedRBACResource != nil else { return }
             genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
         case .helm:
-            guard viewModel.state.selectedHelmRelease != nil else { return }
-            helmInspectorTab = advancedTab(current: helmInspectorTab, direction: direction)
+            switch selectedHelmInspectorMode {
+            case .operatorResource:
+                genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)
+            case .release:
+                helmInspectorTab = advancedTab(current: helmInspectorTab, direction: direction)
+            case .none:
+                return
+            }
         case .terminal:
             terminalInspectorTab = advancedTab(current: terminalInspectorTab, direction: direction)
         case .overview, .events:
@@ -7081,7 +7347,8 @@ public struct RuneRootView: View {
     }
 
     private func emitLayoutSnapshotIfNeeded() {
-        let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredWindowContentTopInset)
+        let measuredTopInset = workspaceWindowReference.measuredTopInset
+        let resolvedTopInset = RuneUILayoutMetrics.resolvedWindowContentTopInset(measuredInset: measuredTopInset)
         if let contentMinY = layoutProbeFrames[.content]?.minY,
            let headerMinY = layoutProbeFrames[.header]?.minY,
            let detailMinY = layoutProbeFrames[.detail]?.minY {
@@ -7095,7 +7362,7 @@ public struct RuneRootView: View {
         let snapshot = RuneRootLayoutSnapshot(
             section: viewModel.state.selectedSection,
             workloadKind: viewModel.state.selectedWorkloadKind,
-            measuredWindowTopInset: measuredWindowContentTopInset,
+            measuredWindowTopInset: measuredTopInset,
             resolvedWindowTopInset: resolvedTopInset,
             contentMinY: layoutProbeFrames[.content]?.minY,
             headerMinY: layoutProbeFrames[.header]?.minY,
@@ -7190,6 +7457,7 @@ public struct RuneRootView: View {
     }
 
     private func persistSidebarWidthIfNeeded(_ width: CGFloat) {
+        guard !debugDisableLayoutPersistence else { return }
         let clamped = clampedSidebarWidth(width)
         if abs(clamped - CGFloat(persistedSidebarWidth)) >= 1 {
             persistedSidebarWidth = Double(clamped)
@@ -7198,6 +7466,7 @@ public struct RuneRootView: View {
     }
 
     private func persistDetailWidthIfNeeded(_ width: CGFloat) {
+        guard !debugDisableLayoutPersistence else { return }
         let clamped = clampedDetailWidth(width, maxWidth: compactDetailMaxWidth)
         if abs(clamped - CGFloat(persistedDetailWidth)) >= 1 {
             persistedDetailWidth = Double(clamped)
@@ -7375,26 +7644,22 @@ public struct RuneRootView: View {
     }
 
     private var authDoctorDisclosureButton: some View {
-        Button {
-            withAnimation(.snappy(duration: 0.16)) {
-                isAuthDoctorPanelExpanded.toggle()
+        RuneDisclosureRow(
+            "Auth Doctor",
+            isExpanded: isAuthDoctorPanelExpanded,
+            fillsAvailableWidth: false,
+            help: isAuthDoctorPanelExpanded ? "Collapse Auth Doctor output" : "Expand Auth Doctor output",
+            action: {
+                withAnimation(.snappy(duration: 0.16)) {
+                    isAuthDoctorPanelExpanded.toggle()
+                }
             }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: isAuthDoctorPanelExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 10, alignment: .center)
-
-                Label("Auth Doctor", systemImage: "stethoscope")
-                    .font(.subheadline.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
-            }
-            .frame(minWidth: 154, minHeight: 30, alignment: .leading)
-            .contentShape(Rectangle())
+        ) {
+            Label("Auth Doctor", systemImage: "stethoscope")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
         }
-        .buttonStyle(.plain)
-        .help(isAuthDoctorPanelExpanded ? "Collapse Auth Doctor output" : "Expand Auth Doctor output")
+        .frame(minWidth: 154, alignment: .leading)
     }
 
     private func authDoctorActions(runLabel: String) -> some View {
@@ -7422,6 +7687,7 @@ public struct RuneRootView: View {
                 }
             } label: {
                 Label("Save Bundle", systemImage: "square.and.arrow.down")
+                    .runeMinimumInteractiveTarget()
             }
             .help("Save Auth Doctor diagnostics and support data.")
 
@@ -7682,16 +7948,12 @@ public struct RuneRootView: View {
     }
 
     private func contextUsageBadge(label: String, value: String) -> some View {
-        HStack(spacing: 4) {
-            Text(label + ":")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.bold))
-        }
-        .padding(.horizontal, RuneUILayoutMetrics.headerChipHorizontalPadding)
-        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-        .background(Color.secondary.opacity(0.14), in: Capsule())
+        RuneHeaderCapsule(
+            "\(label): \(value)",
+            role: .value,
+            systemImage: label == "CPU" ? "cpu" : "memorychip",
+            accessibilityLabel: "\(label) usage: \(value)"
+        )
     }
 
     private func contextUsageValue(_ value: Int?) -> String {
@@ -7699,58 +7961,6 @@ public struct RuneRootView: View {
             return "\(value)%"
         }
         return viewModel.state.isLoading ? "..." : "n/a"
-    }
-
-    private func overviewStatCard(
-        title: String,
-        count: Int,
-        symbol: String,
-        tint: Color,
-        isLoading: Bool = false,
-        isKeyboardFocused: Bool = false,
-        help: String? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Image(systemName: symbol)
-                        .foregroundStyle(tint)
-                    Spacer()
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if isLoading && count == 0 {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.85)
-                        .padding(.vertical, 5)
-                } else {
-                    HStack(spacing: 6) {
-                        Text("\(count)")
-                            .font(.title2.weight(.bold))
-                        if isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.75)
-                        }
-                    }
-                }
-                Text(title)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous)
-                    .stroke(isKeyboardFocused ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 1.5)
-            }
-        }
-        .buttonStyle(.plain)
-        .runeHelp(help ?? "Open \(title)", enabled: showHoverTooltips)
     }
 
     private func healthBadge(label: String, value: Int, color: Color) -> some View {
@@ -7847,19 +8057,12 @@ public struct RuneRootView: View {
     @ViewBuilder
     private func copyButton(value: String, label: String) -> some View {
         if normalizedCopyValue(value) != nil {
-            Button {
+            RuneIconButton(
+                "Copy \(label)",
+                systemImage: "doc.on.doc"
+            ) {
                 copyToClipboard(value)
-            } label: {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 12, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Copy \(label)")
-            .accessibilityLabel("Copy \(label)")
         }
     }
 
@@ -7880,53 +8083,35 @@ public struct RuneRootView: View {
     }
 
     private var detailRefreshButton: some View {
-        Button {
+        RuneIconButton(
+            "Refresh inspector",
+            systemImage: "arrow.clockwise"
+        ) {
             refreshDetailPane()
-        } label: {
-            Image(systemName: "arrow.clockwise")
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .help("Refresh inspector")
-        .accessibilityLabel("Refresh inspector")
     }
 
     private func refreshDetailPane() {
-        switch viewModel.state.selectedSection {
-        case .workloads:
-            switch viewModel.state.selectedWorkloadKind {
-            case .pod:
-                switch podInspectorTab {
-                case .logs:
-                    viewModel.reloadLogsForSelection()
-                case .describe, .yaml:
-                    viewModel.refreshResourceInspectorOnly()
-                default:
-                    viewModel.refreshCurrentView(debounced: false)
-                }
-            case .deployment:
-                switch deploymentInspectorTab {
-                case .unifiedLogs:
-                    viewModel.reloadLogsForSelection()
-                case .describe, .yaml:
-                    viewModel.refreshResourceInspectorOnly()
-                default:
-                    viewModel.refreshCurrentView(debounced: false)
-                }
-            default:
-                viewModel.refreshResourceInspectorOnly()
-            }
-        case .networking:
-            switch serviceInspectorTab {
-            case .unifiedLogs:
-                viewModel.reloadLogsForSelection()
-            case .describe, .yaml:
-                viewModel.refreshResourceInspectorOnly()
-            default:
-                viewModel.refreshCurrentView(debounced: false)
-            }
-        default:
+        let route = RuneInspectorRefreshRouting.route(
+            section: viewModel.state.selectedSection,
+            workloadKind: viewModel.state.selectedWorkloadKind,
+            podTab: podInspectorTab,
+            deploymentTab: deploymentInspectorTab,
+            serviceTab: serviceInspectorTab,
+            genericTab: genericResourceManifestTab,
+            helmTab: helmInspectorTab,
+            helmMode: selectedHelmInspectorMode
+        )
+
+        switch route {
+        case .currentView:
+            viewModel.refreshCurrentView(debounced: false)
+        case .resourceInspector:
             viewModel.refreshResourceInspectorOnly()
+        case .logs:
+            viewModel.reloadLogsForSelection()
+        case .helmInspector:
+            viewModel.refreshSelectedHelmInspector()
         }
     }
 
@@ -7963,15 +8148,6 @@ public struct RuneRootView: View {
 
     private func podOverviewSection(pod: PodSummary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            if shouldShowResourceNamespaceLabel(pod.namespace) {
-                inspectorInfoRow("Namespace", value: pod.namespace, symbol: "square.stack.3d.up")
-                Divider()
-                    .opacity(0.45)
-            }
-
-            podOverviewRow(title: "Status", value: pod.status, symbol: "waveform.path.ecg")
-            Divider()
-                .opacity(0.45)
             podOverviewRow(title: "Ready", value: pod.containersReady ?? "—", symbol: "checkmark.circle")
             podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
             podOverviewRow(title: "Age", value: pod.ageDescription, symbol: "clock")
@@ -8007,13 +8183,15 @@ public struct RuneRootView: View {
                 }
             }
 
-            Divider()
-                .opacity(0.45)
+        }
+    }
 
-            Button("Delete", role: .destructive) {
-                viewModel.requestDeleteSelectedResource()
+    private func podInspectorCoreInfo(_ pod: PodSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if shouldShowResourceNamespaceLabel(pod.namespace) {
+                inspectorInfoRow("Namespace", value: pod.namespace, symbol: "square.stack.3d.up")
             }
-            .disabled(!viewModel.canApplyClusterMutations)
+            inspectorInfoRow("Status", value: pod.status, symbol: "waveform.path.ecg")
         }
     }
 
@@ -8043,20 +8221,6 @@ public struct RuneRootView: View {
 
     private func deploymentOverviewSection(deployment: DeploymentSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if shouldShowResourceNamespaceLabel(deployment.namespace) {
-                inspectorInfoRow("Namespace", value: deployment.namespace, symbol: "square.stack.3d.up")
-                Divider()
-                    .opacity(0.45)
-            }
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(deploymentReplicaStatusColor(deployment))
-                    .frame(width: 8, height: 8)
-                Text(deploymentReplicaStatusText(deployment))
-                    .font(.body.weight(.semibold))
-            }
-
             WorkloadReplicaScaleControlsView(
                 label: "Replicas",
                 isDirty: deploymentScaleIsDirty(deployment),
@@ -8076,7 +8240,11 @@ public struct RuneRootView: View {
                     ? relatedReplicaSets
                     : relatedReplicaSets.filter { !isHistoricalDeploymentReplicaSet($0) }
 
-                ResourceRelationshipSection(title: "Related ReplicaSets") {
+                ResourceRelationshipSection(
+                    title: "Related ReplicaSets",
+                    rowCount: (shouldOfferReplicaSetHistoryLoad ? 1 : visibleReplicaSets.count)
+                        + ((historicalReplicaSetCount > 0 || shouldOfferReplicaSetHistoryLoad) ? 1 : 0)
+                ) {
                     if shouldOfferReplicaSetHistoryLoad {
                         ResourceRelationshipEmptyRow(
                             title: "History not loaded",
@@ -8095,14 +8263,25 @@ public struct RuneRootView: View {
                     }
 
                     if historicalReplicaSetCount > 0 || shouldOfferReplicaSetHistoryLoad {
-                        Button {
-                            if shouldOfferReplicaSetHistoryLoad {
-                                showsHistoricalDeploymentReplicaSets = true
-                                viewModel.refreshReplicaSetsForCurrentNamespace()
-                            } else {
-                                showsHistoricalDeploymentReplicaSets.toggle()
+                        RuneDisclosureRow(
+                            shouldOfferReplicaSetHistoryLoad
+                                ? "Deployment history, not loaded"
+                                : "Deployment history, \(historicalReplicaSetCount) inactive ReplicaSets",
+                            isExpanded: showsHistoricalDeploymentReplicaSets,
+                            help: shouldOfferReplicaSetHistoryLoad
+                                ? "Load ReplicaSets for rollout history and debugging."
+                                : showsHistoricalDeploymentReplicaSets
+                                ? "Hide inactive ReplicaSets with 0/0 ready replicas."
+                                : "Show inactive ReplicaSets kept for rollout history and debugging.",
+                            action: {
+                                if shouldOfferReplicaSetHistoryLoad {
+                                    showsHistoricalDeploymentReplicaSets = true
+                                    viewModel.refreshReplicaSetsForCurrentNamespace()
+                                } else {
+                                    showsHistoricalDeploymentReplicaSets.toggle()
+                                }
                             }
-                        } label: {
+                        ) {
                             HStack(spacing: 8) {
                                 Image(systemName: "clock.arrow.circlepath")
                                     .frame(width: 16)
@@ -8115,26 +8294,14 @@ public struct RuneRootView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer(minLength: 0)
-                                Image(systemName: showsHistoricalDeploymentReplicaSets ? "chevron.up" : "chevron.down")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
                             }
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .help(
-                            shouldOfferReplicaSetHistoryLoad
-                                ? "Load ReplicaSets for rollout history and debugging."
-                                : showsHistoricalDeploymentReplicaSets
-                                ? "Hide inactive ReplicaSets with 0/0 ready replicas."
-                                : "Show inactive ReplicaSets kept for rollout history and debugging."
-                        )
                     }
                 }
             }
 
             let relatedPods = viewModel.selectedDeploymentRelatedPods
-            ResourceRelationshipSection(title: "Related Pods") {
+            ResourceRelationshipSection(title: "Related Pods", rowCount: max(relatedPods.count, 1)) {
                 if relatedPods.isEmpty {
                     ResourceRelationshipEmptyRow(
                         title: "No related pods in snapshot",
@@ -8158,51 +8325,66 @@ public struct RuneRootView: View {
                 RelatedEventsRelationshipSection(events: relatedEvents, open: viewModel.openRelatedEvent)
             }
 
-            inspectorActionButtonRow {
-                Button("Restart Rollout") {
-                    viewModel.requestRolloutRestartSelectedDeployment()
+        }
+    }
+
+    private func deploymentInspectorCoreInfo(_ deployment: DeploymentSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if shouldShowResourceNamespaceLabel(deployment.namespace) {
+                inspectorInfoRow("Namespace", value: deployment.namespace, symbol: "square.stack.3d.up")
+            }
+            RuneInspectorInfoRow("Status", systemImage: "shippingbox") {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(deploymentReplicaStatusColor(deployment))
+                        .frame(width: 8, height: 8)
+                    Text(deploymentReplicaStatusText(deployment))
+                        .font(.body.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.canApplyClusterMutations)
-
-                Button(appString(.applyYAML)) {
-                    viewModel.requestApplySelectedResourceYAML()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!viewModel.canApplyClusterMutations)
-
-                Menu {
-                    Button("Export Pod Logs ZIP") {
-                        viewModel.saveDeploymentPodLogsZip()
-                    }
-
-                    Button("Save Pod Logs ZIP to Export Folder") {
-                        viewModel.saveDeploymentPodLogsZipToExportFolder(openAfterSave: false)
-                    }
-
-                    Button("Save Pod Logs ZIP and Open") {
-                        viewModel.saveDeploymentPodLogsZipToExportFolder(openAfterSave: true)
-                    }
-                } label: {
-                    Label("Export Pod Logs ZIP", systemImage: "archivebox")
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.isLoadingLogs)
-
-                Button("Export Pod YAML ZIP") {
-                    viewModel.saveDeploymentPodYAMLZip()
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.state.isLoadingResourceDetails)
-
-                Button("Delete", role: .destructive) {
-                    viewModel.requestDeleteSelectedResource()
-                }
-                .disabled(!viewModel.canApplyClusterMutations)
-
-                Spacer(minLength: 0)
             }
         }
+    }
+
+    @ViewBuilder
+    private var deploymentInspectorActions: some View {
+        Button("Restart Rollout") {
+            viewModel.requestRolloutRestartSelectedDeployment()
+        }
+        .buttonStyle(.bordered)
+        .disabled(!viewModel.canApplyClusterMutations)
+
+        Button(appString(.applyYAML)) {
+            viewModel.requestApplySelectedResourceYAML()
+        }
+        .buttonStyle(.bordered)
+        .disabled(!viewModel.canApplyClusterMutations)
+
+        Menu {
+            Button("Export Pod Logs ZIP") {
+                viewModel.saveDeploymentPodLogsZip()
+            }
+            Button("Save Pod Logs ZIP to Export Folder") {
+                viewModel.saveDeploymentPodLogsZipToExportFolder(openAfterSave: false)
+            }
+            Button("Save Pod Logs ZIP and Open") {
+                viewModel.saveDeploymentPodLogsZipToExportFolder(openAfterSave: true)
+            }
+        } label: {
+            Label("Export Pod Logs ZIP", systemImage: "archivebox")
+        }
+        .buttonStyle(.bordered)
+        .disabled(viewModel.state.isLoadingLogs)
+
+        Button("Export Pod YAML ZIP") {
+            viewModel.saveDeploymentPodYAMLZip()
+        }
+        .buttonStyle(.bordered)
+        .disabled(viewModel.state.isLoadingResourceDetails)
+
+        Button("Delete", role: .destructive) {
+            viewModel.requestDeleteSelectedResource()
+        }
+        .disabled(!viewModel.canApplyClusterMutations)
     }
 
     private func isHistoricalDeploymentReplicaSet(_ replicaSet: ClusterResourceSummary) -> Bool {
@@ -8212,23 +8394,20 @@ public struct RuneRootView: View {
             .hasPrefix("0/0 ready")
     }
 
-    private func inspectorEmptyState(_ message: String, symbol: String, detail: String = "Select an item in the center list to inspect details and actions here.") -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(message)
-                .font(.subheadline.weight(.semibold))
-            Text(detail)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    private func inspectorEmptyState(_ state: RuneContentState, symbol: String) -> some View {
+        RunePaneContentStateView(
+            state,
+            style: .plain,
+            graphicSystemImage: symbol
+        )
     }
 
     private var namespaceSuggestions: [String] {
         viewModel.namespaceOptions
+    }
+
+    private var hasAvailableKubernetesContexts: Bool {
+        !viewModel.contextMenuOptions.isEmpty
     }
 
     private var manualNamespaceMenuOptions: [String] {

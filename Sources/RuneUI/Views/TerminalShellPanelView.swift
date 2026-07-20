@@ -32,6 +32,7 @@ struct TerminalShellPanelView: View {
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
+    @Environment(\.runeThemePalette) private var runeThemePalette
     @State private var isInputFocused = false
     @State private var commandHistory: [String] = []
     @State private var commandHistoryIndex: Int?
@@ -40,6 +41,10 @@ struct TerminalShellPanelView: View {
 
     private var terminalFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(storedTerminalFontSize))
+    }
+
+    private var terminalPromptLayout: TerminalPromptLayoutMetrics {
+        TerminalPromptLayoutMetrics(fontSize: terminalFontSize)
     }
 
     private var activeTabLabel: String? {
@@ -281,6 +286,7 @@ struct TerminalShellPanelView: View {
             .disabled(!canSaveAllTranscripts)
         } label: {
             Label("Export", systemImage: "square.and.arrow.down")
+                .runeMinimumInteractiveTarget()
         }
         .menuStyle(.button)
         .controlSize(.small)
@@ -305,7 +311,8 @@ struct TerminalShellPanelView: View {
                     }
                     .labelsHidden()
                     .controlSize(.small)
-                    .frame(width: 340, height: 26, alignment: .leading)
+                    .frame(width: 340, alignment: .leading)
+                    .runeMinimumInteractiveTarget(alignment: .leading)
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -342,7 +349,7 @@ struct TerminalShellPanelView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .frame(height: 24)
+            .frame(height: terminalPromptLayout.controlHeight)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color(nsColor: canSendInput ? .textBackgroundColor : .controlBackgroundColor).opacity(0.72))
@@ -362,17 +369,7 @@ struct TerminalShellPanelView: View {
     }
 
     private var multilinePasteConfirmationNote: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "return")
-                .font(.caption.weight(.semibold))
-            Text("Multiline paste staged. Press Return again to send.")
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-        }
-        .foregroundStyle(Color.accentColor)
-        .opacity(pendingMultilinePasteConfirmation ? 1 : 0)
-        .frame(height: 18, alignment: .leading)
-        .accessibilityHidden(!pendingMultilinePasteConfirmation)
+        TerminalMultilinePasteNotice(isActive: pendingMultilinePasteConfirmation)
     }
 
     private func statusBadge(_ status: PodTerminalSessionStatus) -> some View {
@@ -380,8 +377,11 @@ struct TerminalShellPanelView: View {
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(TerminalStatusStyling.color(status).opacity(0.16), in: Capsule())
-            .foregroundStyle(TerminalStatusStyling.color(status))
+            .background(
+                TerminalStatusStyling.color(status, palette: runeThemePalette).opacity(0.16),
+                in: Capsule()
+            )
+            .foregroundStyle(TerminalStatusStyling.color(status, palette: runeThemePalette))
     }
 
     private var draftBadge: some View {
@@ -533,10 +533,15 @@ struct TerminalShellPanelView: View {
 
     private func handleShellPodSelectionChange(_ podID: String) {
         guard !podID.isEmpty else { return }
-        if let session, podID == "\(session.namespace)/\(session.podName)" {
+        let containerName = selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName
+        if let session,
+           podID == "\(session.namespace)/\(session.podName)",
+           session.containerName == containerName {
             return
         }
-        if let matchingSession = sessions.first(where: { "\($0.namespace)/\($0.podName)" == podID }) {
+        if let matchingSession = sessions.first(where: {
+            "\($0.namespace)/\($0.podName)" == podID && $0.containerName == containerName
+        }) {
             onSelectSession(matchingSession.id)
         } else {
             onComposeNewSession()
@@ -563,15 +568,60 @@ struct TerminalShellPanelView: View {
 
 }
 
-private enum TerminalPromptPalette {
-    static let inputTextColor = NSColor(calibratedWhite: 0.92, alpha: 1)
-    static let disabledInputTextColor = NSColor(calibratedWhite: 0.58, alpha: 1)
-    static let selectedInputTextColor = NSColor.white
-    static let selectionBackgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.34)
-    static let insertionPointColor = NSColor.controlAccentColor
+struct TerminalMultilinePasteNotice: View {
+    let isActive: Bool
+
+    @ViewBuilder
+    var body: some View {
+        if isActive {
+            HStack(spacing: 6) {
+                Image(systemName: "return")
+                    .font(.caption.weight(.semibold))
+                Text("Multiline paste staged. Press Return again to send.")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color.accentColor)
+            .frame(height: 18, alignment: .leading)
+            .accessibilityLabel("Multiline paste staged. Press Return again to send.")
+        }
+    }
 }
 
-private struct TerminalPromptTextEditor: NSViewRepresentable {
+struct TerminalPromptLayoutMetrics: Equatable {
+    static let minimumControlHeight: CGFloat = 24
+    static let horizontalInset: CGFloat = 7
+    static let verticalInset: CGFloat = 3
+
+    let fontSize: CGFloat
+    let lineHeight: CGFloat
+    let textContainerHeight: CGFloat
+    let controlHeight: CGFloat
+
+    init(fontSize: CGFloat) {
+        let clampedFontSize = CGFloat(RuneSettingsKeys.clampedTerminalFontSize(Double(fontSize)))
+        let font = NSFont.monospacedSystemFont(ofSize: clampedFontSize, weight: .regular)
+        let measuredLineHeight = ceil(font.ascender - font.descender + font.leading)
+
+        self.fontSize = clampedFontSize
+        lineHeight = max(1, measuredLineHeight)
+        textContainerHeight = max(1, measuredLineHeight)
+        controlHeight = max(
+            Self.minimumControlHeight,
+            measuredLineHeight + Self.verticalInset * 2
+        )
+    }
+}
+
+enum TerminalPromptPalette {
+    static var inputTextColor: NSColor { .labelColor }
+    static var disabledInputTextColor: NSColor { .disabledControlTextColor }
+    static var selectedInputTextColor: NSColor { .selectedTextColor }
+    static var selectionBackgroundColor: NSColor { .selectedTextBackgroundColor }
+    static var insertionPointColor: NSColor { .controlAccentColor }
+}
+
+struct TerminalPromptTextEditor: NSViewRepresentable {
     @Binding var text: String
     let fontSize: CGFloat
     let isEnabled: Bool
@@ -641,6 +691,7 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
     }
 
     private func configure(_ textView: TerminalPromptTextView) {
+        let layout = TerminalPromptLayoutMetrics(fontSize: fontSize)
         textView.isEditable = isEnabled
         textView.isSelectable = true
         textView.isRichText = false
@@ -658,9 +709,12 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = false
         textView.minSize = .zero
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: layout.controlHeight)
         textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 7, height: 3)
+        textView.textContainerInset = NSSize(
+            width: TerminalPromptLayoutMetrics.horizontalInset,
+            height: TerminalPromptLayoutMetrics.verticalInset
+        )
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         let promptFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
@@ -681,13 +735,17 @@ private struct TerminalPromptTextEditor: NSViewRepresentable {
     }
 
     private func layoutTextView(_ textView: TerminalPromptTextView, in scrollView: NSScrollView) {
+        let layout = TerminalPromptLayoutMetrics(fontSize: fontSize)
         let viewportSize = scrollView.contentView.bounds.size
         let resolvedWidth = max(viewportSize.width, 1)
-        let resolvedSize = NSSize(width: resolvedWidth, height: 24)
+        let resolvedSize = NSSize(width: resolvedWidth, height: layout.controlHeight)
         textView.frame = NSRect(origin: .zero, size: resolvedSize)
         textView.minSize = resolvedSize
         textView.maxSize = resolvedSize
-        textView.textContainer?.containerSize = resolvedSize
+        textView.textContainer?.containerSize = NSSize(
+            width: max(1, resolvedWidth - TerminalPromptLayoutMetrics.horizontalInset * 2),
+            height: layout.textContainerHeight
+        )
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

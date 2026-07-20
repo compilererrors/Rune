@@ -40,7 +40,7 @@ enum RuneSurfaceKind {
         case .panel:
             return Color(nsColor: .controlBackgroundColor).opacity(0.72)
         case .inset:
-            return Color(nsColor: .controlBackgroundColor).opacity(0.72)
+            return Color(nsColor: .textBackgroundColor).opacity(0.58)
         case .editor:
             return Color(nsColor: .textBackgroundColor).opacity(0.92)
         case let .listRow(isSelected):
@@ -86,14 +86,13 @@ enum RuneSurfaceKind {
 
 struct RuneSurfaceBackground: View {
     let kind: RuneSurfaceKind
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     var body: some View {
-        let theme = RuneAppearanceTheme.resolved(appearanceThemeRaw)
         RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
-            .fill(kind.fill(theme: theme))
+            .fill(kind.fill(theme: resolvedTheme))
             .overlay {
-                if let stroke = kind.stroke(theme: theme) {
+                if let stroke = kind.stroke(theme: resolvedTheme) {
                     RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
                         .strokeBorder(stroke, lineWidth: 1)
                 }
@@ -134,44 +133,86 @@ struct RuneChip<Content: View>: View {
     }
 }
 
-struct RuneSelectionCheckboxButton: View {
-    let isSelected: Bool
+/// Compact icon affordance with a stable macOS hit target and semantic states.
+struct RuneIconButton: View {
+    let systemImage: String
     let accessibilityLabel: String
-    let selectedHelp: String
-    let deselectedHelp: String
-    let onToggle: () -> Void
+    let helpText: String
+    let isSelected: Bool?
+    let isDisabled: Bool
+    let selectedTint: Color?
+    let action: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     init(
-        isSelected: Bool,
-        accessibilityLabel: String,
-        selectedHelp: String,
-        deselectedHelp: String,
-        onToggle: @escaping () -> Void
+        _ accessibilityLabel: String,
+        systemImage: String,
+        help: String? = nil,
+        isSelected: Bool? = nil,
+        isDisabled: Bool = false,
+        selectedTint: Color? = nil,
+        action: @escaping () -> Void
     ) {
-        self.isSelected = isSelected
+        self.systemImage = systemImage
         self.accessibilityLabel = accessibilityLabel
-        self.selectedHelp = selectedHelp
-        self.deselectedHelp = deselectedHelp
-        self.onToggle = onToggle
+        helpText = help ?? accessibilityLabel
+        self.isSelected = isSelected
+        self.isDisabled = isDisabled
+        self.selectedTint = selectedTint
+        self.action = action
     }
 
     var body: some View {
-        Toggle(
-            isOn: Binding(
-                get: { isSelected },
-                set: { _ in onToggle() }
-            )
-        ) {
-            Text(accessibilityLabel)
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(
+                    width: RuneUILayoutMetrics.iconButtonSize,
+                    height: RuneUILayoutMetrics.iconButtonSize
+                )
+                .contentShape(Rectangle())
         }
-        .toggleStyle(.checkbox)
-        .labelsHidden()
-        .controlSize(.small)
-        .frame(width: 22, height: 22, alignment: .center)
+        .buttonStyle(.plain)
+        .foregroundStyle(foregroundColor)
+        .background {
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
+                .fill(isSelected == true ? selectionColor.opacity(0.16) : Color.clear)
+        }
         .contentShape(Rectangle())
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.52 : 1)
+        .help(helpText)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(isSelected ? selectedHelp : deselectedHelp)
+        .modifier(RuneIconButtonSelectionAccessibilityModifier(isSelected: isSelected))
+    }
+
+    private var selectionColor: Color {
+        selectedTint ?? runeThemePalette?.accent ?? Color.accentColor
+    }
+
+    private var foregroundColor: Color {
+        if isDisabled {
+            return runeThemePalette?.mutedText ?? Color.secondary
+        }
+        if isSelected == true {
+            return selectionColor
+        }
+        return runeThemePalette?.secondaryText ?? Color.secondary
+    }
+}
+
+private struct RuneIconButtonSelectionAccessibilityModifier: ViewModifier {
+    let isSelected: Bool?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let isSelected {
+            content
+                .accessibilityValue(isSelected ? "Selected" : "Not selected")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+        } else {
+            content
+        }
     }
 }
 
@@ -265,6 +306,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
 struct RuneNoticeBanner: View {
     let notice: RuneUserNotice
     let onDismiss: () -> Void
+    @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -287,17 +329,12 @@ struct RuneNoticeBanner: View {
 
             Spacer(minLength: 8)
 
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Dismiss")
-            .accessibilityLabel("Dismiss notice")
+            RuneIconButton(
+                "Dismiss notice",
+                systemImage: "xmark",
+                help: "Dismiss",
+                action: onDismiss
+            )
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -310,7 +347,7 @@ struct RuneNoticeBanner: View {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .strokeBorder(tint.opacity(0.28), lineWidth: 1)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     private var symbolName: String {
@@ -327,32 +364,12 @@ struct RuneNoticeBanner: View {
     private var tint: Color {
         switch notice.severity {
         case .info:
-            return .blue
+            return RuneSemanticColorRole.info.color(in: runeThemePalette)
         case .warning:
-            return .orange
+            return RuneSemanticColorRole.warning.color(in: runeThemePalette)
         case .error:
-            return .red
+            return RuneSemanticColorRole.danger.color(in: runeThemePalette)
         }
-    }
-}
-
-struct RuneInspectorSection<Content: View>: View {
-    let padding: CGFloat
-    @ViewBuilder var content: Content
-
-    init(
-        padding: CGFloat = 14,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.padding = padding
-        self.content = content()
-    }
-
-    var body: some View {
-        content
-            .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RuneSurfaceBackground(kind: .inset))
     }
 }
 
@@ -395,7 +412,7 @@ struct RuneInspectorInfoRow<Value: View>: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 14, alignment: .center)
             Text(title)
-                .font(.caption.weight(.semibold))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -470,19 +487,8 @@ struct RuneDialogCloseButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .semibold))
-                .frame(
-                    width: RuneUILayoutMetrics.dialogIconButtonSize,
-                    height: RuneUILayoutMetrics.dialogIconButtonSize
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
+        RuneIconButton(accessibilityLabel, systemImage: "xmark", action: action)
         .keyboardShortcut(.cancelAction)
-        .help(accessibilityLabel)
-        .accessibilityLabel(accessibilityLabel)
     }
 }
 
@@ -499,27 +505,6 @@ extension View {
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: alignment)
             .background(RuneSurfaceBackground(kind: .inset))
-    }
-
-    func runeEditorCard(padding: CGFloat = 10, alignment: Alignment = .leading) -> some View {
-        self
-            .padding(padding)
-            .frame(maxWidth: .infinity, alignment: alignment)
-            .background(RuneSurfaceBackground(kind: .editor))
-    }
-
-    func runeListRowCard(
-        isSelected: Bool,
-        horizontalPadding: CGFloat = 10,
-        verticalPadding: CGFloat = 6,
-        alignment: Alignment = .leading
-    ) -> some View {
-        self
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
-            .frame(maxWidth: .infinity, alignment: alignment)
-            .background(RuneSurfaceBackground(kind: .listRow(isSelected: isSelected)))
-            .contentShape(Rectangle())
     }
 
     func runeSidebarSelection(isSelected: Bool) -> some View {

@@ -78,7 +78,21 @@ enum ResourceStructuredLogAnalyzer {
     }()
 
     static func analyze(text: String, duplicateLimit: Int = 8) -> ResourceStructuredLogSummary {
+        try! analyze(
+            text: text,
+            duplicateLimit: duplicateLimit,
+            cancellationCheck: {}
+        )
+    }
+
+    static func analyze(
+        text: String,
+        duplicateLimit: Int = 8,
+        cancellationCheck: () throws -> Void
+    ) throws -> ResourceStructuredLogSummary {
+        try cancellationCheck()
         let bytes = Array(text.utf8)
+        try cancellationCheck()
         guard !bytes.isEmpty else {
             return ResourceStructuredLogSummary(
                 totalLineCount: 0,
@@ -89,24 +103,35 @@ enum ResourceStructuredLogAnalyzer {
             )
         }
 
-        guard looksStructured(bytes: bytes) else {
-            let lines = logLines(in: text)
+        guard try looksStructured(bytes: bytes, cancellationCheck: cancellationCheck) else {
+            let lines = try logLines(in: bytes, cancellationCheck: cancellationCheck)
             return ResourceStructuredLogSummary(
                 totalLineCount: lines.count,
                 jsonLineCount: 0,
                 isStructured: false,
                 fields: [],
-                duplicateLines: duplicateLines(in: lines, duplicateLimit: duplicateLimit)
+                duplicateLines: try duplicateLines(
+                    in: lines,
+                    duplicateLimit: duplicateLimit,
+                    cancellationCheck: cancellationCheck
+                )
             )
         }
 
-        return analyzeStructuredBytes(bytes, duplicateLimit: duplicateLimit)
+        return try analyzeStructuredBytes(
+            bytes,
+            duplicateLimit: duplicateLimit,
+            cancellationCheck: cancellationCheck
+        )
     }
 
-    private static func looksStructured(bytes: [UInt8]) -> Bool {
+    private static func looksStructured(
+        bytes: [UInt8],
+        cancellationCheck: () throws -> Void
+    ) throws -> Bool {
         var sampled = 0
         var jsonCandidates = 0
-        forEachLineRange(in: bytes) { start, end, shouldStop in
+        try forEachLineRange(in: bytes, cancellationCheck: cancellationCheck) { start, end, shouldStop in
             guard !isBlank(bytes, start: start, end: end) else { return }
             sampled += 1
             if jsonRange(in: bytes, start: start, end: end) != nil {
@@ -116,11 +141,16 @@ enum ResourceStructuredLogAnalyzer {
                 shouldStop = true
             }
         }
+        try cancellationCheck()
         guard sampled > 0 else { return false }
         return Double(jsonCandidates) / Double(sampled) >= structuredSampleThreshold
     }
 
-    private static func analyzeStructuredBytes(_ bytes: [UInt8], duplicateLimit: Int) -> ResourceStructuredLogSummary {
+    private static func analyzeStructuredBytes(
+        _ bytes: [UInt8],
+        duplicateLimit: Int,
+        cancellationCheck: () throws -> Void
+    ) throws -> ResourceStructuredLogSummary {
         var totalLineCount = 0
         var jsonLineCount = 0
         var fieldCounts = Array(repeating: 0, count: fieldDefinitions.count)
@@ -128,14 +158,20 @@ enum ResourceStructuredLogAnalyzer {
         var fieldSampleQueries = Array(repeating: [ResourceStructuredLogFieldSampleSearch](), count: fieldDefinitions.count)
         var duplicateCounts: [UInt64: (count: Int, sampleLine: String, fingerprint: String)] = [:]
 
-        forEachLineRange(in: bytes) { lineStart, lineEnd, _ in
+        try forEachLineRange(in: bytes, cancellationCheck: cancellationCheck) { lineStart, lineEnd, _ in
+            try cancellationCheck()
             totalLineCount += 1
             guard let jsonRange = jsonRange(in: bytes, start: lineStart, end: lineEnd) else { return }
             jsonLineCount += 1
 
             var levelRange: Range<Int>?
             var messageRange: Range<Int>?
-            scanJSONFields(in: bytes, start: jsonRange.lowerBound, end: jsonRange.upperBound) { fieldIndex, keyStart, keyEnd, valueStart, valueEnd in
+            try scanJSONFields(
+                in: bytes,
+                start: jsonRange.lowerBound,
+                end: jsonRange.upperBound,
+                cancellationCheck: cancellationCheck
+            ) { fieldIndex, keyStart, keyEnd, valueStart, valueEnd in
                 fieldCounts[fieldIndex] += 1
                 if fieldSamples[fieldIndex].count < sampleValueLimit {
                     let value = String(decoding: bytes[valueStart..<valueEnd], as: UTF8.self)
@@ -204,6 +240,8 @@ enum ResourceStructuredLogAnalyzer {
             }
         }
 
+        try cancellationCheck()
+
         let fields = fieldDefinitions.enumerated().compactMap { index, definition -> ResourceStructuredLogField? in
             let count = fieldCounts[index]
             guard count > 0 else { return nil }
@@ -216,22 +254,40 @@ enum ResourceStructuredLogAnalyzer {
             )
         }
 
-        let duplicates = duplicateCounts
-            .filter { $0.value.count > 1 }
-            .sorted {
-                if $0.value.count != $1.value.count {
-                    return $0.value.count > $1.value.count
+        let boundedDuplicateLimit = max(0, duplicateLimit)
+        var rankedDuplicates: [(hash: UInt64, count: Int, sampleLine: String, fingerprint: String)] = []
+        if boundedDuplicateLimit > 0 {
+            for (index, duplicate) in duplicateCounts.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cancellationCheck()
                 }
-                return $0.key < $1.key
+                guard duplicate.value.count > 1 else { continue }
+                rankedDuplicates.append((
+                    hash: duplicate.key,
+                    count: duplicate.value.count,
+                    sampleLine: duplicate.value.sampleLine,
+                    fingerprint: duplicate.value.fingerprint
+                ))
+                rankedDuplicates.sort {
+                    if $0.count != $1.count {
+                        return $0.count > $1.count
+                    }
+                    return $0.hash < $1.hash
+                }
+                if rankedDuplicates.count > boundedDuplicateLimit {
+                    rankedDuplicates.removeLast()
+                }
             }
-            .prefix(max(0, duplicateLimit))
-            .map {
-                ResourceDuplicateLogLine(
-                    fingerprint: $0.value.fingerprint,
-                    count: $0.value.count,
-                    sampleLine: $0.value.sampleLine
-                )
-            }
+        }
+        let duplicates = rankedDuplicates.map {
+            ResourceDuplicateLogLine(
+                fingerprint: $0.fingerprint,
+                count: $0.count,
+                sampleLine: $0.sampleLine
+            )
+        }
+
+        try cancellationCheck()
 
         return ResourceStructuredLogSummary(
             totalLineCount: totalLineCount,
@@ -242,33 +298,42 @@ enum ResourceStructuredLogAnalyzer {
         )
     }
 
-    private static func logLines(in text: String) -> [String] {
+    private static func logLines(
+        in bytes: [UInt8],
+        cancellationCheck: () throws -> Void
+    ) throws -> [String] {
         var lines: [String] = []
-        lines.reserveCapacity(max(1, text.utf8.count / 96))
-        text.enumerateLines { line, _ in
-            lines.append(line)
+        lines.reserveCapacity(max(1, bytes.count / 96))
+        try forEachLineRange(in: bytes, cancellationCheck: cancellationCheck) { start, end, _ in
+            lines.append(String(decoding: bytes[start..<end], as: UTF8.self))
         }
+        try cancellationCheck()
         return lines
     }
 
     private static func forEachLineRange(
         in bytes: [UInt8],
-        _ body: (_ start: Int, _ end: Int, _ shouldStop: inout Bool) -> Void
-    ) {
+        cancellationCheck: () throws -> Void,
+        _ body: (_ start: Int, _ end: Int, _ shouldStop: inout Bool) throws -> Void
+    ) throws {
         var start = 0
         var index = 0
         var shouldStop = false
         while index < bytes.count, !shouldStop {
+            if index.isMultiple(of: 16_384) {
+                try cancellationCheck()
+            }
             if bytes[index] == UInt8(ascii: "\n") {
                 let end = index > start && bytes[index - 1] == UInt8(ascii: "\r") ? index - 1 : index
-                body(start, end, &shouldStop)
+                try body(start, end, &shouldStop)
                 start = index + 1
             }
             index += 1
         }
         if start < bytes.count, !shouldStop {
-            body(start, bytes.count, &shouldStop)
+            try body(start, bytes.count, &shouldStop)
         }
+        try cancellationCheck()
     }
 
     private static func lineRanges(in bytes: [UInt8]) -> [(start: Int, end: Int)] {
@@ -333,17 +398,26 @@ enum ResourceStructuredLogAnalyzer {
         in bytes: [UInt8],
         start: Int,
         end: Int,
+        cancellationCheck: () throws -> Void,
         onField: (Int, Int, Int, Int, Int) -> Void
-    ) {
+    ) throws {
         var cursor = start
         while cursor < end {
+            if (cursor - start).isMultiple(of: 4_096) {
+                try cancellationCheck()
+            }
             guard bytes[cursor] == UInt8(ascii: "\"") else {
                 cursor += 1
                 continue
             }
 
             let keyStart = cursor + 1
-            guard let keyEnd = quotedStringEnd(in: bytes, start: keyStart, end: end) else { return }
+            guard let keyEnd = try quotedStringEnd(
+                in: bytes,
+                start: keyStart,
+                end: end,
+                cancellationCheck: cancellationCheck
+            ) else { return }
             cursor = keyEnd + 1
             skipWhitespace(in: bytes, cursor: &cursor, end: end)
             guard cursor < end, bytes[cursor] == UInt8(ascii: ":") else { continue }
@@ -354,7 +428,12 @@ enum ResourceStructuredLogAnalyzer {
             let fieldIndex = fieldIndex(forKeyBytes: bytes, start: keyStart, end: keyEnd)
             if bytes[cursor] == UInt8(ascii: "\"") {
                 let valueStart = cursor + 1
-                guard let valueEnd = quotedStringEnd(in: bytes, start: valueStart, end: end) else { return }
+                guard let valueEnd = try quotedStringEnd(
+                    in: bytes,
+                    start: valueStart,
+                    end: end,
+                    cancellationCheck: cancellationCheck
+                ) else { return }
                 if let fieldIndex {
                     onField(fieldIndex, keyStart, keyEnd, valueStart, valueEnd)
                 }
@@ -374,39 +453,73 @@ enum ResourceStructuredLogAnalyzer {
                 }
             }
         }
+        try cancellationCheck()
     }
 
-    private static func duplicateLines(in lines: [String], duplicateLimit: Int) -> [ResourceDuplicateLogLine] {
+    private static func duplicateLines(
+        in lines: [String],
+        duplicateLimit: Int,
+        cancellationCheck: () throws -> Void
+    ) throws -> [ResourceDuplicateLogLine] {
         var counts: [String: (count: Int, sampleLine: String)] = [:]
-        for line in lines {
+        for (index, line) in lines.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             let fingerprint = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !fingerprint.isEmpty else { continue }
             var entry = counts[fingerprint, default: (0, line)]
             entry.count += 1
             counts[fingerprint] = entry
         }
-        return counts
-            .filter { $0.value.count > 1 }
-            .sorted {
-                if $0.value.count != $1.value.count {
-                    return $0.value.count > $1.value.count
+        try cancellationCheck()
+        let boundedDuplicateLimit = max(0, duplicateLimit)
+        var rankedDuplicates: [(fingerprint: String, count: Int, sampleLine: String)] = []
+        if boundedDuplicateLimit > 0 {
+            for (index, duplicate) in counts.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cancellationCheck()
                 }
-                return $0.key < $1.key
+                guard duplicate.value.count > 1 else { continue }
+                rankedDuplicates.append((
+                    fingerprint: duplicate.key,
+                    count: duplicate.value.count,
+                    sampleLine: duplicate.value.sampleLine
+                ))
+                rankedDuplicates.sort {
+                    if $0.count != $1.count {
+                        return $0.count > $1.count
+                    }
+                    return $0.fingerprint < $1.fingerprint
+                }
+                if rankedDuplicates.count > boundedDuplicateLimit {
+                    rankedDuplicates.removeLast()
+                }
             }
-            .prefix(max(0, duplicateLimit))
-            .map {
-                ResourceDuplicateLogLine(
-                    fingerprint: $0.key,
-                    count: $0.value.count,
-                    sampleLine: $0.value.sampleLine
-                )
-            }
+        }
+        let duplicates = rankedDuplicates.map {
+            ResourceDuplicateLogLine(
+                fingerprint: $0.fingerprint,
+                count: $0.count,
+                sampleLine: $0.sampleLine
+            )
+        }
+        try cancellationCheck()
+        return duplicates
     }
 
-    private static func quotedStringEnd(in bytes: [UInt8], start: Int, end: Int) -> Int? {
+    private static func quotedStringEnd(
+        in bytes: [UInt8],
+        start: Int,
+        end: Int,
+        cancellationCheck: () throws -> Void
+    ) throws -> Int? {
         var cursor = start
         var isEscaped = false
         while cursor < end {
+            if (cursor - start).isMultiple(of: 4_096) {
+                try cancellationCheck()
+            }
             let byte = bytes[cursor]
             if isEscaped {
                 isEscaped = false

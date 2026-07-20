@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 import XCTest
@@ -11,6 +12,25 @@ import XCTest
 @testable import RuneUI
 
 final class RuneAppStateTests: XCTestCase {
+    @MainActor
+    func testUserDefaultsNotificationsPostedOffMainThreadAreDeliveredSafely() async {
+        let viewModel = RuneAppViewModel()
+
+        await Task.detached {
+            NotificationCenter.default.post(
+                name: UserDefaults.didChangeNotification,
+                object: UserDefaults.standard
+            )
+        }.value
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+        withExtendedLifetime(viewModel) {}
+    }
+
     @MainActor
     func testResourceSettersDoNotPublishWhenValuesAreUnchanged() {
         let state = RuneAppState()
@@ -201,6 +221,59 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(review.redactedPreview.contains("token: <redacted>"))
         XCTAssertTrue(review.redactedPreview.contains("- token: <redacted>"))
         XCTAssertTrue(review.redactedPreview.contains("client-key-data: <redacted>"))
+    }
+
+    func testKubeConfigImportValidatorRedactsTokenBlockScalarContinuationLines() {
+        let review = KubeConfigImportValidator().validate(
+            raw:
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: context-alpha
+            clusters:
+            - name: cluster-alpha
+              cluster:
+                server: https://example.invalid
+            contexts:
+            - name: context-alpha
+              context:
+                cluster: cluster-alpha
+                user: user-alpha
+            users:
+            - name: user-alpha
+              user:
+                token: |-
+                  synthetic-block-secret-line-one
+                  synthetic-block-secret-line-two
+            """
+        )
+
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-block-secret-line-one"))
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-block-secret-line-two"))
+        XCTAssertTrue(review.redactedPreview.contains("<redacted>"))
+    }
+
+    func testKubeConfigImportValidatorRedactsTokenInsideFlowMapping() {
+        let review = KubeConfigImportValidator().validate(
+            raw:
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: context-alpha
+            clusters:
+            - name: cluster-alpha
+              cluster: {server: https://example.invalid}
+            contexts:
+            - name: context-alpha
+              context: {cluster: cluster-alpha, user: user-alpha}
+            users:
+            - name: user-alpha
+              user: {token: synthetic-flow-secret}
+            """
+        )
+
+        XCTAssertFalse(review.redactedPreview.contains("synthetic-flow-secret"))
+        XCTAssertTrue(review.redactedPreview.contains("<redacted>"))
     }
 
     func testKubeConfigImportValidatorRedactsLocalCredentialPaths() {
@@ -968,6 +1041,547 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testImportKubeConfigStagesValidPayloadUntilExplicitConfirmation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importPreflight.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bookmarkStore = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarkStore),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "synthetic.yaml")
+
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+        }
+        XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+        XCTAssertEqual(viewModel.kubeConfigImportReviewMode, .preflight)
+        XCTAssertTrue(bookmarkStore.records.isEmpty)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: imports.path))
+
+        viewModel.confirmKubeConfigImport()
+
+        try await waitUntilForRuneAppState {
+            !bookmarkStore.records.isEmpty
+        }
+        XCTAssertFalse(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertEqual(viewModel.kubeConfigImportReviewMode, .report)
+        XCTAssertEqual(try String(contentsOfFile: bookmarkStore.records[0].path, encoding: .utf8), syntheticImportKubeConfig)
+    }
+
+    @MainActor
+    func testCancelKubeConfigImportDiscardsPayloadAndDoesNotPersistMetadataOrFavorites() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.cancelImportPreflight.\(UUID().uuidString)", isDirectory: true)
+        let preferences = FileBackedContextPreferencesStore(
+            url: directory.appendingPathComponent("context-preferences.json")
+        )
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bookmarkStore = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarkStore),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            contextPreferences: preferences,
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+        viewModel.favoriteImportedKubeConfigContexts = true
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "synthetic.yaml")
+
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+        }
+        viewModel.setKubeConfigImportContextMetadata(
+            contextName: "synthetic-context",
+            alias: "Synthetic Alias",
+            tags: ["synthetic"]
+        )
+        viewModel.cancelKubeConfigImport()
+
+        XCTAssertFalse(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertFalse(viewModel.canConfirmKubeConfigImport)
+        XCTAssertNil(viewModel.kubeConfigImportReviewMode)
+        XCTAssertTrue(viewModel.kubeConfigImportReviews.isEmpty)
+        XCTAssertTrue(bookmarkStore.records.isEmpty)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertTrue(state.favoriteContextNames.isEmpty)
+        XCTAssertNil(preferences.loadContextDisplayMetadata(for: "synthetic-context"))
+        XCTAssertNil(preferences.loadPreferredNamespace(for: "synthetic-context"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: imports.path))
+    }
+
+    @MainActor
+    func testBookmarkFailureRollsBackPublishedBatchAndLeavesPreferencesUnchanged() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importBookmarkRollback.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        let preferences = FileBackedContextPreferencesStore(
+            url: directory.appendingPathComponent("context-preferences.json")
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: RejectingBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            contextPreferences: preferences,
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "synthetic.yaml")
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+        }
+        viewModel.setKubeConfigImportContextMetadata(
+            contextName: "synthetic-context",
+            alias: "Must Not Persist"
+        )
+        viewModel.confirmKubeConfigImport()
+
+        try await waitUntilForRuneAppState {
+            state.lastError != nil && !viewModel.isCommittingKubeConfigImport
+        }
+        XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+        XCTAssertNil(preferences.loadContextDisplayMetadata(for: "synthetic-context"))
+        XCTAssertNil(preferences.loadPreferredNamespace(for: "synthetic-context"))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: imports.path), [])
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+    }
+
+    @MainActor
+    func testDoubleConfirmAndCancelDuringCommitPublishExactlyOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importCommitGuard.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bookmarks = InMemoryBookmarkStore()
+        let viewModel = RuneAppViewModel(
+            state: RuneAppState(),
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "synthetic.yaml")
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+        }
+
+        viewModel.confirmKubeConfigImport()
+        viewModel.confirmKubeConfigImport()
+        viewModel.cancelKubeConfigImport()
+
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+        XCTAssertEqual(bookmarks.records.count, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: imports.path).count, 1)
+    }
+
+    @MainActor
+    func testConfirmRequiresFreshExplicitConfirmationWhenLoadedSourcesChangeAfterPreflight() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importRegistryReconfirm.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "incoming.yaml")
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending && viewModel.canConfirmKubeConfigImport
+        }
+
+        let newlyLoadedSource = directory.appendingPathComponent("newly-loaded.yaml")
+        try """
+        apiVersion: v1
+        kind: Config
+        current-context: other-context
+        clusters:
+        - name: other-cluster
+          cluster:
+            server: https://other.example.invalid
+        contexts:
+        - name: other-context
+          context:
+            cluster: other-cluster
+        users: []
+        """.write(to: newlyLoadedSource, atomically: true, encoding: .utf8)
+        state.setSources([KubeConfigSource(url: newlyLoadedSource)])
+
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState {
+            !viewModel.isCommittingKubeConfigImport
+                && viewModel.kubeConfigImportReviews.flatMap(\.issues).contains {
+                    $0.id == "loaded-registry-changed-reconfirmation-required"
+                }
+        }
+
+        XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+        XCTAssertTrue(bookmarks.records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: imports.path))
+
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+        XCTAssertEqual(bookmarks.records.count, 1)
+    }
+
+    @MainActor
+    func testConfirmRevalidatesChangedNamesAndBlocksStaleDuplicateResolution() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importRegistryTOCTOU.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let loadedSource = directory.appendingPathComponent("loaded.yaml")
+        func loadedKubeConfig(clusterName: String) -> String {
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: loaded-context
+            clusters:
+            - name: \(clusterName)
+              cluster:
+                server: https://loaded.example.invalid
+            contexts:
+            - name: loaded-context
+              context:
+                cluster: \(clusterName)
+            users: []
+            """
+        }
+        try loadedKubeConfig(clusterName: "initial-cluster").write(
+            to: loadedSource,
+            atomically: true,
+            encoding: .utf8
+        )
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: loadedSource)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "incoming.yaml")
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending && viewModel.canConfirmKubeConfigImport
+        }
+
+        // The source path and selected source remain unchanged; only its registry names
+        // change after preflight. Confirm must hash and reparse the current bytes.
+        try loadedKubeConfig(clusterName: "synthetic-cluster").write(
+            to: loadedSource,
+            atomically: true,
+            encoding: .utf8
+        )
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState {
+            !viewModel.isCommittingKubeConfigImport
+                && viewModel.kubeConfigImportReviews.flatMap(\.issues).contains {
+                    $0.id == "skip-duplicate-dependent-name-conflict"
+                }
+        }
+
+        XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertFalse(viewModel.canConfirmKubeConfigImport)
+        XCTAssertTrue(bookmarks.records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: imports.path))
+        XCTAssertTrue(viewModel.kubeConfigImportReviews.flatMap(\.issues).contains {
+            $0.id == "loaded-registry-changed-reconfirmation-required"
+        })
+
+        viewModel.kubeConfigDuplicateHandlingChoice = .importAsCopy
+        XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+        let saved = try String(contentsOfFile: try XCTUnwrap(bookmarks.records.first?.path), encoding: .utf8)
+        XCTAssertTrue(saved.contains("name: synthetic-cluster-copy-2"))
+    }
+
+    @MainActor
+    func testStartingAnotherImportCannotReplaceACommittingTransaction() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importReplacementGuard.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "first.yaml")
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+        }
+
+        viewModel.confirmKubeConfigImport()
+        viewModel.importKubeConfig(
+            raw: syntheticImportKubeConfig.replacingOccurrences(of: "synthetic-context", with: "replacement-context"),
+            sourceName: "replacement.yaml"
+        )
+
+        XCTAssertTrue(state.lastError?.contains("Wait for the current kubeconfig import") == true)
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+        let saved = try String(contentsOfFile: bookmarks.records[0].path, encoding: .utf8)
+        XCTAssertTrue(saved.contains("synthetic-context"))
+        XCTAssertFalse(saved.contains("replacement-context"))
+    }
+
+    @MainActor
+    func testSkipDuplicateAgainstLoadedSourceKeepsExistingSourceOrderAndMetadata() async throws {
+        let fixture = try makeLoadedDuplicateImportFixture(label: "skip")
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        fixture.preferences.saveContextDisplayMetadata(
+            ContextDisplayMetadata(alias: "Existing Alias"),
+            for: "synthetic-context"
+        )
+
+        fixture.viewModel.importKubeConfig(
+            raw: duplicateSourceKubeConfig(server: "incoming.example.invalid", namespace: "incoming"),
+            sourceName: "incoming.yaml"
+        )
+        try await confirmPendingKubeConfigImport(fixture.viewModel)
+
+        try await waitUntilForRuneAppState {
+            (fixture.bookmarks.records.count == 2 && !fixture.viewModel.isKubeConfigImportConfirmationPending)
+                || fixture.state.lastError != nil
+        }
+        XCTAssertNil(fixture.state.lastError)
+        XCTAssertEqual(fixture.bookmarks.records.first?.path, fixture.existingSource.path)
+        XCTAssertEqual(
+            fixture.preferences.loadContextDisplayMetadata(for: "synthetic-context")?.alias,
+            "Existing Alias"
+        )
+        XCTAssertTrue(fixture.viewModel.kubeConfigImportReviews.first?.contexts.isEmpty == true)
+    }
+
+    @MainActor
+    func testSkipDuplicatePreservesLoadedSourceThatWasNotBookmarked() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.unbookmarkedDuplicateImport.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let existingSource = directory.appendingPathComponent("existing.yaml")
+        try duplicateSourceKubeConfig(
+            server: "existing.example.invalid",
+            namespace: "existing"
+        ).write(to: existingSource, atomically: true, encoding: .utf8)
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: existingSource)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports)
+        )
+
+        viewModel.importKubeConfig(
+            raw: duplicateSourceKubeConfig(server: "incoming.example.invalid", namespace: "incoming"),
+            sourceName: "incoming.yaml"
+        )
+        try await confirmPendingKubeConfigImport(viewModel)
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+
+        XCTAssertEqual(state.kubeConfigSources.first?.url.standardizedFileURL, existingSource.standardizedFileURL)
+        XCTAssertEqual(state.kubeConfigSources.count, 2)
+        XCTAssertTrue(viewModel.kubeConfigImportReviews.first?.contexts.isEmpty == true)
+    }
+
+    @MainActor
+    func testUpdateDuplicateAgainstLoadedSourcePrependsIncomingSourceAndPersistsMetadata() async throws {
+        let fixture = try makeLoadedDuplicateImportFixture(label: "update")
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        fixture.preferences.saveContextDisplayMetadata(
+            ContextDisplayMetadata(alias: "Existing Alias"),
+            for: "synthetic-context"
+        )
+        fixture.viewModel.kubeConfigDuplicateHandlingChoice = .updateExisting
+        fixture.viewModel.importKubeConfig(
+            raw: duplicateSourceKubeConfig(server: "incoming.example.invalid", namespace: "incoming"),
+            sourceName: "incoming.yaml"
+        )
+        try await waitUntilForRuneAppState {
+            fixture.viewModel.isKubeConfigImportConfirmationPending
+        }
+        fixture.viewModel.setKubeConfigImportContextMetadata(
+            contextName: "synthetic-context",
+            alias: "Updated Alias"
+        )
+        fixture.viewModel.confirmKubeConfigImport()
+
+        try await waitUntilForRuneAppState {
+            fixture.bookmarks.records.count == 2 && !fixture.viewModel.isKubeConfigImportConfirmationPending
+        }
+        XCTAssertNotEqual(fixture.bookmarks.records.first?.path, fixture.existingSource.path)
+        XCTAssertEqual(fixture.bookmarks.records.last?.path, fixture.existingSource.path)
+        XCTAssertEqual(
+            fixture.preferences.loadContextDisplayMetadata(for: "synthetic-context")?.alias,
+            "Updated Alias"
+        )
+    }
+
+    @MainActor
+    func testImportAsCopyAgainstLoadedSourceRewritesNamesAndPersistsMetadataUnderFinalContext() async throws {
+        let fixture = try makeLoadedDuplicateImportFixture(label: "copy")
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        fixture.viewModel.importKubeConfig(
+            raw: duplicateSourceKubeConfig(server: "incoming.example.invalid", namespace: "incoming"),
+            sourceName: "incoming.yaml"
+        )
+        try await waitUntilForRuneAppState {
+            fixture.viewModel.isKubeConfigImportConfirmationPending
+        }
+        fixture.viewModel.kubeConfigDuplicateHandlingChoice = .importAsCopy
+        XCTAssertEqual(
+            fixture.viewModel.kubeConfigImportReviews.first?.contexts.map(\.name),
+            ["synthetic-context-copy-2"]
+        )
+        XCTAssertTrue(
+            fixture.viewModel.canConfirmKubeConfigImport,
+            "Resolved issues: \(fixture.viewModel.kubeConfigImportReviews.flatMap(\.issues))"
+        )
+        fixture.viewModel.setKubeConfigImportContextMetadata(
+            contextName: "synthetic-context-copy-2",
+            alias: "Copied Alias"
+        )
+        fixture.viewModel.confirmKubeConfigImport()
+
+        try await waitUntilForRuneAppState {
+            (fixture.bookmarks.records.count == 2 && !fixture.viewModel.isKubeConfigImportConfirmationPending)
+                || fixture.state.lastError != nil
+        }
+        XCTAssertNil(fixture.state.lastError)
+        let importedPath = try XCTUnwrap(
+            fixture.bookmarks.records.map(\.path).first { $0 != fixture.existingSource.path }
+        )
+        let saved = try String(contentsOfFile: importedPath, encoding: .utf8)
+        XCTAssertTrue(saved.contains("current-context: synthetic-context-copy-2"))
+        XCTAssertTrue(saved.contains("name: synthetic-cluster-copy-2"))
+        XCTAssertTrue(saved.contains("name: synthetic-user-copy-2"))
+        XCTAssertEqual(
+            fixture.preferences.loadContextDisplayMetadata(for: "synthetic-context-copy-2")?.alias,
+            "Copied Alias"
+        )
+        XCTAssertNil(fixture.preferences.loadContextDisplayMetadata(for: "synthetic-context"))
+    }
+
+    @MainActor
+    private func makeLoadedDuplicateImportFixture(label: String) throws -> (
+        directory: URL,
+        existingSource: URL,
+        bookmarks: InMemoryBookmarkStore,
+        preferences: FileBackedContextPreferencesStore,
+        state: RuneAppState,
+        viewModel: RuneAppViewModel
+    ) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.duplicateImport.\(label).\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let existingSource = directory.appendingPathComponent("existing.yaml")
+        try duplicateSourceKubeConfig(
+            server: "existing.example.invalid",
+            namespace: "existing"
+        ).write(to: existingSource, atomically: true, encoding: .utf8)
+        let bookmarks = InMemoryBookmarkStore()
+        let bookmarkManager = BookmarkManager(store: bookmarks)
+        try bookmarkManager.addKubeConfig(url: existingSource)
+        let preferences = FileBackedContextPreferencesStore(
+            url: directory.appendingPathComponent("context-preferences.json")
+        )
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: existingSource)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: bookmarkManager,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            contextPreferences: preferences,
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+            )
+        )
+        return (directory, existingSource, bookmarks, preferences, state, viewModel)
+    }
+
+    private func duplicateSourceKubeConfig(server: String, namespace: String) -> String {
+        """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-context
+        clusters:
+        - name: synthetic-cluster
+          cluster:
+            server: https://\(server)
+        contexts:
+        - name: synthetic-context
+          context:
+            cluster: synthetic-cluster
+            user: synthetic-user
+            namespace: \(namespace)
+        users:
+        - name: synthetic-user
+          user:
+            token: synthetic-token
+        """
+    }
+
+    private var syntheticImportKubeConfig: String {
+        """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-context
+        clusters:
+        - name: synthetic-cluster
+          cluster:
+            server: https://example.invalid
+        contexts:
+        - name: synthetic-context
+          context:
+            cluster: synthetic-cluster
+            namespace: synthetic-namespace
+        users: []
+        """
+    }
+
+    @MainActor
     func testImportKubeConfigCopiesValidFileIntoAppOwnedStorageBeforeBookmarking() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.importCopy.\(UUID().uuidString)", isDirectory: true)
@@ -1004,6 +1618,7 @@ final class RuneAppStateTests: XCTestCase {
         )
 
         viewModel.importKubeConfig()
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1075,6 +1690,7 @@ final class RuneAppStateTests: XCTestCase {
         )
 
         viewModel.importKubeConfig()
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1135,6 +1751,7 @@ final class RuneAppStateTests: XCTestCase {
         )
 
         viewModel.importKubeConfig(raw: kubeconfig, sourceName: "pasted-kubeconfig.yaml")
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1189,6 +1806,7 @@ final class RuneAppStateTests: XCTestCase {
             """,
             sourceName: "imported-kubeconfig.yaml"
         )
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1257,6 +1875,7 @@ final class RuneAppStateTests: XCTestCase {
             group: "Synthetic Group"
         )
         viewModel.importKubeConfig(raw: raw, sourceName: "synthetic.yaml")
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1338,6 +1957,7 @@ final class RuneAppStateTests: XCTestCase {
         )
 
         viewModel.importKubeConfigFolder()
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             bookmarkStore.records.count == 2
@@ -1371,6 +1991,7 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.manualKubeConfigToken = "synthetic-manual-token"
 
         viewModel.importManualTokenKubeConfig()
+        try await confirmPendingKubeConfigImport(viewModel)
 
         try await waitUntilForRuneAppState {
             !bookmarkStore.records.isEmpty
@@ -1388,6 +2009,25 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(review.contexts.first?.authType, "Token")
         XCTAssertFalse(review.redactedPreview.contains("synthetic-manual-token"))
         XCTAssertEqual(viewModel.manualKubeConfigToken, "")
+    }
+
+    @MainActor
+    func testManualKubeConfigSecretCanBeClearedWithoutChangingNonSecretDraftFields() {
+        let viewModel = RuneAppViewModel(
+            state: RuneAppState(),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
+        )
+        viewModel.manualKubeConfigName = "Synthetic Cluster"
+        viewModel.manualKubeConfigServer = "https://example.invalid:6443"
+        viewModel.manualKubeConfigNamespace = "synthetic-namespace"
+        viewModel.manualKubeConfigToken = "synthetic-bearer-secret"
+
+        viewModel.clearManualKubeConfigSecret()
+
+        XCTAssertEqual(viewModel.manualKubeConfigToken, "")
+        XCTAssertEqual(viewModel.manualKubeConfigName, "Synthetic Cluster")
+        XCTAssertEqual(viewModel.manualKubeConfigServer, "https://example.invalid:6443")
+        XCTAssertEqual(viewModel.manualKubeConfigNamespace, "synthetic-namespace")
     }
 
     @MainActor
@@ -1428,6 +2068,9 @@ final class RuneAppStateTests: XCTestCase {
             state: state,
             bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+            ),
             cloudKubeConfigImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -1440,6 +2083,11 @@ final class RuneAppStateTests: XCTestCase {
         ))
 
         try await waitUntilForRuneAppState(timeout: 10) {
+            viewModel.cloudKubeConfigImportStatus == AddClusterCloudImportWorkflow.readyForReviewStatus(for: .eks)
+                && viewModel.isKubeConfigImportConfirmationPending
+        }
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState(timeout: 10) {
             viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
                 && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
                 && state.selectedNamespace == "alpha-zone"
@@ -1449,7 +2097,8 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.kubeConfigImportReviews.count, 1)
         XCTAssertTrue(viewModel.kubeConfigImportReviews[0].isValid)
-        XCTAssertEqual(state.kubeConfigSources.map(\.url.standardizedFileURL.path), [kubeconfig.standardizedFileURL.path])
+        XCTAssertTrue(state.kubeConfigSources.allSatisfy { $0.url.path.contains("/imports/") })
+        XCTAssertFalse(state.kubeConfigSources.contains { $0.url.standardizedFileURL == kubeconfig.standardizedFileURL })
         XCTAssertNil(state.lastError)
     }
 
@@ -1538,6 +2187,9 @@ final class RuneAppStateTests: XCTestCase {
                 state: state,
                 bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                    rootDirectory: directory.appendingPathComponent("imports-\(request.provider.rawValue)", isDirectory: true)
+                ),
                 cloudKubeConfigImporter: importer,
                 overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
                 namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -1546,6 +2198,11 @@ final class RuneAppStateTests: XCTestCase {
             viewModel.runCloudKubeConfigImport(request)
 
             try await waitUntilForRuneAppState(timeout: 10) {
+                viewModel.cloudKubeConfigImportStatus == AddClusterCloudImportWorkflow.readyForReviewStatus(for: request.provider)
+                    && viewModel.isKubeConfigImportConfirmationPending
+            }
+            viewModel.confirmKubeConfigImport()
+            try await waitUntilForRuneAppState(timeout: 10) {
                 viewModel.cloudKubeConfigImportStatus == expectedStatus
                     && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
                     && state.selectedNamespace == "alpha-zone"
@@ -1553,10 +2210,61 @@ final class RuneAppStateTests: XCTestCase {
                     && state.deployments.contains { $0.name == "orbit-lens" }
             }
 
-            XCTAssertEqual(state.kubeConfigSources.map(\.url.standardizedFileURL.path), [kubeconfig.standardizedFileURL.path])
+            XCTAssertTrue(state.kubeConfigSources.allSatisfy { $0.url.path.contains("/imports-") })
             XCTAssertNil(state.lastError)
             XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
         }
+    }
+
+    @MainActor
+    func testCloudImportUsesIsolatedTargetAndCancelLeavesRequestedKubeconfigUnchanged() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.cloudIsolation.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let requestedTarget = directory.appendingPathComponent("existing-default.yaml")
+        let existingContents = "synthetic existing kubeconfig sentinel\n"
+        try existingContents.write(to: requestedTarget, atomically: true, encoding: .utf8)
+        let importer = TargetWritingCloudKubeConfigImporter()
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+            ),
+            cloudKubeConfigImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runCloudKubeConfigImport(CloudKubeConfigImportRequest(
+            provider: .eks,
+            clusterName: "synthetic-cloud",
+            regionOrLocation: "eu-north-1",
+            targetKubeconfigPath: requestedTarget.path
+        ))
+
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending && !viewModel.isRunningCloudKubeConfigImport
+        }
+        let isolatedTarget = try XCTUnwrap(importer.targetPaths.first)
+        XCTAssertNotEqual(isolatedTarget, requestedTarget.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: isolatedTarget))
+        XCTAssertEqual(try String(contentsOf: requestedTarget, encoding: .utf8), existingContents)
+        XCTAssertTrue(bookmarks.records.isEmpty)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+
+        viewModel.cancelKubeConfigImport()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: isolatedTarget))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: URL(fileURLWithPath: isolatedTarget).deletingLastPathComponent().path
+        ))
+        XCTAssertEqual(try String(contentsOf: requestedTarget, encoding: .utf8), existingContents)
+        XCTAssertTrue(bookmarks.records.isEmpty)
     }
 
     @MainActor
@@ -2124,6 +2832,9 @@ final class RuneAppStateTests: XCTestCase {
             state: state,
             bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+            ),
             cloudKubeConfigImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -2146,8 +2857,13 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertNil(state.lastError)
         try await waitUntilForRuneAppState {
-            viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+            viewModel.cloudKubeConfigImportStatus == AddClusterCloudImportWorkflow.readyForReviewStatus(for: .eks)
                 && !viewModel.isRunningCloudKubeConfigImport
+                && viewModel.isKubeConfigImportConfirmationPending
+        }
+        viewModel.confirmKubeConfigImport()
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
                 && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
                 && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
         }
@@ -2203,6 +2919,39 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertNil(state.lastError)
     }
 
+    @MainActor
+    func testDiscoverySyncRetainsConfirmedSessionImportWhenBookmarkReloadIsUnavailable() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.sessionImportSync.\(UUID().uuidString)", isDirectory: true)
+        let imports = directory.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bookmarks = InMemoryBookmarkStore()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: bookmarks),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(rootDirectory: imports),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.importKubeConfig(raw: syntheticImportKubeConfig, sourceName: "synthetic.yaml")
+        try await confirmPendingKubeConfigImport(viewModel)
+        try await waitUntilForRuneAppState {
+            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+        }
+        let importedPath = try XCTUnwrap(state.kubeConfigSources.first?.url.standardizedFileURL.path)
+
+        bookmarks.removeAllRecords()
+        _ = try await viewModel.syncKubeConfigSourcesFromDiscovery(reason: "test-bookmark-unavailable")
+
+        XCTAssertEqual(state.kubeConfigSources.map { $0.url.standardizedFileURL.path }, [importedPath])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: importedPath))
+    }
+
     func testFileBackedContextPreferencesStoreRoundTripsVersionedPreferences() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.fileBacked.\(UUID().uuidString)", isDirectory: true)
@@ -2252,6 +3001,38 @@ final class RuneAppStateTests: XCTestCase {
         let json = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(json.contains("\"schemaVersion\""))
         XCTAssertTrue(json.contains("\(FileBackedContextPreferencesStore.currentSchemaVersion)"))
+    }
+
+    func testFileBackedContextPreferencesAppliesImportMetadataAsOneDocumentUpdate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.importPreferenceBatch.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("context-preferences.json")
+        let backupURL = url.appendingPathExtension("bak")
+        let store = FileBackedContextPreferencesStore(url: url, backupURL: backupURL)
+        store.saveFavoriteContextNames(["existing-context"])
+
+        store.applyKubeConfigImportPreferenceBatch(KubeConfigImportPreferenceBatch(
+            preferredNamespaces: ["synthetic-context": "synthetic-namespace"],
+            contextDisplayMetadata: [
+                "synthetic-context": ContextDisplayMetadata(alias: "Synthetic", tags: ["test"])
+            ],
+            favoriteContextNames: ["existing-context", "synthetic-context"]
+        ))
+
+        let reloaded = FileBackedContextPreferencesStore(url: url)
+        XCTAssertEqual(reloaded.loadPreferredNamespace(for: "synthetic-context"), "synthetic-namespace")
+        XCTAssertEqual(
+            reloaded.loadContextDisplayMetadata(for: "synthetic-context"),
+            ContextDisplayMetadata(alias: "Synthetic", tags: ["test"])
+        )
+        XCTAssertEqual(reloaded.loadFavoriteContextNames(), ["existing-context", "synthetic-context"])
+
+        let previousDocument = FileBackedContextPreferencesStore(url: backupURL)
+        XCTAssertEqual(previousDocument.loadFavoriteContextNames(), ["existing-context"])
+        XCTAssertNil(previousDocument.loadPreferredNamespace(for: "synthetic-context"))
+        XCTAssertNil(previousDocument.loadContextDisplayMetadata(for: "synthetic-context"))
     }
 
     @MainActor
@@ -2503,6 +3284,76 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.commandPaletteItems(query: ":ws").first?.symbolName, "star.fill")
         XCTAssertEqual(store.loadSavedWorkspaces().map(\.name), ["Observability API"])
         XCTAssertEqual(store.loadSavedWorkspaces().first?.isFavorite, true)
+    }
+
+    @MainActor
+    func testRootSynchronizesHelmBrowserFamilyWhenOpeningLegacySavedWorkspaces() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        viewModel.loadDemoCluster()
+        let release = try XCTUnwrap(state.helmReleases.first)
+        let operatorResource = try XCTUnwrap(state.operatorResources.first)
+        let controller = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 800),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        controller.view.layoutSubtreeIfNeeded()
+
+        let operatorWorkspace = SavedWorkspaceSnapshot(
+            name: "Synthetic operator workspace",
+            contextName: nil,
+            namespace: operatorResource.namespace ?? "default",
+            section: .helm,
+            workloadKind: .pod,
+            resourceKind: operatorResource.apiPath,
+            resourceName: operatorResource.name,
+            resourceNamespace: operatorResource.namespace
+        )
+        viewModel.openSavedWorkspace(operatorWorkspace)
+
+        try await waitUntilForRuneAppState {
+            state.selectedOperatorResource == operatorResource
+                && viewModel.helmBrowserResourceFamily == .operatorResources
+        }
+
+        let releaseWorkspace = SavedWorkspaceSnapshot(
+            name: "Synthetic release workspace",
+            contextName: nil,
+            namespace: release.namespace,
+            section: .helm,
+            workloadKind: .pod,
+            resourceKind: "helmrelease",
+            resourceName: release.name,
+            resourceNamespace: release.namespace
+        )
+        viewModel.openSavedWorkspace(releaseWorkspace)
+
+        try await waitUntilForRuneAppState {
+            state.selectedHelmRelease == release
+        }
+        XCTAssertEqual(viewModel.helmBrowserResourceFamily, .helmReleases)
+
+        XCTAssertNil(operatorWorkspace.inspectorState)
+        XCTAssertNil(releaseWorkspace.inspectorState)
+        XCTAssertGreaterThan(window.frame.width, 0)
     }
 
     @MainActor
@@ -2947,6 +3798,253 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertNil(state.lastResourceYAMLError)
         XCTAssertNil(state.lastResourceDescribeError)
         XCTAssertNil(state.lastLogFetchError)
+    }
+
+    @MainActor
+    func testResourceInspectorRefreshRetainsDocumentsDuringSameScopeReload() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        viewModel.loadDemoCluster()
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.deployment)
+
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("kind: Deployment")
+                && state.resourceDescribe.contains("Deployment")
+                && !state.isLoadingResourceDetails
+        }
+
+        state.setResourceYAML("visible YAML while refreshing")
+        state.setResourceDescribe("visible describe while refreshing")
+        viewModel.refreshResourceInspectorOnly()
+
+        XCTAssertEqual(state.resourceYAML, "visible YAML while refreshing")
+        XCTAssertEqual(state.resourceDescribe, "visible describe while refreshing")
+        XCTAssertTrue(state.isLoadingResourceDetails)
+
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("kind: Deployment")
+                && state.resourceDescribe.contains("Deployment")
+                && !state.isLoadingResourceDetails
+        }
+        XCTAssertNil(state.lastResourceYAMLError)
+        XCTAssertNil(state.lastResourceDescribeError)
+    }
+
+    @MainActor
+    func testResourceInspectorRefreshFailureRetainsSameScopeDocuments() async throws {
+        let context = KubeContext(name: "context-synthetic")
+        let deployment = DeploymentSummary(
+            name: "deployment-synthetic",
+            namespace: "namespace-synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1
+        )
+        let state = RuneAppState()
+        state.setContexts([context])
+        state.selectedContext = context
+        state.selectedNamespace = deployment.namespace
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .deployment
+        state.setDeployments([deployment])
+        state.setSelectedDeployment(deployment)
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: context.name,
+            namespace: deployment.namespace,
+            kind: .deployment,
+            name: deployment.name
+        ))
+        state.setResourceYAML("cached YAML document")
+        state.setResourceDescribe("cached describe document")
+        state.finishResourceDetailLoad()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: KubernetesClient(commandTimeout: 0.01)
+        )
+
+        viewModel.refreshResourceInspectorOnly()
+
+        XCTAssertTrue(state.isLoadingResourceDetails)
+        XCTAssertEqual(state.resourceYAML, "cached YAML document")
+        XCTAssertEqual(state.resourceDescribe, "cached describe document")
+
+        try await waitUntilForRuneAppState {
+            !state.isLoadingResourceDetails
+                && state.lastResourceYAMLError != nil
+                && state.lastResourceDescribeError != nil
+        }
+
+        XCTAssertEqual(state.resourceYAML, "cached YAML document")
+        XCTAssertEqual(state.resourceDescribe, "cached describe document")
+        XCTAssertTrue(state.resourceYAMLHasUnsavedEdits == false)
+    }
+
+    @MainActor
+    func testResourceInspectorRefreshScopeChangePerformsFullReset() async throws {
+        let context = KubeContext(name: "context-synthetic")
+        let previous = DeploymentSummary(
+            name: "deployment-previous",
+            namespace: "namespace-synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1
+        )
+        let current = DeploymentSummary(
+            name: "deployment-current",
+            namespace: "namespace-synthetic",
+            readyReplicas: 1,
+            desiredReplicas: 1
+        )
+        let state = RuneAppState()
+        state.setContexts([context])
+        state.selectedContext = context
+        state.selectedNamespace = current.namespace
+        state.selectedSection = .workloads
+        state.selectedWorkloadKind = .deployment
+        state.setDeployments([previous, current])
+        state.setSelectedDeployment(current)
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: context.name,
+            namespace: previous.namespace,
+            kind: .deployment,
+            name: previous.name
+        ))
+        state.setResourceYAML("stale YAML from previous selection")
+        state.setResourceDescribe("stale describe from previous selection")
+        state.finishResourceDetailLoad()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: KubernetesClient(commandTimeout: 0.01)
+        )
+
+        viewModel.refreshResourceInspectorOnly()
+
+        XCTAssertTrue(state.isLoadingResourceDetails)
+        XCTAssertTrue(state.resourceYAML.isEmpty)
+        XCTAssertTrue(state.resourceDescribe.isEmpty)
+        XCTAssertEqual(state.resourceDetailScope?.name, current.name)
+
+        try await waitUntilForRuneAppState {
+            !state.isLoadingResourceDetails
+        }
+    }
+
+    @MainActor
+    func testSelectedHelmInspectorRefreshReloadsReleaseAndOperatorDocuments() async throws {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = true
+        defer {
+            restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+        }
+
+        let exporter = RecordingFileExporter()
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        viewModel.loadDemoCluster()
+        viewModel.setSection(.helm)
+
+        try await waitUntilForRuneAppState {
+            state.helmValues.contains("replicaCount")
+                && state.helmManifest.contains("kind: Deployment")
+                && state.helmHistory.map(\.revision) == [1, 2]
+        }
+
+        state.setHelmValues("stale values")
+        state.setHelmManifest("stale manifest")
+        state.setHelmHistory([])
+        viewModel.refreshSelectedHelmInspector()
+
+        try await waitUntilForRuneAppState {
+            state.helmValues.contains("replicaCount")
+                && state.helmManifest.contains("kind: Deployment")
+                && state.helmHistory.map(\.revision) == [1, 2]
+        }
+
+        let operatorResource = try XCTUnwrap(state.operatorResources.first)
+        viewModel.selectOperatorResource(operatorResource)
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("apiVersion: operators.coreos.com")
+                && state.resourceDescribe.contains("Operator")
+                && !state.isLoadingResourceDetails
+        }
+
+        state.setResourceYAML("stale operator YAML")
+        state.setResourceDescribe("stale operator describe")
+        viewModel.refreshSelectedHelmInspector()
+
+        XCTAssertEqual(state.resourceYAML, "stale operator YAML")
+        XCTAssertEqual(state.resourceDescribe, "stale operator describe")
+        XCTAssertTrue(state.isLoadingResourceDetails)
+
+        try await waitUntilForRuneAppState {
+            state.resourceYAML.contains("apiVersion: operators.coreos.com")
+                && state.resourceDescribe.contains(operatorResource.name)
+                && !state.isLoadingResourceDetails
+        }
+
+        viewModel.saveCurrentResourceYAML()
+        viewModel.saveCurrentResourceDescribe()
+
+        XCTAssertEqual(exporter.saves.count, 2)
+        XCTAssertTrue(exporter.saves[0].suggestedName.hasSuffix(".yaml"))
+        XCTAssertTrue(exporter.saves[1].suggestedName.contains("-describe-"))
+        XCTAssertEqual(String(data: exporter.saves[0].data, encoding: .utf8), state.resourceYAML)
+        XCTAssertEqual(String(data: exporter.saves[1].data, encoding: .utf8), state.resourceDescribe)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testOperatorInspectorRefreshFailureRetainsSameScopeDocuments() async throws {
+        let context = KubeContext(name: "context-synthetic")
+        let resource = OperatorResourceSummary(
+            family: "Synthetic operator",
+            kind: "SyntheticResource",
+            apiPath: "/apis/synthetic.example/v1/namespaces/namespace-synthetic/resources",
+            name: "resource-synthetic",
+            namespace: "namespace-synthetic",
+            status: "Ready",
+            message: "Synthetic test resource"
+        )
+        let state = RuneAppState()
+        state.setContexts([context])
+        state.selectedContext = context
+        state.selectedNamespace = resource.namespace ?? "default"
+        state.selectedSection = .helm
+        state.setOperatorResources([resource])
+        state.setSelectedOperatorResource(resource)
+        state.beginResourceDetailLoad(scope: ResourceDetailScope(
+            contextName: context.name,
+            namespace: resource.namespace,
+            kind: resource.kind,
+            name: resource.name
+        ))
+        state.setResourceYAML("cached operator YAML")
+        state.setResourceDescribe("cached operator describe")
+        state.finishResourceDetailLoad()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: KubernetesClient(commandTimeout: 0.01)
+        )
+
+        viewModel.refreshSelectedHelmInspector()
+
+        XCTAssertTrue(state.isLoadingResourceDetails)
+        XCTAssertEqual(state.resourceYAML, "cached operator YAML")
+        XCTAssertEqual(state.resourceDescribe, "cached operator describe")
+
+        try await waitUntilForRuneAppState {
+            !state.isLoadingResourceDetails
+                && state.lastResourceYAMLError != nil
+                && state.lastResourceDescribeError != nil
+        }
+
+        XCTAssertEqual(state.resourceYAML, "cached operator YAML")
+        XCTAssertEqual(state.resourceDescribe, "cached operator describe")
     }
 
     @MainActor
@@ -4329,6 +5427,68 @@ final class RuneAppStateTests: XCTestCase {
 
         let globalItem = viewModel.commandPaletteItems(query: "Provider clusters").first { $0.id == "context:context-alpha" }
         XCTAssertEqual(globalItem?.title, "Checkout Production")
+    }
+
+    @MainActor
+    func testCommandPaletteSearchKeepsUnicodeCaseFoldingAndInvalidatesContextMetadataCache() {
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer {
+            if let previousDemoSetting {
+                UserDefaults.standard.set(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.enableDemoCluster)
+            }
+        }
+
+        let suiteName = "RuneAppStateTests.commandPaletteUnicode.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsContextPreferencesStore(defaults: defaults)
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(alias: "München Produktion", tags: ["plattform"]),
+            for: "synthetic-context"
+        )
+
+        let state = RuneAppState()
+        let context = KubeContext(name: "synthetic-context")
+        state.setContexts([context])
+        state.selectedContext = context
+        state.selectedNamespace = "first"
+        state.setNamespaces(["first"])
+        state.setPods([PodSummary(name: "initial-pod", namespace: "first", status: "Running")])
+        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+
+        XCTAssertEqual(
+            viewModel.commandPaletteItems(query: "MÜNCHEN").first { $0.id == "context:synthetic-context" }?.title,
+            "München Produktion"
+        )
+
+        store.saveContextDisplayMetadata(
+            ContextDisplayMetadata(alias: "Zürich Plattform", tags: ["drift"]),
+            for: context.name
+        )
+
+        XCTAssertEqual(
+            viewModel.commandPaletteItems(query: "zürich").first { $0.id == "context:synthetic-context" }?.title,
+            "Zürich Plattform"
+        )
+
+        viewModel.toggleFavorite(for: context)
+        XCTAssertEqual(
+            viewModel.commandPaletteItems(query: "ZÜRICH").first { $0.id == "context:synthetic-context" }?.symbolName,
+            "star.fill"
+        )
+
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ns FIRST").first?.id, "cmd:namespace:first")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":po INITIAL").first?.title, "initial-pod")
+
+        state.selectedNamespace = "second"
+        state.setNamespaces(["second"])
+        state.setPods([PodSummary(name: "fresh-pod", namespace: "second", status: "Running")])
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":ns SECOND").first?.id, "cmd:namespace:second")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":po FRESH").first?.title, "fresh-pod")
+        XCTAssertEqual(viewModel.commandPaletteItems(query: ":po INITIAL").first?.id, "nav:pod")
     }
 
     @MainActor
@@ -6117,6 +7277,224 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testScopeHardeningTerminalTargetIdentityIncludesContextNamespacePodAndContainer() {
+        let session = PodTerminalSession(
+            id: "terminal-scope",
+            contextName: "context-alpha",
+            namespace: "namespace-alpha",
+            podName: "pod-alpha",
+            containerName: "container-alpha",
+            shell: "sh",
+            status: .disconnected
+        )
+
+        XCTAssertTrue(session.targets(
+            contextName: "context-alpha",
+            namespace: "namespace-alpha",
+            podName: "pod-alpha",
+            containerName: "container-alpha"
+        ))
+        XCTAssertFalse(session.targets(
+            contextName: "context-beta",
+            namespace: "namespace-alpha",
+            podName: "pod-alpha",
+            containerName: "container-alpha"
+        ))
+        XCTAssertFalse(session.targets(
+            contextName: "context-alpha",
+            namespace: "namespace-beta",
+            podName: "pod-alpha",
+            containerName: "container-alpha"
+        ))
+        XCTAssertFalse(session.targets(
+            contextName: "context-alpha",
+            namespace: "namespace-alpha",
+            podName: "pod-beta",
+            containerName: "container-alpha"
+        ))
+        XCTAssertFalse(session.targets(
+            contextName: "context-alpha",
+            namespace: "namespace-alpha",
+            podName: "pod-alpha",
+            containerName: "container-beta"
+        ))
+    }
+
+    @MainActor
+    func testScopeHardeningTerminalReconnectRejectsEveryCrossScopeDimension() {
+        let cases: [(String, String, String, String?, String, String, String, String?)] = [
+            ("context-alpha", "namespace-alpha", "pod-alpha", "container-alpha", "context-beta", "namespace-alpha", "pod-alpha", "container-alpha"),
+            ("context-alpha", "namespace-alpha", "pod-alpha", "container-alpha", "context-alpha", "namespace-beta", "pod-alpha", "container-alpha"),
+            ("context-alpha", "namespace-alpha", "pod-alpha", "container-alpha", "context-alpha", "namespace-alpha", "pod-beta", "container-alpha"),
+            ("context-alpha", "namespace-alpha", "pod-alpha", "container-alpha", "context-alpha", "namespace-alpha", "pod-alpha", "container-beta")
+        ]
+
+        for (index, item) in cases.enumerated() {
+            let state = RuneAppState()
+            state.selectedContext = KubeContext(name: item.4)
+            state.selectedNamespace = item.5
+            let viewModel = RuneAppViewModel(state: state)
+            state.setTerminalSession(PodTerminalSession(
+                id: "terminal-\(index)",
+                contextName: item.0,
+                namespace: item.1,
+                podName: item.2,
+                containerName: item.3,
+                shell: "sh",
+                transcript: "preserved",
+                status: .disconnected
+            ))
+            let pod = PodSummary(
+                name: item.6,
+                namespace: item.5,
+                status: "Running",
+                containerNamesLine: [item.3, item.7].compactMap { $0 }.joined(separator: ", ")
+            )
+
+            viewModel.startTerminalSession(
+                for: pod,
+                container: item.7,
+                replacingSessionID: "terminal-\(index)"
+            )
+
+            XCTAssertEqual(state.terminalSessions.count, 1, "case \(index)")
+            XCTAssertEqual(state.terminalSession?.transcript, "preserved", "case \(index)")
+            XCTAssertEqual(state.terminalSession?.status, .disconnected, "case \(index)")
+            XCTAssertTrue(state.lastError?.contains("terminal target changed") == true, "case \(index)")
+        }
+    }
+
+    @MainActor
+    func testScopeHardeningContextSwitchStopsAndClearsEveryTerminalSessionInLeavingContext() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        let leaving = KubeContext(name: "context-leaving")
+        let target = KubeContext(name: "context-target")
+        state.setContexts([leaving, target])
+        state.selectedContext = leaving
+        state.selectedNamespace = "namespace-alpha"
+        state.setTerminalSession(PodTerminalSession(
+            id: "target-session",
+            contextName: target.name,
+            namespace: "namespace-target",
+            podName: "pod-target",
+            shell: "sh",
+            status: .disconnected
+        ))
+        for (id, namespace) in [("leaving-a", "namespace-alpha"), ("leaving-b", "namespace-beta")] {
+            state.setTerminalSession(PodTerminalSession(
+                id: id,
+                contextName: leaving.name,
+                namespace: namespace,
+                podName: "pod-\(id)",
+                shell: "sh",
+                status: .connected
+            ))
+        }
+
+        viewModel.setContext(target)
+
+        XCTAssertEqual(state.terminalSessions.map(\.id), ["target-session"])
+        XCTAssertEqual(state.terminalSession?.id, "target-session")
+    }
+
+    @MainActor
+    func testScopeHardeningNamespaceSwitchStopsAndClearsOnlyTerminalSessionsInLeavingNamespace() {
+        let state = RuneAppState()
+        let context = KubeContext(name: "context-alpha")
+        state.selectedContext = context
+        state.selectedNamespace = "namespace-leaving"
+        let viewModel = RuneAppViewModel(state: state, kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        state.setTerminalSession(PodTerminalSession(
+            id: "target-session",
+            contextName: context.name,
+            namespace: "namespace-target",
+            podName: "pod-target",
+            shell: "sh",
+            status: .disconnected
+        ))
+        state.setTerminalSession(PodTerminalSession(
+            id: "leaving-session",
+            contextName: context.name,
+            namespace: "namespace-leaving",
+            podName: "pod-leaving",
+            shell: "sh",
+            status: .connected
+        ))
+
+        viewModel.setNamespace("namespace-target")
+
+        XCTAssertEqual(state.terminalSessions.map(\.id), ["target-session"])
+        XCTAssertEqual(state.terminalSession?.id, "target-session")
+    }
+
+    @MainActor
+    func testScopeHardeningPortForwardScopesAreValueSnapshotsAndRetryRequiresOriginalActiveScope() {
+        let state = RuneAppState()
+        let source = KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))
+        let contextAlpha = KubeContext(name: "context-alpha")
+        let contextBeta = KubeContext(name: "context-beta")
+        state.setSources([source])
+        state.setContexts([contextAlpha, contextBeta])
+        state.selectedContext = contextAlpha
+        state.selectedNamespace = "namespace-alpha"
+        let viewModel = RuneAppViewModel(state: state)
+
+        let startScope = viewModel.currentPortForwardStartScope()
+        state.selectedContext = contextBeta
+        state.selectedNamespace = "namespace-beta-current"
+        let retrySession = PortForwardSession(
+            id: "port-forward-retry",
+            contextName: contextAlpha.name,
+            namespace: "namespace-alpha-original",
+            targetKind: .pod,
+            targetName: "pod-alpha",
+            localPort: 18080,
+            remotePort: 8080,
+            address: "127.0.0.1",
+            status: .failed
+        )
+        XCTAssertNil(viewModel.portForwardRetryScope(for: retrySession))
+
+        state.selectedContext = contextAlpha
+        state.selectedNamespace = "namespace-alpha-original"
+        let retryScope = viewModel.portForwardRetryScope(for: retrySession)
+
+        XCTAssertEqual(startScope?.context, contextAlpha)
+        XCTAssertEqual(startScope?.namespace, "namespace-alpha")
+        XCTAssertEqual(startScope?.kubeConfigSources, [source])
+        XCTAssertEqual(retryScope?.context, contextAlpha)
+        XCTAssertEqual(retryScope?.namespace, "namespace-alpha-original")
+        XCTAssertEqual(retryScope?.kubeConfigSources, [source])
+    }
+
+    @MainActor
+    func testScopeHardeningPortForwardRetryKeepsFailedRowWhenOriginalScopeCannotBeResolved() {
+        let state = RuneAppState()
+        state.setContexts([KubeContext(name: "context-current")])
+        state.selectedContext = KubeContext(name: "context-current")
+        state.selectedNamespace = "namespace-current"
+        let viewModel = RuneAppViewModel(state: state)
+        let session = PortForwardSession(
+            id: "port-forward-unresolved",
+            contextName: "context-removed",
+            namespace: "namespace-original",
+            targetKind: .service,
+            targetName: "service-alpha",
+            localPort: 18081,
+            remotePort: 8081,
+            address: "127.0.0.1",
+            status: .failed
+        )
+        state.upsertPortForwardSession(session)
+
+        viewModel.retryPortForward(session)
+
+        XCTAssertEqual(state.portForwardSessions, [session])
+        XCTAssertTrue(state.lastError?.contains("original active context and namespace") == true)
+    }
+
+    @MainActor
     func testStartingTerminalSessionForConnectedPodReusesExistingTab() {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "benchmark")
@@ -6592,10 +7970,16 @@ final class RuneAppStateTests: XCTestCase {
             name: "api",
             namespace: "default",
             status: "Running",
-            containerNamesLine: "api, metrics , sidecar"
+            containerNamesLine: "api, metrics , sidecar",
+            initContainerNamesLine: "setup",
+            ephemeralContainerNamesLine: "debugger"
         )
 
         XCTAssertEqual(pod.containerNames, ["api", "metrics", "sidecar"])
+        XCTAssertEqual(pod.logContainerNames, ["api", "metrics", "sidecar", "setup", "debugger"])
+        XCTAssertEqual(RuneAppViewModel.normalizedTerminalContainerSelection("api", pod: pod), "api")
+        XCTAssertNil(RuneAppViewModel.normalizedTerminalContainerSelection("setup", pod: pod))
+        XCTAssertNil(RuneAppViewModel.normalizedTerminalContainerSelection("debugger", pod: pod))
     }
 
     @MainActor
@@ -6808,6 +8192,29 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertFalse(viewModel.canCopySelectedGenericResourceComparison)
         XCTAssertTrue(viewModel.selectedGenericResourceComparisonText.contains("settings"))
+    }
+
+    @MainActor
+    func testSelectedGenericResourceComparisonCopiesToRequestedPasteboard() throws {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "synthetic-namespace"
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps([
+            ClusterResourceSummary(kind: .configMap, name: "app-settings", namespace: "synthetic-namespace", primaryText: "2 keys", secondaryText: "Data"),
+            ClusterResourceSummary(kind: .configMap, name: "feature-flags", namespace: "synthetic-namespace", primaryText: "1 key", secondaryText: "Data")
+        ])
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[0])
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[1])
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("RuneComparisonTest-(UUID().uuidString)"))
+
+        viewModel.copySelectedGenericResourceComparisonToClipboard(to: pasteboard)
+
+        let copiedText = try XCTUnwrap(pasteboard.string(forType: .string))
+        XCTAssertEqual(copiedText, viewModel.selectedGenericResourceComparisonText)
+        XCTAssertTrue(copiedText.contains("app-settings"))
+        XCTAssertTrue(copiedText.contains("feature-flags"))
     }
 
     @MainActor
@@ -7612,6 +9019,65 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testHelmRollbackExecutionUsesArmedScopeAfterActiveScopeChanges() async throws {
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousProductionConfirmation = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation
+        )
+        UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = false
+        UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
+        defer {
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+            restoreUserDefaultsValue(previousProductionConfirmation, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        }
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let armedKubeconfig = directory.appendingPathComponent("armed.yaml")
+        let activeKubeconfig = directory.appendingPathComponent("active.yaml")
+        try Data("apiVersion: v1\n".utf8).write(to: armedKubeconfig)
+        try Data("apiVersion: v1\n".utf8).write(to: activeKubeconfig)
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: armedKubeconfig)])
+        state.selectedContext = KubeContext(name: "synthetic-armed")
+        state.selectedNamespace = "payments-a"
+        state.setSelectedHelmRelease(HelmReleaseSummary(
+            name: "api",
+            namespace: "payments-a",
+            revision: 3,
+            updated: "2026-05-05 10:00:00",
+            status: "deployed",
+            chart: "api-1.2.0",
+            appVersion: "1.2.0"
+        ))
+        let helmRunner = RecordingHelmCommandRunner()
+        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+
+        viewModel.requestHelmRollback(revision: 2)
+
+        state.setSources([KubeConfigSource(url: activeKubeconfig)])
+        state.selectedContext = KubeContext(name: "synthetic-active")
+        state.selectedNamespace = "payments-b"
+        viewModel.confirmPendingWriteAction()
+
+        try await waitUntilForRuneAppState {
+            state.writeAuditLog.contains { $0.action == "Helm Rollback" && $0.status == "Succeeded" }
+        }
+
+        let request = try XCTUnwrap(helmRunner.requests.first)
+        XCTAssertEqual(helmRunner.requests.count, 1)
+        XCTAssertEqual(request.sources, [KubeConfigSource(url: armedKubeconfig)])
+        XCTAssertEqual(request.contextName, "synthetic-armed")
+        XCTAssertEqual(request.namespace, "payments-a")
+        XCTAssertEqual(state.writeAuditLog.first?.contextName, "synthetic-armed")
+        XCTAssertEqual(state.writeAuditLog.first?.namespace, "payments-a")
+        XCTAssertEqual(state.selectedContext?.name, "synthetic-active")
+        XCTAssertEqual(state.selectedNamespace, "payments-b")
+    }
+
+    @MainActor
     func testHelmRollbackUsesEditableOptionsForPreviewAndExecution() async throws {
         let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
         let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
@@ -7897,6 +9363,44 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(
             String(decoding: try XCTUnwrap(entries["deployment-api-pod-logs/pods/api-0/sidecar-20260506T100000Z.log"]), as: UTF8.self),
             "proxy ready"
+        )
+    }
+
+    @MainActor
+    func testFullPodLogArchivePreservesSuccessfulContainerWhenAnotherContainerFails() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.partialLogArchive.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kubeconfig = directory.appendingPathComponent("synthetic-kubeconfig.yaml")
+        try server.kubeconfigYAML().write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let podName = "orbit-lens-6f58d7d89b-hx9q2"
+        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let data = try await viewModel.fullPodLogsZipData(
+            pods: [PodSummary(
+                name: podName,
+                namespace: "alpha-zone",
+                status: "Running",
+                containerNamesLine: "lens, synthetic-missing"
+            )],
+            sources: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone",
+            baseName: "synthetic-partial-logs",
+            generatedAt: "20260718T200000Z",
+            previous: false
+        )
+
+        let entries = try ZipArchiveTestSupport.entries(from: data)
+        let successfulPath = "synthetic-partial-logs/pods/\(podName)/lens-20260718T200000Z.log"
+        let warningPath = "synthetic-partial-logs/pods/\(podName)/synthetic-missing-20260718T200000Z.log"
+        XCTAssertTrue(String(decoding: try XCTUnwrap(entries[successfulPath]), as: UTF8.self).contains("synthetic REST fake log"))
+        XCTAssertTrue(
+            String(decoding: try XCTUnwrap(entries[warningPath]), as: UTF8.self)
+                .contains("⚠ Logs unavailable for container synthetic-missing:")
         )
     }
 
@@ -9142,6 +10646,50 @@ private struct OutputtingCloudKubeConfigImporter: CloudKubeConfigImporting {
     }
 }
 
+private final class TargetWritingCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedTargetPaths: [String] = []
+
+    var targetPaths: [String] {
+        lock.withLock { storedTargetPaths }
+    }
+
+    func commandPreview(for request: CloudKubeConfigImportRequest) throws -> CloudKubeConfigCommandPreview {
+        try CloudKubeConfigCommandBuilder().preview(for: request)
+    }
+
+    func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
+        let target = request.targetKubeconfigPath
+        lock.withLock {
+            storedTargetPaths.append(target)
+        }
+        let url = URL(fileURLWithPath: target)
+        let raw =
+        """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-cloud-context
+        clusters:
+        - name: synthetic-cloud-cluster
+          cluster:
+            server: https://example.invalid
+        contexts:
+        - name: synthetic-cloud-context
+          context:
+            cluster: synthetic-cloud-cluster
+        users: []
+        """
+        try raw.write(to: url, atomically: true, encoding: .utf8)
+        let preview = try commandPreview(for: request)
+        return CloudKubeConfigImportResult(
+            command: preview,
+            commandResult: CloudKubeConfigCommandResult(exitCode: 0, stdout: "updated\n", stderr: ""),
+            discoveredURLs: [url],
+            reviews: [KubeConfigImportValidator().validate(raw: raw, sourceName: url.lastPathComponent)]
+        )
+    }
+}
+
 private final class CountingCloudKubeConfigImporter: CloudKubeConfigImporting, @unchecked Sendable {
     private let lock = NSLock()
     private let preview = CloudKubeConfigCommandPreview(
@@ -9277,6 +10825,24 @@ private final class InMemoryBookmarkStore: BookmarkStore, @unchecked Sendable {
     func saveRecords(_ records: [BookmarkRecord]) throws {
         self.records = records
     }
+
+    func removeAllRecords() {
+        records = []
+    }
+}
+
+private final class RejectingBookmarkStore: BookmarkStore, @unchecked Sendable {
+    private enum Failure: Error {
+        case rejected
+    }
+
+    func loadRecords() throws -> [BookmarkRecord] {
+        []
+    }
+
+    func saveRecords(_ records: [BookmarkRecord]) throws {
+        throw Failure.rejected
+    }
 }
 
 private func restoreUserDefaultsValue(_ value: Any?, forKey key: String) {
@@ -9301,6 +10867,18 @@ private func waitUntilForRuneAppState(
         try await Task.sleep(nanoseconds: 20_000_000)
     }
     XCTFail("Timed out waiting for condition", file: file, line: line)
+}
+
+@MainActor
+private func confirmPendingKubeConfigImport(
+    _ viewModel: RuneAppViewModel,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    try await waitUntilForRuneAppState(file: file, line: line) {
+        viewModel.isKubeConfigImportConfirmationPending && viewModel.canConfirmKubeConfigImport
+    }
+    viewModel.confirmKubeConfigImport()
 }
 
 private actor SnapshotRefreshConcurrencyTracker {

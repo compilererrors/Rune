@@ -31,6 +31,46 @@ struct FavoritePodPickerPresentation {
     }
 }
 
+enum FavoritePodFavoriteActionPlacement: Sendable, Equatable {
+    case selectedPod
+    case podRow
+}
+
+/// Shared favorite affordance for the selected-pod control and each popover row.
+/// The glyph remains compact while `RuneIconButton` owns the 28-point target and
+/// selected-state accessibility semantics.
+struct FavoritePodFavoriteActionButton: View {
+    let podName: String?
+    let isFavorite: Bool
+    let placement: FavoritePodFavoriteActionPlacement
+    let action: () -> Void
+
+    var accessibilityLabel: String {
+        guard let podName, !podName.isEmpty else {
+            return "Favorite selected pod"
+        }
+
+        let operation = isFavorite ? "Remove" : "Add"
+        switch placement {
+        case .selectedPod:
+            return "\(operation) selected pod \(podName) \(isFavorite ? "from" : "to") favorites"
+        case .podRow:
+            return "\(operation) pod \(podName) \(isFavorite ? "from" : "to") favorites"
+        }
+    }
+
+    var body: some View {
+        RuneIconButton(
+            accessibilityLabel,
+            systemImage: isFavorite ? "star.fill" : "star",
+            isSelected: isFavorite,
+            isDisabled: podName == nil,
+            selectedTint: .yellow,
+            action: action
+        )
+    }
+}
+
 struct FavoritePodPicker: View {
     let title: String
     let pods: [PodSummary]
@@ -45,33 +85,10 @@ struct FavoritePodPicker: View {
     var body: some View {
         HStack(spacing: 0) {
             selectedFavoriteButton
-
-            Button {
-                isPopoverPresented = true
-            } label: {
-                HStack(spacing: 8) {
-                    Text(selectedPod.map(rowTitle) ?? "No pods in namespace")
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.leading, 8)
-                .padding(.trailing, 7)
-                .frame(width: max(width - 30, 140), height: 26, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(sortedPods.isEmpty)
-            .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
-                podPopover
-            }
-            .accessibilityLabel(title)
-            .accessibilityValue(selectedPod.map(rowTitle) ?? "No pods in namespace")
+            selectedPodButton
         }
-        .frame(width: width, height: 26, alignment: .leading)
+        .frame(width: width, alignment: .leading)
+        .frame(minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
         .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
         .overlay {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -81,24 +98,50 @@ struct FavoritePodPicker: View {
     }
 
     private var selectedFavoriteButton: some View {
-        Button {
+        FavoritePodFavoriteActionButton(
+            podName: selectedPod?.name,
+            isFavorite: selectedPodIsFavorite,
+            placement: .selectedPod
+        ) {
             if let selectedPod {
                 onToggleFavoritePod(selectedPod)
             }
+        }
+    }
+
+    private var selectedPodButton: some View {
+        Button {
+            isPopoverPresented = true
         } label: {
-            Image(systemName: FavoritePodPickerPresentation.selectedFavoriteIcon(
-                in: pods,
-                selection: selection,
-                isFavoritePod: isFavoritePod
-            ))
-                .frame(width: 30, height: 26)
-                .foregroundStyle(selectedPod.map(isFavoritePod) == true ? Color.yellow : Color.secondary)
-                .contentShape(Rectangle())
+            selectedPodButtonLabel
         }
         .buttonStyle(.plain)
-        .disabled(selectedPod == nil)
-        .help(selectedPod.map(isFavoritePod) == true ? "Remove pod favorite" : "Favorite selected pod")
-        .accessibilityLabel(selectedPod.map(isFavoritePod) == true ? "Remove Pod Favorite" : "Favorite Pod")
+        .disabled(sortedPods.isEmpty)
+        .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
+            podPopover
+        }
+        .accessibilityLabel(title)
+        .accessibilityValue(selectedPodTitle)
+    }
+
+    private var selectedPodButtonLabel: some View {
+        HStack(spacing: 8) {
+            Text(selectedPodTitle)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 7)
+        .frame(
+            width: max(width - RuneUILayoutMetrics.iconButtonSize, 140),
+            alignment: .leading
+        )
+        .frame(minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private var podPopover: some View {
@@ -131,18 +174,13 @@ struct FavoritePodPicker: View {
 
     private func podRow(_ pod: PodSummary) -> some View {
         HStack(spacing: 6) {
-            Button {
+            FavoritePodFavoriteActionButton(
+                podName: pod.name,
+                isFavorite: isFavoritePod(pod),
+                placement: .podRow
+            ) {
                 onToggleFavoritePod(pod)
-            } label: {
-                Image(systemName: isFavoritePod(pod) ? "star.fill" : "star")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isFavoritePod(pod) ? Color.yellow : Color.secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(isFavoritePod(pod) ? "Remove pod favorite" : "Favorite pod")
-            .accessibilityLabel(isFavoritePod(pod) ? "Remove Pod Favorite" : "Favorite Pod")
 
             Button {
                 selection = pod.id
@@ -174,11 +212,17 @@ struct FavoritePodPicker: View {
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 5)
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(RoundedRectangle(
+                    cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius,
+                    style: .continuous
+                ))
             }
             .buttonStyle(.plain)
             .background(RuneSurfaceBackground(kind: .listRow(isSelected: pod.id == selection)))
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .clipShape(RoundedRectangle(
+                cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius,
+                style: .continuous
+            ))
             .help(podHelpText(pod))
             .accessibilityLabel("Select pod \(pod.name)")
         }
@@ -186,6 +230,18 @@ struct FavoritePodPicker: View {
 
     private var selectedPod: PodSummary? {
         FavoritePodPickerPresentation.selectedPod(in: pods, selection: selection)
+    }
+
+    private var selectedPodTitle: String {
+        selectedPod.map(rowTitle) ?? "No pods in namespace"
+    }
+
+    private var selectedPodIsFavorite: Bool {
+        FavoritePodPickerPresentation.selectedFavoriteIcon(
+            in: pods,
+            selection: selection,
+            isFavoritePod: isFavoritePod
+        ) == "star.fill"
     }
 
     private var sortedPods: [PodSummary] {

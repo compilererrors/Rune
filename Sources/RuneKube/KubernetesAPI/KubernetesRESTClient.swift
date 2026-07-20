@@ -43,8 +43,16 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return resolved.tlsDescription
     }
 
-    static func _testLocalPortConflictMessage(port: Int, address: String) -> String? {
-        localPortConflictMessage(port: port, address: address)
+    static func _testLocalPortConflictMessage(
+        port: Int,
+        address: String,
+        externalCommandsAllowed: Bool = true
+    ) -> String? {
+        localPortConflictMessage(
+            port: port,
+            address: address,
+            externalCommandsAllowed: externalCommandsAllowed
+        )
     }
 
     static func _testTerminalResizeFrame(columns: Int, rows: Int) throws -> Data {
@@ -322,8 +330,6 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
         if let container = container?.trimmingCharacters(in: .whitespacesAndNewlines), !container.isEmpty {
             items.append(URLQueryItem(name: "container", value: container))
-        } else {
-            items.append(URLQueryItem(name: "allContainers", value: "true"))
         }
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))
@@ -1209,7 +1215,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return handle
     }
 
-    private static func localPortConflictMessage(port: Int, address: String) -> String? {
+    private static func localPortConflictMessage(
+        port: Int,
+        address: String,
+        externalCommandsAllowed: Bool = RuneExternalCommandPolicy.allowsExternalCommands
+    ) -> String? {
+        guard externalCommandsAllowed else { return nil }
         guard let owner = localTCPListenerOwner(port: port) else { return nil }
         return "Port in use: \(address):\(port) is already used by \(owner.command) (pid \(owner.pid))."
     }

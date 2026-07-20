@@ -3,6 +3,22 @@ import XCTest
 @testable import RuneUI
 
 final class TerminalShellPodSelectionTests: XCTestCase {
+    func testVisibleTerminalSessionsAreStrictlyScopedToContextAndNamespace() {
+        let allSessions = [
+            PodTerminalSession(id: "matching", contextName: "context-alpha", namespace: "namespace-alpha", podName: "pod-alpha", shell: "sh", status: .connected),
+            PodTerminalSession(id: "other-context", contextName: "context-beta", namespace: "namespace-alpha", podName: "pod-alpha", shell: "sh", status: .connected),
+            PodTerminalSession(id: "other-namespace", contextName: "context-alpha", namespace: "namespace-beta", podName: "pod-alpha", shell: "sh", status: .connected)
+        ]
+
+        let scoped = TerminalShellPodSelectionPolicy.sessions(
+            in: allSessions,
+            contextName: "context-alpha",
+            namespace: "namespace-alpha"
+        )
+
+        XCTAssertEqual(scoped.map(\.id), ["matching"])
+    }
+
     func testNewShellCompositionPreservesDropdownPodChoiceWithoutExistingSession() {
         let api = pod("api")
         let worker = pod("worker")

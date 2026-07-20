@@ -204,32 +204,6 @@ enum RuneAppKitResourceListLayout {
     }
 }
 
-private extension NSColor {
-    static func runeTableHex(_ hex: String) -> NSColor {
-        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let value = UInt64(cleaned, radix: 16) ?? 0
-        let red: CGFloat
-        let green: CGFloat
-        let blue: CGFloat
-        let alpha: CGFloat
-
-        switch cleaned.count {
-        case 8:
-            red = CGFloat((value >> 24) & 0xff) / 255
-            green = CGFloat((value >> 16) & 0xff) / 255
-            blue = CGFloat((value >> 8) & 0xff) / 255
-            alpha = CGFloat(value & 0xff) / 255
-        default:
-            red = CGFloat((value >> 16) & 0xff) / 255
-            green = CGFloat((value >> 8) & 0xff) / 255
-            blue = CGFloat(value & 0xff) / 255
-            alpha = 1
-        }
-
-        return NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
-    }
-}
-
 @MainActor
 private final class RuneAppKitColumnWidthStore {
     static let shared = RuneAppKitColumnWidthStore()
@@ -273,6 +247,21 @@ func applyImmediateResourceContextMenuSelection(
     } else {
         tableView.setNeedsDisplay(tableView.rect(ofRow: row))
     }
+}
+
+@MainActor
+func applyResourceTableSelection<Row>(
+    selectedID: String?,
+    rows: [Row],
+    rowID: (Row) -> String,
+    in tableView: NSTableView
+) {
+    guard let selectedID,
+          let selectedRow = rows.firstIndex(where: { rowID($0) == selectedID }) else {
+        tableView.deselectAll(nil)
+        return
+    }
+    tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
 }
 
 @MainActor
@@ -409,6 +398,64 @@ private enum RuneAppKitResourceTableStyle {
 }
 
 @MainActor
+private enum RuneAppKitResourceTableHost {
+    static func make<Coordinator>(
+        coordinator: Coordinator,
+        resolvedTheme: RuneResolvedTheme,
+        columns: [NSTableColumn],
+        resizableColumnIdentifiers: Set<String>,
+        onResetColumn: @escaping (String) -> Void,
+        onColumnResize: @escaping (Notification) -> Void,
+        onVisibleWidthChanged: @escaping () -> Void,
+        onContextMenu: @escaping (Int, NSTableView) -> NSMenu?,
+        onFavoriteToggle: (() -> Void)? = nil
+    ) -> NSScrollView where Coordinator: NSObject, Coordinator: NSTableViewDelegate, Coordinator: NSTableViewDataSource {
+        let tableView = RuneAppKitResourceTableView()
+        tableView.resolvedTheme = resolvedTheme
+        tableView.delegate = coordinator
+        tableView.dataSource = coordinator
+        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
+
+        let headerView = RuneAppKitResourceTableHeaderView()
+        RuneAppKitResourceTableStyle.apply(to: headerView)
+        headerView.resizableColumnIdentifiers = resizableColumnIdentifiers
+        headerView.onResetColumn = onResetColumn
+        headerView.onColumnResizeCommitted = { [weak tableView] tableColumn in
+            onColumnResize(
+                Notification(
+                    name: NSTableView.columnDidResizeNotification,
+                    object: tableView,
+                    userInfo: ["NSTableColumn": tableColumn]
+                )
+            )
+        }
+        tableView.headerView = headerView
+        columns.forEach(tableView.addTableColumn)
+        tableView.onContextMenu = onContextMenu
+        tableView.onFavoriteToggle = onFavoriteToggle
+
+        let scrollView = RuneAppKitResourceListScrollView()
+        scrollView.onVisibleWidthChanged = onVisibleWidthChanged
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.horizontalScrollElasticity = .automatic
+        scrollView.documentView = tableView
+        return scrollView
+    }
+
+    static func tableView(in scrollView: NSScrollView) -> NSTableView? {
+        scrollView.documentView as? RuneAppKitResourceTableView
+    }
+
+    static func invalidateTheme(in scrollView: NSScrollView, resolvedTheme: RuneResolvedTheme) {
+        (scrollView.documentView as? RuneAppKitResourceTableView)?.resolvedTheme = resolvedTheme
+        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+    }
+}
+
+@MainActor
 private enum RuneAppKitResourceColumnResizeNotificationGate {
     private static var suppressionDepthByTableID: [ObjectIdentifier: Int] = [:]
 
@@ -466,8 +513,7 @@ private struct RuneAppKitResourceTableTheme {
     let selectedRowFill: NSColor
     let rowStroke: NSColor
 
-    static var current: RuneAppKitResourceTableTheme {
-        let theme = RuneAppearanceTheme.resolved(UserDefaults.standard.string(forKey: RuneSettingsKeys.appearanceTheme) ?? RuneSettingsKeys.appearanceThemeDefault)
+    static func resolved(_ theme: RuneResolvedTheme) -> RuneAppKitResourceTableTheme {
         if theme.isNative {
             return RuneAppKitResourceTableTheme(
                 headerFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42),
@@ -492,6 +538,11 @@ private struct RuneAppKitResourceTableTheme {
         )
     }
 
+    @MainActor
+    static func resolved(for view: NSView) -> RuneAppKitResourceTableTheme {
+        resolved(resolvedRuneResourceTableTheme(for: view))
+    }
+
     private static func themed(
         text: String,
         stroke: String,
@@ -499,18 +550,38 @@ private struct RuneAppKitResourceTableTheme {
         selected: String,
         selectedAlpha: CGFloat = 0.18
     ) -> RuneAppKitResourceTableTheme {
-        let strokeColor = NSColor.runeTableHex(stroke)
+        let strokeColor = NSColor.runeHex(stroke)
         return RuneAppKitResourceTableTheme(
-            headerFill: NSColor.runeTableHex(row).withAlphaComponent(0.62),
-            headerText: NSColor.runeTableHex(text).withAlphaComponent(0.92),
+            headerFill: NSColor.runeHex(row).withAlphaComponent(0.62),
+            headerText: NSColor.runeHex(text).withAlphaComponent(0.92),
             headerDivider: strokeColor.withAlphaComponent(0.40),
             columnDivider: strokeColor.withAlphaComponent(0.32),
             columnDividerResizable: strokeColor.withAlphaComponent(0.56),
-            rowFill: NSColor.runeTableHex(row).withAlphaComponent(0.62),
-            selectedRowFill: NSColor.runeTableHex(selected).withAlphaComponent(selectedAlpha),
+            rowFill: NSColor.runeHex(row).withAlphaComponent(0.62),
+            selectedRowFill: NSColor.runeHex(selected).withAlphaComponent(selectedAlpha),
             rowStroke: strokeColor.withAlphaComponent(0.30)
         )
     }
+}
+
+/// Resolves the SwiftUI-provided Rune theme from either table content or its
+/// separate AppKit header hierarchy. `NSTableHeaderView` is hosted in the
+/// scroll view's header clip view, so walking only `superview` cannot reach the
+/// document table.
+@MainActor
+func resolvedRuneResourceTableTheme(for view: NSView) -> RuneResolvedTheme {
+    var candidate: NSView? = view
+    while let current = candidate {
+        if let tableView = current as? RuneAppKitResourceTableView {
+            return tableView.resolvedTheme
+        }
+        if let headerView = current as? NSTableHeaderView,
+           let tableView = headerView.tableView as? RuneAppKitResourceTableView {
+            return tableView.resolvedTheme
+        }
+        candidate = current.superview
+    }
+    return RuneAppearanceTheme.native.resolvedTheme
 }
 
 struct AppKitPodTableView: NSViewRepresentable {
@@ -532,59 +603,43 @@ struct AppKitPodTableView: NSViewRepresentable {
     let onOpenDescribe: (PodSummary) -> Void
     let onOpenYAML: (PodSummary) -> Void
     let onDelete: (PodSummary) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = PodNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(PodColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in PodColumn.allCases {
-            tableView.addTableColumn(column.tableColumn(nameColumnWidth: nameColumnWidth))
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateTableGeometry()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: PodColumn.allCases.map { $0.tableColumn(nameColumnWidth: nameColumnWidth) },
+            resizableColumnIdentifiers: Set(PodColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateTableGeometry() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            },
+            onFavoriteToggle: { [weak coordinator = context.coordinator] in
+                guard let tableView = coordinator?.tableView else { return }
+                coordinator?.toggleFavoriteForSelectedRow(in: tableView)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? PodNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -908,14 +963,9 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.pods.firstIndex { $0.id == parent.selectedPodID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedPodID, rows: parent.pods, rowID: \.id, in: tableView)
         }
 
         private func updateSortIndicator(on tableView: NSTableView) {
@@ -992,28 +1042,12 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         private func favoriteCell(isFavorite: Bool, row: Int) -> NSView {
-            let container = NSView()
-            let button = NSButton(
-                image: NSImage(systemSymbolName: isFavorite ? "star.fill" : "star", accessibilityDescription: "Favorite Resource") ?? NSImage(),
+            RuneAppKitFavoriteButtonCell(
+                isFavorite: isFavorite,
+                row: row,
                 target: self,
                 action: #selector(toggleFavoriteButton(_:))
             )
-            button.tag = row
-            button.isBordered = false
-            button.imagePosition = .imageOnly
-            button.contentTintColor = isFavorite ? .systemYellow : .secondaryLabelColor
-            button.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .semibold)
-            button.toolTip = isFavorite ? "Remove favorite" : "Favorite resource"
-            button.setAccessibilityLabel(isFavorite ? "Remove Favorite" : "Favorite Resource")
-            button.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(button)
-            NSLayoutConstraint.activate([
-                button.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                button.widthAnchor.constraint(equalToConstant: 22),
-                button.heightAnchor.constraint(equalToConstant: 22)
-            ])
-            return container
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
@@ -1070,59 +1104,43 @@ struct AppKitDeploymentListView: NSViewRepresentable {
     let onOpenDescribe: (DeploymentSummary) -> Void
     let onOpenYAML: (DeploymentSummary) -> Void
     let onDelete: (DeploymentSummary) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = DeploymentNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(DeploymentColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in DeploymentColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: DeploymentColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(DeploymentColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            },
+            onFavoriteToggle: { [weak coordinator = context.coordinator] in
+                guard let tableView = coordinator?.tableView else { return }
+                coordinator?.toggleFavoriteForSelectedRow(in: tableView)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? DeploymentNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -1299,14 +1317,9 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.deployments.firstIndex { $0.id == parent.selectedDeploymentID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedDeploymentID, rows: parent.deployments, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -1406,59 +1419,43 @@ struct AppKitServiceListView: NSViewRepresentable {
     let onOpenDescribe: (ServiceSummary) -> Void
     let onOpenYAML: (ServiceSummary) -> Void
     let onDelete: (ServiceSummary) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = ServiceNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(ServiceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in ServiceColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: ServiceColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(ServiceColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            },
+            onFavoriteToggle: { [weak coordinator = context.coordinator] in
+                guard let tableView = coordinator?.tableView else { return }
+                coordinator?.toggleFavoriteForSelectedRow(in: tableView)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? ServiceNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -1642,14 +1639,9 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.services.firstIndex { $0.id == parent.selectedServiceID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedServiceID, rows: parent.services, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -1752,59 +1744,43 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     let onOpenDescribe: (ClusterResourceSummary) -> Void
     let onOpenYAML: (ClusterResourceSummary) -> Void
     let onDelete: (ClusterResourceSummary) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = GenericResourceNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(GenericResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in GenericResourceColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: GenericResourceColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(GenericResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            },
+            onFavoriteToggle: { [weak coordinator = context.coordinator] in
+                guard let tableView = coordinator?.tableView else { return }
+                coordinator?.toggleFavoriteForSelectedRow(in: tableView)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? GenericResourceNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -2015,14 +1991,9 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.resources.firstIndex { $0.id == parent.selectedResourceID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedResourceID, rows: parent.resources, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -2121,59 +2092,39 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
     let sortAscending: Bool
     let onSelectRelease: (HelmReleaseSummary) -> Void
     let onToggleSort: (HelmReleaseListSortColumn) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = HelmReleaseNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(HelmReleaseColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in HelmReleaseColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: HelmReleaseColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(HelmReleaseColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? HelmReleaseNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -2324,14 +2275,9 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.releases.firstIndex { $0.id == parent.selectedReleaseID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedReleaseID, rows: parent.releases, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -2446,59 +2392,39 @@ struct AppKitEventListView: NSViewRepresentable {
     let sortAscending: Bool
     let onSelectEvent: (EventSummary) -> Void
     let onToggleSort: (EventListSortColumn) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = EventNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(EventColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in EventColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: EventColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(EventColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? EventNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -2670,14 +2596,9 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.events.firstIndex { $0.id == parent.selectedEventID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedEventID, rows: parent.events, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -2788,59 +2709,43 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     let onToggleFavorite: (OperatorResourceSummary) -> Void
     let onOpenDescribe: (OperatorResourceSummary) -> Void
     let onOpenYAML: (OperatorResourceSummary) -> Void
-    @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
+    @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = OperatorResourceNSTableView()
-        tableView.coordinator = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: true)
-        let headerView = RuneAppKitResourceTableHeaderView()
-        RuneAppKitResourceTableStyle.apply(to: headerView)
-        headerView.resizableColumnIdentifiers = Set(OperatorResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue))
-        headerView.onResetColumn = { [weak coordinator = context.coordinator] columnID in
-            coordinator?.resetColumnWidth(columnID)
-        }
-        headerView.onColumnResizeCommitted = { [weak coordinator = context.coordinator, weak tableView] tableColumn in
-            let notification = Notification(
-                name: NSTableView.columnDidResizeNotification,
-                object: tableView,
-                userInfo: ["NSTableColumn": tableColumn]
-            )
-            coordinator?.tableViewColumnDidResize(notification)
-        }
-        tableView.headerView = headerView
-
-        for column in OperatorResourceColumn.allCases {
-            tableView.addTableColumn(column.tableColumn())
-        }
-
-        let scrollView = RuneAppKitResourceListScrollView()
-        scrollView.onVisibleWidthChanged = { [weak coordinator = context.coordinator] in
-            coordinator?.updateColumnWidths()
-        }
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        let scrollView = RuneAppKitResourceTableHost.make(
+            coordinator: context.coordinator,
+            resolvedTheme: resolvedTheme,
+            columns: OperatorResourceColumn.allCases.map { $0.tableColumn() },
+            resizableColumnIdentifiers: Set(OperatorResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
+            onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
+            onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
+            onVisibleWidthChanged: { [weak coordinator = context.coordinator] in coordinator?.updateColumnWidths() },
+            onContextMenu: { [weak coordinator = context.coordinator] row, tableView in
+                coordinator?.selectRowForContextMenu(row, in: tableView)
+                return coordinator?.makeMenu(forRow: row)
+            },
+            onFavoriteToggle: { [weak coordinator = context.coordinator] in
+                guard let tableView = coordinator?.tableView else { return }
+                coordinator?.toggleFavoriteForSelectedRow(in: tableView)
+            }
+        )
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return scrollView }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let tableView = scrollView.documentView as? OperatorResourceNSTableView else { return }
+        guard let tableView = RuneAppKitResourceTableHost.tableView(in: scrollView) else { return }
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
-        RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
+        RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
     }
 
     @MainActor
@@ -3057,14 +2962,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         private func applySelection(on tableView: NSTableView) {
-            let selectedRow = parent.resources.firstIndex { $0.id == parent.selectedResourceID }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
-            if let selectedRow {
-                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-            } else {
-                tableView.deselectAll(nil)
-            }
+            applyResourceTableSelection(selectedID: parent.selectedResourceID, rows: parent.resources, rowID: \.id, in: tableView)
         }
 
         func updateColumnWidths() {
@@ -3181,12 +3081,14 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
 }
 
 @MainActor
-private final class PodNSTableView: NSTableView {
-    weak var coordinator: AppKitPodTableView.Coordinator?
+final class RuneAppKitResourceTableView: NSTableView {
+    var resolvedTheme = RuneAppearanceTheme.native.resolvedTheme
+    var onContextMenu: ((Int, NSTableView) -> NSMenu?)?
+    var onFavoriteToggle: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
-        if runeAppKitEventIsFavoriteToggle(event) {
-            coordinator?.toggleFavoriteForSelectedRow(in: self)
+        if runeAppKitEventIsFavoriteToggle(event), let onFavoriteToggle {
+            onFavoriteToggle()
             return
         }
         super.keyDown(with: event)
@@ -3196,118 +3098,7 @@ private final class PodNSTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class DeploymentNSTableView: NSTableView {
-    weak var coordinator: AppKitDeploymentListView.Coordinator?
-
-    override func keyDown(with event: NSEvent) {
-        if runeAppKitEventIsFavoriteToggle(event) {
-            coordinator?.toggleFavoriteForSelectedRow(in: self)
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class ServiceNSTableView: NSTableView {
-    weak var coordinator: AppKitServiceListView.Coordinator?
-
-    override func keyDown(with event: NSEvent) {
-        if runeAppKitEventIsFavoriteToggle(event) {
-            coordinator?.toggleFavoriteForSelectedRow(in: self)
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class GenericResourceNSTableView: NSTableView {
-    weak var coordinator: AppKitGenericResourceListView.Coordinator?
-
-    override func keyDown(with event: NSEvent) {
-        if runeAppKitEventIsFavoriteToggle(event) {
-            coordinator?.toggleFavoriteForSelectedRow(in: self)
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class HelmReleaseNSTableView: NSTableView {
-    weak var coordinator: AppKitHelmReleaseListView.Coordinator?
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class EventNSTableView: NSTableView {
-    weak var coordinator: AppKitEventListView.Coordinator?
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
-    }
-}
-
-@MainActor
-private final class OperatorResourceNSTableView: NSTableView {
-    weak var coordinator: AppKitOperatorResourceListView.Coordinator?
-
-    override func keyDown(with event: NSEvent) {
-        if runeAppKitEventIsFavoriteToggle(event) {
-            coordinator?.toggleFavoriteForSelectedRow(in: self)
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = row(at: point)
-        guard row >= 0 else { return nil }
-        coordinator?.selectRowForContextMenu(row, in: self)
-        return coordinator?.makeMenu(forRow: row)
+        return onContextMenu?(row, self)
     }
 }
 
@@ -3353,7 +3144,7 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
             }
         }
 
-        RuneAppKitResourceTableTheme.current.headerDivider.setFill()
+        RuneAppKitResourceTableTheme.resolved(for: self).headerDivider.setFill()
         let renderedWidth = tableView.map(RuneAppKitResourceTableStyle.renderedTableWidth(in:)) ?? bounds.width
         NSRect(
             x: bounds.minX + horizontalInset,
@@ -3372,7 +3163,7 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
             height: max(0, bounds.height - 2)
         )
         guard rect.intersects(dirtyRect), rect.width > 0, rect.height > 0 else { return }
-        RuneAppKitResourceTableTheme.current.headerFill.setFill()
+        RuneAppKitResourceTableTheme.resolved(for: self).headerFill.setFill()
         NSBezierPath(
             roundedRect: rect,
             xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius,
@@ -3447,7 +3238,7 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
 
     private func drawColumnDivider(at x: CGFloat, isResizable: Bool) {
         guard x > bounds.minX + horizontalInset, x < bounds.maxX - horizontalInset else { return }
-        let tableTheme = RuneAppKitResourceTableTheme.current
+        let tableTheme = RuneAppKitResourceTableTheme.resolved(for: self)
         let color = isResizable ? tableTheme.columnDividerResizable : tableTheme.columnDivider
         color.setFill()
         NSRect(x: x.rounded(.down), y: bounds.minY + 4, width: 1, height: max(0, bounds.height - 8)).fill()
@@ -3499,7 +3290,7 @@ private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
         paragraph.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
-            .foregroundColor: RuneAppKitResourceTableTheme.current.headerText,
+            .foregroundColor: RuneAppKitResourceTableTheme.resolved(for: controlView).headerText,
             .paragraphStyle: paragraph
         ]
         let title = NSAttributedString(string: baseTitle.isEmpty ? stringValue : baseTitle, attributes: attributes)
@@ -3547,7 +3338,7 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
             height: max(0, bounds.height - 2)
         )
         let path = NSBezierPath(roundedRect: rowRect, xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, yRadius: RuneUILayoutMetrics.compactGlyphCornerRadius)
-        let tableTheme = RuneAppKitResourceTableTheme.current
+        let tableTheme = RuneAppKitResourceTableTheme.resolved(for: self)
         let fill = isSelected
             ? tableTheme.selectedRowFill
             : tableTheme.rowFill
@@ -3562,15 +3353,107 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
     }
 }
 
+struct RuneHorizontalTableOverflowState: Equatable, Sendable {
+    let hasOverflow: Bool
+    let showsLeadingIndicator: Bool
+    let showsTrailingIndicator: Bool
+
+    static func resolve(
+        visibleOriginX: CGFloat,
+        visibleWidth: CGFloat,
+        documentWidth: CGFloat,
+        tolerance: CGFloat = 1
+    ) -> RuneHorizontalTableOverflowState {
+        let maximumOffset = max(0, documentWidth - visibleWidth)
+        guard maximumOffset > tolerance else {
+            return RuneHorizontalTableOverflowState(
+                hasOverflow: false,
+                showsLeadingIndicator: false,
+                showsTrailingIndicator: false
+            )
+        }
+
+        let offset = min(max(visibleOriginX, 0), maximumOffset)
+        return RuneHorizontalTableOverflowState(
+            hasOverflow: true,
+            showsLeadingIndicator: offset > tolerance,
+            showsTrailingIndicator: offset < maximumOffset - tolerance
+        )
+    }
+}
+
+private final class RuneHorizontalTableOverflowIndicatorView: NSView {
+    var state = RuneHorizontalTableOverflowState.resolve(
+        visibleOriginX: 0,
+        visibleWidth: 0,
+        documentWidth: 0
+    ) {
+        didSet {
+            guard state != oldValue else { return }
+            isHidden = !state.showsLeadingIndicator
+            needsDisplay = true
+        }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if state.showsLeadingIndicator {
+            drawIndicator(atLeadingEdge: true)
+        }
+    }
+
+    override func isAccessibilityElement() -> Bool {
+        false
+    }
+
+    private func drawIndicator(atLeadingEdge: Bool) {
+        let indicatorWidth: CGFloat = 18
+        let rect = NSRect(
+            x: atLeadingEdge ? bounds.minX : bounds.maxX - indicatorWidth,
+            y: bounds.minY,
+            width: indicatorWidth,
+            height: bounds.height
+        )
+        let edgeColor = NSColor.separatorColor.withAlphaComponent(0.22)
+        let colors = atLeadingEdge
+            ? [edgeColor, NSColor.clear]
+            : [NSColor.clear, edgeColor]
+        NSGradient(colors: colors)?.draw(in: rect, angle: 0)
+    }
+}
+
 @MainActor
 private final class RuneAppKitResourceListScrollView: NSScrollView {
     var onVisibleWidthChanged: (() -> Void)?
     private var lastVisibleWidth: CGFloat = -1
     private var isSendingVisibleWidthChange = false
+    private let horizontalOverflowIndicator = RuneHorizontalTableOverflowIndicatorView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        installHorizontalOverflowIndicator()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installHorizontalOverflowIndicator()
+    }
 
     override func layout() {
         super.layout()
+        horizontalOverflowIndicator.frame = contentView.frame
+        updateHorizontalOverflowIndicator()
         notifyVisibleWidthChangedIfNeeded()
+    }
+
+    override func reflectScrolledClipView(_ clipView: NSClipView) {
+        super.reflectScrolledClipView(clipView)
+        updateHorizontalOverflowIndicator()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -3596,6 +3479,26 @@ private final class RuneAppKitResourceListScrollView: NSScrollView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         notifyVisibleWidthChangedIfNeeded(force: true)
+    }
+
+    private func installHorizontalOverflowIndicator() {
+        horizontalOverflowIndicator.isHidden = true
+        addSubview(horizontalOverflowIndicator, positioned: .above, relativeTo: contentView)
+    }
+
+    private func updateHorizontalOverflowIndicator() {
+        let visibleRect = contentView.documentVisibleRect
+        let state = RuneHorizontalTableOverflowState.resolve(
+            visibleOriginX: visibleRect.minX,
+            visibleWidth: visibleRect.width,
+            documentWidth: documentView?.frame.width ?? visibleRect.width
+        )
+        horizontalOverflowIndicator.state = state
+        setAccessibilityHelp(
+            state.hasOverflow
+                ? "More columns are available. Scroll horizontally to reveal them."
+                : nil
+        )
     }
 
     private func notifyVisibleWidthChangedIfNeeded(force: Bool = false) {
@@ -3670,13 +3573,15 @@ private final class RuneAppKitFavoriteButtonCell: NSView {
         button.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .semibold)
         button.toolTip = isFavorite ? "Remove favorite" : "Favorite resource"
         button.setAccessibilityLabel(isFavorite ? "Remove Favorite" : "Favorite Resource")
+        button.setAccessibilityValue(isFavorite ? "Selected" : "Not selected")
+        button.setAccessibilityHelp(button.toolTip)
         button.translatesAutoresizingMaskIntoConstraints = false
         addSubview(button)
         NSLayoutConstraint.activate([
             button.centerXAnchor.constraint(equalTo: centerXAnchor),
             button.centerYAnchor.constraint(equalTo: centerYAnchor),
-            button.widthAnchor.constraint(equalToConstant: 22),
-            button.heightAnchor.constraint(equalToConstant: 22)
+            button.widthAnchor.constraint(equalToConstant: RuneUILayoutMetrics.iconButtonSize),
+            button.heightAnchor.constraint(equalToConstant: RuneUILayoutMetrics.iconButtonSize)
         ])
     }
 

@@ -1,12 +1,29 @@
 import RuneCore
 import SwiftUI
 
+enum ResourceRelationshipLayoutMetrics {
+    static let rowSpacing: CGFloat = 6
+    static let minimumRowHeight: CGFloat = 34
+    static let maximumVisibleRows = 3
+
+    static var maximumListHeight: CGFloat {
+        minimumRowHeight * CGFloat(maximumVisibleRows)
+            + rowSpacing * CGFloat(maximumVisibleRows - 1)
+    }
+}
+
 struct ResourceRelationshipSection<Content: View>: View {
     let title: String
+    let rowCount: Int?
     @ViewBuilder var content: Content
 
-    init(title: String, @ViewBuilder content: () -> Content) {
+    init(
+        title: String,
+        rowCount: Int? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
+        self.rowCount = rowCount
         self.content = content()
     }
 
@@ -15,12 +32,34 @@ struct ResourceRelationshipSection<Content: View>: View {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 6) {
-                content
+
+            if usesBoundedInnerScroll {
+                ScrollView(.vertical) {
+                    relationshipRows
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: ResourceRelationshipLayoutMetrics.maximumListHeight,
+                    alignment: .topLeading
+                )
+            } else {
+                relationshipRows
             }
         }
         .padding(10)
         .background(RuneSurfaceBackground(kind: .editor))
+    }
+
+    private var usesBoundedInnerScroll: Bool {
+        guard let rowCount else { return false }
+        return rowCount > ResourceRelationshipLayoutMetrics.maximumVisibleRows
+    }
+
+    private var relationshipRows: some View {
+        LazyVStack(alignment: .leading, spacing: ResourceRelationshipLayoutMetrics.rowSpacing) {
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -29,7 +68,7 @@ struct RelatedPodsRelationshipSection: View {
     let open: (PodSummary) -> Void
 
     var body: some View {
-        ResourceRelationshipSection(title: "Related Pods") {
+        ResourceRelationshipSection(title: "Related Pods", rowCount: pods.count) {
             ForEach(pods) { pod in
                 ResourceRelationshipLinkButton(
                     title: pod.name,
@@ -48,7 +87,7 @@ struct RelatedEventsRelationshipSection: View {
     let open: (EventSummary) -> Void
 
     var body: some View {
-        ResourceRelationshipSection(title: "Related Events") {
+        ResourceRelationshipSection(title: "Related Events", rowCount: events.count) {
             ForEach(events) { event in
                 ResourceRelationshipLinkButton(
                     title: event.reason,
@@ -71,6 +110,8 @@ struct RelatedEventsRelationshipSection: View {
 }
 
 struct ResourceRelationshipLinkButton: View {
+    static let minimumHeight = ResourceRelationshipLayoutMetrics.minimumRowHeight
+
     let title: String
     let subtitle: String
     let symbol: String
@@ -96,9 +137,13 @@ struct ResourceRelationshipLinkButton: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, minHeight: Self.minimumHeight, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(subtitle)
+        .accessibilityHint("Opens the related resource in the inspector")
         .help("Open \(title)")
     }
 }
@@ -122,6 +167,11 @@ struct ResourceRelationshipEmptyRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ResourceRelationshipLinkButton.minimumHeight,
+            alignment: .leading
+        )
+        .accessibilityElement(children: .combine)
     }
 }

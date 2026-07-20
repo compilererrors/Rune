@@ -53,6 +53,38 @@ struct YAMLDocumentLine: Equatable {
             return false
         }
     }
+
+    var startsBlockScalar: Bool {
+        switch shape {
+        case .mapping, .sequence:
+            break
+        case .blank, .comment, .directive, .scalar:
+            return false
+        }
+
+        let trimmed = contentWithoutComment.trimmingCharacters(in: .whitespaces)
+        guard let indicator = trimmed.split(whereSeparator: { $0.isWhitespace }).last,
+              let style = indicator.first,
+              style == "|" || style == ">"
+        else { return false }
+
+        let modifiers = indicator.dropFirst()
+        guard modifiers.count <= 2 else { return false }
+        var hasChompingModifier = false
+        var hasIndentModifier = false
+        for character in modifiers {
+            if character == "+" || character == "-" {
+                guard !hasChompingModifier else { return false }
+                hasChompingModifier = true
+            } else if character >= "1" && character <= "9" {
+                guard !hasIndentModifier else { return false }
+                hasIndentModifier = true
+            } else {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 struct YAMLDocumentModel: Equatable {
@@ -86,6 +118,7 @@ private struct YAMLDocumentParser {
         var tokens: [YAMLSyntaxToken] = []
         var diagnostics: [YAMLValidationIssue] = []
         var previousMeaningfulLine: YAMLDocumentLine?
+        var blockScalarHeaderIndentation: Int?
         var lineNumber = 1
 
         nsSource.enumerateSubstrings(
@@ -94,12 +127,34 @@ private struct YAMLDocumentParser {
         ) { _, substringRange, _, _ in
             let line = nsSource.substring(with: substringRange) as NSString
             let parsedLine = parseLine(line, number: lineNumber, absoluteLocation: substringRange.location)
-
-            tokens.append(contentsOf: parsedLine.tokens)
-            diagnostics.append(contentsOf: parsedLine.diagnostics)
-
             let documentLine = parsedLine.line
-            if documentLine.isMeaningful {
+            let isBlockScalarContent: Bool
+            if let headerIndentation = blockScalarHeaderIndentation, documentLine.isMeaningful {
+                if documentLine.indentationColumns > headerIndentation {
+                    isBlockScalarContent = true
+                } else {
+                    blockScalarHeaderIndentation = nil
+                    isBlockScalarContent = false
+                }
+            } else {
+                isBlockScalarContent = false
+            }
+
+            if isBlockScalarContent {
+                let contentLocation = documentLine.range.location + documentLine.indentationRange.length
+                let contentLength = max(0, documentLine.range.length - documentLine.indentationRange.length)
+                if contentLength > 0 {
+                    tokens.append(YAMLSyntaxToken(
+                        range: NSRange(location: contentLocation, length: contentLength),
+                        kind: .string
+                    ))
+                }
+            } else {
+                tokens.append(contentsOf: parsedLine.tokens)
+                diagnostics.append(contentsOf: parsedLine.diagnostics)
+            }
+
+            if documentLine.isMeaningful, !isBlockScalarContent {
                 if let previous = previousMeaningfulLine,
                    documentLine.indentationColumns > previous.indentationColumns,
                    !previous.opensNestedBlock,
@@ -120,6 +175,9 @@ private struct YAMLDocumentParser {
                 }
 
                 previousMeaningfulLine = documentLine
+                if documentLine.startsBlockScalar {
+                    blockScalarHeaderIndentation = documentLine.indentationColumns
+                }
             }
 
             lines.append(documentLine)

@@ -414,6 +414,62 @@ final class KubeConfigImportStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
     }
 
+    func testBatchFailureOnLastPayloadRollsBackEveryStagedFile() throws {
+        let root = temporaryDirectory("batch-rollback")
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        let imports = root.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = sourceDirectory.appendingPathComponent("second.yaml")
+
+        XCTAssertThrowsError(try AppOwnedKubeConfigImportStore(rootDirectory: imports).saveImportedKubeConfigs([
+            KubeConfigImportStorePayload(
+                raw: "clusters: []\ncontexts: []\nusers: []\n",
+                sourceName: "first.yaml",
+                sourceURL: nil
+            ),
+            KubeConfigImportStorePayload(
+                raw:
+                """
+                users:
+                - name: synthetic-user
+                  user:
+                    tokenFile: missing-token
+                """,
+                sourceName: "second.yaml",
+                sourceURL: source
+            )
+        ])) { error in
+            XCTAssertEqual(
+                error as? KubeConfigImportMaterializationError,
+                .missingReference(reference: "token file")
+            )
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: imports.path), [])
+    }
+
+    func testSuccessfulBatchPublishesOneTransactionWithoutStagingArtifacts() throws {
+        let imports = temporaryDirectory("batch-success")
+        defer { try? FileManager.default.removeItem(at: imports) }
+        let store = AppOwnedKubeConfigImportStore(rootDirectory: imports)
+
+        let imported = try store.saveImportedKubeConfigs([
+            KubeConfigImportStorePayload(raw: "clusters: []\n", sourceName: "first.yaml", sourceURL: nil),
+            KubeConfigImportStorePayload(raw: "users: []\n", sourceName: "second.yaml", sourceURL: nil)
+        ])
+
+        XCTAssertEqual(imported.count, 2)
+        XCTAssertTrue(imported.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        let transactionDirectories = Set(imported.map { $0.deletingLastPathComponent().deletingLastPathComponent() })
+        XCTAssertEqual(transactionDirectories.count, 1)
+        let rootEntries = try FileManager.default.contentsOfDirectory(atPath: imports.path)
+        XCTAssertEqual(rootEntries.count, 1)
+        XCTAssertFalse(rootEntries.contains { $0.contains("staging") })
+
+        try store.removeImportedKubeConfigs(at: imported)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: imports.path), [])
+    }
+
     private func temporaryDirectory(_ label: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("KubeConfigImportStoreTests.\(label).\(UUID().uuidString)", isDirectory: true)
