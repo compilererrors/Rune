@@ -51,27 +51,30 @@ final class AddClusterProviderPresentationTests: XCTestCase {
         let eks = presentation(.eks, mode: .nativeOnly)
         let gke = presentation(.gke, mode: .nativeOnly)
 
-        XCTAssertEqual(aks.subtitle, "Native service-principal credentials")
-        XCTAssertEqual(aks.fields.map(\.id), [.azureClientSecret])
-        XCTAssertEqual(aks.primaryAction.id, .connectNativeCredentials)
+        XCTAssertEqual(aks.subtitle, "Native Azure Public Cloud import")
+        XCTAssertEqual(
+            aks.fields.map(\.id),
+            [.clusterName, .resourceGroup, .subscription, .azureTenantID, .azureClientID, .azureClientSecret]
+        )
+        XCTAssertEqual(aks.primaryAction.id, .runNativeImport)
 
-        XCTAssertEqual(eks.subtitle, "Native AWS credentials")
+        XCTAssertEqual(eks.subtitle, "Native AWS import")
         XCTAssertEqual(
             eks.fields.map(\.id),
-            [.awsAccessKeyID, .awsSecretAccessKey, .awsSessionToken]
+            [.clusterName, .region, .awsAccessKeyID, .awsSecretAccessKey, .awsSessionToken]
         )
-        XCTAssertEqual(eks.primaryAction.id, .connectNativeCredentials)
+        XCTAssertEqual(eks.primaryAction.id, .runNativeImport)
 
-        XCTAssertEqual(gke.subtitle, "Native service-account credentials")
-        XCTAssertEqual(gke.fields.map(\.id), [.googleServiceAccountJSON])
+        XCTAssertEqual(gke.subtitle, "Native Google Cloud import")
+        XCTAssertEqual(gke.fields.map(\.id), [.clusterName, .location, .projectID, .googleServiceAccountJSON])
         XCTAssertEqual(gke.primaryAction.id, .chooseServiceAccountJSON)
-        XCTAssertEqual(gke.primaryAction.title, "Choose JSON…")
+        XCTAssertEqual(gke.primaryAction.title, "Choose JSON & Import…")
 
         for value in [aks, eks, gke] {
             XCTAssertFalse(value.allowsExternalCommandExecution)
             XCTAssertFalse(value.exposesCLIOnlyActions)
             XCTAssertFalse(value.showsCommandDetails)
-            XCTAssertTrue(value.requiresCompatibleImportedContext)
+            XCTAssertFalse(value.requiresCompatibleImportedContext)
             XCTAssertEqual(
                 value.utilityActions.map(\.id),
                 [.importKubeconfig, .refreshContexts, .runAuthDoctor]
@@ -79,7 +82,7 @@ final class AddClusterProviderPresentationTests: XCTestCase {
         }
     }
 
-    func testNativeDisconnectAppearsOnlyForConnectedProviderProfile() {
+    func testNativeAddFlowDoesNotMixExistingProfileDisconnectionIntoImport() {
         let disconnected = AddClusterProviderPresentation.resolve(
             provider: .eks,
             mode: .nativeOnly,
@@ -92,11 +95,10 @@ final class AddClusterProviderPresentationTests: XCTestCase {
         )
 
         XCTAssertFalse(disconnected.utilityActions.contains { $0.id == .disconnectNativeCredentials })
-        XCTAssertEqual(connected.utilityActions.last?.id, .disconnectNativeCredentials)
-        XCTAssertTrue(connected.utilityActions.last?.isDestructive == true)
+        XCTAssertFalse(connected.utilityActions.contains { $0.id == .disconnectNativeCredentials })
     }
 
-    func testNativeOnlyMakesKubeconfigImportPrimaryUntilAContextIsAvailable() {
+    func testNativeOnlyAlwaysMakesProviderAPIImportPrimary() {
         for provider in [
             AddClusterProviderIdentifier.aks,
             .eks,
@@ -106,10 +108,11 @@ final class AddClusterProviderPresentationTests: XCTestCase {
             let initialPrimary = value.primaryAction(hasCompatibleImportedContext: false)
             let initialUtilities = value.utilityActions(hasCompatibleImportedContext: false)
 
-            XCTAssertEqual(initialPrimary.id, .importKubeconfig)
-            XCTAssertEqual(initialPrimary.title, "Import kubeconfig…")
-            XCTAssertEqual(initialPrimary.systemImage, "doc.badge.plus")
-            XCTAssertEqual(initialUtilities.map(\.id), [.refreshContexts, .runAuthDoctor])
+            XCTAssertEqual(initialPrimary, value.primaryAction)
+            XCTAssertEqual(
+                initialUtilities.map(\.id),
+                [.importKubeconfig, .refreshContexts, .runAuthDoctor]
+            )
 
             let availablePrimary = value.primaryAction(hasCompatibleImportedContext: true)
             let availableUtilities = value.utilityActions(hasCompatibleImportedContext: true)
@@ -119,10 +122,7 @@ final class AddClusterProviderPresentationTests: XCTestCase {
                 availableUtilities.map(\.id),
                 [.importKubeconfig, .refreshContexts, .runAuthDoctor]
             )
-            XCTAssertEqual(
-                availableUtilities.first { $0.id == .importKubeconfig }?.title,
-                "Import another…"
-            )
+            XCTAssertEqual(availableUtilities.first { $0.id == .importKubeconfig }?.title, "Import…")
         }
     }
 
@@ -171,10 +171,10 @@ final class AddClusterProviderPresentationTests: XCTestCase {
         let secretKey = try XCTUnwrap(eks.fields.first { $0.id == .awsSecretAccessKey })
         let sessionToken = try XCTUnwrap(eks.fields.first { $0.id == .awsSessionToken })
         let azureSecret = try XCTUnwrap(
-            presentation(.aks, mode: .nativeOnly).fields.first
+            presentation(.aks, mode: .nativeOnly).fields.first { $0.id == .azureClientSecret }
         )
         let serviceAccount = try XCTUnwrap(
-            presentation(.gke, mode: .nativeOnly).fields.first
+            presentation(.gke, mode: .nativeOnly).fields.first { $0.id == .googleServiceAccountJSON }
         )
 
         XCTAssertEqual(accessKey.input, .text)

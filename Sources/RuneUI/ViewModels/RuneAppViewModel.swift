@@ -58,6 +58,20 @@ private struct KubeConfigImportRegistrySnapshot: Equatable {
     let sources: [SourceEntry]
 }
 
+private enum PendingNativeCloudCredential: Sendable {
+    case aks(clientSecret: String)
+    case eks(credentials: AWSEKSCredentials)
+    case gke(serviceAccountJSON: Data)
+
+    var provider: KubernetesNativeAuthProviderKind {
+        switch self {
+        case .aks: return .azureKubelogin
+        case .eks: return .awsEKS
+        case .gke: return .googleGKE
+        }
+    }
+}
+
 public struct WorkspacePortForwardBrowserOpener: PortForwardBrowserOpening {
     public init() {}
 
@@ -928,6 +942,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var cloudKubeConfigImportDiagnostic: AddClusterCloudImportDiagnostic?
     @Published public private(set) var cloudKubeConfigImportOutput: String = ""
     @Published public private(set) var isRunningCloudKubeConfigImport = false
+    @Published public private(set) var isRunningNativeCloudClusterImport = false
     @Published public private(set) var nativeKubernetesAuthStatus: String?
     @Published public private(set) var isConnectingNativeKubernetesAuth = false
     @Published public var pendingWriteAction: PendingWriteAction? {
@@ -1013,6 +1028,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let kubeConfigImportStore: KubeConfigImportStoring
     private let kubeConfigDuplicateResolver = KubeConfigDuplicateResolver()
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
+    private let nativeCloudClusterImporter: any NativeCloudClusterImporting
     private let nativeAuthConfigurator: any KubernetesNativeAuthConfiguring
     private let helmCommandRunner: HelmCommandRunning
     private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
@@ -1033,6 +1049,9 @@ public final class RuneAppViewModel: ObservableObject {
     private var pendingKubeConfigImportRegistrySnapshot: KubeConfigImportRegistrySnapshot?
     private var pendingKubeConfigTemporaryDirectories: [URL] = []
     private var pendingCloudKubeConfigProvider: CloudKubeConfigProvider?
+    private var pendingNativeCloudCredential: PendingNativeCloudCredential?
+    private var nativeCloudClusterImportTask: Task<Void, Never>?
+    private var nativeGKEImportPanel: NSOpenPanel?
     private var clusterLoadGeneration = UUID()
     private var launchExperienceStartedAt = ContinuousClock.now
     private var latestSnapshotRequestID = UUID()
@@ -1135,6 +1154,7 @@ public final class RuneAppViewModel: ObservableObject {
         kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
         kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
         cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
+        nativeCloudClusterImporter: any NativeCloudClusterImporting = NativeCloudClusterImporter(),
         nativeAuthConfigurator: any KubernetesNativeAuthConfiguring = DefaultKubernetesNativeCredentialProvider.shared,
         helmCommandRunner: HelmCommandRunning = ProcessHelmCommandRunner(),
         overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
@@ -1157,6 +1177,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeConfigImportValidator = kubeConfigImportValidator
         self.kubeConfigImportStore = kubeConfigImportStore
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
+        self.nativeCloudClusterImporter = nativeCloudClusterImporter
         self.nativeAuthConfigurator = nativeAuthConfigurator
         self.helmCommandRunner = helmCommandRunner
         self.overviewSnapshotPersistence = overviewSnapshotPersistence
@@ -2291,7 +2312,9 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func beginKubeConfigImportPreparation() -> Bool {
-        guard !isPreparingKubeConfigImport, !isCommittingKubeConfigImport else {
+        guard !isPreparingKubeConfigImport,
+              !isCommittingKubeConfigImport,
+              !isRunningCloudKubeConfigImport else {
             state.setError(RuneError.invalidInput(
                 message: "Wait for the current kubeconfig import to finish before starting another import."
             ))
@@ -2389,6 +2412,201 @@ public final class RuneAppViewModel: ObservableObject {
                 self.state.setError(error)
             }
         }
+    }
+
+    public func runNativeEKSClusterImport(
+        clusterName: String,
+        region: String,
+        accessKeyID: String,
+        secretAccessKey: String,
+        sessionToken: String = ""
+    ) {
+        do {
+            let request = AWSEKSClusterImportRequest(
+                clusterName: clusterName,
+                region: region
+            )
+            let credentials = try AWSEKSCredentials(
+                accessKeyID: accessKeyID,
+                secretAccessKey: secretAccessKey,
+                sessionToken: sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : sessionToken
+            )
+            let importer = nativeCloudClusterImporter
+            beginNativeCloudClusterImport(
+                provider: .eks,
+                credential: .eks(credentials: credentials)
+            ) {
+                try await importer.importEKS(request, credentials: credentials)
+            }
+        } catch {
+            failNativeCloudClusterImport(error, provider: .eks)
+        }
+    }
+
+    public func runNativeAKSClusterImport(
+        subscriptionID: String,
+        resourceGroup: String,
+        clusterName: String,
+        tenantID: String,
+        clientID: String,
+        clientSecret: String
+    ) {
+        do {
+            let request = try AKSNativeClusterImportRequest(
+                subscriptionID: subscriptionID,
+                resourceGroup: resourceGroup,
+                clusterName: clusterName,
+                tenantID: tenantID,
+                clientID: clientID
+            )
+            let importer = nativeCloudClusterImporter
+            beginNativeCloudClusterImport(
+                provider: .aks,
+                credential: .aks(clientSecret: clientSecret)
+            ) {
+                try await importer.importAKS(request, clientSecret: clientSecret)
+            }
+        } catch {
+            failNativeCloudClusterImport(error, provider: .aks)
+        }
+    }
+
+    public func chooseAndRunNativeGKEClusterImport(
+        projectID: String,
+        location: String,
+        clusterName: String
+    ) {
+        guard !isRunningCloudKubeConfigImport, !isConnectingNativeKubernetesAuth else { return }
+        let request = GKENativeClusterImportRequest(
+            projectID: projectID,
+            location: location,
+            clusterName: clusterName
+        )
+
+        isConnectingNativeKubernetesAuth = true
+        nativeKubernetesAuthStatus = "Choose a Google service-account JSON file…"
+        let panel = NSOpenPanel()
+        panel.title = "Choose Google service-account JSON"
+        panel.prompt = "Import"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        nativeGKEImportPanel = panel
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            defer {
+                self.nativeGKEImportPanel = nil
+                self.isConnectingNativeKubernetesAuth = false
+            }
+            guard response == .OK, let url = panel.url else {
+                self.nativeKubernetesAuthStatus = nil
+                return
+            }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let data = try handle.read(upToCount: 1_048_577) ?? Data()
+                guard !data.isEmpty, data.count <= 1_048_576 else {
+                    throw RuneError.invalidInput(
+                        message: "The Google service-account JSON must be between 1 byte and 1 MiB."
+                    )
+                }
+                let importer = self.nativeCloudClusterImporter
+                self.beginNativeCloudClusterImport(
+                    provider: .gke,
+                    credential: .gke(serviceAccountJSON: data)
+                ) {
+                    try await importer.importGKE(request, serviceAccountJSON: data)
+                }
+            } catch {
+                self.failNativeCloudClusterImport(error, provider: .gke)
+            }
+        }
+    }
+
+    public func cancelNativeCloudClusterImport() {
+        if let nativeGKEImportPanel {
+            nativeGKEImportPanel.cancel(nil)
+            self.nativeGKEImportPanel = nil
+        }
+        guard isRunningNativeCloudClusterImport else { return }
+        cloudKubeConfigImportStatus = "Cancelling native cluster import…"
+        nativeKubernetesAuthStatus = nil
+        nativeCloudClusterImportTask?.cancel()
+    }
+
+    private func beginNativeCloudClusterImport(
+        provider: CloudKubeConfigProvider,
+        credential: PendingNativeCloudCredential,
+        operation: @escaping @Sendable () async throws -> NativeCloudClusterImportResult
+    ) {
+        guard !isRunningCloudKubeConfigImport else { return }
+        guard !isPreparingKubeConfigImport,
+              !isCommittingKubeConfigImport,
+              !isKubeConfigImportConfirmationPending else {
+            state.setError(RuneError.invalidInput(
+                message: "Finish or cancel the current kubeconfig import before importing another cluster."
+            ))
+            return
+        }
+        isRunningCloudKubeConfigImport = true
+        isRunningNativeCloudClusterImport = true
+        pendingNativeCloudCredential = nil
+        cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportOutput = ""
+        if state.lastError != nil { state.clearError() }
+        cloudKubeConfigImportStatus = "Connecting securely to the cloud provider…"
+
+        nativeCloudClusterImportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.nativeCloudClusterImportTask = nil
+                self.isRunningNativeCloudClusterImport = false
+                self.isRunningCloudKubeConfigImport = false
+            }
+            do {
+                let result = try await operation()
+                try Task.checkCancellation()
+                guard result.provider == provider else {
+                    throw RuneError.invalidInput(message: "The cloud provider returned an unexpected import result.")
+                }
+                try await self.importKubeConfigPayloads(
+                    [(raw: result.rawKubeConfig, sourceName: result.sourceName, sourceURL: nil)],
+                    logLabel: "runNativeCloudClusterImport"
+                )
+                try Task.checkCancellation()
+                self.pendingNativeCloudCredential = credential
+                self.pendingCloudKubeConfigProvider = provider
+                self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeReadyForReviewStatus(for: provider)
+                self.nativeKubernetesAuthStatus = "Cluster access is ready for review. Credentials remain in memory until you confirm."
+            } catch is CancellationError {
+                self.discardPendingKubeConfigImport(clearReview: true)
+                self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: provider)
+                self.nativeKubernetesAuthStatus = nil
+            } catch {
+                self.pendingNativeCloudCredential = nil
+                self.failNativeCloudClusterImport(error, provider: provider)
+            }
+        }
+    }
+
+    private func failNativeCloudClusterImport(
+        _ error: Error,
+        provider: CloudKubeConfigProvider
+    ) {
+        cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
+        cloudKubeConfigImportDiagnostic = nil
+        nativeKubernetesAuthStatus = "Native cluster import could not be completed."
+        state.setAuthDoctorChecks(AddClusterCloudImportWorkflow.nativeImportFailureChecks(for: provider))
+        diagnostics.log("native cloud import failed: \(error.localizedDescription)")
+        state.setError(error)
     }
 
     private func isolatedCloudKubeConfigImportRequest(
@@ -2911,6 +3129,7 @@ public final class RuneAppViewModel: ObservableObject {
         isCommittingKubeConfigImport = true
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.isCommittingKubeConfigImport = false }
             do {
                 let currentRegistrySnapshot = try self.loadedKubeConfigRegistrySnapshot()
                 if try self.requireFreshKubeConfigImportConfirmationIfNeeded(
@@ -2941,15 +3160,35 @@ public final class RuneAppViewModel: ObservableObject {
                     logLabel: transaction.logLabel
                 )
                 guard self.pendingKubeConfigImport?.id == transaction.id else { return }
+                let pendingNativeCredential = self.pendingNativeCloudCredential
                 self.pendingKubeConfigImport = nil
                 self.pendingKubeConfigImportRegistrySnapshot = nil
+                self.pendingNativeCloudCredential = nil
                 self.isKubeConfigImportConfirmationPending = false
                 self.canConfirmKubeConfigImport = false
-                self.isCommittingKubeConfigImport = false
                 self.kubeConfigImportReviewMode = .report
                 if let provider = self.pendingCloudKubeConfigProvider {
                     self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.importedStatus(for: provider)
                     self.pendingCloudKubeConfigProvider = nil
+                }
+                var finalNativeCredentialStatus: String?
+                var nativeCredentialBindingError: Error?
+                if let pendingNativeCredential {
+                    do {
+                        if try await self.bindPendingNativeCloudCredential(
+                            pendingNativeCredential,
+                            resolution: resolution
+                        ) != nil {
+                            finalNativeCredentialStatus = "Cluster imported and native credentials connected."
+                        } else {
+                            finalNativeCredentialStatus = "No context was added. Import again and choose Update existing in the review to connect credentials."
+                        }
+                    } catch {
+                        finalNativeCredentialStatus = "Cluster imported, but Keychain storage failed. Import again and choose Update existing in the review to retry."
+                        nativeCredentialBindingError = error
+                        self.diagnostics.log("native credential bind after import failed: \(error.localizedDescription)")
+                        self.state.setError(error)
+                    }
                 }
                 do {
                     try await self.activateCommittedKubeConfigImport(
@@ -2960,9 +3199,14 @@ public final class RuneAppViewModel: ObservableObject {
                     self.diagnostics.log("activateCommittedKubeConfigImport failed: \(error.localizedDescription)")
                     self.state.setError(error)
                 }
+                if let finalNativeCredentialStatus {
+                    self.nativeKubernetesAuthStatus = finalNativeCredentialStatus
+                }
+                if let nativeCredentialBindingError {
+                    self.state.setError(nativeCredentialBindingError)
+                }
             } catch {
                 guard self.pendingKubeConfigImport?.id == transaction.id else { return }
-                self.isCommittingKubeConfigImport = false
                 self.canConfirmKubeConfigImport = true
                 self.diagnostics.log("confirmKubeConfigImport failed: \(error.localizedDescription)")
                 self.state.setError(error)
@@ -3016,9 +3260,67 @@ public final class RuneAppViewModel: ObservableObject {
         return true
     }
 
+    private func bindPendingNativeCloudCredential(
+        _ credential: PendingNativeCloudCredential,
+        resolution: KubeConfigImportTransaction.Resolution
+    ) async throws -> KubernetesNativeCredentialRequest? {
+        guard !resolution.contextNamesForPreferences.isEmpty else { return nil }
+        var candidates: [KubernetesNativeCredentialRequest] = []
+        for payload in resolution.payloads {
+            let analysis = try KubeConfigNativeAuthAnalyzer().analyze(raw: payload.raw)
+            candidates.append(contentsOf: analysis.contexts.compactMap { descriptor in
+                guard resolution.contextNamesForPreferences.contains(descriptor.contextName),
+                      descriptor.provider == credential.provider else {
+                    return nil
+                }
+                return descriptor.credentialRequest
+            })
+        }
+        let request: KubernetesNativeCredentialRequest?
+        if let preferredContextName = resolution.preferredContextName {
+            request = candidates.first { $0.contextName == preferredContextName }
+        } else if candidates.count == 1 {
+            request = candidates[0]
+        } else {
+            request = nil
+        }
+        guard let request else {
+            throw RuneError.invalidInput(
+                message: "Rune could not match the imported cluster to its native credential profile."
+            )
+        }
+
+        switch credential {
+        case let .aks(clientSecret):
+            try await nativeAuthConfigurator.bindAKSServicePrincipal(
+                to: request,
+                clientSecret: clientSecret,
+                displayName: "Azure AKS"
+            )
+        case let .eks(credentials):
+            try await nativeAuthConfigurator.bindAWSCredentials(
+                to: request,
+                credentials: credentials,
+                displayName: "AWS EKS"
+            )
+        case let .gke(serviceAccountJSON):
+            try await nativeAuthConfigurator.bindGCPServiceAccount(
+                to: request,
+                serviceAccountJSON: serviceAccountJSON,
+                displayName: "Google GKE"
+            )
+        }
+        return request
+    }
+
     public func cancelKubeConfigImport() {
         guard !isCommittingKubeConfigImport else { return }
+        let wasNativeImport = pendingNativeCloudCredential != nil
         discardPendingKubeConfigImport(clearReview: true)
+        if wasNativeImport {
+            cloudKubeConfigImportStatus = nil
+            nativeKubernetesAuthStatus = "Import cancelled. Credentials were not stored."
+        }
     }
 
     private func discardPendingKubeConfigImport(clearReview: Bool) {
@@ -3027,6 +3329,7 @@ public final class RuneAppViewModel: ObservableObject {
         pendingKubeConfigImport = nil
         pendingKubeConfigImportRegistrySnapshot = nil
         pendingCloudKubeConfigProvider = nil
+        pendingNativeCloudCredential = nil
         isKubeConfigImportConfirmationPending = false
         canConfirmKubeConfigImport = false
         if clearReview {

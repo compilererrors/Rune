@@ -30,6 +30,8 @@ enum AddClusterProviderFieldIdentifier: String, Sendable, Equatable {
     case awsAccessKeyID
     case awsSecretAccessKey
     case awsSessionToken
+    case azureTenantID
+    case azureClientID
     case azureClientSecret
     case googleServiceAccountJSON
 }
@@ -70,6 +72,7 @@ struct AddClusterProviderField: Sendable, Equatable, Identifiable {
 
 enum AddClusterProviderActionIdentifier: String, Sendable, Equatable {
     case runExternalCLI
+    case runNativeImport
     case connectNativeCredentials
     case chooseServiceAccountJSON
     case importKubeconfig
@@ -83,7 +86,8 @@ enum AddClusterProviderActionIdentifier: String, Sendable, Equatable {
         switch self {
         case .runExternalCLI, .copyExternalCommand:
             return true
-        case .connectNativeCredentials,
+        case .runNativeImport,
+             .connectNativeCredentials,
              .chooseServiceAccountJSON,
              .importKubeconfig,
              .copyLocalSetupCommand,
@@ -263,7 +267,7 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
 
     private static func nativePresentation(
         provider: AddClusterProviderIdentifier,
-        isNativeProfileConnected: Bool
+        isNativeProfileConnected _: Bool
     ) -> AddClusterProviderPresentation {
         let fields: [AddClusterProviderField]
         let subtitle: String
@@ -272,9 +276,14 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
 
         switch provider {
         case .aks:
-            subtitle = "Native service-principal credentials"
-            note = "Uses an imported kubelogin service-principal context and stores its secret only in Keychain."
+            subtitle = "Native Azure Public Cloud import"
+            note = "Fetches cluster access from Azure Public Cloud, builds kubeconfig locally, and stores the service-principal secret only in Keychain."
             fields = [
+                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
+                AddClusterProviderField(.resourceGroup, title: "Resource group", isRequired: true),
+                AddClusterProviderField(.subscription, title: "Subscription ID", isRequired: true),
+                AddClusterProviderField(.azureTenantID, title: "Tenant ID", isRequired: true),
+                AddClusterProviderField(.azureClientID, title: "Service-principal client ID", isRequired: true),
                 AddClusterProviderField(
                     .azureClientSecret,
                     title: "Service-principal secret",
@@ -283,14 +292,16 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
                 )
             ]
             primaryAction = AddClusterProviderAction(
-                .connectNativeCredentials,
-                title: "Connect",
-                systemImage: "key.fill"
+                .runNativeImport,
+                title: "Import & Connect",
+                systemImage: "icloud.and.arrow.down"
             )
         case .eks:
-            subtitle = "Native AWS credentials"
-            note = "Uses an imported EKS context and stores credential material only in Keychain."
+            subtitle = "Native AWS import"
+            note = "Fetches the EKS endpoint and certificate directly from AWS and stores credential material only in Keychain."
             fields = [
+                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
+                AddClusterProviderField(.region, title: "Region", isRequired: true),
                 AddClusterProviderField(.awsAccessKeyID, title: "AWS access key ID", isRequired: true),
                 AddClusterProviderField(
                     .awsSecretAccessKey,
@@ -306,14 +317,17 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
                 )
             ]
             primaryAction = AddClusterProviderAction(
-                .connectNativeCredentials,
-                title: "Connect",
-                systemImage: "key.fill"
+                .runNativeImport,
+                title: "Import & Connect",
+                systemImage: "icloud.and.arrow.down"
             )
         case .gke:
-            subtitle = "Native service-account credentials"
-            note = "Uses an imported GKE context and stores the selected service-account document only in Keychain."
+            subtitle = "Native Google Cloud import"
+            note = "Fetches cluster access from Google Cloud and stores the selected service-account document only in Keychain."
             fields = [
+                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
+                AddClusterProviderField(.location, title: "Location, region or zone", isRequired: true),
+                AddClusterProviderField(.projectID, title: "Project ID", isRequired: true),
                 AddClusterProviderField(
                     .googleServiceAccountJSON,
                     title: "Google service-account JSON",
@@ -323,27 +337,18 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
             ]
             primaryAction = AddClusterProviderAction(
                 .chooseServiceAccountJSON,
-                title: "Choose JSON…",
-                systemImage: "key.fill"
+                title: "Choose JSON & Import…",
+                systemImage: "icloud.and.arrow.down"
             )
         case .local:
             return localPresentation(mode: .nativeOnly)
         }
 
-        var utilityActions = [
+        let utilityActions = [
             AddClusterProviderAction(.importKubeconfig, title: "Import…", systemImage: "doc.badge.plus"),
             AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
             AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
         ]
-        if isNativeProfileConnected {
-            utilityActions.append(AddClusterProviderAction(
-                .disconnectNativeCredentials,
-                title: "Disconnect",
-                systemImage: "key.slash",
-                isDestructive: true
-            ))
-        }
-
         return AddClusterProviderPresentation(
             provider: provider,
             executionMode: .nativeOnly,
@@ -356,7 +361,7 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
             primaryAction: primaryAction,
             utilityActions: utilityActions,
             showsCommandDetails: false,
-            requiresCompatibleImportedContext: true
+            requiresCompatibleImportedContext: false
         )
     }
 

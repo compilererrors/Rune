@@ -8,6 +8,24 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         XCTAssertEqual(AddClusterCloudImportWorkflow.runningStatus(for: .eks), "Running EKS import...")
         XCTAssertEqual(AddClusterCloudImportWorkflow.importedStatus(for: .aks), "Imported AKS kubeconfig context.")
         XCTAssertEqual(AddClusterCloudImportWorkflow.failedStatus(), "Cloud import failed.")
+        XCTAssertEqual(
+            AddClusterCloudImportWorkflow.nativeReadyForReviewStatus(for: .eks),
+            "Amazon EKS cluster access is ready for review."
+        )
+        XCTAssertEqual(
+            AddClusterCloudImportWorkflow.nativeCancelledStatus(for: .gke),
+            "Google GKE import cancelled."
+        )
+    }
+
+    func testNativeFailureChecksNeverReferToProviderCLI() throws {
+        for provider in [CloudKubeConfigProvider.aks, .eks, .gke] {
+            let check = try XCTUnwrap(
+                AddClusterCloudImportWorkflow.nativeImportFailureChecks(for: provider).first
+            )
+            XCTAssertFalse(check.message.localizedCaseInsensitiveContains("CLI"))
+            XCTAssertTrue(check.message.localizedCaseInsensitiveContains("Native"))
+        }
     }
 
     func testCloudImportDiagnosticClassifiesCommonProviderFailures() {

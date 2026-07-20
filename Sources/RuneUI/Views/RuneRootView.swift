@@ -420,6 +420,8 @@ struct CloudCredentialDraft {
     var nativeAWSAccessKeyID = ""
     var nativeAWSSecretAccessKey = ""
     var nativeAWSSessionToken = ""
+    var nativeAKSTenantID = ""
+    var nativeAKSClientID = ""
     var nativeAKSClientSecret = ""
 
     func request(provider: CloudKubeConfigProvider) -> CloudKubeConfigImportRequest {
@@ -487,6 +489,42 @@ struct CloudCredentialDraft {
 
     var hasNativeAKSClientSecret: Bool {
         hasValue(nativeAKSClientSecret)
+    }
+
+    func hasRequiredNativeFields(for provider: CloudKubeConfigProvider) -> Bool {
+        guard hasRequiredFields(for: provider) else { return false }
+        switch provider {
+        case .aks:
+            return hasValue(profileOrSubscription)
+                && hasValue(nativeAKSTenantID)
+                && hasValue(nativeAKSClientID)
+                && hasValue(nativeAKSClientSecret)
+        case .eks:
+            return hasNativeAWSCredentials
+        case .gke:
+            return true
+        }
+    }
+
+    func missingRequiredNativeFieldSummary(for provider: CloudKubeConfigProvider) -> String? {
+        var fields: [String] = []
+        if !hasValue(clusterName) { fields.append("cluster name") }
+        switch provider {
+        case .aks:
+            if !hasValue(resourceGroup) { fields.append("resource group") }
+            if !hasValue(profileOrSubscription) { fields.append("subscription ID") }
+            if !hasValue(nativeAKSTenantID) { fields.append("tenant ID") }
+            if !hasValue(nativeAKSClientID) { fields.append("client ID") }
+            if !hasValue(nativeAKSClientSecret) { fields.append("client secret") }
+        case .eks:
+            if !hasValue(regionOrLocation) { fields.append("region") }
+            if !hasValue(nativeAWSAccessKeyID) { fields.append("access key ID") }
+            if !hasValue(nativeAWSSecretAccessKey) { fields.append("secret access key") }
+        case .gke:
+            if !hasValue(regionOrLocation) { fields.append("location") }
+            if !hasValue(projectID) { fields.append("project ID") }
+        }
+        return fields.isEmpty ? nil : fields.joined(separator: ", ")
     }
 
     private func trimmed(_ value: String) -> String {
@@ -1663,7 +1701,9 @@ public struct RuneRootView: View {
                         onCopyCommand: viewModel.copyPendingWriteActionKubectlCommand
                     )
             }
-            .sheet(item: $selectedAddClusterProvider) { provider in
+            .sheet(item: $selectedAddClusterProvider, onDismiss: {
+                viewModel.cancelNativeCloudClusterImport()
+            }) { provider in
                 addClusterProviderSheet(provider)
             }
             .sheet(isPresented: $isManualNamespaceSheetPresented) {
@@ -2579,6 +2619,7 @@ public struct RuneRootView: View {
                 .buttonStyle(.borderless)
                 .help("Back to Add Cluster")
                 .accessibilityLabel("Back to Add Cluster")
+                .disabled(viewModel.isRunningNativeCloudClusterImport)
 
                 Image(systemName: presentation.symbolName)
                     .font(.system(size: 24, weight: .semibold))
@@ -2621,6 +2662,7 @@ public struct RuneRootView: View {
                     if provider != .local
                         && (!presentation.requiresCompatibleImportedContext || selectedNativeContext != nil) {
                         providerCredentialFields(presentation.fields)
+                            .disabled(viewModel.isRunningCloudKubeConfigImport)
                     }
 
                     LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
@@ -2636,9 +2678,9 @@ public struct RuneRootView: View {
                         }
                     }
                     .controlSize(.regular)
+                    .disabled(viewModel.isRunningCloudKubeConfigImport)
 
-                    if presentation.executionMode == .externalCLI,
-                       provider.cloudProvider != nil,
+                    if provider.cloudProvider != nil,
                        let status = viewModel.cloudKubeConfigImportStatus {
                         Text(status)
                             .font(.caption)
@@ -2725,13 +2767,23 @@ public struct RuneRootView: View {
             )
 
             RuneDialogActionBar {
-                Button {
-                    closeAddClusterProviderSheet()
-                } label: {
-                    RuneDialogButtonLabel("Close")
+                if viewModel.isRunningNativeCloudClusterImport {
+                    Button(role: .cancel) {
+                        viewModel.cancelNativeCloudClusterImport()
+                    } label: {
+                        RuneDialogButtonLabel("Cancel Import")
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                } else {
+                    Button {
+                        closeAddClusterProviderSheet()
+                    } label: {
+                        RuneDialogButtonLabel("Close")
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
                 }
-                .buttonStyle(.bordered)
-                .keyboardShortcut(.cancelAction)
 
                 providerPrimaryAction(
                     primaryAction,
@@ -2745,7 +2797,9 @@ public struct RuneRootView: View {
         }
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
         .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
+        .interactiveDismissDisabled(viewModel.isRunningNativeCloudClusterImport)
         .task(id: "\(provider.rawValue)-\(viewModel.isConnectingNativeKubernetesAuth)") {
+            guard presentation.requiresCompatibleImportedContext else { return }
             await refreshAddClusterNativeContexts(for: provider)
         }
     }
@@ -2898,7 +2952,7 @@ public struct RuneRootView: View {
                 .help("Remove native credentials only for \(selectedNativeContext.contextName).")
             }
 
-        case .runExternalCLI, .connectNativeCredentials, .chooseServiceAccountJSON:
+        case .runExternalCLI, .runNativeImport, .connectNativeCredentials, .chooseServiceAccountJSON:
             EmptyView()
         }
     }
@@ -3047,6 +3101,10 @@ public struct RuneRootView: View {
             AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAWSSecretAccessKey)
         case .awsSessionToken:
             AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAWSSessionToken)
+        case .azureTenantID:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAKSTenantID)
+        case .azureClientID:
+            AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAKSClientID)
         case .azureClientSecret:
             AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAKSClientSecret)
         case .googleServiceAccountJSON:
@@ -3102,8 +3160,46 @@ public struct RuneRootView: View {
                 .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
                 .help(runHelp)
             }
+        case .runNativeImport:
+            Button {
+                runNativeCloudImport(provider)
+            } label: {
+                Label {
+                    Text(viewModel.isRunningCloudKubeConfigImport ? "Importing" : action.title)
+                } icon: {
+                    Image(systemName: action.systemImage)
+                }
+                .frame(
+                    minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                    minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
+            .help(runHelp)
         case .connectNativeCredentials, .chooseServiceAccountJSON:
-            nativeCloudAuthConnectButton(provider)
+            if action.id == .chooseServiceAccountJSON,
+               !RuneExternalCommandPolicy.allowsExternalCommands {
+                Button {
+                    chooseAndRunNativeGKEImport()
+                } label: {
+                    Label(
+                        viewModel.isRunningCloudKubeConfigImport ? "Importing" : action.title,
+                        systemImage: action.systemImage
+                    )
+                    .frame(
+                        minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
+                        minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
+                .help(runHelp)
+            } else {
+                nativeCloudAuthConnectButton(provider)
+            }
         case .copyExternalCommand,
              .copyLocalSetupCommand,
              .refreshContexts,
@@ -3111,6 +3207,53 @@ public struct RuneRootView: View {
              .disconnectNativeCredentials:
             EmptyView()
         }
+    }
+
+    private func runNativeCloudImport(_ provider: RuneAddClusterProvider) {
+        switch provider {
+        case .eks:
+            let request = cloudCredentialDraft.request(provider: .eks)
+            let accessKeyID = cloudCredentialDraft.nativeAWSAccessKeyID
+            let secretAccessKey = cloudCredentialDraft.nativeAWSSecretAccessKey
+            let sessionToken = cloudCredentialDraft.nativeAWSSessionToken
+            cloudCredentialDraft.nativeAWSAccessKeyID = ""
+            cloudCredentialDraft.nativeAWSSecretAccessKey = ""
+            cloudCredentialDraft.nativeAWSSessionToken = ""
+            viewModel.runNativeEKSClusterImport(
+                clusterName: request.clusterName,
+                region: request.regionOrLocation,
+                accessKeyID: accessKeyID,
+                secretAccessKey: secretAccessKey,
+                sessionToken: sessionToken
+            )
+        case .aks:
+            let request = cloudCredentialDraft.request(provider: .aks)
+            let tenantID = cloudCredentialDraft.nativeAKSTenantID
+            let clientID = cloudCredentialDraft.nativeAKSClientID
+            let clientSecret = cloudCredentialDraft.nativeAKSClientSecret
+            cloudCredentialDraft.nativeAKSClientSecret = ""
+            viewModel.runNativeAKSClusterImport(
+                subscriptionID: request.profileOrSubscription,
+                resourceGroup: request.resourceGroup,
+                clusterName: request.clusterName,
+                tenantID: tenantID,
+                clientID: clientID,
+                clientSecret: clientSecret
+            )
+        case .gke:
+            chooseAndRunNativeGKEImport()
+        case .local:
+            break
+        }
+    }
+
+    private func chooseAndRunNativeGKEImport() {
+        let request = cloudCredentialDraft.request(provider: .gke)
+        viewModel.chooseAndRunNativeGKEClusterImport(
+            projectID: request.projectID,
+            location: request.regionOrLocation,
+            clusterName: request.clusterName
+        )
     }
 
     @ViewBuilder
@@ -3196,7 +3339,10 @@ public struct RuneRootView: View {
 
     private func canRunProviderCredentialImport(_ provider: RuneAddClusterProvider) -> Bool {
         guard let cloudProvider = provider.cloudProvider else { return false }
-        return cloudCredentialDraft.hasRequiredFields(for: cloudProvider)
+        if RuneExternalCommandPolicy.allowsExternalCommands {
+            return cloudCredentialDraft.hasRequiredFields(for: cloudProvider)
+        }
+        return cloudCredentialDraft.hasRequiredNativeFields(for: cloudProvider)
     }
 
     private func providerCredentialRunHelp(
@@ -3208,6 +3354,14 @@ public struct RuneRootView: View {
         }
         if viewModel.isRunningCloudKubeConfigImport {
             return "Provider import is already running."
+        }
+        if !RuneExternalCommandPolicy.allowsExternalCommands {
+            if canRunCredentialImport {
+                return "Fetch cluster access through the provider API, review kubeconfig, then store credentials in Keychain."
+            }
+            if let missingFields = cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) {
+                return "Enter \(missingFields) to import this cluster."
+            }
         }
         if canRunCredentialImport {
             return "Run the provider CLI locally, validate kubeconfig, and refresh contexts."

@@ -203,32 +203,49 @@ public final class GCPServiceAccountURLSessionHTTPClient: GCPServiceAccountHTTPC
         configuration.waitsForConnectivity = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
         let delegate = GCPServiceAccountNoRedirectDelegate()
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        let data: Data
-        let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            let (bytes, response) = try await session.bytes(for: urlRequest)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw GCPServiceAccountAuthError.invalidHTTPResponse
+            }
+            if let rawLength = httpResponse.value(forHTTPHeaderField: "Content-Length"),
+               let contentLength = Int(rawLength),
+               contentLength > 1_048_576 {
+                throw GCPServiceAccountAuthError.responseTooLarge
+            }
+            var data = Data()
+            data.reserveCapacity(64 * 1_024)
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < 1_048_576 else {
+                    throw GCPServiceAccountAuthError.responseTooLarge
+                }
+                data.append(byte)
+            }
+            var headers: [String: String] = [:]
+            for (key, value) in httpResponse.allHeaderFields {
+                guard let key = key as? String, let value = value as? String else { continue }
+                headers[key] = value
+            }
+            return GCPServiceAccountHTTPResponse(
+                statusCode: httpResponse.statusCode,
+                headers: headers,
+                body: data
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as GCPServiceAccountAuthError {
+            throw error
         } catch {
             throw GCPServiceAccountAuthError.networkFailure
         }
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw GCPServiceAccountAuthError.invalidHTTPResponse
-        }
-        guard data.count <= 1_048_576 else {
-            throw GCPServiceAccountAuthError.responseTooLarge
-        }
-        var headers: [String: String] = [:]
-        for (key, value) in httpResponse.allHeaderFields {
-            guard let key = key as? String, let value = value as? String else { continue }
-            headers[key] = value
-        }
-        return GCPServiceAccountHTTPResponse(
-            statusCode: httpResponse.statusCode,
-            headers: headers,
-            body: data
-        )
     }
 }
 
@@ -298,6 +315,9 @@ public actor GCPServiceAccountCredentialProvider {
             return token
         } catch {
             inFlight = nil
+            if error is CancellationError {
+                throw CancellationError()
+            }
             if let known = error as? GCPServiceAccountAuthError {
                 throw known
             }

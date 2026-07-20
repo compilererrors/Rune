@@ -38,6 +38,14 @@ public enum AddClusterCloudImportWorkflow {
         "\(providerTitle(provider)) kubeconfig is ready for review."
     }
 
+    public static func nativeReadyForReviewStatus(for provider: CloudKubeConfigProvider) -> String {
+        "\(nativeProviderTitle(provider)) cluster access is ready for review."
+    }
+
+    public static func nativeCancelledStatus(for provider: CloudKubeConfigProvider) -> String {
+        "\(nativeProviderTitle(provider)) import cancelled."
+    }
+
     public static func failedStatus() -> String {
         "Cloud import failed."
     }
@@ -283,6 +291,26 @@ public enum AddClusterCloudImportWorkflow {
         ]
     }
 
+    public static func nativeImportFailureChecks(for provider: CloudKubeConfigProvider) -> [RuneHealthCheck] {
+        let message: String
+        switch provider {
+        case .aks:
+            message = "Native AKS import did not complete. Check the IDs, service-principal credentials, and permission to list cluster user credentials."
+        case .eks:
+            message = "Native EKS import did not complete. Check the cluster, region, AWS credentials, and eks:DescribeCluster permission."
+        case .gke:
+            message = "Native GKE import did not complete. Check the cluster location, service-account credentials, and container.clusters.get permission."
+        }
+        return [
+            RuneHealthCheck(
+                id: cloudLoginCheckID(for: provider),
+                title: cloudLoginCheckTitle(for: provider),
+                status: .failed,
+                message: message
+            )
+        ]
+    }
+
     public static func commandShape(for provider: CloudKubeConfigProvider) -> String {
         switch provider {
         case .aks:
@@ -299,6 +327,14 @@ public enum AddClusterCloudImportWorkflow {
         case .aks: return "Azure CLI"
         case .eks: return "AWS CLI"
         case .gke: return "Google Cloud CLI"
+        }
+    }
+
+    private static func nativeProviderTitle(_ provider: CloudKubeConfigProvider) -> String {
+        switch provider {
+        case .aks: return "Microsoft AKS"
+        case .eks: return "Amazon EKS"
+        case .gke: return "Google GKE"
         }
     }
 

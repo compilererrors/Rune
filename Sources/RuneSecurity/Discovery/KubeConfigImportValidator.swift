@@ -185,6 +185,11 @@ public struct KubeConfigImportValidator: Sendable {
         }
         var previews: [KubeConfigImportContextPreview] = []
         previews.reserveCapacity(parsed.contexts.count)
+        let nativelyHandledExecContexts = Set(
+            (try? KubeConfigNativeAuthAnalyzer().analyze(raw: raw).contexts.compactMap { descriptor in
+                descriptor.credentialRequest == nil ? nil : descriptor.contextName
+            }) ?? []
+        )
 
         for context in parsed.contexts {
             let cluster = context.clusterName.flatMap { clustersByName[$0] }
@@ -204,7 +209,10 @@ public struct KubeConfigImportValidator: Sendable {
                 ))
             }
 
-            if let user, let command = user.execCommand, !commandExists(command) {
+            if let user,
+               let command = user.execCommand,
+               !commandExists(command),
+               !nativelyHandledExecContexts.contains(context.name) {
                 issues.append(.init(
                     id: "missing-exec-plugin-\(context.name)",
                     severity: .warning,

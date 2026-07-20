@@ -12,9 +12,12 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         let nativeGKE = presentation(.gke, mode: .nativeOnly)
 
         XCTAssertEqual(directEKS.fields.map(\.requirementTitle), ["Required", "Required", "Optional", "Optional"])
-        XCTAssertEqual(nativeEKS.fields.map(\.requirementTitle), ["Required", "Required", "Optional"])
-        XCTAssertEqual(nativeAKS.fields.map(\.requirementTitle), ["Required"])
-        XCTAssertEqual(nativeGKE.fields.map(\.requirementTitle), ["Required"])
+        XCTAssertEqual(
+            nativeEKS.fields.map(\.requirementTitle),
+            ["Required", "Required", "Required", "Required", "Optional"]
+        )
+        XCTAssertEqual(nativeAKS.fields.map(\.requirementTitle), Array(repeating: "Required", count: 6))
+        XCTAssertEqual(nativeGKE.fields.map(\.requirementTitle), Array(repeating: "Required", count: 4))
 
         let accessKey = try field(.awsAccessKeyID, in: nativeEKS)
         let secretKey = try field(.awsSecretAccessKey, in: nativeEKS)
@@ -237,6 +240,8 @@ private extension AddClusterProviderFieldIdentifier {
         .awsAccessKeyID,
         .awsSecretAccessKey,
         .awsSessionToken,
+        .azureTenantID,
+        .azureClientID,
         .azureClientSecret,
         .googleServiceAccountJSON,
     ]
