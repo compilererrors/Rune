@@ -38,7 +38,7 @@ final class AddClusterNativeContextSectionTests: XCTestCase {
                 selectedBindingID: .constant(nil),
                 connectedBindingIDs: [],
                 isCheckingProfiles: isChecking,
-                analysisMessage: "No compatible synthetic context was found."
+                analysisMessage: nil
             )
             .frame(width: 528)
             let host = NSHostingView(rootView: view)
@@ -49,6 +49,20 @@ final class AddClusterNativeContextSectionTests: XCTestCase {
             XCTAssertGreaterThan(host.fittingSize.height, 28)
             XCTAssertLessThan(host.fittingSize.height, 160)
         }
+    }
+
+    func testEmptyContextCopyDirectsUsersToImportInsteadOfReportingCompatibilityFailure() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/RuneUI/Views/AddClusterNativeContextSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("Import a kubeconfig to add this cluster."))
+        XCTAssertTrue(source.contains("Rune checks its authentication settings after import."))
+        XCTAssertTrue(source.contains("Checking imported contexts…"))
+        XCTAssertFalse(source.contains("No compatible"))
     }
 
     private func option(contextName: String) -> AddClusterNativeContextOption {

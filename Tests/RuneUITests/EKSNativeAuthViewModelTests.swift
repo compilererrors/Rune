@@ -360,8 +360,13 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSAccessKeyID = \"\""))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSSecretAccessKey = \"\""))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAWSSessionToken = \"\""))
-        XCTAssertTrue(source.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")"))
-        XCTAssertTrue(source.contains("Import a compatible provider kubeconfig before connecting native credentials."))
+        XCTAssertTrue(source.contains("let primaryAction = presentation.primaryAction("))
+        XCTAssertTrue(source.contains("hasCompatibleImportedContext: hasCompatibleImportedContext"))
+        XCTAssertTrue(source.contains("case .importKubeconfig:"))
+        XCTAssertTrue(source.contains("viewModel.importKubeConfig()"))
+        XCTAssertTrue(source.contains("Import a \\(provider.title) kubeconfig to add this cluster."))
+        XCTAssertFalse(source.contains("No compatible imported"))
+        XCTAssertFalse(source.contains("Import a compatible provider kubeconfig"))
     }
 
     func testConnectSelectedAKSNativeAuthBindsOnlySecretToKubeloginDescriptor() async throws {

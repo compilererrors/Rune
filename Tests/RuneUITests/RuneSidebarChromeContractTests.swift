@@ -2681,6 +2681,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("return \"Provider import is already running.\""))
         XCTAssertTrue(rootViewSource.contains("return \"Enter \\(missingFields) to run provider import.\""))
         XCTAssertTrue(providerPresentationSource.contains(".copyExternalCommand, title: \"Copy\""))
+        XCTAssertTrue(providerPresentationSource.contains(".importKubeconfig, title: \"Import…\""))
         XCTAssertTrue(rootViewSource.contains("copyToPasteboard(credentialCommand)"))
         XCTAssertTrue(rootViewSource.contains("Copy the provider CLI command."))
         XCTAssertTrue(rootViewSource.contains("if provider != .local"))
@@ -2718,7 +2719,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("if presentation.showsCommandDetails"))
         XCTAssertTrue(rootViewSource.contains("Command Details"))
         XCTAssertTrue(rootViewSource.contains("AddClusterProviderPresentation.resolve("))
-        XCTAssertTrue(rootViewSource.contains("ForEach(presentation.utilityActions)"))
+        XCTAssertTrue(rootViewSource.contains("let primaryAction = presentation.primaryAction("))
+        XCTAssertTrue(rootViewSource.contains("let utilityActions = presentation.utilityActions("))
+        XCTAssertTrue(rootViewSource.contains("ForEach(utilityActions)"))
         XCTAssertTrue(rootViewSource.contains("AddClusterNativeContextSection("))
         XCTAssertTrue(rootViewSource.contains("AddClusterNativeContextResolver.compatibleOptions("))
         XCTAssertTrue(rootViewSource.contains("viewModel.connectEKSNativeAuth("))
@@ -2789,16 +2792,32 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "private func nativeCloudAuthConnectButton",
             in: rootViewSource
         )
+        let nativeActionBlock = try functionBlock(
+            named: "private func nativeCloudAuthConnectButton",
+            endingBefore: "private func providerCredentialCommand",
+            in: rootViewSource
+        )
 
         XCTAssertTrue(
-            primaryActionBlock.contains("Label(\"Import…\", systemImage: \"doc.badge.plus\")")
+            primaryActionBlock.contains("case .importKubeconfig:")
+                && primaryActionBlock.contains("Label(action.title, systemImage: action.systemImage)")
                 && primaryActionBlock.contains(".buttonStyle(.borderedProminent)\n            .keyboardShortcut(.defaultAction)"),
-            "Local Add Cluster should default Return to the primary Import action, not Close."
+            "Local and native Add Cluster should default Return to Import when a kubeconfig is needed."
         )
         XCTAssertTrue(
             primaryActionBlock.contains("Image(systemName: \"icloud.and.arrow.down\")")
                 && primaryActionBlock.contains(".disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)"),
             "Cloud Add Cluster should default Return to the primary Run action once required fields are valid."
+        )
+        XCTAssertTrue(
+            primaryActionBlock.contains("case .connectNativeCredentials, .chooseServiceAccountJSON:")
+                && primaryActionBlock.contains("nativeCloudAuthConnectButton(provider)"),
+            "Native credential actions should only render after the presentation selects them."
+        )
+        XCTAssertEqual(
+            nativeActionBlock.components(separatedBy: "selectedAddClusterNativeContextOption == nil").count - 1,
+            3,
+            "Every native provider must require an explicit imported-context selection before connecting credentials."
         )
         XCTAssertTrue(sheetBlock.contains("RuneDialogButtonLabel(\"Close\")"))
         XCTAssertTrue(sheetBlock.contains(".keyboardShortcut(.cancelAction)"))

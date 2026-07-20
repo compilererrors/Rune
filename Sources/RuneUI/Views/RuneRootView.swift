@@ -2552,6 +2552,13 @@ public struct RuneRootView: View {
             externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands,
             isNativeProfileConnected: isNativeProfileConnected
         )
+        let hasCompatibleImportedContext = !addClusterNativeContextOptions.isEmpty
+        let primaryAction = presentation.primaryAction(
+            hasCompatibleImportedContext: hasCompatibleImportedContext
+        )
+        let utilityActions = presentation.utilityActions(
+            hasCompatibleImportedContext: hasCompatibleImportedContext
+        )
         let canRunCredentialImport = canRunProviderCredentialImport(provider)
         let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
         let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
@@ -2617,7 +2624,7 @@ public struct RuneRootView: View {
                     }
 
                     LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
-                        ForEach(presentation.utilityActions) { action in
+                        ForEach(utilityActions) { action in
                             if action.id != .runAuthDoctor || !simpleMode {
                                 addClusterProviderUtilityAction(
                                     action,
@@ -2727,7 +2734,8 @@ public struct RuneRootView: View {
                 .keyboardShortcut(.cancelAction)
 
                 providerPrimaryAction(
-                    provider,
+                    primaryAction,
+                    provider: provider,
                     canRunCredentialImport: canRunCredentialImport,
                     runHelp: runHelp
                 )
@@ -2833,7 +2841,7 @@ public struct RuneRootView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .help("Import a compatible provider kubeconfig before connecting native credentials.")
+            .help("Import another kubeconfig and review its contexts before adding them.")
 
         case .copyExternalCommand, .copyLocalSetupCommand:
             Button {
@@ -2956,7 +2964,7 @@ public struct RuneRootView: View {
             guard selectedAddClusterProvider == provider else { return }
             connectedAddClusterNativeContextBindingIDs = connected
             if options.isEmpty {
-                addClusterNativeContextAnalysisMessage = "No compatible imported \(provider.title) context was found."
+                addClusterNativeContextAnalysisMessage = "Import a \(provider.title) kubeconfig to add this cluster. Rune checks its authentication settings after import."
             }
         } catch is CancellationError {
             return
@@ -2965,7 +2973,7 @@ public struct RuneRootView: View {
             addClusterNativeContextOptions = []
             selectedAddClusterNativeContextBindingID = nil
             connectedAddClusterNativeContextBindingIDs = []
-            addClusterNativeContextAnalysisMessage = "Imported contexts could not be analyzed for native authentication."
+            addClusterNativeContextAnalysisMessage = "Rune could not read the imported contexts. Import a kubeconfig or try Refresh."
         }
     }
 
@@ -3054,16 +3062,18 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private func providerPrimaryAction(
-        _ provider: RuneAddClusterProvider,
+        _ action: AddClusterProviderAction,
+        provider: RuneAddClusterProvider,
         canRunCredentialImport: Bool,
         runHelp: String
     ) -> some View {
-        if provider == .local {
+        switch action.id {
+        case .importKubeconfig:
             Button {
                 selectedAddClusterProvider = nil
                 viewModel.importKubeConfig()
             } label: {
-                Label("Import…", systemImage: "doc.badge.plus")
+                Label(action.title, systemImage: action.systemImage)
                     .frame(
                         minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
@@ -3072,8 +3082,8 @@ public struct RuneRootView: View {
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
             .help("Import kubeconfig from a file.")
-        } else if let cloudProvider = provider.cloudProvider {
-            if RuneExternalCommandPolicy.allowsExternalCommands {
+        case .runExternalCLI:
+            if let cloudProvider = provider.cloudProvider {
                 Button {
                     viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
                 } label: {
@@ -3091,9 +3101,15 @@ public struct RuneRootView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
                 .help(runHelp)
-            } else {
-                nativeCloudAuthConnectButton(provider)
             }
+        case .connectNativeCredentials, .chooseServiceAccountJSON:
+            nativeCloudAuthConnectButton(provider)
+        case .copyExternalCommand,
+             .copyLocalSetupCommand,
+             .refreshContexts,
+             .runAuthDoctor,
+             .disconnectNativeCredentials:
+            EmptyView()
         }
     }
 

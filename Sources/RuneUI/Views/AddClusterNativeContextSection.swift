@@ -21,7 +21,12 @@ struct AddClusterNativeContextSection: View {
 
             if options.isEmpty {
                 Label {
-                    Text(analysisMessage ?? "Import a compatible provider kubeconfig before connecting credentials.")
+                    Text(
+                        isCheckingProfiles
+                            ? "Checking imported contexts…"
+                            : analysisMessage
+                                ?? "Import a kubeconfig to add this cluster. Rune checks its authentication settings after import."
+                    )
                 } icon: {
                     if isCheckingProfiles {
                         ProgressView()

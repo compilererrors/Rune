@@ -136,6 +136,37 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
         primaryAction.id.isCLIOnly || utilityActions.contains { $0.id.isCLIOnly }
     }
 
+    func primaryAction(hasCompatibleImportedContext: Bool) -> AddClusterProviderAction {
+        guard executionMode == .nativeOnly,
+              requiresCompatibleImportedContext,
+              !hasCompatibleImportedContext else {
+            return primaryAction
+        }
+        return AddClusterProviderAction(
+            .importKubeconfig,
+            title: "Import kubeconfig…",
+            systemImage: "doc.badge.plus"
+        )
+    }
+
+    func utilityActions(hasCompatibleImportedContext: Bool) -> [AddClusterProviderAction] {
+        guard executionMode == .nativeOnly,
+              requiresCompatibleImportedContext else {
+            return utilityActions
+        }
+        if !hasCompatibleImportedContext {
+            return utilityActions.filter { $0.id != .importKubeconfig }
+        }
+        return utilityActions.map { action in
+            guard action.id == .importKubeconfig else { return action }
+            return AddClusterProviderAction(
+                .importKubeconfig,
+                title: "Import another…",
+                systemImage: action.systemImage
+            )
+        }
+    }
+
     static func resolve(
         provider: AddClusterProviderIdentifier,
         externalCommandsAllowed: Bool,
@@ -220,6 +251,7 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
                 systemImage: "icloud.and.arrow.down"
             ),
             utilityActions: [
+                AddClusterProviderAction(.importKubeconfig, title: "Import…", systemImage: "doc.badge.plus"),
                 AddClusterProviderAction(.copyExternalCommand, title: "Copy", systemImage: "doc.on.doc"),
                 AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
                 AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")

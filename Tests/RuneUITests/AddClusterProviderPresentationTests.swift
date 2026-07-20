@@ -41,7 +41,7 @@ final class AddClusterProviderPresentationTests: XCTestCase {
             XCTAssertFalse(value.requiresCompatibleImportedContext)
             XCTAssertEqual(
                 value.utilityActions.map(\.id),
-                [.copyExternalCommand, .refreshContexts, .runAuthDoctor]
+                [.importKubeconfig, .copyExternalCommand, .refreshContexts, .runAuthDoctor]
             )
         }
     }
@@ -94,6 +94,36 @@ final class AddClusterProviderPresentationTests: XCTestCase {
         XCTAssertFalse(disconnected.utilityActions.contains { $0.id == .disconnectNativeCredentials })
         XCTAssertEqual(connected.utilityActions.last?.id, .disconnectNativeCredentials)
         XCTAssertTrue(connected.utilityActions.last?.isDestructive == true)
+    }
+
+    func testNativeOnlyMakesKubeconfigImportPrimaryUntilAContextIsAvailable() {
+        for provider in [
+            AddClusterProviderIdentifier.aks,
+            .eks,
+            .gke
+        ] {
+            let value = presentation(provider, mode: .nativeOnly)
+            let initialPrimary = value.primaryAction(hasCompatibleImportedContext: false)
+            let initialUtilities = value.utilityActions(hasCompatibleImportedContext: false)
+
+            XCTAssertEqual(initialPrimary.id, .importKubeconfig)
+            XCTAssertEqual(initialPrimary.title, "Import kubeconfig…")
+            XCTAssertEqual(initialPrimary.systemImage, "doc.badge.plus")
+            XCTAssertEqual(initialUtilities.map(\.id), [.refreshContexts, .runAuthDoctor])
+
+            let availablePrimary = value.primaryAction(hasCompatibleImportedContext: true)
+            let availableUtilities = value.utilityActions(hasCompatibleImportedContext: true)
+
+            XCTAssertEqual(availablePrimary, value.primaryAction)
+            XCTAssertEqual(
+                availableUtilities.map(\.id),
+                [.importKubeconfig, .refreshContexts, .runAuthDoctor]
+            )
+            XCTAssertEqual(
+                availableUtilities.first { $0.id == .importKubeconfig }?.title,
+                "Import another…"
+            )
+        }
     }
 
     func testNativeOnlyPresentationNeverExposesCloudCLIOnlyActions() {
