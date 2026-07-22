@@ -2701,8 +2701,7 @@ public struct RuneRootView: View {
                         addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
                     }
 
-                    if presentation.executionMode == .externalCLI,
-                       let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                    if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
                         addClusterCloudImportDiagnosticView(diagnostic)
                     }
 
@@ -2843,7 +2842,7 @@ public struct RuneRootView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text(diagnostic.commandShape)
+            Text(diagnostic.operationShape)
                 .font(.system(.caption2, design: .monospaced))
                 .lineLimit(2)
                 .textSelection(.enabled)
@@ -3378,7 +3377,7 @@ public struct RuneRootView: View {
     }
 
     private var contentPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentModuleSpacing) {
             if let notice = viewModel.state.activeNotice {
                 RuneNoticeBanner(notice: notice) {
                     viewModel.state.clearError()
@@ -3430,7 +3429,7 @@ public struct RuneRootView: View {
     }
 
     private var contentHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentControlSpacing) {
             RuneAdaptiveToolbar("Content header") {
                 HStack(spacing: 8) {
                     Text(viewModel.state.selectedSection.localizedTitle(appString))
@@ -3714,7 +3713,7 @@ public struct RuneRootView: View {
 
     private var overviewPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentSectionSpacing) {
                 if !hasAvailableKubernetesContexts {
                     KubernetesConnectionOnboardingView(
                         favoriteImportedContexts: $viewModel.favoriteImportedKubeConfigContexts,
@@ -3869,6 +3868,7 @@ public struct RuneRootView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .id("overview")
         .scrollContentBackground(.hidden)
@@ -4173,8 +4173,6 @@ public struct RuneRootView: View {
                 operatorResourceViews
             }
         }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -4290,7 +4288,7 @@ public struct RuneRootView: View {
                         yamlManifestIsEditing = false
                     }
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -4306,10 +4304,9 @@ public struct RuneRootView: View {
                 onSelectEvent: viewModel.selectEvent,
                 onToggleSort: viewModel.toggleEventSort
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "", enabled: showHoverTooltips)
         }
-        .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -6395,12 +6392,10 @@ public struct RuneRootView: View {
                         viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
                     }
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.vertical, 2)
         }
-        .padding(.horizontal, 2)
         .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\(genericResourceListIdentity(resources))")
         .transaction { transaction in
             transaction.animation = nil
@@ -7794,7 +7789,7 @@ public struct RuneRootView: View {
             }
             .padding(12)
             .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
-            .task {
+            .task(id: viewModel.state.selectedContext?.name) {
                 viewModel.refreshKubernetesRequestMetricsSummary()
             }
         }
@@ -7886,7 +7881,7 @@ public struct RuneRootView: View {
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("API Requests")
+                Text("API Attempts")
                     .font(.caption.weight(.semibold))
                 Text("\(summary.requestCountText) • \(summary.outcomeText)")
                     .font(.caption)
@@ -7896,6 +7891,31 @@ public struct RuneRootView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if !summary.endpointHighlights.isEmpty {
+                    Text("Retained endpoint highlights")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 3)
+
+                    ForEach(summary.endpointHighlights) { endpoint in
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Image(systemName: endpoint.hasIssues ? "exclamationmark.triangle.fill" : "clock")
+                                .font(.caption2)
+                                .foregroundStyle(endpoint.hasIssues ? .orange : .secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(endpoint.method) \(endpoint.apiPath)")
+                                    .font(.caption2.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help("\(endpoint.method) \(endpoint.apiPath)")
+                                Text("\(endpoint.outcomeText) • \(endpoint.maxDurationText)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
             }
 
             Spacer(minLength: 8)

@@ -851,6 +851,79 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
     }
 
+    func testMiddlePanelResourceSurfacesUseSharedOuterInset() async throws {
+        let pod = PodSummary(
+            name: "sample-pod",
+            namespace: "sample-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "5m"
+        )
+        let configMap = ClusterResourceSummary(
+            kind: .configMap,
+            name: "sample-config",
+            namespace: "sample-namespace",
+            primaryText: "2 keys",
+            secondaryText: "5m"
+        )
+        let event = EventSummary(
+            type: "Normal",
+            reason: "Scheduled",
+            objectName: "sample-pod",
+            message: "Resource scheduled",
+            lastTimestamp: "2026-01-01T00:00:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: "sample-namespace"
+        )
+        let eventState = RuneAppState()
+        eventState.selectedSection = .events
+        eventState.selectedWorkloadKind = .event
+        eventState.selectedNamespace = "sample-namespace"
+        eventState.setEvents([event])
+
+        let helmState = RuneAppState()
+        helmState.selectedSection = .helm
+        helmState.selectedNamespace = "sample-namespace"
+        helmState.setHelmReleases([
+            HelmReleaseSummary(
+                name: "sample-release",
+                namespace: "sample-namespace",
+                revision: 1,
+                updated: "2026-01-01 00:00:00",
+                status: "deployed",
+                chart: "sample-chart-1.0.0",
+                appVersion: "1.0.0"
+            )
+        ])
+
+        let scenarios: [(String, RuneAppViewModel, RuneSection, KubeResourceKind)] = [
+            ("Pods", makePodViewModel(pod: pod), .workloads, .pod),
+            ("ConfigMaps", makeConfigViewModel(resource: configMap), .config, .configMap),
+            ("Events", RuneAppViewModel(state: eventState), .events, .event),
+            ("Helm", RuneAppViewModel(state: helmState), .helm, .pod)
+        ]
+
+        for (label, viewModel, section, kind) in scenarios {
+            let snapshot = try await hostMiddlePanelTableSnapshot(
+                viewModel: viewModel,
+                section: section,
+                kind: kind
+            )
+            XCTAssertEqual(
+                snapshot.tableFrame.minX,
+                RuneUILayoutMetrics.paneOuterPadding,
+                accuracy: 0.75,
+                "\(label) should start on the shared middle-panel leading grid."
+            )
+            XCTAssertEqual(
+                snapshot.contentWidth - snapshot.tableFrame.maxX,
+                RuneUILayoutMetrics.paneOuterPadding,
+                accuracy: 0.75,
+                "\(label) should end on the shared middle-panel trailing grid."
+            )
+        }
+    }
+
     func testSectionTransitionsDoNotDriftAfterLayoutSettles() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
@@ -2128,6 +2201,88 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let contentWidth: CGFloat
         let detailMinX: CGFloat
         let detailWidth: CGFloat
+    }
+
+    private struct MiddlePanelTableSnapshot {
+        let contentWidth: CGFloat
+        let tableFrame: CGRect
+    }
+
+    private func hostMiddlePanelTableSnapshot(
+        viewModel: RuneAppViewModel,
+        section: RuneSection,
+        kind: KubeResourceKind
+    ) async throws -> MiddlePanelTableSnapshot {
+        prepareLayoutTestViewModel(viewModel)
+        viewModel.state.selectedSection = section
+        viewModel.state.selectedWorkloadKind = kind
+
+        let host = NSHostingController(
+            rootView: RuneRootView(
+                viewModel: viewModel,
+                onLayoutSnapshotChange: nil,
+                debugDisableBootstrap: true,
+                shellVariant: .appKitSplitView,
+                initialSidebarWidthOverride: 280,
+                initialDetailWidthOverride: 520
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        window.contentView = container
+        let hostView = host.view
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let timeout = Date().addingTimeInterval(2.0)
+        while Date() < timeout {
+            container.layoutSubtreeIfNeeded()
+            await Task.yield()
+
+            if let splitView = firstThreePaneVerticalSplitView(in: container),
+               splitView.arrangedSubviews.count == 3 {
+                let contentView = splitView.arrangedSubviews[1]
+                if let tableView = firstTableView(in: contentView),
+                   let scrollView = tableView.enclosingScrollView,
+                   scrollView.bounds.width > 1 {
+                    return MiddlePanelTableSnapshot(
+                        contentWidth: contentView.bounds.width,
+                        tableFrame: scrollView.convert(scrollView.bounds, to: contentView)
+                    )
+                }
+            }
+
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTFail("Timed out waiting for the \(section.rawValue) middle-panel table surface")
+        throw CancellationError()
+    }
+
+    private func firstTableView(in view: NSView?) -> NSTableView? {
+        guard let view else { return nil }
+        if let tableView = view as? NSTableView {
+            return tableView
+        }
+        for subview in view.subviews {
+            if let tableView = firstTableView(in: subview) {
+                return tableView
+            }
+        }
+        return nil
     }
 
     private func hostAppKitSplitSnapshot(

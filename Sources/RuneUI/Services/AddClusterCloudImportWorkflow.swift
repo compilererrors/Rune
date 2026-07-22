@@ -11,10 +11,12 @@ public struct AddClusterCloudImportDiagnostic: Equatable {
     public let title: String
     public let classification: String
     public let message: String
-    public let commandShape: String
+    public let operationShape: String
     public let nextAction: String
     public let documentationTitle: String
     public let documentationURL: URL
+
+    public var commandShape: String { operationShape }
 }
 
 public enum AddClusterCloudImportWorkflow {
@@ -106,11 +108,448 @@ public enum AddClusterCloudImportWorkflow {
             title: title,
             classification: classification,
             message: message,
-            commandShape: commandShape(for: provider),
+            operationShape: commandShape(for: provider),
             nextAction: nextAction,
             documentationTitle: documentationTitle(for: provider),
             documentationURL: documentationURL(for: provider)
         )
+    }
+
+    public static func nativeDiagnostic(
+        for error: Error,
+        provider: CloudKubeConfigProvider
+    ) -> AddClusterCloudImportDiagnostic {
+        let failure = nativeFailurePresentation(for: error, provider: provider)
+        return AddClusterCloudImportDiagnostic(
+            title: failure.title,
+            classification: failure.classification,
+            message: failure.message,
+            operationShape: nativeOperationShape(for: provider),
+            nextAction: failure.nextAction,
+            documentationTitle: documentationTitle(for: provider),
+            documentationURL: documentationURL(for: provider)
+        )
+    }
+
+    private struct NativeFailurePresentation {
+        let title: String
+        let classification: String
+        let message: String
+        let nextAction: String
+    }
+
+    private static func nativeFailurePresentation(
+        for error: Error,
+        provider: CloudKubeConfigProvider
+    ) -> NativeFailurePresentation {
+        switch provider {
+        case .aks:
+            if let error = error as? AKSNativeClusterImportError {
+                return aksNativeFailurePresentation(for: error)
+            }
+        case .eks:
+            if let error = error as? AWSEKSClusterImportError {
+                return eksNativeFailurePresentation(for: error)
+            }
+            if let error = error as? AWSEKSNativeAuthError {
+                return eksNativeAuthFailurePresentation(for: error)
+            }
+        case .gke:
+            if let error = error as? GKENativeClusterImportError {
+                return gkeNativeFailurePresentation(for: error)
+            }
+            if let error = error as? GCPServiceAccountAuthError {
+                return gkeCredentialFailurePresentation(for: error)
+            }
+        }
+
+        return NativeFailurePresentation(
+            title: "Native import failed",
+            classification: "Native import failed",
+            message: "\(nativeProviderTitle(provider)) could not complete the secure provider connection.",
+            nextAction: nativeDefaultNextAction(for: provider)
+        )
+    }
+
+    private static func aksNativeFailurePresentation(
+        for error: AKSNativeClusterImportError
+    ) -> NativeFailurePresentation {
+        switch error {
+        case .invalidRequest:
+            return NativeFailurePresentation(
+                title: "Invalid AKS details",
+                classification: "Invalid input",
+                message: "One or more required Azure identifiers are missing or invalid.",
+                nextAction: "Check the subscription, resource group, cluster, tenant, and client IDs, then retry import."
+            )
+        case .invalidCredentials:
+            return NativeFailurePresentation(
+                title: "Azure authentication failed",
+                classification: "Authentication failed",
+                message: "The Azure service-principal credential is missing or invalid.",
+                nextAction: "Check the tenant ID, client ID, and client secret, then retry import."
+            )
+        case let .authenticationFailed(statusCode, _):
+            return nativeAuthenticationFailurePresentation(
+                title: "Azure authentication failed",
+                providerTitle: "Microsoft Entra ID",
+                statusCode: statusCode,
+                message: "Microsoft Entra ID rejected the service-principal authentication request.",
+                nextAction: "Check the tenant ID, client ID, and client secret, then retry import."
+            )
+        case let .clusterRequestFailed(statusCode, _):
+            if statusCode == 401 {
+                return nativeAuthenticationFailurePresentation(
+                    title: "Azure authentication failed",
+                    providerTitle: "Azure Resource Manager",
+                    statusCode: statusCode,
+                    message: "Azure Resource Manager rejected the service-principal access token.",
+                    nextAction: "Check the tenant ID, client ID, and client secret, then retry import."
+                )
+            }
+            if statusCode == 403 {
+                return NativeFailurePresentation(
+                    title: "AKS permission denied",
+                    classification: "Authorization failed",
+                    message: "Azure accepted the identity but denied access to fetch AKS user credentials.",
+                    nextAction: "Grant AKS Cluster User access for this cluster, then retry import."
+                )
+            }
+            if statusCode == 404 {
+                return NativeFailurePresentation(
+                    title: "AKS cluster not found",
+                    classification: "Cluster not found",
+                    message: "Azure could not find the requested AKS cluster in the selected scope.",
+                    nextAction: "Check the subscription, resource group, and cluster name, then retry import."
+                )
+            }
+            return rejectedNativeRequestPresentation(
+                providerTitle: "Microsoft AKS",
+                statusCode: statusCode,
+                nextAction: "Check Azure service health and the cluster details, then retry import."
+            )
+        case .transport:
+            return NativeFailurePresentation(
+                title: "Azure connection failed",
+                classification: "Network failure",
+                message: "Rune could not complete the secure request to Microsoft Azure.",
+                nextAction: "Check network or VPN access to Microsoft login and management endpoints, then retry import."
+            )
+        case .tenantMismatch:
+            return NativeFailurePresentation(
+                title: "AKS tenant mismatch",
+                classification: "Tenant mismatch",
+                message: "Azure returned cluster access configured for a different tenant.",
+                nextAction: "Use the tenant ID configured for this AKS cluster, then retry import."
+            )
+        case .invalidEndpoint,
+             .responseTooLarge,
+             .invalidProviderResponse,
+             .invalidKubeConfig,
+             .incompatibleKubeConfig:
+            return NativeFailurePresentation(
+                title: "Invalid AKS response",
+                classification: "Provider response rejected",
+                message: "Rune rejected incomplete or incompatible cluster access data returned by Azure.",
+                nextAction: "Retry after checking the cluster state; if it persists, import a reviewed kubeconfig instead."
+            )
+        }
+    }
+
+    private static func eksNativeFailurePresentation(
+        for error: AWSEKSClusterImportError
+    ) -> NativeFailurePresentation {
+        switch error {
+        case .invalidClusterName, .invalidRegion:
+            return NativeFailurePresentation(
+                title: "Invalid EKS details",
+                classification: "Invalid input",
+                message: "The EKS cluster name or AWS region is invalid.",
+                nextAction: "Check the cluster name and region, then retry import."
+            )
+        case .unsupportedPartition:
+            return NativeFailurePresentation(
+                title: "AWS partition unsupported",
+                classification: "Unsupported environment",
+                message: "Rune cannot import this AWS partition through native authentication yet.",
+                nextAction: "Import a reviewed kubeconfig or use Rune's direct build for this AWS environment."
+            )
+        case .networkFailure:
+            return NativeFailurePresentation(
+                title: "AWS connection failed",
+                classification: "Network failure",
+                message: "Rune could not complete the secure request to the Amazon EKS API.",
+                nextAction: "Check network or VPN access to the regional EKS endpoint, then retry import."
+            )
+        case .authenticationFailed:
+            return NativeFailurePresentation(
+                title: "AWS authentication failed",
+                classification: "Authentication failed",
+                message: "Amazon EKS rejected the supplied AWS credentials.",
+                nextAction: "Check the access key, secret key, and optional session token, then retry import."
+            )
+        case .accessDenied:
+            return NativeFailurePresentation(
+                title: "EKS permission denied",
+                classification: "Authorization failed",
+                message: "AWS accepted the credentials but denied access to describe the EKS cluster.",
+                nextAction: "Grant eks:DescribeCluster for this cluster, then retry import."
+            )
+        case .clusterNotFound:
+            return NativeFailurePresentation(
+                title: "EKS cluster not found",
+                classification: "Cluster not found",
+                message: "Amazon EKS could not find the requested cluster in the selected region.",
+                nextAction: "Check the cluster name, region, and AWS account, then retry import."
+            )
+        case let .requestRejected(statusCode):
+            return rejectedNativeRequestPresentation(
+                providerTitle: "Amazon EKS",
+                statusCode: statusCode,
+                nextAction: "Check AWS service health and the cluster details, then retry import."
+            )
+        case .clusterNotReady:
+            return NativeFailurePresentation(
+                title: "EKS cluster not ready",
+                classification: "Cluster unavailable",
+                message: "The EKS control plane is not ready to accept connections yet.",
+                nextAction: "Wait for the cluster to become active, then retry import."
+            )
+        case .invalidHTTPResponse,
+             .responseTooLarge,
+             .invalidClusterResponse,
+             .invalidClusterEndpoint,
+             .invalidCertificateAuthority:
+            return NativeFailurePresentation(
+                title: "Invalid EKS response",
+                classification: "Provider response rejected",
+                message: "Rune rejected incomplete or unsafe cluster connection data returned by Amazon EKS.",
+                nextAction: "Retry after checking the cluster state; if it persists, import a reviewed kubeconfig instead."
+            )
+        }
+    }
+
+    private static func eksNativeAuthFailurePresentation(
+        for error: AWSEKSNativeAuthError
+    ) -> NativeFailurePresentation {
+        switch error {
+        case .invalidCredentials:
+            return NativeFailurePresentation(
+                title: "Invalid AWS credentials",
+                classification: "Authentication failed",
+                message: "The supplied AWS credentials are missing or malformed.",
+                nextAction: "Check the access key, secret key, and optional session token, then retry import."
+            )
+        case .expiredCredentials:
+            return NativeFailurePresentation(
+                title: "AWS credentials expired",
+                classification: "Session expired",
+                message: "The supplied temporary AWS credentials have expired.",
+                nextAction: "Create fresh session credentials, including the session token, then retry import."
+            )
+        case .missingRegion,
+             .invalidRegion,
+             .missingClusterIdentifier,
+             .conflictingClusterIdentifiers,
+             .invalidClusterIdentifier:
+            return NativeFailurePresentation(
+                title: "Invalid EKS details",
+                classification: "Invalid input",
+                message: "The EKS cluster identifier or AWS region is missing or invalid.",
+                nextAction: "Check the cluster name and region, then retry import."
+            )
+        case .missingOptionValue,
+             .duplicateOption,
+             .unsupportedOption,
+             .unsupportedArgument,
+             .unsupportedRoleAssumption,
+             .customEndpointUnsupported,
+             .unsupportedPartition,
+             .tokenTooLarge:
+            return NativeFailurePresentation(
+                title: "AWS native authentication unsupported",
+                classification: "Unsupported configuration",
+                message: "The requested AWS authentication configuration is not supported by Rune's native flow.",
+                nextAction: "Import a reviewed kubeconfig or use Rune's direct build for this AWS configuration."
+            )
+        }
+    }
+
+    private static func gkeNativeFailurePresentation(
+        for error: GKENativeClusterImportError
+    ) -> NativeFailurePresentation {
+        switch error {
+        case .missingRequiredField, .invalidResourceIdentifier:
+            return NativeFailurePresentation(
+                title: "Invalid GKE details",
+                classification: "Invalid input",
+                message: "The Google Cloud project, location, or cluster name is missing or invalid.",
+                nextAction: "Check the project ID, location, and cluster name, then retry import."
+            )
+        case .authenticationFailed:
+            return NativeFailurePresentation(
+                title: "Google authentication failed",
+                classification: "Authentication failed",
+                message: "Google Cloud rejected the selected service-account credential.",
+                nextAction: "Check the service-account JSON and select a current credential, then retry import."
+            )
+        case .networkFailure:
+            return NativeFailurePresentation(
+                title: "Google Cloud connection failed",
+                classification: "Network failure",
+                message: "Rune could not complete the secure request to Google Kubernetes Engine.",
+                nextAction: "Check network or VPN access to Google OAuth and GKE endpoints, then retry import."
+            )
+        case let .requestRejected(statusCode):
+            if statusCode == 403 {
+                return NativeFailurePresentation(
+                    title: "GKE permission denied",
+                    classification: "Authorization failed",
+                    message: "Google Cloud accepted the credential but denied access to read the GKE cluster.",
+                    nextAction: "Grant container.clusters.get for this cluster, then retry import."
+                )
+            }
+            if statusCode == 404 {
+                return NativeFailurePresentation(
+                    title: "GKE cluster not found",
+                    classification: "Cluster not found",
+                    message: "Google Kubernetes Engine could not find the requested cluster in the selected location.",
+                    nextAction: "Check the project ID, location, and cluster name, then retry import."
+                )
+            }
+            return rejectedNativeRequestPresentation(
+                providerTitle: "Google GKE",
+                statusCode: statusCode,
+                nextAction: "Check Google Cloud service health and the cluster details, then retry import."
+            )
+        case .invalidHTTPResponse,
+             .responseTooLarge,
+             .invalidClusterResponse,
+             .invalidClusterEndpoint,
+             .invalidCertificateAuthority:
+            return NativeFailurePresentation(
+                title: "Invalid GKE response",
+                classification: "Provider response rejected",
+                message: "Rune rejected incomplete or unsafe cluster connection data returned by Google Cloud.",
+                nextAction: "Retry after checking the cluster state; if it persists, import a reviewed kubeconfig instead."
+            )
+        }
+    }
+
+    private static func gkeCredentialFailurePresentation(
+        for error: GCPServiceAccountAuthError
+    ) -> NativeFailurePresentation {
+        switch error {
+        case .invalidJSON,
+             .unsupportedCredentialType,
+             .missingRequiredField,
+             .invalidClientEmail,
+             .invalidPrivateKey,
+             .invalidTokenURI,
+             .signingFailed:
+            return NativeFailurePresentation(
+                title: "Invalid Google credential",
+                classification: "Credential rejected",
+                message: "Rune could not use the selected Google service-account document.",
+                nextAction: "Select a valid service-account JSON credential, then retry import."
+            )
+        case .networkFailure:
+            return NativeFailurePresentation(
+                title: "Google OAuth connection failed",
+                classification: "Network failure",
+                message: "Rune could not complete the secure request to Google OAuth.",
+                nextAction: "Check network or VPN access to Google OAuth, then retry import."
+            )
+        case let .tokenEndpointRejected(statusCode):
+            return nativeAuthenticationFailurePresentation(
+                title: "Google authentication failed",
+                providerTitle: "Google OAuth",
+                statusCode: statusCode,
+                message: "Google OAuth rejected the service-account assertion.",
+                nextAction: "Check that the service account and private key are active, then retry import."
+            )
+        case .invalidHTTPResponse, .responseTooLarge, .invalidTokenResponse:
+            return NativeFailurePresentation(
+                title: "Invalid Google OAuth response",
+                classification: "Provider response rejected",
+                message: "Rune rejected an incomplete or unsafe response from Google OAuth.",
+                nextAction: "Retry with a current service-account credential."
+            )
+        }
+    }
+
+    private static func nativeAuthenticationFailurePresentation(
+        title: String,
+        providerTitle: String,
+        statusCode: Int,
+        message: String,
+        nextAction: String
+    ) -> NativeFailurePresentation {
+        if (400...403).contains(statusCode) {
+            return NativeFailurePresentation(
+                title: title,
+                classification: "Authentication failed",
+                message: message,
+                nextAction: nextAction
+            )
+        }
+        return rejectedNativeRequestPresentation(
+            providerTitle: providerTitle,
+            statusCode: statusCode,
+            nextAction: "Check provider service health and network access, then retry import."
+        )
+    }
+
+    private static func rejectedNativeRequestPresentation(
+        providerTitle: String,
+        statusCode: Int,
+        nextAction: String
+    ) -> NativeFailurePresentation {
+        let safeStatusCode = (100...599).contains(statusCode) ? statusCode : 0
+        if safeStatusCode == 429 {
+            return NativeFailurePresentation(
+                title: "Provider request throttled",
+                classification: "HTTP 429",
+                message: "\(providerTitle) temporarily throttled the native cluster access request.",
+                nextAction: "Wait briefly, then retry import."
+            )
+        }
+        if (500...599).contains(safeStatusCode) {
+            return NativeFailurePresentation(
+                title: "Provider temporarily unavailable",
+                classification: "HTTP \(safeStatusCode)",
+                message: "\(providerTitle) could not complete the native cluster access request.",
+                nextAction: "Check provider service status, then retry import."
+            )
+        }
+        return NativeFailurePresentation(
+            title: "Provider request rejected",
+            classification: "HTTP \(safeStatusCode)",
+            message: "\(providerTitle) rejected the native cluster access request.",
+            nextAction: nextAction
+        )
+    }
+
+    private static func nativeDefaultNextAction(for provider: CloudKubeConfigProvider) -> String {
+        switch provider {
+        case .aks:
+            return "Check the Azure identifiers, service-principal credential, and AKS access, then retry import."
+        case .eks:
+            return "Check the cluster, region, AWS credentials, and EKS access, then retry import."
+        case .gke:
+            return "Check the project, location, service-account credential, and GKE access, then retry import."
+        }
+    }
+
+    private static func nativeOperationShape(for provider: CloudKubeConfigProvider) -> String {
+        switch provider {
+        case .aks:
+            return "Microsoft Entra ID → Azure Resource Manager HTTPS API → kubeconfig review → Keychain"
+        case .eks:
+            return "AWS Signature V4 → Amazon EKS HTTPS API → kubeconfig review → Keychain"
+        case .gke:
+            return "Google OAuth → GKE HTTPS API → kubeconfig review → Keychain"
+        }
     }
 
     private static func providerCommandFailureDiagnostic(

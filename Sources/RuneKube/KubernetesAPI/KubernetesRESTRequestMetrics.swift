@@ -1,4 +1,5 @@
 import Foundation
+import RuneDiagnostics
 
 public enum KubernetesRESTRequestMetricOutcome: String, Sendable, Equatable {
     case success
@@ -41,54 +42,7 @@ public struct KubernetesRESTRequestMetric: Sendable, Equatable {
     }
 
     public static func sanitizedAPIPath(_ apiPath: String) -> String {
-        let pieces = apiPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-        let redactedPath = redactedPathSegments(String(pieces.first ?? ""))
-        guard pieces.count > 1 else { return redactedPath }
-
-        let query = pieces[1]
-            .split(separator: "&", omittingEmptySubsequences: false)
-            .map { item -> String in
-                let pair = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                guard let name = pair.first, !name.isEmpty else { return "<redacted>" }
-                return "\(name)=<redacted>"
-            }
-            .joined(separator: "&")
-        return query.isEmpty ? redactedPath : "\(redactedPath)?\(query)"
-    }
-
-    private static func redactedPathSegments(_ path: String) -> String {
-        let hasLeadingSlash = path.hasPrefix("/")
-        var segments = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-
-        if let namespaceIndex = segments.firstIndex(of: "namespaces"),
-           namespaceIndex + 1 < segments.count {
-            segments[namespaceIndex + 1] = "<namespace>"
-        }
-
-        if let nameIndex = objectNameIndex(in: segments) {
-            segments[nameIndex] = "<name>"
-        }
-
-        let joined = segments.joined(separator: "/")
-        return hasLeadingSlash ? "/" + joined : joined
-    }
-
-    private static func objectNameIndex(in segments: [String]) -> Int? {
-        if let namespaceIndex = segments.firstIndex(of: "namespaces") {
-            let resourceIndex = namespaceIndex + 2
-            let nameIndex = resourceIndex + 1
-            return nameIndex < segments.count ? nameIndex : nil
-        }
-
-        if segments.first == "api", segments.count >= 5 {
-            return 4
-        }
-
-        if segments.first == "apis", segments.count >= 6 {
-            return 5
-        }
-
-        return nil
+        KubernetesAPIPathSanitizer.sanitizedPath(apiPath)
     }
 }
 
@@ -100,54 +54,141 @@ public struct KubernetesRESTRequestMetricsSummary: Sendable, Equatable {
     public let responseBytes: Int
     public let totalDurationSeconds: Double
     public let retainedMetricCount: Int
+
+    public var omittedMetricCount: Int {
+        max(0, requestCount - retainedMetricCount)
+    }
+}
+
+public struct KubernetesRESTRequestMetricsReport: Sendable, Equatable {
+    public let metrics: [KubernetesRESTRequestMetric]
+    public let summary: KubernetesRESTRequestMetricsSummary
+
+    public static let empty = KubernetesRESTRequestMetricsReport(
+        metrics: [],
+        summary: KubernetesRESTRequestMetricsSummary(
+            requestCount: 0,
+            successCount: 0,
+            failureCount: 0,
+            cancelledCount: 0,
+            responseBytes: 0,
+            totalDurationSeconds: 0,
+            retainedMetricCount: 0
+        )
+    )
 }
 
 actor KubernetesRESTRequestMetricsRecorder {
     private var retainedMetrics: RetainedRequestMetricBuffer
-    private var totalRequestCount = 0
-    private var totalSuccessCount = 0
-    private var totalCancelledCount = 0
-    private var totalResponseBytes = 0
-    private var totalDurationSeconds = 0.0
+    private var allContextsAccumulator = RequestMetricsAccumulator()
+    private var contextAccumulators: [String: RequestMetricsAccumulator] = [:]
 
     init(maxRetainedMetrics: Int = 1_000) {
         retainedMetrics = RetainedRequestMetricBuffer(capacity: max(1, maxRetainedMetrics))
     }
 
     func record(_ metric: KubernetesRESTRequestMetric) {
-        totalRequestCount += 1
-        if metric.outcome == .success {
-            totalSuccessCount += 1
-        }
-        if metric.outcome == .cancelled {
-            totalCancelledCount += 1
-        }
-        totalResponseBytes += metric.responseBytes
-        totalDurationSeconds += metric.durationSeconds
+        record(metric, scopedContextName: nil)
+    }
 
-        retainedMetrics.append(metric)
+    func record(_ metric: KubernetesRESTRequestMetric, contextName: String) {
+        record(metric, scopedContextName: contextName)
+    }
+
+    private func record(_ metric: KubernetesRESTRequestMetric, scopedContextName: String?) {
+        allContextsAccumulator.record(metric)
+        if let contextName = scopedContextName {
+            contextAccumulators[contextName, default: RequestMetricsAccumulator()].record(metric)
+        }
+        retainedMetrics.append(RecordedRequestMetric(contextName: scopedContextName, metric: metric))
     }
 
     func snapshot() -> [KubernetesRESTRequestMetric] {
-        retainedMetrics.elements
+        retainedMetricsSnapshot(contextName: nil)
+    }
+
+    func snapshot(contextName: String) -> [KubernetesRESTRequestMetric] {
+        retainedMetricsSnapshot(contextName: contextName)
     }
 
     func summary() -> KubernetesRESTRequestMetricsSummary {
-        return KubernetesRESTRequestMetricsSummary(
-            requestCount: totalRequestCount,
-            successCount: totalSuccessCount,
-            failureCount: totalRequestCount - totalSuccessCount - totalCancelledCount,
-            cancelledCount: totalCancelledCount,
-            responseBytes: totalResponseBytes,
+        allContextsAccumulator.summary(retainedMetricCount: retainedMetrics.count)
+    }
+
+    func summary(contextName: String) -> KubernetesRESTRequestMetricsSummary {
+        let retainedMetricCount = retainedMetrics.retainedCount(contextName: contextName)
+        return accumulator(contextName: contextName).summary(retainedMetricCount: retainedMetricCount)
+    }
+
+    func report() -> KubernetesRESTRequestMetricsReport {
+        makeReport(contextName: nil)
+    }
+
+    func report(contextName: String) -> KubernetesRESTRequestMetricsReport {
+        makeReport(contextName: contextName)
+    }
+
+    private func makeReport(contextName: String?) -> KubernetesRESTRequestMetricsReport {
+        let metrics = retainedMetricsSnapshot(contextName: contextName)
+        return KubernetesRESTRequestMetricsReport(
+            metrics: metrics,
+            summary: accumulator(contextName: contextName).summary(retainedMetricCount: metrics.count)
+        )
+    }
+
+    private func retainedMetricsSnapshot(contextName: String?) -> [KubernetesRESTRequestMetric] {
+        retainedMetrics.elements.compactMap { entry in
+            guard contextName == nil || entry.contextName == contextName else { return nil }
+            return entry.metric
+        }
+    }
+
+    private func accumulator(contextName: String?) -> RequestMetricsAccumulator {
+        guard let contextName else { return allContextsAccumulator }
+        return contextAccumulators[contextName] ?? RequestMetricsAccumulator()
+    }
+}
+
+private struct RequestMetricsAccumulator {
+    private var requestCount = 0
+    private var successCount = 0
+    private var cancelledCount = 0
+    private var responseBytes = 0
+    private var totalDurationSeconds = 0.0
+
+    mutating func record(_ metric: KubernetesRESTRequestMetric) {
+        requestCount += 1
+        if metric.outcome == .success {
+            successCount += 1
+        }
+        if metric.outcome == .cancelled {
+            cancelledCount += 1
+        }
+        responseBytes += metric.responseBytes
+        totalDurationSeconds += metric.durationSeconds
+    }
+
+    func summary(retainedMetricCount: Int) -> KubernetesRESTRequestMetricsSummary {
+        KubernetesRESTRequestMetricsSummary(
+            requestCount: requestCount,
+            successCount: successCount,
+            failureCount: requestCount - successCount - cancelledCount,
+            cancelledCount: cancelledCount,
+            responseBytes: responseBytes,
             totalDurationSeconds: totalDurationSeconds,
-            retainedMetricCount: retainedMetrics.count
+            retainedMetricCount: retainedMetricCount
         )
     }
 }
 
+private struct RecordedRequestMetric {
+    let contextName: String?
+    let metric: KubernetesRESTRequestMetric
+}
+
 private struct RetainedRequestMetricBuffer {
     private let capacity: Int
-    private var storage: [KubernetesRESTRequestMetric] = []
+    private var storage: [RecordedRequestMetric] = []
     private var startIndex = 0
 
     init(capacity: Int) {
@@ -159,12 +200,17 @@ private struct RetainedRequestMetricBuffer {
         storage.count
     }
 
-    var elements: [KubernetesRESTRequestMetric] {
+    var elements: [RecordedRequestMetric] {
         guard storage.count == capacity, startIndex > 0 else { return storage }
         return Array(storage[startIndex...]) + Array(storage[..<startIndex])
     }
 
-    mutating func append(_ metric: KubernetesRESTRequestMetric) {
+    func retainedCount(contextName: String?) -> Int {
+        guard let contextName else { return count }
+        return storage.lazy.filter { $0.contextName == contextName }.count
+    }
+
+    mutating func append(_ metric: RecordedRequestMetric) {
         guard storage.count == capacity else {
             storage.append(metric)
             return

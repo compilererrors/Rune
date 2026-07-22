@@ -70,6 +70,35 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
             viewModel.isKubeConfigImportConfirmationPending
                 && !viewModel.isRunningCloudKubeConfigImport
         }
+        let readyStatus = viewModel.cloudKubeConfigImportStatus
+        let readyNativeStatus = viewModel.nativeKubernetesAuthStatus
+        let reviewCount = viewModel.kubeConfigImportReviews.count
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "",
+            region: "",
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.runNativeAKSClusterImport(
+            subscriptionID: "",
+            resourceGroup: "",
+            clusterName: "",
+            tenantID: "",
+            clientID: "",
+            clientSecret: ""
+        )
+        viewModel.chooseAndRunNativeGKEClusterImport(
+            projectID: "",
+            location: "",
+            clusterName: ""
+        )
+
+        XCTAssertTrue(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        XCTAssertEqual(viewModel.kubeConfigImportReviews.count, reviewCount)
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, readyStatus)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, readyNativeStatus)
+        XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
         let callBeforeConfirmation = await credentials.awsCall()
         XCTAssertNil(callBeforeConfirmation)
         XCTAssertTrue(state.kubeConfigSources.isEmpty)
@@ -182,6 +211,123 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertNil(state.lastError)
         XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Amazon EKS import cancelled.")
         XCTAssertNil(viewModel.nativeKubernetesAuthStatus)
+    }
+
+    func testInvalidNativeDuplicateEntriesCannotOverwriteInFlightImportPresentation() async throws {
+        let importer = HangingNativeCloudClusterImporter()
+        let state = RuneAppState()
+        state.setAuthDoctorChecks([
+            RuneHealthCheck(
+                id: "synthetic-baseline",
+                title: "Synthetic baseline",
+                status: .passed,
+                message: "Synthetic baseline remains unchanged."
+            )
+        ])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            nativeCloudClusterImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil { await importer.hasStarted() }
+        let statusBeforeDuplicates = viewModel.cloudKubeConfigImportStatus
+        let nativeStatusBeforeDuplicates = viewModel.nativeKubernetesAuthStatus
+        let checksBeforeDuplicates = state.authDoctorChecks.map { "\($0.id)|\($0.status)|\($0.message)" }
+
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "",
+            region: "",
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.runNativeAKSClusterImport(
+            subscriptionID: "",
+            resourceGroup: "",
+            clusterName: "",
+            tenantID: "",
+            clientID: "",
+            clientSecret: ""
+        )
+        viewModel.chooseAndRunNativeGKEClusterImport(
+            projectID: "",
+            location: "",
+            clusterName: ""
+        )
+
+        let importerCallCount = await importer.eksCallCount()
+        XCTAssertEqual(importerCallCount, 1)
+        XCTAssertTrue(viewModel.isRunningNativeCloudClusterImport)
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, statusBeforeDuplicates)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, nativeStatusBeforeDuplicates)
+        XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(
+            state.authDoctorChecks.map { "\($0.id)|\($0.status)|\($0.message)" },
+            checksBeforeDuplicates
+        )
+
+        viewModel.cancelNativeCloudClusterImport()
+        try await waitUntil { !viewModel.isRunningNativeCloudClusterImport }
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Amazon EKS import cancelled.")
+        XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertNil(state.lastError)
+    }
+
+    func testNativeImportFailurePublishesActionablePrivacySafeDiagnostic() async throws {
+        let sensitiveValue = "synthetic-sensitive-native-import-payload"
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            nativeCloudClusterImporter: SensitiveFailingNativeCloudClusterImporter(
+                message: sensitiveValue
+            ),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && !viewModel.isRunningNativeCloudClusterImport
+        }
+
+        let diagnostic = try XCTUnwrap(viewModel.cloudKubeConfigImportDiagnostic)
+        let surfaced = [
+            diagnostic.title,
+            diagnostic.classification,
+            diagnostic.message,
+            diagnostic.operationShape,
+            diagnostic.nextAction,
+            viewModel.cloudKubeConfigImportStatus,
+            viewModel.nativeKubernetesAuthStatus,
+            state.lastError,
+            state.authDoctorChecks.map(\.message).joined(separator: "\n")
+        ].compactMap { $0 }.joined(separator: "\n")
+
+        XCTAssertEqual(diagnostic.title, "Native import failed")
+        XCTAssertTrue(diagnostic.operationShape.contains("Amazon EKS HTTPS API"))
+        XCTAssertTrue(diagnostic.nextAction.contains("EKS access"))
+        XCTAssertTrue(state.authDoctorChecks.contains { $0.id == "cloud-login-eks" })
+        XCTAssertEqual(state.activeNotice?.severity, .error)
+        XCTAssertEqual(state.activeNotice?.title, "Action failed")
+        XCTAssertFalse(viewModel.isKubeConfigImportConfirmationPending)
+        XCTAssertTrue(state.kubeConfigSources.isEmpty)
+        XCTAssertFalse(surfaced.contains(sensitiveValue))
+        XCTAssertFalse(surfaced.contains("synthetic-secret-material"))
     }
 
     func testImportAsCopyBindsCredentialsToFinalRenamedContext() async throws {
@@ -355,6 +501,7 @@ private struct FixedNativeCloudClusterImporter: NativeCloudClusterImporting {
 
 private actor HangingNativeCloudClusterImporter: NativeCloudClusterImporting {
     private var started = false
+    private var eksCalls = 0
 
     func importAKS(
         _: AKSNativeClusterImportRequest,
@@ -367,6 +514,7 @@ private actor HangingNativeCloudClusterImporter: NativeCloudClusterImporting {
         _: AWSEKSClusterImportRequest,
         credentials _: AWSEKSCredentials
     ) async throws -> NativeCloudClusterImportResult {
+        eksCalls += 1
         started = true
         try await Task.sleep(nanoseconds: 30_000_000_000)
         throw CancellationError()
@@ -380,6 +528,38 @@ private actor HangingNativeCloudClusterImporter: NativeCloudClusterImporting {
     }
 
     func hasStarted() -> Bool { started }
+    func eksCallCount() -> Int { eksCalls }
+}
+
+private struct SensitiveFailingNativeCloudClusterImporter: NativeCloudClusterImporting {
+    let message: String
+
+    func importAKS(
+        _: AKSNativeClusterImportRequest,
+        clientSecret _: String
+    ) async throws -> NativeCloudClusterImportResult {
+        throw SensitiveNativeImportFailure(message: message)
+    }
+
+    func importEKS(
+        _: AWSEKSClusterImportRequest,
+        credentials _: AWSEKSCredentials
+    ) async throws -> NativeCloudClusterImportResult {
+        throw SensitiveNativeImportFailure(message: message)
+    }
+
+    func importGKE(
+        _: GKENativeClusterImportRequest,
+        serviceAccountJSON _: Data
+    ) async throws -> NativeCloudClusterImportResult {
+        throw SensitiveNativeImportFailure(message: message)
+    }
+}
+
+private struct SensitiveNativeImportFailure: LocalizedError, Sendable {
+    let message: String
+
+    var errorDescription: String? { message }
 }
 
 private actor RecordingNativeCloudCredentialConfigurator:

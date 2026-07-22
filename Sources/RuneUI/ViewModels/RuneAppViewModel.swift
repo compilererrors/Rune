@@ -72,6 +72,12 @@ private enum PendingNativeCloudCredential: Sendable {
     }
 }
 
+private struct NativeCloudImportPresentationError: LocalizedError, Sendable {
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
 public struct WorkspacePortForwardBrowserOpener: PortForwardBrowserOpening {
     public init() {}
 
@@ -1052,6 +1058,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var pendingNativeCloudCredential: PendingNativeCloudCredential?
     private var nativeCloudClusterImportTask: Task<Void, Never>?
     private var nativeGKEImportPanel: NSOpenPanel?
+    private var shouldRefreshKubernetesRequestMetricsSummaryAgain = false
     private var clusterLoadGeneration = UUID()
     private var launchExperienceStartedAt = ContinuousClock.now
     private var latestSnapshotRequestID = UUID()
@@ -2421,6 +2428,7 @@ public final class RuneAppViewModel: ObservableObject {
         secretAccessKey: String,
         sessionToken: String = ""
     ) {
+        guard admitNativeCloudClusterImport() else { return }
         do {
             let request = AWSEKSClusterImportRequest(
                 clusterName: clusterName,
@@ -2453,6 +2461,7 @@ public final class RuneAppViewModel: ObservableObject {
         clientID: String,
         clientSecret: String
     ) {
+        guard admitNativeCloudClusterImport() else { return }
         do {
             let request = try AKSNativeClusterImportRequest(
                 subscriptionID: subscriptionID,
@@ -2478,7 +2487,7 @@ public final class RuneAppViewModel: ObservableObject {
         location: String,
         clusterName: String
     ) {
-        guard !isRunningCloudKubeConfigImport, !isConnectingNativeKubernetesAuth else { return }
+        guard admitNativeCloudClusterImport() else { return }
         let request = GKENativeClusterImportRequest(
             projectID: projectID,
             location: location,
@@ -2486,6 +2495,12 @@ public final class RuneAppViewModel: ObservableObject {
         )
 
         isConnectingNativeKubernetesAuth = true
+        isRunningCloudKubeConfigImport = true
+        isRunningNativeCloudClusterImport = true
+        cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportOutput = ""
+        if state.lastError != nil { state.clearError() }
+        cloudKubeConfigImportStatus = "Choose a Google service-account JSON file…"
         nativeKubernetesAuthStatus = "Choose a Google service-account JSON file…"
         let panel = NSOpenPanel()
         panel.title = "Choose Google service-account JSON"
@@ -2497,11 +2512,10 @@ public final class RuneAppViewModel: ObservableObject {
         nativeGKEImportPanel = panel
         panel.begin { [weak self] response in
             guard let self else { return }
-            defer {
-                self.nativeGKEImportPanel = nil
-                self.isConnectingNativeKubernetesAuth = false
-            }
+            guard self.releaseNativeGKEImportPanelReservation(for: panel) else { return }
             guard response == .OK, let url = panel.url else {
+                self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: .gke)
+                self.cloudKubeConfigImportDiagnostic = nil
                 self.nativeKubernetesAuthStatus = nil
                 return
             }
@@ -2532,9 +2546,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func cancelNativeCloudClusterImport() {
-        if let nativeGKEImportPanel {
-            nativeGKEImportPanel.cancel(nil)
-            self.nativeGKEImportPanel = nil
+        if let panel = nativeGKEImportPanel {
+            guard releaseNativeGKEImportPanelReservation(for: panel) else { return }
+            panel.cancel(nil)
+            cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: .gke)
+            cloudKubeConfigImportDiagnostic = nil
+            nativeKubernetesAuthStatus = nil
+            return
         }
         guard isRunningNativeCloudClusterImport else { return }
         cloudKubeConfigImportStatus = "Cancelling native cluster import…"
@@ -2542,20 +2560,39 @@ public final class RuneAppViewModel: ObservableObject {
         nativeCloudClusterImportTask?.cancel()
     }
 
-    private func beginNativeCloudClusterImport(
-        provider: CloudKubeConfigProvider,
-        credential: PendingNativeCloudCredential,
-        operation: @escaping @Sendable () async throws -> NativeCloudClusterImportResult
-    ) {
-        guard !isRunningCloudKubeConfigImport else { return }
+    private func admitNativeCloudClusterImport() -> Bool {
+        guard !isRunningCloudKubeConfigImport,
+              !isRunningNativeCloudClusterImport,
+              !isConnectingNativeKubernetesAuth,
+              nativeGKEImportPanel == nil else {
+            return false
+        }
         guard !isPreparingKubeConfigImport,
               !isCommittingKubeConfigImport,
               !isKubeConfigImportConfirmationPending else {
             state.setError(RuneError.invalidInput(
                 message: "Finish or cancel the current kubeconfig import before importing another cluster."
             ))
-            return
+            return false
         }
+        return true
+    }
+
+    private func releaseNativeGKEImportPanelReservation(for panel: NSOpenPanel) -> Bool {
+        guard let activePanel = nativeGKEImportPanel, activePanel === panel else { return false }
+        nativeGKEImportPanel = nil
+        isConnectingNativeKubernetesAuth = false
+        isRunningNativeCloudClusterImport = false
+        isRunningCloudKubeConfigImport = false
+        return true
+    }
+
+    private func beginNativeCloudClusterImport(
+        provider: CloudKubeConfigProvider,
+        credential: PendingNativeCloudCredential,
+        operation: @escaping @Sendable () async throws -> NativeCloudClusterImportResult
+    ) {
+        guard admitNativeCloudClusterImport() else { return }
         isRunningCloudKubeConfigImport = true
         isRunningNativeCloudClusterImport = true
         pendingNativeCloudCredential = nil
@@ -2585,10 +2622,12 @@ public final class RuneAppViewModel: ObservableObject {
                 self.pendingNativeCloudCredential = credential
                 self.pendingCloudKubeConfigProvider = provider
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeReadyForReviewStatus(for: provider)
+                self.cloudKubeConfigImportDiagnostic = nil
                 self.nativeKubernetesAuthStatus = "Cluster access is ready for review. Credentials remain in memory until you confirm."
             } catch is CancellationError {
                 self.discardPendingKubeConfigImport(clearReview: true)
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: provider)
+                self.cloudKubeConfigImportDiagnostic = nil
                 self.nativeKubernetesAuthStatus = nil
             } catch {
                 self.pendingNativeCloudCredential = nil
@@ -2601,12 +2640,18 @@ public final class RuneAppViewModel: ObservableObject {
         _ error: Error,
         provider: CloudKubeConfigProvider
     ) {
+        let diagnostic = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: error,
+            provider: provider
+        )
         cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
-        cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportDiagnostic = diagnostic
         nativeKubernetesAuthStatus = "Native cluster import could not be completed."
         state.setAuthDoctorChecks(AddClusterCloudImportWorkflow.nativeImportFailureChecks(for: provider))
-        diagnostics.log("native cloud import failed: \(error.localizedDescription)")
-        state.setError(error)
+        diagnostics.log("native cloud import failed provider=\(provider.rawValue) classification=\(diagnostic.classification)")
+        state.setError(NativeCloudImportPresentationError(
+            message: "\(diagnostic.title). \(diagnostic.message)"
+        ))
     }
 
     private func isolatedCloudKubeConfigImportRequest(
@@ -3169,6 +3214,7 @@ public final class RuneAppViewModel: ObservableObject {
                 self.kubeConfigImportReviewMode = .report
                 if let provider = self.pendingCloudKubeConfigProvider {
                     self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.importedStatus(for: provider)
+                    self.cloudKubeConfigImportDiagnostic = nil
                     self.pendingCloudKubeConfigProvider = nil
                 }
                 var finalNativeCredentialStatus: String?
@@ -3319,6 +3365,7 @@ public final class RuneAppViewModel: ObservableObject {
         discardPendingKubeConfigImport(clearReview: true)
         if wasNativeImport {
             cloudKubeConfigImportStatus = nil
+            cloudKubeConfigImportDiagnostic = nil
             nativeKubernetesAuthStatus = "Import cancelled. Credentials were not stored."
         }
     }
@@ -7042,10 +7089,10 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func supportBundleExportPayload() async throws -> LogExportPayload {
-        let restRequestMetrics = await kubeClient.restRequestMetricsSnapshot()
+        let metricsReport = await stableSelectedContextRequestMetricsReport()
+        let restRequestMetrics = metricsReport.metrics
         let requestMetrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: restRequestMetrics)
         let requestMetricGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
-        let requestMetricsSummary = await kubeClient.restRequestMetricsSummary()
         let formatter = ISO8601DateFormatter()
         let generatedAt = formatter.string(from: Date())
         let exportStamp = generatedAt.replacingOccurrences(of: ":", with: "")
@@ -7057,7 +7104,7 @@ public final class RuneAppViewModel: ObservableObject {
                 selectedResourceKind: selectedResourceKindLabel(),
                 selectedResourceName: selectedResourceName(),
                 requestMetrics: requestMetrics,
-                requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: requestMetricsSummary),
+                requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: metricsReport.summary),
                 requestMetricGroups: requestMetricGroups
             )
         )
@@ -7066,6 +7113,16 @@ public final class RuneAppViewModel: ObservableObject {
             suggestedName: "support-bundle-\(exportStamp).json",
             allowedFileTypes: ["json"]
         )
+    }
+
+    private func stableSelectedContextRequestMetricsReport() async -> KubernetesRESTRequestMetricsReport {
+        while true {
+            let contextName = state.selectedContext?.name
+            guard let contextName else { return .empty }
+            let report = await kubeClient.restRequestMetricsReport(contextName: contextName)
+            guard state.selectedContext?.name == contextName else { continue }
+            return report
+        }
     }
 
     public func runAuthDoctor() {
@@ -7112,7 +7169,10 @@ public final class RuneAppViewModel: ObservableObject {
                 }
             }
 
-            defer { state.setAuthDoctorRunning(false) }
+            defer {
+                state.setAuthDoctorRunning(false)
+                refreshKubernetesRequestMetricsSummary()
+            }
 
             if state.selectedContext?.name == demoContextName {
                 record("demo", "Demo cluster", .passed, "The in-memory demo cluster is active. Auth Doctor skips real Kubernetes API calls in demo mode.")
@@ -7331,13 +7391,29 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func refreshKubernetesRequestMetricsSummary() {
-        guard !isRefreshingKubernetesRequestMetricsSummary else { return }
+        guard !isRefreshingKubernetesRequestMetricsSummary else {
+            shouldRefreshKubernetesRequestMetricsSummaryAgain = true
+            return
+        }
         isRefreshingKubernetesRequestMetricsSummary = true
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let summary = await self.kubeClient.restRequestMetricsSummary()
-            self.kubernetesRequestMetricsSummary = KubernetesRequestMetricsDebugPresentation(summary: summary)
+            repeat {
+                self.shouldRefreshKubernetesRequestMetricsSummaryAgain = false
+                let contextName = self.state.selectedContext?.name
+                let report: KubernetesRESTRequestMetricsReport
+                if let contextName {
+                    report = await self.kubeClient.restRequestMetricsReport(contextName: contextName)
+                } else {
+                    report = .empty
+                }
+                if self.state.selectedContext?.name == contextName {
+                    self.kubernetesRequestMetricsSummary = KubernetesRequestMetricsDebugPresentation(report: report)
+                } else {
+                    self.shouldRefreshKubernetesRequestMetricsSummaryAgain = true
+                }
+            } while self.shouldRefreshKubernetesRequestMetricsSummaryAgain
             self.isRefreshingKubernetesRequestMetricsSummary = false
         }
     }

@@ -42,7 +42,13 @@ public enum KubernetesRequestMetricsSupportBundleProjector {
                 if lhs.requestCount != rhs.requestCount {
                     return lhs.requestCount > rhs.requestCount
                 }
-                return lhs.key.apiPath < rhs.key.apiPath
+                if lhs.key.apiPath != rhs.key.apiPath {
+                    return lhs.key.apiPath < rhs.key.apiPath
+                }
+                if lhs.key.sourcePath != rhs.key.sourcePath {
+                    return lhs.key.sourcePath < rhs.key.sourcePath
+                }
+                return lhs.key.method < rhs.key.method
             }
             .map(\.supportBundleGroup)
     }
@@ -55,7 +61,8 @@ public enum KubernetesRequestMetricsSupportBundleProjector {
             cancelledCount: summary.cancelledCount,
             responseBytes: summary.responseBytes,
             totalDurationSeconds: summary.totalDurationSeconds,
-            retainedMetricCount: summary.retainedMetricCount
+            retainedMetricCount: summary.retainedMetricCount,
+            omittedMetricCount: summary.omittedMetricCount
         )
     }
 

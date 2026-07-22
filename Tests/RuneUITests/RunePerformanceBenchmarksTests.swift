@@ -461,31 +461,78 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     func testRESTRequestMetricsRecordingBenchmarkKPI() async {
-        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 2_000)
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 1_000)
         let started = ContinuousClock.now
 
         for index in 0..<2_000 {
-            await recorder.record(KubernetesRESTRequestMetric(
-                method: "GET",
-                apiPath: "/apis/apps/v1/namespaces/synthetic/deployments/deploy-\(index)/status?limit=200&continue=token-\(index)",
-                statusCode: 200,
-                responseBytes: 512,
-                durationSeconds: 0.001,
-                attempt: 1,
-                outcome: .success
-            ))
+            let apiPath: String
+            switch index % 5 {
+            case 0:
+                apiPath = "/apis/apps/v1/namespaces/synthetic/deployments/deploy-\(index)/status?limit=200&continue=token-\(index)"
+            case 1:
+                apiPath = "/api/v1/nodes/node-\(index)/proxy/private-route-\(index)/health"
+            case 2:
+                apiPath = "/apis/rbac.authorization.k8s.io/v1/clusterroles/role-\(index)/status?watch=true"
+            case 3:
+                apiPath = "/api/v1/watch/nodes/node-\(index)?resourceVersion=token-\(index)"
+            default:
+                apiPath = "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/role-\(index)"
+            }
+            await recorder.record(
+                KubernetesRESTRequestMetric(
+                    method: "GET",
+                    apiPath: apiPath,
+                    statusCode: 200,
+                    responseBytes: 512,
+                    durationSeconds: 0.001,
+                    attempt: 1,
+                    outcome: .success
+                ),
+                contextName: "synthetic-context-\(index % 5)"
+            )
         }
-        let summary = await recorder.summary()
+        let report = await recorder.report()
+        let scopedReport = await recorder.report(contextName: "synthetic-context-3")
         let elapsed = started.duration(to: .now)
+        let summary = report.summary
+        let snapshot = report.metrics
 
         XCTAssertEqual(summary.requestCount, 2_000)
         XCTAssertEqual(summary.successCount, 2_000)
         XCTAssertEqual(summary.responseBytes, 1_024_000)
-        XCTAssertEqual(summary.retainedMetricCount, 2_000)
+        XCTAssertEqual(summary.retainedMetricCount, 1_000)
+        XCTAssertEqual(summary.omittedMetricCount, 1_000)
+        XCTAssertEqual(scopedReport.summary.requestCount, 400)
+        XCTAssertEqual(scopedReport.summary.retainedMetricCount, 200)
+        XCTAssertEqual(scopedReport.summary.omittedMetricCount, 200)
+        XCTAssertEqual(scopedReport.metrics.count, 200)
+        XCTAssertTrue(snapshot.allSatisfy { metric in
+            !metric.apiPath.contains("deploy-")
+                && !metric.apiPath.contains("node-")
+                && !metric.apiPath.contains("role-")
+                && !metric.apiPath.contains("private-route-")
+                && !metric.apiPath.contains("synthetic-")
+                && !metric.apiPath.contains("token-")
+        })
+        XCTAssertTrue(snapshot.contains { $0.apiPath == "/api/v1/nodes/<name>/proxy/<path>" })
+        XCTAssertTrue(snapshot.contains {
+            $0.apiPath == "/api/v1/watch/nodes/<name>?resourceVersion=<redacted>"
+        })
+        XCTAssertTrue(snapshot.contains {
+            $0.apiPath == "/apis/rbac.authorization.k8s.io/v1/clusterroles/<name>/status?watch=<redacted>"
+        })
+        XCTAssertTrue(snapshot.contains {
+            $0.apiPath == "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/<name>"
+        })
+        #if DEBUG
+        let maximumRecordingSeconds = 0.30
+        #else
+        let maximumRecordingSeconds = 0.15
+        #endif
         XCTAssertLessThan(
             seconds(elapsed),
-            0.25,
-            "KPI: recording 2k privacy-safe REST request metrics should stay below 250ms in debug."
+            maximumRecordingSeconds,
+            "KPI: recording 2k privacy-safe REST metrics across five contexts plus scoped/global reports should stay below 300ms in debug and 150ms in release."
         )
     }
 
@@ -504,20 +551,22 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 outcome: index.isMultiple(of: 17) ? .httpError : .success
             ))
         }
-        let snapshot = await recorder.snapshot()
-        let summary = await recorder.summary()
+        let report = await recorder.report()
+        let snapshot = report.metrics
+        let summary = report.summary
         let elapsed = started.duration(to: .now)
 
         XCTAssertEqual(summary.requestCount, 10_000)
         XCTAssertEqual(summary.retainedMetricCount, 512)
         XCTAssertEqual(summary.responseBytes, 49_995_000)
         XCTAssertEqual(snapshot.count, 512)
+        XCTAssertEqual(snapshot.count, summary.retainedMetricCount)
         XCTAssertEqual(snapshot.first?.responseBytes, 9_488)
         XCTAssertEqual(snapshot.last?.responseBytes, 9_999)
         XCTAssertLessThan(
             seconds(elapsed),
             0.75,
-            "KPI: sustained REST metrics churn should retain the latest window without O(n) eviction cost."
+            "KPI: sustained REST metrics churn should atomically report the latest window without O(n) eviction cost."
         )
     }
 
@@ -583,6 +632,57 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             seconds(elapsed),
             0.12,
             "KPI: grouping 4k privacy-safe REST request metrics for support bundles should stay below 120ms in debug."
+        )
+    }
+
+    func testRESTRequestMetricsDebugHighlightsBenchmarkKPI() {
+        let resources = ["pods", "services", "configmaps", "secrets", "events"]
+        let metrics = (0..<4_000).map { index in
+            KubernetesRESTRequestMetric(
+                sourcePath: "swift-rest",
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-\(index % 12)/\(resources[index % resources.count])/resource-\(index)?continue=token-\(index)",
+                statusCode: index.isMultiple(of: 17) ? 503 : 200,
+                responseBytes: 256 + index % 512,
+                durationSeconds: Double(index % 500) / 1_000,
+                attempt: index.isMultiple(of: 17) ? 2 : 1,
+                outcome: index.isMultiple(of: 17) ? .httpError : .success
+            )
+        }
+        let failureCount = metrics.filter { $0.outcome == .httpError }.count
+        let report = KubernetesRESTRequestMetricsReport(
+            metrics: metrics,
+            summary: KubernetesRESTRequestMetricsSummary(
+                requestCount: metrics.count,
+                successCount: metrics.count - failureCount,
+                failureCount: failureCount,
+                cancelledCount: 0,
+                responseBytes: metrics.reduce(0) { $0 + $1.responseBytes },
+                totalDurationSeconds: metrics.reduce(0) { $0 + $1.durationSeconds },
+                retainedMetricCount: metrics.count
+            )
+        )
+        let started = ContinuousClock.now
+
+        let presentation = KubernetesRequestMetricsDebugPresentation(report: report)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(presentation.endpointHighlights.count, 3)
+        XCTAssertTrue(presentation.endpointHighlights.allSatisfy { $0.hasIssues })
+        XCTAssertTrue(presentation.endpointHighlights.allSatisfy { highlight in
+            !highlight.apiPath.contains("synthetic-")
+                && !highlight.apiPath.contains("resource-")
+                && !highlight.apiPath.contains("token-")
+        })
+        #if DEBUG
+        let maximumProjectionSeconds = 0.12
+        #else
+        let maximumProjectionSeconds = 0.06
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumProjectionSeconds,
+            "KPI: projecting three privacy-safe Auth Doctor endpoint highlights from 4k retained metrics should stay below 120ms in debug and 60ms in release."
         )
     }
 
@@ -809,6 +909,74 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertFalse(sample.contains("synthetic-private-cluster"))
         XCTAssertFalse(sample.contains("synthetic-private-context"))
         XCTAssertLessThan(elapsed, 0.02, "KPI: cloud import failure projection and sanitization should stay below 20ms for 5k synthetic failures.")
+    }
+
+    func testNativeCloudImportDiagnosticProjectionBenchmarkKPI() {
+        let sensitiveValue = "synthetic-sensitive-native-provider-payload"
+        let failures: [(provider: CloudKubeConfigProvider, error: any Error)] = [
+            (.aks, AKSNativeClusterImportError.invalidRequest(field: sensitiveValue)),
+            (.aks, AKSNativeClusterImportError.clusterRequestFailed(statusCode: 403, code: sensitiveValue)),
+            (.aks, AKSNativeClusterImportError.authenticationFailed(statusCode: 429, code: sensitiveValue)),
+            (.eks, AWSEKSClusterImportError.accessDenied),
+            (.eks, AWSEKSClusterImportError.requestRejected(429)),
+            (.eks, AWSEKSNativeAuthError.unsupportedOption(sensitiveValue)),
+            (.gke, GKENativeClusterImportError.invalidResourceIdentifier(sensitiveValue)),
+            (.gke, GKENativeClusterImportError.requestRejected(403)),
+            (.gke, GCPServiceAccountAuthError.missingRequiredField(sensitiveValue)),
+            (.gke, GCPServiceAccountAuthError.tokenEndpointRejected(503)),
+            (.gke, NSError(domain: sensitiveValue, code: 1))
+        ]
+        let projectionCount = 15_000
+        var checksum = 0
+
+        let elapsed = minimumElapsedSeconds(repetitions: 5) {
+            var localChecksum = 0
+            for index in 0..<projectionCount {
+                let failure = failures[index % failures.count]
+                let diagnostic = AddClusterCloudImportWorkflow.nativeDiagnostic(
+                    for: failure.error,
+                    provider: failure.provider
+                )
+                localChecksum &+= diagnostic.title.utf8.count
+                localChecksum &+= diagnostic.classification.utf8.count
+                localChecksum &+= diagnostic.message.utf8.count
+                localChecksum &+= diagnostic.operationShape.utf8.count
+                localChecksum &+= diagnostic.nextAction.utf8.count
+            }
+            checksum = localChecksum
+        }
+
+        let rendered = failures.map { failure in
+            let diagnostic = AddClusterCloudImportWorkflow.nativeDiagnostic(
+                for: failure.error,
+                provider: failure.provider
+            )
+            return [
+                diagnostic.title,
+                diagnostic.classification,
+                diagnostic.message,
+                diagnostic.operationShape,
+                diagnostic.nextAction
+            ].joined(separator: "\n")
+        }.joined(separator: "\n")
+
+        XCTAssertGreaterThan(checksum, 0)
+        XCTAssertFalse(rendered.contains(sensitiveValue))
+        XCTAssertTrue(rendered.contains("eks:DescribeCluster"))
+        XCTAssertTrue(rendered.contains("AKS Cluster User"))
+        XCTAssertTrue(rendered.contains("container.clusters.get"))
+        XCTAssertTrue(rendered.contains("Provider request throttled"))
+        XCTAssertTrue(rendered.contains("Provider temporarily unavailable"))
+        #if DEBUG
+        let maximumProjectionSeconds = 0.10
+        #else
+        let maximumProjectionSeconds = 0.05
+        #endif
+        XCTAssertLessThan(
+            elapsed,
+            maximumProjectionSeconds,
+            "KPI: 15k privacy-safe native cloud-import diagnostics should project below 100ms in debug and 50ms in release."
+        )
     }
 
     @MainActor
@@ -4738,6 +4906,100 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testMockedNativeEKSImportReviewBindingAndCoreLoadBenchmarkKPI() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer {
+            if let previousSimpleMode {
+                UserDefaults.standard.set(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode)
+            } else {
+                UserDefaults.standard.removeObject(forKey: RuneSettingsKeys.simpleMode)
+            }
+        }
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let rawKubeconfig = server.kubeconfigYAML().replacingOccurrences(
+            of: "    token: fake-token",
+            with: "    exec:\n"
+                + "      apiVersion: client.authentication.k8s.io/v1beta1\n"
+                + "      command: aws\n"
+                + "      args: [eks, get-token, --cluster-name, synthetic-cluster, --region, eu-north-1]\n"
+                + "      interactiveMode: Never"
+        )
+        let importer = BenchmarkNativeCloudClusterImporter(result: NativeCloudClusterImportResult(
+            provider: .eks,
+            rawKubeConfig: rawKubeconfig,
+            sourceName: "synthetic-native-eks.yaml"
+        ))
+
+        let elapsedSeconds = try await minimumAsyncElapsedSeconds {
+            let directory = try self.makeBenchmarkTemporaryDirectory(prefix: "rune-native-import-kpi")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let credentials = BenchmarkNativeCloudCredentialConfigurator()
+            let requestMetrics = KubernetesRESTRequestMetricsRecorder()
+            let kubeClient = KubernetesClient(
+                commandTimeout: 2,
+                restClient: KubernetesRESTClient(
+                    requestMetricsRecorder: requestMetrics,
+                    nativeCredentialProvider: credentials
+                ),
+                requestMetricsRecorder: requestMetrics
+            )
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(
+                state: state,
+                kubeClient: kubeClient,
+                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+                kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                    rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+                ),
+                nativeCloudClusterImporter: importer,
+                nativeAuthConfigurator: credentials,
+                overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+                namespaceListPersistence: NoopNamespaceListPersistenceStore()
+            )
+
+            viewModel.runNativeEKSClusterImport(
+                clusterName: "synthetic-cluster",
+                region: "eu-north-1",
+                accessKeyID: "SYNTHETICACCESSKEY",
+                secretAccessKey: "synthetic-secret-material"
+            )
+            try await waitUntil {
+                viewModel.isKubeConfigImportConfirmationPending
+                    && !viewModel.isRunningNativeCloudClusterImport
+            }
+            XCTAssertTrue(viewModel.canConfirmKubeConfigImport)
+            viewModel.confirmKubeConfigImport()
+
+            try await waitUntil {
+                viewModel.cloudKubeConfigImportStatus == "Imported EKS kubeconfig context."
+                    && viewModel.nativeKubernetesAuthStatus == "Cluster imported and native credentials connected."
+                    && state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                    && state.selectedNamespace == "alpha-zone"
+                    && state.pods.contains { $0.name == "orbit-lens-6f58d7d89b-hx9q2" }
+                    && state.deployments.contains { $0.name == "orbit-lens" }
+            }
+            XCTAssertNil(state.lastError)
+            let hasBoundAWSCredentials = await credentials.hasBoundAWSCredentials()
+            XCTAssertTrue(hasBoundAWSCredentials)
+        }
+
+        #if DEBUG
+        let maximumNativeImportSeconds = 0.7
+        #else
+        let maximumNativeImportSeconds = 0.35
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumNativeImportSeconds,
+            "KPI: mocked native EKS import, review, credential binding, and fake REST core load should stay below 700ms in debug and 350ms in release."
+        )
+    }
+
+    @MainActor
     func testAddClusterDuplicateCloudImportRunGuardBenchmarkKPI() async throws {
         let command = CloudKubeConfigCommandPreview(
             executable: "aws",
@@ -4787,6 +5049,86 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             0.02,
             "KPI: rejecting 20k duplicate Add Cluster cloud imports should stay below 20ms while an import is in flight."
         )
+    }
+
+    @MainActor
+    func testNativeCloudImportAdmissionGuardBenchmarkKPI() async throws {
+        let importer = BenchmarkHangingNativeCloudClusterImporter()
+        let state = RuneAppState()
+        state.setAuthDoctorChecks([
+            RuneHealthCheck(
+                id: "synthetic-baseline",
+                title: "Synthetic baseline",
+                status: .passed,
+                message: "Synthetic baseline remains unchanged."
+            )
+        ])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            nativeCloudClusterImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil {
+            importer.hasStarted && viewModel.isRunningNativeCloudClusterImport
+        }
+        let statusBeforeDuplicates = viewModel.cloudKubeConfigImportStatus
+        let checksBeforeDuplicates = state.authDoctorChecks.map(\.id)
+
+        let elapsedSeconds = minimumElapsedSeconds {
+            for index in 0..<20_000 {
+                switch index % 3 {
+                case 0:
+                    viewModel.runNativeEKSClusterImport(
+                        clusterName: "",
+                        region: "",
+                        accessKeyID: "",
+                        secretAccessKey: ""
+                    )
+                case 1:
+                    viewModel.runNativeAKSClusterImport(
+                        subscriptionID: "",
+                        resourceGroup: "",
+                        clusterName: "",
+                        tenantID: "",
+                        clientID: "",
+                        clientSecret: ""
+                    )
+                default:
+                    viewModel.chooseAndRunNativeGKEClusterImport(
+                        projectID: "",
+                        location: "",
+                        clusterName: ""
+                    )
+                }
+            }
+        }
+
+        XCTAssertEqual(importer.importCallCount, 1)
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, statusBeforeDuplicates)
+        XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(state.authDoctorChecks.map(\.id), checksBeforeDuplicates)
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        #if DEBUG
+        let maximumAdmissionSeconds = 0.04
+        #else
+        let maximumAdmissionSeconds = 0.02
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumAdmissionSeconds,
+            "KPI: rejecting 20k mixed native cloud-import duplicate entries should stay below 40ms in debug and 20ms in release without presentation mutation."
+        )
+
+        viewModel.cancelNativeCloudClusterImport()
+        try await waitUntil { !viewModel.isRunningNativeCloudClusterImport }
     }
 
     @MainActor
@@ -6552,6 +6894,131 @@ private struct BenchmarkCloudKubeConfigImporter: CloudKubeConfigImporting {
 
     func importCluster(_ request: CloudKubeConfigImportRequest) async throws -> CloudKubeConfigImportResult {
         result
+    }
+}
+
+private struct BenchmarkNativeCloudClusterImporter: NativeCloudClusterImporting {
+    let result: NativeCloudClusterImportResult
+
+    func importAKS(
+        _: AKSNativeClusterImportRequest,
+        clientSecret _: String
+    ) async throws -> NativeCloudClusterImportResult {
+        result
+    }
+
+    func importEKS(
+        _: AWSEKSClusterImportRequest,
+        credentials _: AWSEKSCredentials
+    ) async throws -> NativeCloudClusterImportResult {
+        result
+    }
+
+    func importGKE(
+        _: GKENativeClusterImportRequest,
+        serviceAccountJSON _: Data
+    ) async throws -> NativeCloudClusterImportResult {
+        result
+    }
+}
+
+private final class BenchmarkHangingNativeCloudClusterImporter: NativeCloudClusterImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedStarted = false
+    private var storedCallCount = 0
+
+    var hasStarted: Bool {
+        lock.withLock { storedStarted }
+    }
+
+    var importCallCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    func importAKS(
+        _: AKSNativeClusterImportRequest,
+        clientSecret _: String
+    ) async throws -> NativeCloudClusterImportResult {
+        throw CancellationError()
+    }
+
+    func importEKS(
+        _: AWSEKSClusterImportRequest,
+        credentials _: AWSEKSCredentials
+    ) async throws -> NativeCloudClusterImportResult {
+        lock.withLock {
+            storedCallCount += 1
+            storedStarted = true
+        }
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        throw CancellationError()
+    }
+
+    func importGKE(
+        _: GKENativeClusterImportRequest,
+        serviceAccountJSON _: Data
+    ) async throws -> NativeCloudClusterImportResult {
+        throw CancellationError()
+    }
+
+}
+
+private actor BenchmarkNativeCloudCredentialConfigurator:
+    KubernetesNativeAuthConfiguring,
+    KubernetesNativeCredentialProviding {
+    private var awsRequest: KubernetesNativeCredentialRequest?
+
+    func status(
+        for request: KubernetesNativeCredentialRequest
+    ) async throws -> KubernetesNativeAuthProfileStatus {
+        KubernetesNativeAuthProfileStatus(
+            bindingID: request.bindingID,
+            provider: request.provider,
+            isConnected: awsRequest?.bindingID == request.bindingID,
+            expiresAt: nil
+        )
+    }
+
+    func bindAWSCredentials(
+        to request: KubernetesNativeCredentialRequest,
+        credentials _: AWSEKSCredentials,
+        displayName _: String
+    ) async throws {
+        awsRequest = request
+    }
+
+    func bindAKSServicePrincipal(
+        to _: KubernetesNativeCredentialRequest,
+        clientSecret _: String,
+        displayName _: String
+    ) async throws {}
+
+    func bindGCPServiceAccount(
+        to _: KubernetesNativeCredentialRequest,
+        serviceAccountJSON _: Data,
+        displayName _: String
+    ) async throws {}
+
+    func removeProfile(for bindingID: String) async throws {
+        if awsRequest?.bindingID == bindingID {
+            awsRequest = nil
+        }
+    }
+
+    func credential(
+        for request: KubernetesNativeCredentialRequest
+    ) async throws -> KubernetesNativeCredential? {
+        guard awsRequest?.bindingID == request.bindingID else { return nil }
+        return KubernetesNativeCredential(
+            bearerToken: "synthetic-native-benchmark-token",
+            expiresAt: Date().addingTimeInterval(300)
+        )
+    }
+
+    func invalidateCredential(for _: String) async {}
+
+    func hasBoundAWSCredentials() -> Bool {
+        awsRequest != nil
     }
 }
 

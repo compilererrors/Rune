@@ -23,6 +23,10 @@ enum RuneUILayoutMetrics {
     static let paneOuterPadding: CGFloat = 16
     static let paneInnerPadding: CGFloat = 12
     static let sidebarPadding: CGFloat = 14
+    /// Middle-pane cadence from `.docs/rune-design-plan.md` §6.6.
+    static let contentControlSpacing: CGFloat = 8
+    static let contentModuleSpacing: CGFloat = 12
+    static let contentSectionSpacing: CGFloat = 16
     /// Minimum width for the resource list column (`NavigationSplitView` content).
     static let splitContentColumnMinWidth: CGFloat = 360
     /// Matches first-ship column cap (`49c6517` First draft).

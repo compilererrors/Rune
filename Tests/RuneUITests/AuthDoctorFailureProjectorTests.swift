@@ -109,11 +109,32 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
 
         XCTAssertEqual(checks.first?.id, "api-authorization")
         XCTAssertEqual(endpoint.status, .warning)
-        XCTAssertTrue(endpoint.message.contains("/api/v1/namespaces/<namespace>/pods/<name>/log?container=<redacted>&token=<redacted>"))
+        XCTAssertTrue(endpoint.message.contains("/api/v1/namespaces/<namespace>/pods/<name>/log?container=<redacted>&<redacted>"))
         XCTAssertFalse(endpoint.message.contains("team-a"))
         XCTAssertFalse(endpoint.message.contains("api-0"))
         XCTAssertFalse(endpoint.message.contains("secret-token"))
+        XCTAssertFalse(endpoint.message.contains("token="))
         XCTAssertFalse(endpoint.message.contains("cluster.example.invalid"))
+    }
+
+    func testProjectsClusterScopedFailedAPIEndpointWithoutLeakingWatchOrProxyPathValues() throws {
+        let proxyChecks = AuthDoctorFailureProjector.checks(
+            for: "HTTP status 403 GET https://cluster.example.invalid/api/v1/nodes/synthetic-private-node/proxy/synthetic-private-route/health"
+        )
+        let proxyEndpoint = try XCTUnwrap(proxyChecks.first { $0.id == "api-request-endpoint" })
+        let watchChecks = AuthDoctorFailureProjector.checks(
+            for: "HTTP status 403 GET https://cluster.example.invalid/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/synthetic-private-role?resourceVersion=synthetic-private-token"
+        )
+        let watchEndpoint = try XCTUnwrap(watchChecks.first { $0.id == "api-request-endpoint" })
+
+        XCTAssertTrue(proxyEndpoint.message.contains("/api/v1/nodes/<name>/proxy/<path>"))
+        XCTAssertTrue(watchEndpoint.message.contains("/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/<name>?resourceVersion=<redacted>"))
+        let rendered = (proxyChecks + watchChecks).map(\.message).joined(separator: "\n")
+        XCTAssertFalse(rendered.contains("synthetic-private-node"))
+        XCTAssertFalse(rendered.contains("synthetic-private-route"))
+        XCTAssertFalse(rendered.contains("synthetic-private-role"))
+        XCTAssertFalse(rendered.contains("synthetic-private-token"))
+        XCTAssertFalse(rendered.contains("cluster.example.invalid"))
     }
 
     func testBoundsOversizedFailureMessagesBeforeEndpointScanning() throws {

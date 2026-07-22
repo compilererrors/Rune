@@ -28,6 +28,101 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         }
     }
 
+    func testNativeImportDiagnosticClassifiesProviderFailures() {
+        let aks = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: AKSNativeClusterImportError.clusterRequestFailed(
+                statusCode: 403,
+                code: "SyntheticAuthorizationFailure"
+            ),
+            provider: .aks
+        )
+        let eks = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: AWSEKSClusterImportError.accessDenied,
+            provider: .eks
+        )
+        let gke = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: GKENativeClusterImportError.requestRejected(403),
+            provider: .gke
+        )
+        let aksUnauthorized = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: AKSNativeClusterImportError.clusterRequestFailed(
+                statusCode: 401,
+                code: "SyntheticUnauthorized"
+            ),
+            provider: .aks
+        )
+        let entraThrottled = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: AKSNativeClusterImportError.authenticationFailed(
+                statusCode: 429,
+                code: "SyntheticThrottled"
+            ),
+            provider: .aks
+        )
+        let googleUnavailable = AddClusterCloudImportWorkflow.nativeDiagnostic(
+            for: GCPServiceAccountAuthError.tokenEndpointRejected(503),
+            provider: .gke
+        )
+
+        XCTAssertEqual(aks.title, "AKS permission denied")
+        XCTAssertEqual(aks.classification, "Authorization failed")
+        XCTAssertTrue(aks.nextAction.contains("AKS Cluster User"))
+        XCTAssertTrue(aks.operationShape.contains("Azure Resource Manager HTTPS API"))
+        XCTAssertEqual(eks.title, "EKS permission denied")
+        XCTAssertTrue(eks.nextAction.contains("eks:DescribeCluster"))
+        XCTAssertTrue(eks.operationShape.contains("Amazon EKS HTTPS API"))
+        XCTAssertEqual(gke.title, "GKE permission denied")
+        XCTAssertTrue(gke.nextAction.contains("container.clusters.get"))
+        XCTAssertTrue(gke.operationShape.contains("GKE HTTPS API"))
+        XCTAssertEqual(aksUnauthorized.title, "Azure authentication failed")
+        XCTAssertEqual(aksUnauthorized.classification, "Authentication failed")
+        XCTAssertFalse(aksUnauthorized.nextAction.contains("AKS Cluster User"))
+        XCTAssertEqual(entraThrottled.title, "Provider request throttled")
+        XCTAssertEqual(entraThrottled.classification, "HTTP 429")
+        XCTAssertEqual(googleUnavailable.title, "Provider temporarily unavailable")
+        XCTAssertEqual(googleUnavailable.classification, "HTTP 503")
+        XCTAssertTrue([aks, eks, gke].allSatisfy { !$0.operationShape.contains("<secret>") })
+    }
+
+    func testNativeImportDiagnosticRejectsSensitiveErrorPayloads() {
+        let sensitiveValue = "synthetic-sensitive-provider-payload"
+        let diagnostics = [
+            AddClusterCloudImportWorkflow.nativeDiagnostic(
+                for: AKSNativeClusterImportError.clusterRequestFailed(
+                    statusCode: 9_999,
+                    code: sensitiveValue
+                ),
+                provider: .aks
+            ),
+            AddClusterCloudImportWorkflow.nativeDiagnostic(
+                for: AWSEKSNativeAuthError.unsupportedOption(sensitiveValue),
+                provider: .eks
+            ),
+            AddClusterCloudImportWorkflow.nativeDiagnostic(
+                for: GCPServiceAccountAuthError.missingRequiredField(sensitiveValue),
+                provider: .gke
+            ),
+            AddClusterCloudImportWorkflow.nativeDiagnostic(
+                for: SyntheticSensitiveNativeImportError(message: sensitiveValue),
+                provider: .gke
+            )
+        ]
+        let rendered = diagnostics.map { diagnostic in
+            [
+                diagnostic.title,
+                diagnostic.classification,
+                diagnostic.message,
+                diagnostic.operationShape,
+                diagnostic.nextAction,
+                diagnostic.documentationTitle,
+                diagnostic.documentationURL.absoluteString
+            ].joined(separator: "\n")
+        }.joined(separator: "\n")
+
+        XCTAssertFalse(rendered.contains(sensitiveValue))
+        XCTAssertEqual(diagnostics[0].classification, "HTTP 0")
+        XCTAssertEqual(diagnostics[3].title, "Native import failed")
+    }
+
     func testCloudImportDiagnosticClassifiesCommonProviderFailures() {
         let failed = AddClusterCloudImportWorkflow.diagnostic(
             for: CloudKubeConfigImportError.commandFailed(
@@ -105,14 +200,14 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
             diagnostic.title,
             diagnostic.classification,
             diagnostic.message,
-            diagnostic.commandShape,
+            diagnostic.operationShape,
             diagnostic.nextAction,
             diagnostic.documentationTitle,
             diagnostic.documentationURL.absoluteString
         ].joined(separator: "\n")
 
-        XCTAssertTrue(diagnostic.commandShape.contains("<cluster-name>"))
-        XCTAssertTrue(diagnostic.commandShape.contains("<region>"))
+        XCTAssertTrue(diagnostic.operationShape.contains("<cluster-name>"))
+        XCTAssertTrue(diagnostic.operationShape.contains("<region>"))
         XCTAssertFalse(rendered.contains(rawCommand))
         XCTAssertFalse(rendered.contains(rawOutput))
         XCTAssertFalse(rendered.contains("private-cluster"))
@@ -311,4 +406,10 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
             message: message ?? "Issue \(id)"
         )
     }
+}
+
+private struct SyntheticSensitiveNativeImportError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
 }

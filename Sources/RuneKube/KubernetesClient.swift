@@ -112,8 +112,24 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         await requestMetricsRecorder.snapshot()
     }
 
+    public func restRequestMetricsSnapshot(contextName: String) async -> [KubernetesRESTRequestMetric] {
+        await requestMetricsRecorder.snapshot(contextName: contextName)
+    }
+
     public func restRequestMetricsSummary() async -> KubernetesRESTRequestMetricsSummary {
         await requestMetricsRecorder.summary()
+    }
+
+    public func restRequestMetricsSummary(contextName: String) async -> KubernetesRESTRequestMetricsSummary {
+        await requestMetricsRecorder.summary(contextName: contextName)
+    }
+
+    public func restRequestMetricsReport() async -> KubernetesRESTRequestMetricsReport {
+        await requestMetricsRecorder.report()
+    }
+
+    public func restRequestMetricsReport(contextName: String) async -> KubernetesRESTRequestMetricsReport {
+        await requestMetricsRecorder.report(contextName: contextName)
     }
 
     public func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext] {

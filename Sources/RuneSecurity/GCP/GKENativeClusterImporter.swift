@@ -294,7 +294,7 @@ public struct GKENativeClusterImporter: Sendable {
             throw GKENativeClusterImportError.responseTooLarge
         }
         guard (200...299).contains(response.statusCode) else {
-            if response.statusCode == 401 || response.statusCode == 403 {
+            if response.statusCode == 401 {
                 throw GKENativeClusterImportError.authenticationFailed
             }
             throw GKENativeClusterImportError.requestRejected(response.statusCode)

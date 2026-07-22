@@ -996,6 +996,47 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(gate.contains("alignment: .center"))
     }
 
+    func testMiddlePanelSectionsDoNotOwnAdHocOuterInsets() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let contentPane = try functionBlock(
+            named: "private var contentPane: some View {",
+            endingBefore: "private var contentHeader",
+            in: source
+        )
+        let overviewPane = try functionBlock(
+            named: "private var overviewPane: some View {",
+            endingBefore: "private var workloadsPane",
+            in: source
+        )
+        let helmPane = try functionBlock(
+            named: "private var helmPane: some View {",
+            endingBefore: "private var helmReleaseBrowser",
+            in: source
+        )
+        let eventsPane = try functionBlock(
+            named: "private var eventsPane: some View {",
+            endingBefore: "private var sectionPlaceholder",
+            in: source
+        )
+        let genericResourceList = try functionBlock(
+            named: "private func genericResourceList(",
+            endingBefore: "@ViewBuilder\n    private func resourceListGate",
+            in: source
+        )
+
+        XCTAssertTrue(contentPane.contains("spacing: RuneUILayoutMetrics.contentModuleSpacing"))
+        XCTAssertTrue(contentPane.contains(".padding(RuneUILayoutMetrics.paneOuterPadding)"))
+        XCTAssertTrue(overviewPane.contains("spacing: RuneUILayoutMetrics.contentSectionSpacing"))
+        XCTAssertTrue(overviewPane.contains(".frame(maxWidth: .infinity, alignment: .topLeading)"))
+
+        for section in [helmPane, eventsPane, genericResourceList] {
+            XCTAssertFalse(section.contains(".padding(.horizontal, 2)"))
+            XCTAssertFalse(section.contains(".padding(.vertical, 2)"))
+        }
+        XCTAssertTrue(eventsPane.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
+        XCTAssertTrue(genericResourceList.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
+    }
+
     func testInspectorTransientAndEmptyStatesUseTopAnchoredPlainPaneSurface() throws {
         let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let helper = try functionBlock(
@@ -2704,9 +2745,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider)"))
         XCTAssertTrue(rootViewSource.contains("presentation.executionMode == .externalCLI"))
         XCTAssertTrue(rootViewSource.contains("let diagnostic = viewModel.cloudKubeConfigImportDiagnostic"))
+        XCTAssertTrue(rootViewSource.contains("if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic"))
         XCTAssertTrue(rootViewSource.contains("addClusterCloudImportDiagnosticView(diagnostic)"))
         XCTAssertTrue(rootViewSource.contains("private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View"))
-        XCTAssertTrue(rootViewSource.contains("Text(diagnostic.commandShape)"))
+        XCTAssertTrue(rootViewSource.contains("Text(diagnostic.operationShape)"))
         XCTAssertTrue(rootViewSource.contains("Link(destination: diagnostic.documentationURL)"))
         XCTAssertTrue(rootViewSource.contains("closeAddClusterProviderSheet(showPopover: true)"))
         XCTAssertTrue(rootViewSource.contains("Image(systemName: \"chevron.left\")"))
@@ -2906,17 +2948,27 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
 
-        XCTAssertTrue(requestMetricsBlock.contains("Text(\"API Requests\")"))
+        XCTAssertTrue(requestMetricsBlock.contains("Text(\"API Attempts\")"))
         XCTAssertTrue(requestMetricsBlock.contains("summary.requestCountText"))
         XCTAssertTrue(requestMetricsBlock.contains("summary.outcomeText"))
         XCTAssertTrue(requestMetricsBlock.contains("summary.transferText"))
         XCTAssertTrue(requestMetricsBlock.contains("summary.retainedText"))
+        XCTAssertTrue(requestMetricsBlock.contains("Text(\"Retained endpoint highlights\")"))
+        XCTAssertTrue(requestMetricsBlock.contains("ForEach(summary.endpointHighlights)"))
+        XCTAssertTrue(requestMetricsBlock.contains("endpoint.maxDurationText"))
         XCTAssertTrue(requestMetricsBlock.contains("Label(\"Refresh\", systemImage: \"arrow.clockwise\")"))
         XCTAssertTrue(requestMetricsBlock.contains("viewModel.refreshKubernetesRequestMetricsSummary()"))
         XCTAssertTrue(requestMetricsBlock.contains("viewModel.isRefreshingKubernetesRequestMetricsSummary"))
+        XCTAssertTrue(rootViewSource.contains(".task(id: viewModel.state.selectedContext?.name)"))
         XCTAssertTrue(viewModelSource.contains("KubernetesRequestMetricsDebugPresentation"))
         XCTAssertTrue(viewModelSource.contains("public func refreshKubernetesRequestMetricsSummary()"))
-        XCTAssertTrue(viewModelSource.contains("kubeClient.restRequestMetricsSummary()"))
+        XCTAssertFalse(viewModelSource.contains("kubeClient.restRequestMetricsReport()"))
+        XCTAssertTrue(viewModelSource.contains("restRequestMetricsReport(contextName: contextName)"))
+        XCTAssertTrue(viewModelSource.contains("KubernetesRequestMetricsDebugPresentation(report: report)"))
+        XCTAssertTrue(viewModelSource.contains("stableSelectedContextRequestMetricsReport()"))
+        XCTAssertTrue(viewModelSource.contains("guard let contextName else { return .empty }"))
+        XCTAssertTrue(viewModelSource.contains("report = .empty"))
+        XCTAssertTrue(viewModelSource.contains("guard state.selectedContext?.name == contextName else { continue }"))
     }
 
     func testAuthDoctorStaysReadOnlyAndDoesNotRunMutatingActions() throws {

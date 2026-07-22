@@ -1366,6 +1366,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
                     await recordRequestMetric(
                         method: method,
+                        contextName: contextName,
                         apiPath: apiPath,
                         statusCode: nil,
                         responseBytes: 0,
@@ -1390,6 +1391,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 )
                 await recordRequestMetric(
                     method: method,
+                    contextName: contextName,
                     apiPath: apiPath,
                     statusCode: nil,
                     responseBytes: 0,
@@ -1431,6 +1433,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
                     await recordRequestMetric(
                         method: method,
+                        contextName: contextName,
                         apiPath: apiPath,
                         statusCode: http.statusCode,
                         responseBytes: data.count,
@@ -1454,6 +1457,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 )
                 await recordRequestMetric(
                     method: method,
+                    contextName: contextName,
                     apiPath: apiPath,
                     statusCode: http.statusCode,
                     responseBytes: data.count,
@@ -1470,6 +1474,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
             await recordRequestMetric(
                 method: method,
+                contextName: contextName,
                 apiPath: apiPath,
                 statusCode: http.statusCode,
                 responseBytes: data.count,
@@ -1486,6 +1491,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
     private func recordRequestMetric(
         method: String,
+        contextName: String,
         apiPath: String,
         statusCode: Int?,
         responseBytes: Int,
@@ -1497,16 +1503,19 @@ final class KubernetesRESTClient: @unchecked Sendable {
         guard let requestMetricsRecorder else { return }
         let elapsed = started.duration(to: .now)
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-        await requestMetricsRecorder.record(KubernetesRESTRequestMetric(
-            method: method,
-            apiPath: apiPath,
-            statusCode: statusCode,
-            responseBytes: responseBytes,
-            durationSeconds: seconds,
-            attempt: attempt,
-            outcome: outcome,
-            cancellationReason: cancellationReason
-        ))
+        await requestMetricsRecorder.record(
+            KubernetesRESTRequestMetric(
+                method: method,
+                apiPath: apiPath,
+                statusCode: statusCode,
+                responseBytes: responseBytes,
+                durationSeconds: seconds,
+                attempt: attempt,
+                outcome: outcome,
+                cancellationReason: cancellationReason
+            ),
+            contextName: contextName
+        )
     }
 
     private func requestCancellationReason(_ error: Error) -> String? {

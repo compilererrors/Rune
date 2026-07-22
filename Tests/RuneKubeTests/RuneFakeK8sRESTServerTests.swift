@@ -260,6 +260,8 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
 
         let metrics = await recorder.snapshot()
         let summary = await recorder.summary()
+        let scopedReport = await recorder.report(contextName: RuneFakeK8sFixture.defaultContextName)
+        let unrelatedReport = await recorder.report(contextName: "synthetic-unrelated-context")
         let podListMetric = try XCTUnwrap(metrics.first { $0.apiPath.contains("/pods") })
 
         XCTAssertEqual(pods.count, 2)
@@ -273,6 +275,10 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertFalse(podListMetric.apiPath.contains("alpha-zone"))
         XCTAssertEqual(summary.requestCount, metrics.count)
         XCTAssertGreaterThanOrEqual(summary.successCount, 1)
+        XCTAssertEqual(scopedReport.metrics, metrics)
+        XCTAssertEqual(scopedReport.summary, summary)
+        XCTAssertTrue(unrelatedReport.metrics.isEmpty)
+        XCTAssertEqual(unrelatedReport.summary.requestCount, 0)
     }
 
     func testNativeClientRecordsRESTRequestMetricsForRetriedReads() async throws {
@@ -296,13 +302,18 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             namespace: "alpha-zone"
         )
 
-        let podMetrics = await recorder.snapshot()
+        let scopedReport = await recorder.report(contextName: RuneFakeK8sFixture.defaultContextName)
+        let unrelatedReport = await recorder.report(contextName: "synthetic-unrelated-context")
+        let podMetrics = scopedReport.metrics
             .filter { $0.apiPath == "/api/v1/namespaces/<namespace>/pods" }
 
         XCTAssertEqual(pods.count, 2)
         XCTAssertEqual(podMetrics.map(\.attempt), [1, 2])
         XCTAssertEqual(podMetrics.map(\.outcome), [.httpError, .success])
         XCTAssertEqual(podMetrics.map(\.statusCode), [503, 200])
+        XCTAssertEqual(scopedReport.summary.requestCount, 2)
+        XCTAssertEqual(scopedReport.summary.failureCount, 1)
+        XCTAssertEqual(unrelatedReport.summary.requestCount, 0)
         XCTAssertTrue(podMetrics.allSatisfy { !$0.apiPath.contains("alpha-zone") })
     }
 
@@ -343,16 +354,19 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             XCTFail("Expected CancellationError, got \(error).")
         }
 
-        let podMetrics = await recorder.snapshot()
+        let scopedReport = await recorder.report(contextName: RuneFakeK8sFixture.defaultContextName)
+        let unrelatedReport = await recorder.report(contextName: "synthetic-unrelated-context")
+        let podMetrics = scopedReport.metrics
             .filter { $0.apiPath == "/api/v1/namespaces/<namespace>/pods" }
-        let summary = await recorder.summary()
         let cancelledMetric = try XCTUnwrap(podMetrics.first)
 
         XCTAssertEqual(cancelledMetric.outcome, .cancelled)
         XCTAssertEqual(cancelledMetric.cancellationReason, "task-cancelled")
         XCTAssertNil(cancelledMetric.statusCode)
         XCTAssertEqual(cancelledMetric.responseBytes, 0)
-        XCTAssertEqual(summary.cancelledCount, 1)
+        XCTAssertEqual(scopedReport.summary.cancelledCount, 1)
+        XCTAssertEqual(scopedReport.summary.requestCount, 1)
+        XCTAssertEqual(unrelatedReport.summary.requestCount, 0)
         XCTAssertTrue(podMetrics.allSatisfy { !$0.apiPath.contains("alpha-zone") })
     }
 

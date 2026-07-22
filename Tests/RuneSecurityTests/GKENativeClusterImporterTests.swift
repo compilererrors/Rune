@@ -170,7 +170,7 @@ final class GKENativeClusterImporterTests: XCTestCase {
         XCTAssertEqual(clusterRequestCount, 0)
     }
 
-    func testForbiddenClusterResponseReportsAuthenticationWithoutExposingProviderBody() async throws {
+    func testForbiddenClusterResponseReportsAuthorizationWithoutExposingProviderBody() async throws {
         let sensitiveDiagnostic = "synthetic-sensitive-diagnostic"
         let clusterClient = RecordingGKEClusterHTTPClient(response: GKEClusterHTTPResponse(
             statusCode: 403,
@@ -184,6 +184,26 @@ final class GKENativeClusterImporterTests: XCTestCase {
         do {
             _ = try await importer.importCluster(validRequest(), serviceAccountJSON: try makeServiceAccountFixture())
             XCTFail("Expected request rejection")
+        } catch {
+            XCTAssertEqual(error as? GKENativeClusterImportError, .requestRejected(403))
+            XCTAssertFalse(error.localizedDescription.contains(sensitiveDiagnostic))
+        }
+    }
+
+    func testUnauthorizedClusterResponseReportsAuthenticationWithoutExposingProviderBody() async throws {
+        let sensitiveDiagnostic = "synthetic-sensitive-authentication-diagnostic"
+        let clusterClient = RecordingGKEClusterHTTPClient(response: GKEClusterHTTPResponse(
+            statusCode: 401,
+            body: Data("{\"error\":\"\(sensitiveDiagnostic)\"}".utf8)
+        ))
+        let importer = GKENativeClusterImporter(
+            httpClient: clusterClient,
+            oauthHTTPClient: RecordingGKEOAuthHTTPClient(response: oauthTokenResponse())
+        )
+
+        do {
+            _ = try await importer.importCluster(validRequest(), serviceAccountJSON: try makeServiceAccountFixture())
+            XCTFail("Expected authentication failure")
         } catch {
             XCTAssertEqual(error as? GKENativeClusterImportError, .authenticationFailed)
             XCTAssertFalse(error.localizedDescription.contains(sensitiveDiagnostic))

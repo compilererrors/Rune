@@ -152,6 +152,7 @@ public struct SupportBundleRequestMetricsSummary: Codable, Sendable, Equatable {
     public let responseBytes: Int
     public let totalDurationSeconds: Double
     public let retainedMetricCount: Int
+    public let omittedMetricCount: Int
 
     public init(
         requestCount: Int,
@@ -160,7 +161,8 @@ public struct SupportBundleRequestMetricsSummary: Codable, Sendable, Equatable {
         cancelledCount: Int,
         responseBytes: Int,
         totalDurationSeconds: Double,
-        retainedMetricCount: Int
+        retainedMetricCount: Int,
+        omittedMetricCount: Int? = nil
     ) {
         self.requestCount = requestCount
         self.successCount = successCount
@@ -169,6 +171,43 @@ public struct SupportBundleRequestMetricsSummary: Codable, Sendable, Equatable {
         self.responseBytes = responseBytes
         self.totalDurationSeconds = totalDurationSeconds
         self.retainedMetricCount = retainedMetricCount
+        self.omittedMetricCount = omittedMetricCount ?? max(0, requestCount - retainedMetricCount)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestCount
+        case successCount
+        case failureCount
+        case cancelledCount
+        case responseBytes
+        case totalDurationSeconds
+        case retainedMetricCount
+        case omittedMetricCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requestCount = try container.decode(Int.self, forKey: .requestCount)
+        successCount = try container.decode(Int.self, forKey: .successCount)
+        failureCount = try container.decode(Int.self, forKey: .failureCount)
+        cancelledCount = try container.decode(Int.self, forKey: .cancelledCount)
+        responseBytes = try container.decode(Int.self, forKey: .responseBytes)
+        totalDurationSeconds = try container.decode(Double.self, forKey: .totalDurationSeconds)
+        retainedMetricCount = try container.decode(Int.self, forKey: .retainedMetricCount)
+        omittedMetricCount = try container.decodeIfPresent(Int.self, forKey: .omittedMetricCount)
+            ?? max(0, requestCount - retainedMetricCount)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestCount, forKey: .requestCount)
+        try container.encode(successCount, forKey: .successCount)
+        try container.encode(failureCount, forKey: .failureCount)
+        try container.encode(cancelledCount, forKey: .cancelledCount)
+        try container.encode(responseBytes, forKey: .responseBytes)
+        try container.encode(totalDurationSeconds, forKey: .totalDurationSeconds)
+        try container.encode(retainedMetricCount, forKey: .retainedMetricCount)
+        try container.encode(omittedMetricCount, forKey: .omittedMetricCount)
     }
 }
 
@@ -477,55 +516,7 @@ public extension SupportBundleRequest {
             for identifier in redactedIdentifiers where !identifier.isEmpty {
                 sanitized = sanitized.replacingOccurrences(of: identifier, with: "<context-name>")
             }
-
-            let pieces = sanitized.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-            let redactedPath = redactedMetricPathSegments(String(pieces.first ?? ""))
-            guard pieces.count > 1 else { return redactedPath }
-
-            let query = pieces[1]
-                .split(separator: "&", omittingEmptySubsequences: false)
-                .map { item -> String in
-                    let pair = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                    guard let name = pair.first, !name.isEmpty else { return "<redacted>" }
-                    return "\(name)=<redacted>"
-                }
-                .joined(separator: "&")
-            return query.isEmpty ? redactedPath : "\(redactedPath)?\(query)"
-        }
-
-        private func redactedMetricPathSegments(_ path: String) -> String {
-            let hasLeadingSlash = path.hasPrefix("/")
-            var segments = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-
-            if let namespaceIndex = segments.firstIndex(of: "namespaces"),
-               namespaceIndex + 1 < segments.count {
-                segments[namespaceIndex + 1] = "<namespace>"
-            }
-
-            if let nameIndex = metricObjectNameIndex(in: segments) {
-                segments[nameIndex] = "<name>"
-            }
-
-            let joined = segments.joined(separator: "/")
-            return hasLeadingSlash ? "/" + joined : joined
-        }
-
-        private func metricObjectNameIndex(in segments: [String]) -> Int? {
-            if let namespaceIndex = segments.firstIndex(of: "namespaces") {
-                let resourceIndex = namespaceIndex + 2
-                let nameIndex = resourceIndex + 1
-                return nameIndex < segments.count ? nameIndex : nil
-            }
-
-            if segments.first == "api", segments.count >= 5 {
-                return 4
-            }
-
-            if segments.first == "apis", segments.count >= 6 {
-                return 5
-            }
-
-            return nil
+            return KubernetesAPIPathSanitizer.sanitizedPath(sanitized)
         }
 
         private func sanitizedLine(_ line: String) -> String {

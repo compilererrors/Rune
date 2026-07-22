@@ -147,6 +147,66 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertFalse(metric.apiPath.contains("synthetic"))
         XCTAssertFalse(metric.apiPath.contains("api-0"))
         XCTAssertFalse(metric.apiPath.contains("sensitive-token"))
+
+        XCTAssertEqual(
+            KubernetesRESTRequestMetric.sanitizedAPIPath(
+                "/api/v1/pods?synthetic-secret&limit=200&synthetic-private-key=value&=orphan"
+            ),
+            "/api/v1/pods?<redacted>&limit=<redacted>&<redacted>&<redacted>"
+        )
+    }
+
+    func testRESTRequestMetricSanitizesClusterScopedPathMatrix() {
+        let cases = [
+            (
+                path: "/api/v1/nodes",
+                expected: "/api/v1/nodes"
+            ),
+            (
+                path: "/api/v1/nodes/synthetic-private-node",
+                expected: "/api/v1/nodes/<name>"
+            ),
+            (
+                path: "/api/v1/nodes/synthetic-private-node/status",
+                expected: "/api/v1/nodes/<name>/status"
+            ),
+            (
+                path: "/api/v1/nodes/synthetic-private-node/proxy/synthetic-private-route/health",
+                expected: "/api/v1/nodes/<name>/proxy/<path>"
+            ),
+            (
+                path: "/api/v1/watch/nodes/synthetic-private-node",
+                expected: "/api/v1/watch/nodes/<name>"
+            ),
+            (
+                path: "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+                expected: "/apis/rbac.authorization.k8s.io/v1/clusterroles"
+            ),
+            (
+                path: "/apis/rbac.authorization.k8s.io/v1/clusterroles/synthetic-private-role",
+                expected: "/apis/rbac.authorization.k8s.io/v1/clusterroles/<name>"
+            ),
+            (
+                path: "/apis/rbac.authorization.k8s.io/v1/clusterroles/synthetic-private-role/status",
+                expected: "/apis/rbac.authorization.k8s.io/v1/clusterroles/<name>/status"
+            ),
+            (
+                path: "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/synthetic-private-role",
+                expected: "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/<name>"
+            ),
+            (
+                path: "/api/v1/namespaces/synthetic-private-namespace/pods/synthetic-private-pod/proxy/synthetic-private-route/health",
+                expected: "/api/v1/namespaces/<namespace>/pods/<name>/proxy/<path>"
+            )
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                KubernetesRESTRequestMetric.sanitizedAPIPath(testCase.path),
+                testCase.expected,
+                testCase.path
+            )
+        }
     }
 
     func testRESTRequestMetricsRecorderSummarizesOutcomes() async {
@@ -190,6 +250,7 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(summary.responseBytes, 320)
         XCTAssertEqual(summary.totalDurationSeconds, 0.06, accuracy: 0.001)
         XCTAssertEqual(summary.retainedMetricCount, 3)
+        XCTAssertEqual(summary.omittedMetricCount, 0)
     }
 
     func testRESTRequestMetricsRecorderRetainsMostRecentMetricsOnly() async {
@@ -219,6 +280,118 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(summary.requestCount, 5)
         XCTAssertEqual(summary.responseBytes, 10)
         XCTAssertEqual(summary.retainedMetricCount, 3)
+        XCTAssertEqual(summary.omittedMetricCount, 2)
+    }
+
+    func testRESTRequestMetricsReportsPartitionContextsWithinOneBoundedRetentionWindow() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: 10)
+
+        for index in 0..<20 {
+            let contextName = index.isMultiple(of: 2) ? "synthetic-context-a" : "synthetic-context-b"
+            await recorder.record(
+                KubernetesRESTRequestMetric(
+                    method: "GET",
+                    apiPath: "/api/v1/namespaces/synthetic/pods/pod-\(index)",
+                    statusCode: index.isMultiple(of: 4) ? 503 : 200,
+                    responseBytes: index,
+                    durationSeconds: 0.001,
+                    attempt: 1,
+                    outcome: index.isMultiple(of: 4) ? .httpError : .success
+                ),
+                contextName: contextName
+            )
+        }
+
+        let globalReport = await recorder.report()
+        let contextAReport = await recorder.report(contextName: "synthetic-context-a")
+        let contextBReport = await recorder.report(contextName: "synthetic-context-b")
+        let missingReport = await recorder.report(contextName: "synthetic-context-missing")
+
+        XCTAssertEqual(globalReport.summary.requestCount, 20)
+        XCTAssertEqual(globalReport.summary.retainedMetricCount, 10)
+        XCTAssertEqual(globalReport.summary.omittedMetricCount, 10)
+        XCTAssertEqual(contextAReport.summary.requestCount, 10)
+        XCTAssertEqual(contextAReport.summary.failureCount, 5)
+        XCTAssertEqual(contextAReport.summary.retainedMetricCount, 5)
+        XCTAssertEqual(contextAReport.summary.omittedMetricCount, 5)
+        XCTAssertEqual(contextAReport.metrics.map(\.responseBytes), [10, 12, 14, 16, 18])
+        XCTAssertEqual(contextBReport.summary.requestCount, 10)
+        XCTAssertEqual(contextBReport.summary.failureCount, 0)
+        XCTAssertEqual(contextBReport.summary.retainedMetricCount, 5)
+        XCTAssertEqual(contextBReport.summary.omittedMetricCount, 5)
+        XCTAssertEqual(contextBReport.metrics.map(\.responseBytes), [11, 13, 15, 17, 19])
+        XCTAssertEqual(missingReport.summary.requestCount, 0)
+        XCTAssertTrue(missingReport.metrics.isEmpty)
+        let renderedMetrics = (contextAReport.metrics + contextBReport.metrics)
+            .map { "\($0.sourcePath)|\($0.method)|\($0.apiPath)" }
+            .joined(separator: "\n")
+        XCTAssertFalse(renderedMetrics.contains("synthetic-context-a"))
+        XCTAssertFalse(renderedMetrics.contains("synthetic-context-b"))
+    }
+
+    func testRESTRequestMetricsReportStaysInternallyConsistentDuringConcurrentRecording() async {
+        let capacity = 64
+        let requestCount = 500
+        let recorder = KubernetesRESTRequestMetricsRecorder(maxRetainedMetrics: capacity)
+        let writer = Task {
+            for index in 0..<requestCount {
+                await recorder.record(
+                    KubernetesRESTRequestMetric(
+                        method: "GET",
+                        apiPath: "/api/v1/namespaces/synthetic/pods/pod-\(index)",
+                        statusCode: 200,
+                        responseBytes: index,
+                        durationSeconds: 0.001,
+                        attempt: 1,
+                        outcome: .success
+                    ),
+                    contextName: index.isMultiple(of: 2) ? "synthetic-context-a" : "synthetic-context-b"
+                )
+                if index.isMultiple(of: 7) {
+                    await Task.yield()
+                }
+            }
+        }
+
+        for _ in 0..<250 {
+            let report = await recorder.report()
+
+            XCTAssertEqual(report.metrics.count, report.summary.retainedMetricCount)
+            XCTAssertEqual(
+                report.summary.successCount + report.summary.failureCount + report.summary.cancelledCount,
+                report.summary.requestCount
+            )
+            XCTAssertEqual(
+                report.summary.omittedMetricCount,
+                report.summary.requestCount - report.summary.retainedMetricCount
+            )
+            if let first = report.metrics.first, let last = report.metrics.last {
+                XCTAssertEqual(first.responseBytes, max(0, report.summary.requestCount - capacity))
+                XCTAssertEqual(last.responseBytes, report.summary.requestCount - 1)
+            }
+            let contextReport = await recorder.report(contextName: "synthetic-context-a")
+            XCTAssertEqual(contextReport.metrics.count, contextReport.summary.retainedMetricCount)
+            XCTAssertEqual(
+                contextReport.summary.omittedMetricCount,
+                contextReport.summary.requestCount - contextReport.summary.retainedMetricCount
+            )
+            XCTAssertTrue(contextReport.metrics.allSatisfy { $0.responseBytes.isMultiple(of: 2) })
+            if let last = contextReport.metrics.last {
+                XCTAssertEqual(last.responseBytes, (contextReport.summary.requestCount - 1) * 2)
+            }
+            await Task.yield()
+        }
+
+        await writer.value
+        let finalReport = await recorder.report()
+        XCTAssertEqual(finalReport.summary.requestCount, requestCount)
+        XCTAssertEqual(finalReport.summary.retainedMetricCount, capacity)
+        XCTAssertEqual(finalReport.metrics.first?.responseBytes, requestCount - capacity)
+        XCTAssertEqual(finalReport.metrics.last?.responseBytes, requestCount - 1)
+        let finalContextReport = await recorder.report(contextName: "synthetic-context-a")
+        XCTAssertEqual(finalContextReport.summary.requestCount, requestCount / 2)
+        XCTAssertEqual(finalContextReport.summary.retainedMetricCount, capacity / 2)
+        XCTAssertEqual(finalContextReport.summary.omittedMetricCount, requestCount / 2 - capacity / 2)
     }
 
     func testTerminalResizeFrameUsesKubernetesExecResizeChannel() throws {

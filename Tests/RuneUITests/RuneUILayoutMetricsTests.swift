@@ -40,6 +40,17 @@ final class RuneUILayoutMetricsTests: XCTestCase {
 
     func testSharedPaneMetricsStayConsistent() {
         XCTAssertGreaterThan(RuneUILayoutMetrics.paneOuterPadding, RuneUILayoutMetrics.paneInnerPadding)
+        XCTAssertEqual(RuneUILayoutMetrics.contentControlSpacing, 8)
+        XCTAssertEqual(RuneUILayoutMetrics.contentModuleSpacing, 12)
+        XCTAssertEqual(RuneUILayoutMetrics.contentSectionSpacing, 16)
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.contentControlSpacing,
+            RuneUILayoutMetrics.contentModuleSpacing
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.contentModuleSpacing,
+            RuneUILayoutMetrics.contentSectionSpacing
+        )
         XCTAssertGreaterThan(RuneUILayoutMetrics.headerChipHeight, 24)
         XCTAssertGreaterThan(RuneUILayoutMetrics.headerChipHorizontalPadding, 0)
         XCTAssertGreaterThanOrEqual(

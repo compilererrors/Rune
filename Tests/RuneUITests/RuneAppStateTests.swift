@@ -2454,15 +2454,15 @@ final class RuneAppStateTests: XCTestCase {
             diagnostic.title,
             diagnostic.classification,
             diagnostic.message,
-            diagnostic.commandShape,
+            diagnostic.operationShape,
             diagnostic.nextAction,
             diagnostic.documentationTitle,
             diagnostic.documentationURL.absoluteString
         ].joined(separator: "\n")
         XCTAssertEqual(diagnostic.title, "Provider CLI failed")
         XCTAssertEqual(diagnostic.classification, "Exit code 42")
-        XCTAssertTrue(diagnostic.commandShape.contains("<cluster-name>"))
-        XCTAssertTrue(diagnostic.commandShape.contains("<region>"))
+        XCTAssertTrue(diagnostic.operationShape.contains("<cluster-name>"))
+        XCTAssertTrue(diagnostic.operationShape.contains("<region>"))
         XCTAssertTrue(state.kubeConfigSources.isEmpty)
         XCTAssertTrue(state.contexts.isEmpty)
         XCTAssertFalse(state.authDoctorChecks.map(\.message).joined(separator: "\n").contains(sensitiveProviderOutput))
@@ -9594,7 +9594,8 @@ final class RuneAppStateTests: XCTestCase {
                 cancelledCount: 0,
                 responseBytes: 2_048,
                 totalDurationSeconds: 0.10,
-                retainedMetricCount: 1
+                retainedMetricCount: 1,
+                omittedMetricCount: 3
             ),
             requestMetricGroups: [
                 SupportBundleRequestMetricGroup(
@@ -9622,6 +9623,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.requestMetrics.first?.apiPath, "/api/v1/namespaces/<namespace>/pods?continue=<redacted>")
         XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 4)
         XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, 1)
+        XCTAssertEqual(decoded.requestMetricsSummary?.omittedMetricCount, 3)
         XCTAssertEqual(decoded.requestMetricGroups.count, 1)
         XCTAssertEqual(decoded.requestMetricGroups.first?.requestCount, 4)
         XCTAssertEqual(decoded.requestMetricGroups.first?.latestOutcome, "httpError")
@@ -9632,6 +9634,88 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.resourceListFreshness.last?.message, "Partial load for <context-name> namespace <namespace>: services forbidden")
         XCTAssertFalse(json.contains("synthetic-namespace"))
         XCTAssertFalse(json.contains("synthetic-context"))
+    }
+
+    @MainActor
+    func testSupportBundleRedactsClusterScopedRequestMetricNamesWithoutChangingResourceShape() throws {
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "synthetic-namespace"
+        let paths = [
+            "/api/v1/nodes",
+            "/api/v1/nodes/synthetic-private-node",
+            "/api/v1/nodes/synthetic-private-node/status",
+            "/api/v1/nodes/synthetic-private-node/proxy/synthetic-private-route/health",
+            "/api/v1/watch/nodes/synthetic-private-node",
+            "/api/v1/pods?synthetic-private-bare-value&limit=10&synthetic-private-key=synthetic-private-value",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/synthetic-private-role",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/synthetic-private-role/status",
+            "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/synthetic-private-role"
+        ]
+        let expectedPaths = [
+            "/api/v1/nodes",
+            "/api/v1/nodes/<name>",
+            "/api/v1/nodes/<name>/status",
+            "/api/v1/nodes/<name>/proxy/<path>",
+            "/api/v1/watch/nodes/<name>",
+            "/api/v1/pods?<redacted>&limit=<redacted>&<redacted>",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/<name>",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/<name>/status",
+            "/apis/rbac.authorization.k8s.io/v1/watch/clusterroles/<name>"
+        ]
+        let requestMetrics = paths.map { path in
+            SupportBundleRequestMetric(
+                sourcePath: "swift-rest",
+                method: "GET",
+                apiPath: path,
+                statusCode: 200,
+                responseBytes: 128,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: "success",
+                cancellationReason: nil
+            )
+        }
+        let requestMetricGroups = paths.map { path in
+            SupportBundleRequestMetricGroup(
+                sourcePath: "swift-rest",
+                method: "GET",
+                apiPath: path,
+                requestCount: 1,
+                successCount: 1,
+                failureCount: 0,
+                cancelledCount: 0,
+                responseBytes: 128,
+                totalDurationSeconds: 0.01,
+                maxDurationSeconds: 0.01,
+                latestStatusCode: 200,
+                latestOutcome: "success"
+            )
+        }
+
+        let request = SupportBundleRequest.snapshot(
+            state: state,
+            generatedAt: "2026-07-22T00:00:00Z",
+            resourceCounts: ["nodes": 1, "clusterRoles": 1],
+            selectedResourceKind: nil,
+            selectedResourceName: nil,
+            requestMetrics: requestMetrics,
+            requestMetricGroups: requestMetricGroups
+        )
+        let data = try JSONSupportBundleBuilder().buildBundle(from: request)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertEqual(decoded.requestMetrics.map(\.apiPath), expectedPaths)
+        XCTAssertEqual(decoded.requestMetricGroups.map(\.apiPath), expectedPaths)
+        XCTAssertFalse(json.contains("synthetic-private-node"))
+        XCTAssertFalse(json.contains("synthetic-private-route"))
+        XCTAssertFalse(json.contains("synthetic-private-role"))
+        XCTAssertFalse(json.contains("synthetic-private-bare-value"))
+        XCTAssertFalse(json.contains("synthetic-private-key"))
+        XCTAssertFalse(json.contains("synthetic-private-value"))
     }
 
     func testSupportBundleDecodesOlderSnapshotsWithoutOptionalDiagnostics() throws {
@@ -9730,24 +9814,42 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedContext = KubeContext(name: "synthetic-context")
         state.selectedNamespace = "default"
         let recorder = KubernetesRESTRequestMetricsRecorder()
-        await recorder.record(KubernetesRESTRequestMetric(
-            method: "GET",
-            apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=synthetic-token",
-            statusCode: 200,
-            responseBytes: 256,
-            durationSeconds: 0.01,
-            attempt: 1,
-            outcome: .success
-        ))
-        await recorder.record(KubernetesRESTRequestMetric(
-            method: "GET",
-            apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=retry-token",
-            statusCode: 503,
-            responseBytes: 64,
-            durationSeconds: 0.02,
-            attempt: 1,
-            outcome: .httpError
-        ))
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=synthetic-token",
+                statusCode: 200,
+                responseBytes: 256,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .success
+            ),
+            contextName: "synthetic-context"
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-namespace/pods?continue=retry-token",
+                statusCode: 503,
+                responseBytes: 64,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            contextName: "synthetic-context"
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-other/secrets?synthetic-private-key=synthetic-private-value",
+                statusCode: nil,
+                responseBytes: 0,
+                durationSeconds: 0.03,
+                attempt: 1,
+                outcome: .networkError
+            ),
+            contextName: "synthetic-other-context"
+        )
         let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let exporter = RecordingFileExporter()
@@ -9772,6 +9874,9 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.requestMetricsSummary?.successCount, 1)
         XCTAssertEqual(decoded.requestMetricsSummary?.failureCount, 1)
         XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, 2)
+        XCTAssertEqual(decoded.requestMetricsSummary?.omittedMetricCount, 0)
+        XCTAssertTrue(json.contains("\"omittedMetricCount\""))
+        XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, decoded.requestMetrics.count)
         XCTAssertEqual(decoded.requestMetricGroups.count, 1)
         XCTAssertEqual(decoded.requestMetricGroups.first?.apiPath, "/api/v1/namespaces/<namespace>/pods?continue=<redacted>")
         XCTAssertEqual(decoded.requestMetricGroups.first?.requestCount, 2)
@@ -9780,6 +9885,10 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(json.contains("synthetic-namespace"))
         XCTAssertFalse(json.contains("synthetic-token"))
         XCTAssertFalse(json.contains("retry-token"))
+        XCTAssertFalse(json.contains("/secrets"))
+        XCTAssertFalse(json.contains("synthetic-other-context"))
+        XCTAssertFalse(json.contains("synthetic-private-key"))
+        XCTAssertFalse(json.contains("synthetic-private-value"))
     }
 
     @MainActor
@@ -9811,12 +9920,115 @@ final class RuneAppStateTests: XCTestCase {
 
         try await waitUntilForRuneAppState {
             !viewModel.isRefreshingKubernetesRequestMetricsSummary
-                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "2 requests"
+                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "2 API attempts"
         }
         XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.outcomeText, "1 ok • 1 failed • 0 cancelled")
         XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.transferText, "1.1 KB • 210 ms total")
         XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.retainedText, "2 retained")
         XCTAssertTrue(viewModel.kubernetesRequestMetricsSummary.hasFailures)
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.map(\.apiPath), [
+            "/api/v1/namespaces/<namespace>/services",
+            "/api/v1/namespaces/<namespace>/pods"
+        ])
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.map(\.hasIssues), [true, false])
+    }
+
+    @MainActor
+    func testAuthDoctorAutomaticallyRefreshesMetricsForSelectedContextOnEarlyExit() async throws {
+        let selectedContextName = "synthetic-selected-context"
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods",
+                statusCode: 200,
+                responseBytes: 256,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .success
+            ),
+            contextName: selectedContextName
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/secrets",
+                statusCode: 503,
+                responseBytes: 64,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            contextName: "synthetic-other-context"
+        )
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: selectedContextName)
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client)
+
+        viewModel.runAuthDoctor()
+
+        try await waitUntilForRuneAppState {
+            !state.isRunningAuthDoctor
+                && !viewModel.isRefreshingKubernetesRequestMetricsSummary
+                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "1 API attempt"
+        }
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.outcomeText, "1 ok • 0 failed • 0 cancelled")
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.retainedText, "1 retained")
+        XCTAssertFalse(viewModel.kubernetesRequestMetricsSummary.hasFailures)
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.map(\.apiPath), [
+            "/api/v1/namespaces/<namespace>/pods"
+        ])
+        XCTAssertTrue(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.allSatisfy { !$0.hasIssues })
+        XCTAssertTrue(state.authDoctorChecks.contains { $0.id == "kubeconfig" && $0.status == .failed })
+    }
+
+    @MainActor
+    func testMetricsUIAndSupportBundleStayEmptyWithoutSelectedContext() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-private/secrets?synthetic-key=synthetic-value",
+                statusCode: 503,
+                responseBytes: 64,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            contextName: "synthetic-unselected-context"
+        )
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
+        let state = RuneAppState()
+        let exporter = RecordingFileExporter()
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client, exporter: exporter)
+
+        viewModel.refreshKubernetesRequestMetricsSummary()
+        try await waitUntilForRuneAppState {
+            !viewModel.isRefreshingKubernetesRequestMetricsSummary
+        }
+
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary, .empty)
+
+        viewModel.saveSupportBundle()
+        try await waitUntilForRuneAppState {
+            exporter.saves.count == 1
+        }
+
+        let data = try XCTUnwrap(exporter.saves.first?.data)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(decoded.requestMetrics.isEmpty)
+        XCTAssertTrue(decoded.requestMetricGroups.isEmpty)
+        XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 0)
+        XCTAssertEqual(decoded.requestMetricsSummary?.retainedMetricCount, 0)
+        XCTAssertEqual(decoded.requestMetricsSummary?.omittedMetricCount, 0)
+        XCTAssertFalse(json.contains("/secrets"))
+        XCTAssertFalse(json.contains("synthetic-unselected-context"))
+        XCTAssertFalse(json.contains("synthetic-key"))
+        XCTAssertFalse(json.contains("synthetic-value"))
     }
 
     @MainActor
