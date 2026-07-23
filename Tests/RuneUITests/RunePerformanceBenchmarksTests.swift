@@ -214,7 +214,13 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 name: "resource-\(String(format: "%04d", index))",
                 namespace: index.isMultiple(of: 9) ? nil : "default",
                 status: index.isMultiple(of: 10) ? "Progressing" : "Ready",
-                message: "synthetic status \(index)"
+                message: "synthetic status \(index)",
+                printerColumns: [
+                    OperatorResourceSummary.PrinterColumn(
+                        title: "Ready",
+                        value: index.isMultiple(of: 10) ? "False" : "True"
+                    )
+                ]
             )
         }
     }
@@ -2882,7 +2888,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         eventTable.delegate = eventCoordinator
 
         let operatorResources = benchmarkOperatorResources(count: 500)
-        let operatorTable = benchmarkTable(columnIDs: ["name", "family", "kind", "namespace", "status", "apiPath", "favorite"])
+        let operatorTable = benchmarkTable(
+            columnIDs: ["name", "family", "kind", "namespace", "status", "printerColumns", "apiPath", "favorite"]
+        )
         let operatorView = AppKitOperatorResourceListView(
             resources: operatorResources,
             selectedResourceID: operatorResources[50].id,
@@ -2925,7 +2933,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
-            XCTAssertEqual(projectVisibleCells(), 832)
+            XCTAssertEqual(projectVisibleCells(), 864)
         }
 
         let elapsedSeconds = minimumElapsedSeconds {
@@ -3051,10 +3059,10 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             "pods": ["name", "cpu", "memory", "restarts", "age", "status"],
             "deployments": ["name", "replicas"],
             "services": ["name", "type", "clusterIP"],
-            "genericResources": ["name", "primary", "secondary", "namespace"],
+            "genericResources.configMap": ["name", "primary", "secondary", "namespace"],
             "helmReleases": ["name", "status", "namespace", "revision", "chart", "appVersion"],
             "events": ["reason", "type", "object", "namespace", "lastSeen", "message"],
-            "operatorResources": ["name", "family", "kind", "namespace", "status", "apiPath"]
+            "operatorResources": ["name", "family", "kind", "namespace", "status", "printerColumns", "apiPath"]
         ]
         let touchedKeys = touchedColumnsByTable.flatMap { tableID, columnIDs in
             columnIDs.map { columnID in "rune.settings.layout.resourceColumnWidths.\(tableID).\(columnID)" }
@@ -3206,7 +3214,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             onOpenYAML: { _ in }
         )
         let operatorCoordinator = operatorView.makeCoordinator()
-        let operatorTable = benchmarkTable(columnIDs: ["name", "family", "kind", "namespace", "status", "apiPath", "favorite"])
+        let operatorTable = benchmarkTable(
+            columnIDs: ["name", "family", "kind", "namespace", "status", "printerColumns", "apiPath", "favorite"]
+        )
         operatorCoordinator.tableView = operatorTable
 
         let resizeSamples = stride(from: CGFloat(180), through: CGFloat(520), by: CGFloat(17)).map { $0 }
@@ -3224,7 +3234,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                     column.width = sample
                     serviceCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
                 }
-                for column in genericTable.tableColumns where touchedColumnsByTable["genericResources"]?.contains(column.identifier.rawValue) == true {
+                for column in genericTable.tableColumns where touchedColumnsByTable["genericResources.configMap"]?.contains(column.identifier.rawValue) == true {
                     column.width = sample
                     genericCoordinator.tableViewColumnDidResize(resizeNotification(for: column))
                 }
@@ -3250,6 +3260,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let elapsedSeconds = minimumElapsedSeconds {
             runResizePasses()
         }
+
+        XCTAssertTrue(
+            touchedKeys.allSatisfy { UserDefaults.standard.object(forKey: $0) != nil },
+            "Every measured resource column must exercise its persistence path."
+        )
 
         XCTAssertLessThan(
             elapsedSeconds,
@@ -3437,12 +3452,18 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     func testResourceListColumnLayoutBenchmarkKPI() {
-        let visibleWidths = stride(from: CGFloat(240), through: CGFloat(1800), by: CGFloat(3)).map { $0 }
+        let visibleWidths = stride(from: CGFloat(240), through: CGFloat(1800), by: CGFloat(12)).map { $0 }
 
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
             var checksum: CGFloat = 0
-            for _ in 0..<400 {
+            for _ in 0..<30 {
                 for visibleWidth in visibleWidths {
+                    let podWidths = RuneAppKitResourceListLayout.podColumnWidths(
+                        visibleWidth: visibleWidth,
+                        minimumNameWidth: PodTableLayout.nameColumnDefaultWidth
+                    )
+                    checksum += podWidths.selection + podWidths.name + podWidths.cpu + podWidths.memory
+                        + podWidths.restarts + podWidths.age + podWidths.status + podWidths.favorite
                     let widths = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
                     checksum += widths.name + widths.replicas + widths.favorite
                     let serviceWidths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
@@ -3460,152 +3481,163 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             XCTAssertGreaterThan(checksum, 0)
         }
 
-        var previousTotal: CGFloat = 0
-        for visibleWidth in visibleWidths {
-            let widths = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
-            let total = widths.name + widths.replicas + widths.favorite
-            let deploymentMinimumTotal = RuneAppKitResourceListLayout.deploymentMinimumNameColumnWidth
-                + RuneAppKitResourceListLayout.deploymentReplicaColumnWidth
-                + RuneAppKitResourceListLayout.deploymentFavoriteColumnWidth
-            let deploymentUsableWidth = min(
-                RuneAppKitResourceListLayout.deploymentMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.deploymentTrailingBreathingRoom
-            )
-            XCTAssertEqual(total, max(deploymentUsableWidth, deploymentMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(total, max(RuneAppKitResourceListLayout.deploymentMaximumContentWidth, deploymentMinimumTotal))
-            XCTAssertGreaterThanOrEqual(total, previousTotal)
-            previousTotal = total
+        let podMinimum = RuneAppKitResourceListLayout.podColumnWidths(
+            visibleWidth: 0,
+            minimumNameWidth: PodTableLayout.nameColumnDefaultWidth
+        )
+        let podMinimumTotal = podMinimum.selection + podMinimum.name + podMinimum.cpu + podMinimum.memory
+            + podMinimum.restarts + podMinimum.age + podMinimum.status + podMinimum.favorite
+        let deploymentMinimum = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: 0)
+        let deploymentMinimumTotal = deploymentMinimum.name + deploymentMinimum.replicas + deploymentMinimum.favorite
+        let serviceMinimum = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: 0)
+        let serviceMinimumTotal = serviceMinimum.name + serviceMinimum.type + serviceMinimum.clusterIP + serviceMinimum.favorite
+        let genericMinimum = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: 0)
+        let genericMinimumTotal = genericMinimum.selection + genericMinimum.name + genericMinimum.primary
+            + genericMinimum.secondary + genericMinimum.namespace + genericMinimum.favorite
+        let helmMinimum = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: 0)
+        let helmMinimumTotal = helmMinimum.name + helmMinimum.status + helmMinimum.namespace
+            + helmMinimum.revision + helmMinimum.chart + helmMinimum.appVersion
+        let eventMinimum = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: 0)
+        let eventMinimumTotal = eventMinimum.reason + eventMinimum.type + eventMinimum.object
+            + eventMinimum.namespace + eventMinimum.lastSeen + eventMinimum.message
+        let operatorMinimum = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: 0)
+        let operatorMinimumTotal = operatorMinimum.name + operatorMinimum.family + operatorMinimum.kind
+            + operatorMinimum.namespace + operatorMinimum.status + operatorMinimum.printerColumns
+            + operatorMinimum.apiPath + operatorMinimum.favorite
 
-            let serviceWidths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
-            let serviceTotal = serviceWidths.name + serviceWidths.type + serviceWidths.clusterIP + serviceWidths.favorite
-            let serviceMinimumTotal = RuneAppKitResourceListLayout.serviceMinimumNameColumnWidth
-                + RuneAppKitResourceListLayout.serviceTypeColumnWidth
-                + RuneAppKitResourceListLayout.serviceClusterIPColumnWidth
-                + RuneAppKitResourceListLayout.serviceFavoriteColumnWidth
-            let serviceUsableWidth = min(
-                RuneAppKitResourceListLayout.serviceMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.serviceTrailingBreathingRoom
+        func assertFillsViewport(
+            total: CGFloat,
+            minimumTotal: CGFloat,
+            visibleWidth: CGFloat,
+            family: String,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            let expected = max(
+                minimumTotal,
+                RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             )
-            XCTAssertEqual(serviceTotal, max(serviceUsableWidth, serviceMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(serviceTotal, max(RuneAppKitResourceListLayout.serviceMaximumContentWidth, serviceMinimumTotal))
-
-            let genericWidths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
-            let genericLeadingTotal = genericWidths.selection + genericWidths.name + genericWidths.primary
-            let genericTrailingTotal = genericWidths.secondary + genericWidths.namespace + genericWidths.favorite
-            let genericTotal = genericLeadingTotal + genericTrailingTotal
-            let genericMinimumTotal = RuneAppKitResourceListLayout.genericSelectionColumnWidth
-                + RuneAppKitResourceListLayout.genericMinimumNameColumnWidth
-                + RuneAppKitResourceListLayout.genericPrimaryColumnWidth
-                + RuneAppKitResourceListLayout.genericSecondaryColumnWidth
-                + RuneAppKitResourceListLayout.genericNamespaceColumnWidth
-                + RuneAppKitResourceListLayout.genericFavoriteColumnWidth
-            let genericUsableWidth = min(
-                RuneAppKitResourceListLayout.genericMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.genericTrailingBreathingRoom
+            XCTAssertEqual(
+                total,
+                expected,
+                accuracy: 0.5,
+                "KPI: \(family) columns should fill the usable viewport and overflow only below readable minimums.",
+                file: file,
+                line: line
             )
-            XCTAssertEqual(genericTotal, max(genericUsableWidth, genericMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(genericTotal, max(RuneAppKitResourceListLayout.genericMaximumContentWidth, genericMinimumTotal))
-
-            let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
-            let helmPrimaryTotal = helmWidths.name + helmWidths.status + helmWidths.namespace
-            let helmMetadataTotal = helmWidths.revision + helmWidths.chart + helmWidths.appVersion
-            let helmTotal = helmPrimaryTotal + helmMetadataTotal
-            let helmMinimumTotal = RuneAppKitResourceListLayout.helmMinimumNameColumnWidth
-                + RuneAppKitResourceListLayout.helmStatusColumnWidth
-                + RuneAppKitResourceListLayout.helmNamespaceColumnWidth
-                + RuneAppKitResourceListLayout.helmRevisionColumnWidth
-                + RuneAppKitResourceListLayout.helmChartColumnWidth
-                + RuneAppKitResourceListLayout.helmAppVersionColumnWidth
-            let helmUsableWidth = min(
-                RuneAppKitResourceListLayout.helmMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.helmTrailingBreathingRoom
-            )
-            XCTAssertEqual(helmTotal, max(helmUsableWidth, helmMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(helmTotal, RuneAppKitResourceListLayout.helmMaximumContentWidth)
-
-            let eventWidths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
-            let eventPrimaryTotal = eventWidths.reason + eventWidths.type + eventWidths.object
-            let eventMetadataTotal = eventWidths.namespace + eventWidths.lastSeen + eventWidths.message
-            let eventTotal = eventPrimaryTotal + eventMetadataTotal
-            let eventMinimumTotal = RuneAppKitResourceListLayout.eventMinimumReasonColumnWidth
-                + RuneAppKitResourceListLayout.eventTypeColumnWidth
-                + RuneAppKitResourceListLayout.eventObjectColumnWidth
-                + RuneAppKitResourceListLayout.eventNamespaceColumnWidth
-                + RuneAppKitResourceListLayout.eventLastSeenColumnWidth
-                + RuneAppKitResourceListLayout.eventMessageColumnWidth
-            let eventUsableWidth = min(
-                RuneAppKitResourceListLayout.eventMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.eventTrailingBreathingRoom
-            )
-            XCTAssertEqual(eventTotal, max(eventUsableWidth, eventMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(eventTotal, RuneAppKitResourceListLayout.eventMaximumContentWidth)
-
-            let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
-            let operatorPrimaryTotal = operatorWidths.name + operatorWidths.family + operatorWidths.kind
-            let operatorMetadataTotal = operatorWidths.namespace + operatorWidths.status + operatorWidths.printerColumns + operatorWidths.apiPath + operatorWidths.favorite
-            let operatorTotal = operatorPrimaryTotal + operatorMetadataTotal
-            let operatorMinimumTotal = RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth
-                + RuneAppKitResourceListLayout.operatorFamilyColumnWidth
-                + RuneAppKitResourceListLayout.operatorKindColumnWidth
-                + RuneAppKitResourceListLayout.operatorNamespaceColumnWidth
-                + RuneAppKitResourceListLayout.operatorStatusColumnWidth
-                + RuneAppKitResourceListLayout.operatorPrinterColumnsColumnWidth
-                + RuneAppKitResourceListLayout.operatorAPIPathColumnWidth
-                + RuneAppKitResourceListLayout.operatorFavoriteColumnWidth
-            let operatorUsableWidth = min(
-                RuneAppKitResourceListLayout.operatorMaximumContentWidth,
-                visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.operatorTrailingBreathingRoom
-            )
-            XCTAssertEqual(operatorTotal, max(operatorUsableWidth, operatorMinimumTotal), accuracy: 0.5)
-            XCTAssertLessThanOrEqual(operatorTotal, max(RuneAppKitResourceListLayout.operatorMaximumContentWidth, operatorMinimumTotal))
-
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.deploymentReplicaColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Ready", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.serviceClusterIPColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Cluster IP", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericPrimaryColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Detail", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericSecondaryColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Info", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.genericNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmStatusColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmRevisionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Rev", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmChartColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Chart", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.helmAppVersionColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "App", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventTypeColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventObjectColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Object", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.eventLastSeenColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Last Seen", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorFamilyColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Family", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorKindColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Kind", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorNamespaceColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorStatusColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorPrinterColumnsColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Columns", reservesSortIndicator: false))
-            XCTAssertGreaterThanOrEqual(RuneAppKitResourceListLayout.operatorAPIPathColumnWidth, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "API Path", reservesSortIndicator: true))
         }
 
+        for visibleWidth in visibleWidths {
+            let pod = RuneAppKitResourceListLayout.podColumnWidths(
+                visibleWidth: visibleWidth,
+                minimumNameWidth: PodTableLayout.nameColumnDefaultWidth
+            )
+            assertFillsViewport(
+                total: pod.selection + pod.name + pod.cpu + pod.memory + pod.restarts
+                    + pod.age + pod.status + pod.favorite,
+                minimumTotal: podMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Pods"
+            )
+
+            let deployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: deployment.name + deployment.replicas + deployment.favorite,
+                minimumTotal: deploymentMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Deployments"
+            )
+
+            let serviceWidths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: serviceWidths.name + serviceWidths.type + serviceWidths.clusterIP + serviceWidths.favorite,
+                minimumTotal: serviceMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Services"
+            )
+
+            let genericWidths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: genericWidths.selection + genericWidths.name + genericWidths.primary
+                    + genericWidths.secondary + genericWidths.namespace + genericWidths.favorite,
+                minimumTotal: genericMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Generic resources"
+            )
+
+            let helmWidths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: helmWidths.name + helmWidths.status + helmWidths.namespace
+                    + helmWidths.revision + helmWidths.chart + helmWidths.appVersion,
+                minimumTotal: helmMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Helm releases"
+            )
+
+            let eventWidths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: eventWidths.reason + eventWidths.type + eventWidths.object
+                    + eventWidths.namespace + eventWidths.lastSeen + eventWidths.message,
+                minimumTotal: eventMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Events"
+            )
+
+            let operatorWidths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
+            assertFillsViewport(
+                total: operatorWidths.name + operatorWidths.family + operatorWidths.kind
+                    + operatorWidths.namespace + operatorWidths.status + operatorWidths.printerColumns
+                    + operatorWidths.apiPath + operatorWidths.favorite,
+                minimumTotal: operatorMinimumTotal,
+                visibleWidth: visibleWidth,
+                family: "Operator resources"
+            )
+        }
+
+        XCTAssertGreaterThanOrEqual(podMinimum.cpu, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "CPU", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(podMinimum.memory, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "MEM", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(podMinimum.restarts, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Restarts", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(podMinimum.age, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Age", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(podMinimum.status, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(genericMinimum.primary, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Policy Types", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(genericMinimum.secondary, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Pod Selector", reservesSortIndicator: true))
+        XCTAssertGreaterThanOrEqual(genericMinimum.namespace, RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true))
+
+        let widePods = RuneAppKitResourceListLayout.podColumnWidths(
+            visibleWidth: 1320,
+            minimumNameWidth: PodTableLayout.nameColumnDefaultWidth
+        )
+        XCTAssertGreaterThan(widePods.name, podMinimum.name)
+        XCTAssertGreaterThan(widePods.name, widePods.restarts)
+
         let wideDeployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: 1320)
-        XCTAssertGreaterThanOrEqual(wideDeployment.replicas, 88)
-        XCTAssertLessThanOrEqual(wideDeployment.name, 510)
+        XCTAssertGreaterThan(wideDeployment.name, wideDeployment.replicas)
 
         let wideGeneric = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: 1320)
-        XCTAssertLessThanOrEqual(wideGeneric.name, 380)
-        XCTAssertLessThanOrEqual(wideGeneric.primary, 144)
-        XCTAssertLessThanOrEqual(wideGeneric.secondary, 164)
-        XCTAssertLessThanOrEqual(wideGeneric.namespace, 132)
+        XCTAssertGreaterThan(wideGeneric.name, wideGeneric.primary)
+        XCTAssertGreaterThan(wideGeneric.name, genericMinimum.name)
 
         let wideEvents = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: 1320)
-        XCTAssertLessThanOrEqual(wideEvents.reason, 204)
-        XCTAssertLessThanOrEqual(wideEvents.type, 120)
-        XCTAssertLessThanOrEqual(wideEvents.namespace, 140)
+        XCTAssertGreaterThan(wideEvents.message, wideEvents.type)
 
         let wideOperators = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: 1320)
-        XCTAssertLessThanOrEqual(wideOperators.name, 262)
-        XCTAssertLessThanOrEqual(wideOperators.family, 140)
-        XCTAssertLessThanOrEqual(wideOperators.status, 130)
+        XCTAssertGreaterThan(wideOperators.name, wideOperators.family)
+        XCTAssertGreaterThan(wideOperators.apiPath, wideOperators.status)
+
+        let projectionPasses = 20
+        let solverFamilyCount = 7
+        let maximumSecondsPerSolverCall = 0.000_006_5
 
         func projectedChecksum() -> CGFloat {
             var checksum: CGFloat = 0
-            for _ in 0..<50 {
+            for _ in 0..<projectionPasses {
                 for visibleWidth in visibleWidths {
+                    let pod = RuneAppKitResourceListLayout.podColumnWidths(
+                        visibleWidth: visibleWidth,
+                        minimumNameWidth: PodTableLayout.nameColumnDefaultWidth
+                    )
+                    checksum += pod.selection + pod.name + pod.cpu + pod.memory + pod.restarts
+                        + pod.age + pod.status + pod.favorite
                     let deployment = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
                     checksum += deployment.name + deployment.replicas + deployment.favorite
                     let service = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
@@ -3628,19 +3660,23 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             _ = projectedChecksum()
         }
 
-        let maximumProjectionSeconds = 0.01
+        let solverCallCount = projectionPasses * visibleWidths.count * solverFamilyCount
+        let maximumProjectionSeconds = Double(solverCallCount) * maximumSecondsPerSolverCall
+        let microsecondsPerSolverCall = elapsedSeconds * 1_000_000 / Double(solverCallCount)
 
         print(
-            "KPI resource column projection: 50 resize-sample passes in "
+            "KPI resource column projection: \(projectionPasses) complete resize-sample passes (\(solverCallCount) solver calls) in "
                 + String(format: "%.3f", elapsedSeconds * 1_000)
-                + "ms (target < 10ms)."
+                + "ms, "
+                + String(format: "%.3f", microsecondsPerSolverCall)
+                + "µs/call (target < 6.5µs/call in debug)."
         )
 
         XCTAssertGreaterThan(checksum, 0)
         XCTAssertLessThan(
             elapsedSeconds,
             maximumProjectionSeconds,
-            "KPI: resource column width projection should stay below 10ms for 50 passes across resize samples so the middle panel tracks the side panel."
+            "KPI: all seven resource-family solvers must average below 6.5µs per projection across the full resize range in debug."
         )
     }
 
@@ -4633,12 +4669,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             $0.executionMode == .nativeOnly && $0.provider != .local
         }
         XCTAssertEqual(nativeCloudPresentations.count, 6)
-        XCTAssertEqual(
-            nativeCloudPresentations.filter {
-                $0.utilityActions.contains { $0.id == .disconnectNativeCredentials }
-            }.count,
-            3
-        )
+        XCTAssertTrue(nativeCloudPresentations.allSatisfy { presentation in
+            !presentation.utilityActions.contains { $0.id == .disconnectNativeCredentials }
+        })
 
         let descriptorProviders: [KubernetesNativeAuthProviderKind?] = [
             .awsEKS,

@@ -924,6 +924,200 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
     }
 
+    func testHelmReleaseAndOperatorTablesShareTheSameToolbarGrid() async throws {
+        let releaseState = RuneAppState()
+        releaseState.selectedSection = .helm
+        releaseState.selectedNamespace = "sample-namespace"
+        releaseState.setHelmReleases([
+            HelmReleaseSummary(
+                name: "sample-release",
+                namespace: "sample-namespace",
+                revision: 1,
+                updated: "2026-01-01 00:00:00",
+                status: "deployed",
+                chart: "sample-chart-1.0.0",
+                appVersion: "1.0.0"
+            )
+        ])
+
+        let operatorResource = OperatorResourceSummary(
+            family: "Example operator",
+            kind: "Applications",
+            apiPath: "/apis/example.io/v1/namespaces/sample-namespace/applications",
+            name: "sample-application",
+            namespace: "sample-namespace",
+            status: "Ready True",
+            message: "Reconciled",
+            printerColumns: [
+                OperatorResourceSummary.PrinterColumn(title: "Ready", value: "True")
+            ]
+        )
+        let operatorState = RuneAppState()
+        operatorState.selectedSection = .helm
+        operatorState.selectedNamespace = "sample-namespace"
+        operatorState.setOperatorResources([operatorResource])
+        operatorState.setSelectedOperatorResource(operatorResource)
+
+        for windowWidth in [CGFloat(1_440), CGFloat(1_160)] {
+            let releaseSnapshot = try await hostMiddlePanelTableSnapshot(
+                viewModel: RuneAppViewModel(state: releaseState),
+                section: .helm,
+                kind: .pod,
+                windowWidth: windowWidth
+            )
+            let operatorSnapshot = try await hostMiddlePanelTableSnapshot(
+                viewModel: RuneAppViewModel(state: operatorState),
+                section: .helm,
+                kind: .pod,
+                windowWidth: windowWidth
+            )
+
+            XCTAssertEqual(
+                operatorSnapshot.tableFrame.maxY,
+                releaseSnapshot.tableFrame.maxY,
+                accuracy: 1,
+                "Helm releases and operator resources should enter the table on the same shared grid at width \(windowWidth)."
+            )
+        }
+    }
+
+    func testResourceControlGridFramesAlignAtDefaultAndCompactWidths() async throws {
+        let pod = PodSummary(
+            name: "sample-pod",
+            namespace: "sample-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "5m"
+        )
+        let configMap = ClusterResourceSummary(
+            kind: .configMap,
+            name: "sample-config",
+            namespace: "sample-namespace",
+            primaryText: "2 keys",
+            secondaryText: "5m"
+        )
+        let scenarios: [(String, RuneSection, KubeResourceKind, () -> RuneAppViewModel)] = [
+            ("Pods", .workloads, .pod, { self.makePodViewModel(pod: pod) }),
+            ("ConfigMaps", .config, .configMap, { self.makeConfigViewModel(resource: configMap) })
+        ]
+
+        for (width, expectsCompactToolbar) in [(CGFloat(1_600), false), (CGFloat(1_160), true)] {
+            for (label, section, kind, makeViewModel) in scenarios {
+                let snapshot = try await hostMiddlePanelTableSnapshot(
+                    viewModel: makeViewModel(),
+                    section: section,
+                    kind: kind,
+                    windowWidth: width
+                )
+                assertResourceControlGrid(
+                    snapshot,
+                    label: "\(label) at \(Int(width))pt",
+                    expectsCompactToolbar: expectsCompactToolbar
+                )
+            }
+        }
+    }
+
+    func testWorkloadResourceToolbarKeepsTableTopStableAcrossKindsAndSelectionState() async throws {
+        let pod = PodSummary(
+            name: "sample-pod",
+            namespace: "sample-namespace",
+            status: "Running",
+            totalRestarts: 0,
+            ageDescription: "5m"
+        )
+        let deployment = DeploymentSummary(
+            name: "sample-deployment",
+            namespace: "sample-namespace",
+            readyReplicas: 1,
+            desiredReplicas: 1
+        )
+        let statefulSet = ClusterResourceSummary(
+            kind: .statefulSet,
+            name: "sample-statefulset",
+            namespace: "sample-namespace",
+            primaryText: "1/1 ready",
+            secondaryText: "5m"
+        )
+
+        let podViewModel = makePodViewModel(pod: pod)
+        let podSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: podViewModel,
+            section: .workloads,
+            kind: .pod
+        )
+        podViewModel.togglePodBulkSelection(pod)
+        let selectedPodSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: podViewModel,
+            section: .workloads,
+            kind: .pod
+        )
+        let deploymentSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: makeDeploymentViewModel(deployment: deployment),
+            section: .workloads,
+            kind: .deployment
+        )
+
+        let statefulSetState = RuneAppState()
+        statefulSetState.selectedSection = .workloads
+        statefulSetState.selectedWorkloadKind = .statefulSet
+        statefulSetState.selectedNamespace = "sample-namespace"
+        statefulSetState.setStatefulSets([statefulSet])
+        statefulSetState.setSelectedStatefulSet(statefulSet)
+        let statefulSetSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: RuneAppViewModel(state: statefulSetState),
+            section: .workloads,
+            kind: .statefulSet
+        )
+
+        for (label, snapshot) in [
+            ("selected Pods", selectedPodSnapshot),
+            ("Deployments", deploymentSnapshot),
+            ("StatefulSets", statefulSetSnapshot)
+        ] {
+            XCTAssertEqual(
+                snapshot.tableFrame.maxY,
+                podSnapshot.tableFrame.maxY,
+                accuracy: 1.0,
+                "\(label) should share the same table top edge as unselected Pods."
+            )
+        }
+
+        podViewModel.clearPodBulkSelection()
+        let compactPodSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: podViewModel,
+            section: .workloads,
+            kind: .pod,
+            windowWidth: 1_160
+        )
+        podViewModel.togglePodBulkSelection(pod)
+        let compactSelectedPodSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: podViewModel,
+            section: .workloads,
+            kind: .pod,
+            windowWidth: 1_160
+        )
+        let compactDeploymentSnapshot = try await hostMiddlePanelTableSnapshot(
+            viewModel: makeDeploymentViewModel(deployment: deployment),
+            section: .workloads,
+            kind: .deployment,
+            windowWidth: 1_160
+        )
+
+        XCTAssertEqual(
+            compactSelectedPodSnapshot.tableFrame.maxY,
+            compactPodSnapshot.tableFrame.maxY,
+            accuracy: 1,
+            "Compact selection actions must not move the table top edge."
+        )
+        XCTAssertEqual(
+            compactDeploymentSnapshot.tableFrame.maxY,
+            compactPodSnapshot.tableFrame.maxY,
+            accuracy: 1,
+            "Compact resource toolbars must reserve the same two-row grid."
+        )
+    }
+
     func testSectionTransitionsDoNotDriftAfterLayoutSettles() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
             let viewModel = RuneAppViewModel()
@@ -2205,22 +2399,28 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
     private struct MiddlePanelTableSnapshot {
         let contentWidth: CGFloat
+        let contentHeight: CGFloat
         let tableFrame: CGRect
+        let layout: RuneRootLayoutSnapshot
     }
 
     private func hostMiddlePanelTableSnapshot(
         viewModel: RuneAppViewModel,
         section: RuneSection,
-        kind: KubeResourceKind
+        kind: KubeResourceKind,
+        windowWidth: CGFloat = 1_440
     ) async throws -> MiddlePanelTableSnapshot {
         prepareLayoutTestViewModel(viewModel)
         viewModel.state.selectedSection = section
         viewModel.state.selectedWorkloadKind = kind
+        var layoutSnapshots: [RuneRootLayoutSnapshot] = []
 
         let host = NSHostingController(
             rootView: RuneRootView(
                 viewModel: viewModel,
-                onLayoutSnapshotChange: nil,
+                onLayoutSnapshotChange: { snapshot in
+                    layoutSnapshots.append(snapshot)
+                },
                 debugDisableBootstrap: true,
                 shellVariant: .appKitSplitView,
                 initialSidebarWidthOverride: 280,
@@ -2228,12 +2428,12 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: 900),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: 900))
         window.contentView = container
         let hostView = host.view
         hostView.translatesAutoresizingMaskIntoConstraints = false
@@ -2257,10 +2457,20 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 let contentView = splitView.arrangedSubviews[1]
                 if let tableView = firstTableView(in: contentView),
                    let scrollView = tableView.enclosingScrollView,
-                   scrollView.bounds.width > 1 {
+                   scrollView.bounds.width > 1,
+                   let layout = layoutSnapshots.last(where: {
+                       $0.section == section
+                           && $0.resourceFamilyFrame != nil
+                           && $0.resourceToolbarFrame != nil
+                           && $0.resourceFilterRailFrame != nil
+                           && $0.resourceActionsRailFrame != nil
+                           && $0.resourceTableSurfaceFrame != nil
+                   }) {
                     return MiddlePanelTableSnapshot(
                         contentWidth: contentView.bounds.width,
-                        tableFrame: scrollView.convert(scrollView.bounds, to: contentView)
+                        contentHeight: contentView.bounds.height,
+                        tableFrame: scrollView.convert(scrollView.bounds, to: contentView),
+                        layout: layout
                     )
                 }
             }
@@ -2270,6 +2480,94 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
         XCTFail("Timed out waiting for the \(section.rawValue) middle-panel table surface")
         throw CancellationError()
+    }
+
+    private func assertResourceControlGrid(
+        _ snapshot: MiddlePanelTableSnapshot,
+        label: String,
+        expectsCompactToolbar: Bool
+    ) {
+        guard let contentMinX = snapshot.layout.contentMinX,
+              let contentMinY = snapshot.layout.contentMinY,
+              let family = snapshot.layout.resourceFamilyFrame,
+              let toolbar = snapshot.layout.resourceToolbarFrame,
+              let filterRail = snapshot.layout.resourceFilterRailFrame,
+              let actionsRail = snapshot.layout.resourceActionsRailFrame,
+              let tableSurface = snapshot.layout.resourceTableSurfaceFrame else {
+            XCTFail("\(label) did not report the complete hosted resource-control hierarchy.")
+            return
+        }
+
+        for (name, frame) in [
+            ("family", family),
+            ("toolbar", toolbar),
+            ("filter", filterRail),
+            ("actions", actionsRail),
+            ("table", tableSurface)
+        ] {
+            XCTAssertGreaterThan(frame.width, 1, "\(label) \(name) rail must have a real hosted width.")
+            XCTAssertGreaterThan(frame.height, 1, "\(label) \(name) rail must have a real hosted height.")
+        }
+
+        XCTAssertEqual(family.minX, toolbar.minX, accuracy: 0.75, "\(label) family and toolbar leading edges drifted.")
+        XCTAssertEqual(toolbar.minX, tableSurface.minX, accuracy: 0.75, "\(label) toolbar and table leading edges drifted.")
+        XCTAssertEqual(family.width, toolbar.width, accuracy: 0.75, "\(label) family and toolbar widths should share the grid.")
+        XCTAssertEqual(toolbar.width, tableSurface.width, accuracy: 0.75, "\(label) toolbar and table widths should share the grid.")
+        XCTAssertEqual(
+            toolbar.minY - family.maxY,
+            RuneUILayoutMetrics.contentControlSpacing,
+            accuracy: 0.75,
+            "\(label) family-to-toolbar gap changed or overlapped."
+        )
+        XCTAssertEqual(
+            tableSurface.minY - toolbar.maxY,
+            RuneUILayoutMetrics.contentModuleSpacing,
+            accuracy: 0.75,
+            "\(label) toolbar-to-table gap changed or overlapped."
+        )
+
+        XCTAssertGreaterThanOrEqual(filterRail.minX, toolbar.minX - 0.5, "\(label) filter escaped the toolbar.")
+        XCTAssertLessThanOrEqual(filterRail.maxX, toolbar.maxX + 0.5, "\(label) filter escaped the toolbar.")
+        XCTAssertGreaterThanOrEqual(actionsRail.minX, toolbar.minX - 0.5, "\(label) actions escaped the toolbar.")
+        XCTAssertLessThanOrEqual(actionsRail.maxX, toolbar.maxX + 0.5, "\(label) actions escaped the toolbar.")
+
+        if expectsCompactToolbar {
+            XCTAssertEqual(filterRail.minX, actionsRail.minX, accuracy: 0.75, "\(label) compact rails should share a leading edge.")
+            XCTAssertEqual(filterRail.width, actionsRail.width, accuracy: 0.75, "\(label) compact rails should share a width.")
+            XCTAssertEqual(
+                actionsRail.minY - filterRail.maxY,
+                RuneUILayoutMetrics.resourceListCompactRowSpacing,
+                accuracy: 0.75,
+                "\(label) compact rails should stack without overlap."
+            )
+        } else {
+            XCTAssertEqual(filterRail.midY, actionsRail.midY, accuracy: 0.75, "\(label) default rails should share a baseline.")
+            XCTAssertEqual(
+                actionsRail.minX - filterRail.maxX,
+                RuneUILayoutMetrics.contentControlSpacing,
+                accuracy: 0.75,
+                "\(label) default rails should use the shared horizontal gutter."
+            )
+        }
+
+        XCTAssertEqual(
+            family.minX - contentMinX,
+            snapshot.tableFrame.minX,
+            accuracy: 1,
+            "\(label) control grid and native table should share the pane inset."
+        )
+        XCTAssertEqual(
+            tableSurface.width,
+            snapshot.tableFrame.width,
+            accuracy: 1,
+            "\(label) control grid and native table should share the available width."
+        )
+        XCTAssertEqual(
+            tableSurface.minY - contentMinY,
+            snapshot.contentHeight - snapshot.tableFrame.maxY,
+            accuracy: 1.5,
+            "\(label) the native table should start exactly at the probed table region."
+        )
     }
 
     private func firstTableView(in view: NSView?) -> NSTableView? {

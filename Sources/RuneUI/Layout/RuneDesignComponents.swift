@@ -220,38 +220,86 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     let selectedCount: Int
     let visibleCount: Int
     let allVisibleSelected: Bool
+    let showsActions: Bool
     let onToggleVisibleSelection: () -> Void
+    let onClearSelection: () -> Void
     @ViewBuilder var actions: Actions
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(
         selectedCount: Int,
         visibleCount: Int,
         allVisibleSelected: Bool,
+        showsActions: Bool = true,
         onToggleVisibleSelection: @escaping () -> Void,
+        onClearSelection: @escaping () -> Void,
         @ViewBuilder actions: () -> Actions
     ) {
         self.selectedCount = selectedCount
         self.visibleCount = visibleCount
         self.allVisibleSelected = allVisibleSelected
+        self.showsActions = showsActions
         self.onToggleVisibleSelection = onToggleVisibleSelection
+        self.onClearSelection = onClearSelection
         self.actions = actions()
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                selectionCountChip
-                selectVisibleButton
+        ViewThatFits(in: .horizontal) {
+            regularControls
+            compactControls
+        }
+        .buttonStyle(.bordered)
+        .controlSize(dynamicTypeSize.isAccessibilitySize ? .regular : .small)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize
+                ? RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight
+                : RuneUILayoutMetrics.resourceListToolbarMinimumHeight,
+            alignment: .leading
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    private var regularControls: some View {
+        HStack(spacing: 8) {
+            if selectedCount > 0 {
+                selectionSummary
+            }
+            selectVisibleButton
+            if showsActions {
                 separator
                 actions
             }
-            .fixedSize(horizontal: true, vertical: false)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactControls: some View {
+        HStack(spacing: 6) {
+            if selectedCount > 0 {
+                selectionSummary
+            }
+            compactSelectVisibleButton
+            if showsActions {
+                actions
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactSelectVisibleButton: some View {
+        Button {
+            onToggleVisibleSelection()
+        } label: {
+            Image(systemName: allVisibleSelected ? "xmark.square" : "checklist")
+        }
+        .frame(width: RuneUILayoutMetrics.iconButtonSize)
+        .runeMinimumInteractiveTarget()
+        .disabled(visibleCount == 0)
+        .help(allVisibleSelected ? "Deselect all visible rows" : "Select all visible rows")
+        .accessibilityLabel(toggleTitle)
     }
 
     private var selectionCountChip: some View {
@@ -276,14 +324,29 @@ struct RuneBulkSelectionBar<Actions: View>: View {
         .accessibilityLabel(selectedCountText)
     }
 
+    private var selectionSummary: some View {
+        HStack(spacing: 2) {
+            selectionCountChip
+            RuneIconButton(
+                "Clear selection",
+                systemImage: "xmark",
+                help: "Clear all selected rows"
+            ) {
+                onClearSelection()
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
     private var selectVisibleButton: some View {
         Button {
             onToggleVisibleSelection()
         } label: {
             Label(toggleTitle, systemImage: allVisibleSelected ? "xmark.square" : "checklist")
         }
+        .runeMinimumInteractiveTarget()
         .disabled(visibleCount == 0)
-        .help(allVisibleSelected ? "Deselect all visible pods" : "Select all visible pods")
+        .help(allVisibleSelected ? "Deselect all visible rows" : "Select all visible rows")
         .accessibilityLabel(toggleTitle)
     }
 
@@ -295,11 +358,98 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     }
 
     private var toggleTitle: String {
-        allVisibleSelected ? "Deselect All" : "Select All"
+        allVisibleSelected ? "Deselect Visible" : "Select Visible"
     }
 
     private var selectedCountText: String {
         "\(selectedCount) selected"
+    }
+}
+
+/// One stable control band shared by every resource list. The primary control
+/// keeps enough width for filtering while secondary controls own their compact
+/// overflow behavior, avoiding per-resource wrapping and table-position jumps.
+struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
+    let accessibilityLabel: String
+    @ViewBuilder let primary: Primary
+    @ViewBuilder let actions: Actions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(
+        _ accessibilityLabel: String = "Resource list controls",
+        @ViewBuilder primary: () -> Primary,
+        @ViewBuilder actions: () -> Actions
+    ) {
+        self.accessibilityLabel = accessibilityLabel
+        self.primary = primary()
+        self.actions = actions()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            inlineLayout
+            compactLayout
+        }
+        .controlSize(dynamicTypeSize.isAccessibilitySize ? .regular : .small)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: minimumHeight,
+            alignment: .leading
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier("resource-list-toolbar")
+    }
+
+    private var inlineLayout: some View {
+        HStack(alignment: .center, spacing: RuneUILayoutMetrics.contentControlSpacing) {
+            primary
+                .frame(
+                    width: RuneUILayoutMetrics.resourceFilterControlsMaximumWidth,
+                    alignment: .leading
+                )
+
+            actionsRail
+                .frame(
+                    minWidth: RuneUILayoutMetrics.resourceListActionsRailMinimumWidth,
+                    maxWidth: .infinity,
+                    minHeight: minimumHeight,
+                    alignment: .leading
+                )
+        }
+        .frame(minHeight: minimumHeight)
+    }
+
+    private var compactLayout: some View {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.resourceListCompactRowSpacing) {
+            primary
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actionsRail
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: minimumHeight,
+                    alignment: .leading
+                )
+        }
+    }
+
+    /// `EmptyView` deliberately has no layout footprint. Keep a transparent,
+    /// non-interactive rail behind the contextual actions so resource families
+    /// without actions still use the same grid and compact breakpoint.
+    private var actionsRail: some View {
+        ZStack(alignment: .leading) {
+            Color.clear
+                .frame(height: minimumHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            actions
+        }
+    }
+
+    private var minimumHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight
+            : RuneUILayoutMetrics.resourceListToolbarMinimumHeight
     }
 }
 

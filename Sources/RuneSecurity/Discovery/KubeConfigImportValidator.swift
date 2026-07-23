@@ -185,11 +185,18 @@ public struct KubeConfigImportValidator: Sendable {
         }
         var previews: [KubeConfigImportContextPreview] = []
         previews.reserveCapacity(parsed.contexts.count)
-        let nativelyHandledExecContexts = Set(
-            (try? KubeConfigNativeAuthAnalyzer().analyze(raw: raw).contexts.compactMap { descriptor in
-                descriptor.credentialRequest == nil ? nil : descriptor.contextName
-            }) ?? []
-        )
+        let nativelyHandledExecContexts: Set<String>
+        if parsed.users.contains(where: { $0.execCommand != nil }) {
+            nativelyHandledExecContexts = Set(
+                (try? KubeConfigNativeAuthAnalyzer().analyze(raw: raw).contexts.compactMap { descriptor in
+                    descriptor.credentialRequest == nil ? nil : descriptor.contextName
+                }) ?? []
+            )
+        } else {
+            // Native-exec classification reparses the kubeconfig. Token, certificate,
+            // and auth-provider-only files cannot need its missing-command exception.
+            nativelyHandledExecContexts = []
+        }
 
         for context in parsed.contexts {
             let cluster = context.clusterName.flatMap { clustersByName[$0] }

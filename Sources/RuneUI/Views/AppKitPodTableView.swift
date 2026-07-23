@@ -10,31 +10,27 @@ fileprivate func copyLabelSelector(_ selector: [String: String]) -> String {
 }
 
 enum RuneAppKitResourceListLayout {
-    static let sortIndicatorReservedWidth: CGFloat = 22
-    static let sortIndicatorSize = NSSize(width: 8, height: 8)
-    static let resourceMaximumContentWidth: CGFloat = 860
+    static let sortIndicatorTrailingInset: CGFloat = 10
+    static let sortIndicatorResizeSafetyGap: CGFloat = 3
+    static let sortIndicatorSize = NSSize(width: 10, height: 8)
+    static let sortIndicatorReservedWidth: CGFloat = sortIndicatorTrailingInset + sortIndicatorSize.width + 4
+    static let viewportTrailingPadding: CGFloat = 18
     static let deploymentReplicaColumnWidth: CGFloat = 88
     static let deploymentFavoriteColumnWidth: CGFloat = PodTableLayout.favoriteColumnWidth
     static let deploymentMinimumNameColumnWidth: CGFloat = 260
-    static let deploymentTrailingBreathingRoom: CGFloat = 14
-    static let deploymentMaximumContentWidth: CGFloat = 620
     static let serviceTypeColumnWidth: CGFloat = 140
     static let serviceClusterIPColumnWidth: CGFloat = 172
     static let serviceFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let serviceMinimumNameColumnWidth: CGFloat = 260
-    static let serviceTrailingBreathingRoom: CGFloat = 14
-    static let serviceMaximumContentWidth: CGFloat = 740
     static let genericSelectionColumnWidth = PodTableLayout.selectionColumnWidth
     static let genericPrimaryColumnWidth: CGFloat = 136
     static let genericSecondaryColumnWidth: CGFloat = 152
     static let genericNamespaceColumnWidth: CGFloat = 124
-    static let genericPrimaryMinimumColumnWidth: CGFloat = 96
-    static let genericSecondaryMinimumColumnWidth: CGFloat = 72
-    static let genericNamespaceMinimumColumnWidth: CGFloat = 104
+    static let genericPrimaryMinimumColumnWidth: CGFloat = 128
+    static let genericSecondaryMinimumColumnWidth: CGFloat = 128
+    static let genericNamespaceMinimumColumnWidth: CGFloat = 120
     static let genericFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let genericMinimumNameColumnWidth: CGFloat = 300
-    static let genericTrailingBreathingRoom: CGFloat = 14
-    static let genericMaximumContentWidth: CGFloat = 820
     static let helmStatusColumnWidth: CGFloat = 100
     static let helmNamespaceColumnWidth: CGFloat = 150
     static let helmRevisionColumnWidth: CGFloat = 76
@@ -46,8 +42,6 @@ enum RuneAppKitResourceListLayout {
     static let helmChartMinimumColumnWidth: CGFloat = 112
     static let helmAppVersionMinimumColumnWidth: CGFloat = 80
     static let helmMinimumNameColumnWidth: CGFloat = 300
-    static let helmTrailingBreathingRoom: CGFloat = 14
-    static let helmMaximumContentWidth: CGFloat = 980
     static let eventTypeColumnWidth: CGFloat = 108
     static let eventObjectColumnWidth: CGFloat = 210
     static let eventNamespaceColumnWidth: CGFloat = 132
@@ -59,8 +53,6 @@ enum RuneAppKitResourceListLayout {
     static let eventLastSeenMinimumColumnWidth: CGFloat = 120
     static let eventMessageMinimumColumnWidth: CGFloat = 160
     static let eventMinimumReasonColumnWidth: CGFloat = 180
-    static let eventTrailingBreathingRoom: CGFloat = 14
-    static let eventMaximumContentWidth: CGFloat = 1_080
     static let operatorFavoriteColumnWidth = PodTableLayout.favoriteColumnWidth
     static let operatorFamilyColumnWidth: CGFloat = 132
     static let operatorKindColumnWidth: CGFloat = 150
@@ -74,132 +66,413 @@ enum RuneAppKitResourceListLayout {
     static let operatorStatusMinimumColumnWidth: CGFloat = 90
     static let operatorAPIPathMinimumColumnWidth: CGFloat = 150
     static let operatorMinimumNameColumnWidth: CGFloat = 240
-    static let operatorTrailingBreathingRoom: CGFloat = 14
-    static let operatorMaximumContentWidth: CGFloat = 1_080
+
+    private struct ColumnRule {
+        let minimum: CGFloat
+        let ideal: CGFloat
+        let maximum: CGFloat
+        let growthWeight: CGFloat
+
+        init(minimum: CGFloat, ideal: CGFloat, maximum: CGFloat, growthWeight: CGFloat) {
+            self.minimum = minimum
+            self.ideal = max(minimum, ideal)
+            self.maximum = max(self.ideal, maximum)
+            self.growthWeight = max(0, growthWeight)
+        }
+
+        static func fixed(_ width: CGFloat) -> ColumnRule {
+            ColumnRule(minimum: width, ideal: width, maximum: width, growthWeight: 0)
+        }
+    }
+
+    static func availableColumnWidth(visibleWidth: CGFloat) -> CGFloat {
+        max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - viewportTrailingPadding)
+    }
+
+    static func viewportFillingFlexibleWidth(
+        baseWidth: CGFloat,
+        occupiedWidth: CGFloat,
+        visibleWidth: CGFloat,
+        minimumWidth: CGFloat,
+        maximumWidth: CGFloat
+    ) -> CGFloat {
+        let residualFillWidth = availableColumnWidth(visibleWidth: visibleWidth) - occupiedWidth
+        return min(max(max(baseWidth, residualFillWidth), minimumWidth), maximumWidth)
+    }
+
+    static func sortIndicatorRect(in columnRect: NSRect) -> NSRect {
+        NSRect(
+            x: columnRect.maxX - sortIndicatorTrailingInset - sortIndicatorSize.width,
+            y: columnRect.midY - (sortIndicatorSize.height / 2),
+            width: sortIndicatorSize.width,
+            height: sortIndicatorSize.height
+        )
+    }
+
+    private static func solveColumnWidths(visibleWidth: CGFloat, rules: [ColumnRule]) -> [CGFloat] {
+        let targetWidth = availableColumnWidth(visibleWidth: visibleWidth)
+        var widths: [CGFloat] = []
+        widths.reserveCapacity(rules.count)
+        var minimumWidth: CGFloat = 0
+        for rule in rules {
+            widths.append(rule.minimum)
+            minimumWidth += rule.minimum
+        }
+        guard targetWidth > minimumWidth else { return widths }
+
+        var remaining = targetWidth - minimumWidth
+        var idealGrowthTotal: CGFloat = 0
+        for index in rules.indices {
+            idealGrowthTotal += max(0, rules[index].ideal - widths[index])
+        }
+        if idealGrowthTotal > 0 {
+            let budget = min(remaining, idealGrowthTotal)
+            for index in rules.indices {
+                let idealGrowth = max(0, rules[index].ideal - widths[index])
+                if idealGrowth > 0 {
+                    widths[index] += budget * (idealGrowth / idealGrowthTotal)
+                }
+            }
+            remaining -= budget
+        }
+
+        while remaining > 0.01 {
+            var totalWeight: CGFloat = 0
+            for index in rules.indices
+            where rules[index].growthWeight > 0 && widths[index] < rules[index].maximum - 0.01 {
+                totalWeight += rules[index].growthWeight
+            }
+            guard totalWeight > 0 else { break }
+
+            var consumed: CGFloat = 0
+            for index in rules.indices
+            where rules[index].growthWeight > 0 && widths[index] < rules[index].maximum - 0.01 {
+                let requested = remaining * (rules[index].growthWeight / totalWeight)
+                let growth = min(requested, rules[index].maximum - widths[index])
+                widths[index] += growth
+                consumed += growth
+            }
+            guard consumed > 0.01 else { break }
+            remaining -= consumed
+        }
+
+        return widths
+    }
 
     static func minimumHeaderColumnWidth(title: String, reservesSortIndicator: Bool) -> CGFloat {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
-        let trailingWidth: CGFloat = reservesSortIndicator ? sortIndicatorReservedWidth : 6
-        return ceil(textWidth + 8 + trailingWidth)
+        let contentInset: CGFloat = 10
+        let trailingWidth = reservesSortIndicator
+            ? sortIndicatorSize.width + 4
+            : 0
+        // Reserve the same chrome on both sides. This keeps centered labels optically
+        // centered and prevents a hover/active chevron from truncating short headers.
+        return ceil(textWidth + ((contentInset + trailingWidth) * 2))
+    }
+
+    private static let podHeaderMinimums = (
+        cpu: minimumHeaderColumnWidth(title: "CPU", reservesSortIndicator: true),
+        memory: minimumHeaderColumnWidth(title: "MEM", reservesSortIndicator: true),
+        restarts: minimumHeaderColumnWidth(title: "Restarts", reservesSortIndicator: true),
+        age: minimumHeaderColumnWidth(title: "Age", reservesSortIndicator: true),
+        status: minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true)
+    )
+    private static let helmHeaderMinimums = (
+        status: minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true),
+        namespace: minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true),
+        revision: minimumHeaderColumnWidth(title: "Rev", reservesSortIndicator: true),
+        chart: minimumHeaderColumnWidth(title: "Chart", reservesSortIndicator: true),
+        appVersion: minimumHeaderColumnWidth(title: "App", reservesSortIndicator: true)
+    )
+    private static let eventHeaderMinimums = (
+        type: minimumHeaderColumnWidth(title: "Type", reservesSortIndicator: true),
+        object: minimumHeaderColumnWidth(title: "Object", reservesSortIndicator: true),
+        namespace: minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true),
+        lastSeen: minimumHeaderColumnWidth(title: "Last Seen", reservesSortIndicator: true),
+        message: minimumHeaderColumnWidth(title: "Message", reservesSortIndicator: false)
+    )
+    private static let operatorHeaderMinimums = (
+        family: minimumHeaderColumnWidth(title: "Family", reservesSortIndicator: true),
+        kind: minimumHeaderColumnWidth(title: "Kind", reservesSortIndicator: true),
+        namespace: minimumHeaderColumnWidth(title: "Namespace", reservesSortIndicator: true),
+        status: minimumHeaderColumnWidth(title: "Status", reservesSortIndicator: true),
+        printerColumns: minimumHeaderColumnWidth(title: "Columns", reservesSortIndicator: false),
+        apiPath: minimumHeaderColumnWidth(title: "API Path", reservesSortIndicator: true)
+    )
+    private static let deploymentColumnRules: [ColumnRule] = [
+        ColumnRule(minimum: deploymentMinimumNameColumnWidth, ideal: 360, maximum: 10_000, growthWeight: 3),
+        ColumnRule(minimum: deploymentReplicaColumnWidth, ideal: deploymentReplicaColumnWidth, maximum: 180, growthWeight: 1),
+        .fixed(deploymentFavoriteColumnWidth)
+    ]
+    private static let serviceColumnRules: [ColumnRule] = [
+        ColumnRule(minimum: serviceMinimumNameColumnWidth, ideal: 360, maximum: 10_000, growthWeight: 2.6),
+        ColumnRule(minimum: serviceTypeColumnWidth, ideal: serviceTypeColumnWidth, maximum: 220, growthWeight: 1),
+        ColumnRule(minimum: serviceClusterIPColumnWidth, ideal: serviceClusterIPColumnWidth, maximum: 260, growthWeight: 1.2),
+        .fixed(serviceFavoriteColumnWidth)
+    ]
+    private static let genericColumnRules: [ColumnRule] = [
+        .fixed(genericSelectionColumnWidth),
+        ColumnRule(minimum: genericMinimumNameColumnWidth, ideal: 380, maximum: 10_000, growthWeight: 2.8),
+        ColumnRule(minimum: genericPrimaryMinimumColumnWidth, ideal: genericPrimaryColumnWidth, maximum: 260, growthWeight: 1.1),
+        ColumnRule(minimum: genericSecondaryMinimumColumnWidth, ideal: genericSecondaryColumnWidth, maximum: 360, growthWeight: 1.3),
+        ColumnRule(minimum: genericNamespaceMinimumColumnWidth, ideal: genericNamespaceColumnWidth, maximum: 280, growthWeight: 1.1),
+        .fixed(genericFavoriteColumnWidth)
+    ]
+    private static let helmColumnRules: [ColumnRule] = [
+        ColumnRule(minimum: helmMinimumNameColumnWidth, ideal: 380, maximum: 10_000, growthWeight: 2.4),
+        ColumnRule(minimum: max(helmStatusMinimumColumnWidth, helmHeaderMinimums.status), ideal: helmStatusColumnWidth, maximum: 220, growthWeight: 0.9),
+        ColumnRule(minimum: max(helmNamespaceMinimumColumnWidth, helmHeaderMinimums.namespace), ideal: helmNamespaceColumnWidth, maximum: 280, growthWeight: 1.1),
+        ColumnRule(minimum: max(helmRevisionMinimumColumnWidth, helmHeaderMinimums.revision), ideal: helmRevisionColumnWidth, maximum: 150, growthWeight: 0.6),
+        ColumnRule(minimum: max(helmChartMinimumColumnWidth, helmHeaderMinimums.chart), ideal: helmChartColumnWidth, maximum: 420, growthWeight: 1.7),
+        ColumnRule(minimum: max(helmAppVersionMinimumColumnWidth, helmHeaderMinimums.appVersion), ideal: helmAppVersionColumnWidth, maximum: 240, growthWeight: 1)
+    ]
+    private static let eventColumnRules: [ColumnRule] = [
+        ColumnRule(minimum: eventMinimumReasonColumnWidth, ideal: 240, maximum: 10_000, growthWeight: 1.5),
+        ColumnRule(minimum: max(eventTypeMinimumColumnWidth, eventHeaderMinimums.type), ideal: eventTypeColumnWidth, maximum: 220, growthWeight: 0.8),
+        ColumnRule(minimum: max(eventObjectMinimumColumnWidth, eventHeaderMinimums.object), ideal: eventObjectColumnWidth, maximum: 420, growthWeight: 1.4),
+        ColumnRule(minimum: max(eventNamespaceMinimumColumnWidth, eventHeaderMinimums.namespace), ideal: eventNamespaceColumnWidth, maximum: 280, growthWeight: 1),
+        ColumnRule(minimum: max(eventLastSeenMinimumColumnWidth, eventHeaderMinimums.lastSeen), ideal: eventLastSeenColumnWidth, maximum: 320, growthWeight: 1.1),
+        ColumnRule(minimum: max(eventMessageMinimumColumnWidth, eventHeaderMinimums.message), ideal: eventMessageColumnWidth, maximum: 10_000, growthWeight: 2.2)
+    ]
+    private static let operatorColumnRules: [ColumnRule] = [
+        ColumnRule(minimum: operatorMinimumNameColumnWidth, ideal: 340, maximum: 10_000, growthWeight: 2.2),
+        ColumnRule(minimum: max(operatorFamilyMinimumColumnWidth, operatorHeaderMinimums.family), ideal: operatorFamilyColumnWidth, maximum: 280, growthWeight: 1),
+        ColumnRule(minimum: max(operatorKindMinimumColumnWidth, operatorHeaderMinimums.kind), ideal: operatorKindColumnWidth, maximum: 300, growthWeight: 1.1),
+        ColumnRule(minimum: max(operatorNamespaceMinimumColumnWidth, operatorHeaderMinimums.namespace), ideal: operatorNamespaceColumnWidth, maximum: 280, growthWeight: 1),
+        ColumnRule(minimum: max(operatorStatusMinimumColumnWidth, operatorHeaderMinimums.status), ideal: operatorStatusColumnWidth, maximum: 260, growthWeight: 0.9),
+        ColumnRule(minimum: max(120, operatorHeaderMinimums.printerColumns), ideal: operatorPrinterColumnsColumnWidth, maximum: 360, growthWeight: 1.3),
+        ColumnRule(minimum: max(operatorAPIPathMinimumColumnWidth, operatorHeaderMinimums.apiPath), ideal: operatorAPIPathColumnWidth, maximum: 10_000, growthWeight: 2),
+        .fixed(operatorFavoriteColumnWidth)
+    ]
+
+    static func podColumnWidths(
+        visibleWidth: CGFloat,
+        minimumNameWidth: CGFloat
+    ) -> (
+        selection: CGFloat,
+        name: CGFloat,
+        cpu: CGFloat,
+        memory: CGFloat,
+        restarts: CGFloat,
+        age: CGFloat,
+        status: CGFloat,
+        favorite: CGFloat
+    ) {
+        let cpuMinimum = max(
+            PodTableLayout.cpuWidth,
+            podHeaderMinimums.cpu
+        )
+        let memoryMinimum = max(
+            PodTableLayout.memoryWidth,
+            podHeaderMinimums.memory
+        )
+        let restartsMinimum = max(
+            PodTableLayout.restartsWidth,
+            podHeaderMinimums.restarts
+        )
+        let ageMinimum = max(
+            PodTableLayout.ageWidth,
+            podHeaderMinimums.age
+        )
+        let statusMinimum = max(
+            PodTableLayout.statusTotalWidth,
+            podHeaderMinimums.status
+        )
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: [
+                .fixed(PodTableLayout.selectionColumnWidth),
+                ColumnRule(
+                    minimum: PodTableLayout.clampedNameColumnWidth(minimumNameWidth),
+                    ideal: 380,
+                    maximum: PodTableLayout.nameColumnMaximumWidth,
+                    growthWeight: 3
+                ),
+                ColumnRule(minimum: cpuMinimum, ideal: max(cpuMinimum, 78), maximum: 160, growthWeight: 0.7),
+                ColumnRule(minimum: memoryMinimum, ideal: max(memoryMinimum, 86), maximum: 180, growthWeight: 0.8),
+                ColumnRule(minimum: restartsMinimum, ideal: max(restartsMinimum, 108), maximum: 180, growthWeight: 0.9),
+                ColumnRule(minimum: ageMinimum, ideal: max(ageMinimum, 82), maximum: 140, growthWeight: 0.6),
+                ColumnRule(minimum: statusMinimum, ideal: max(statusMinimum, 118), maximum: 240, growthWeight: 1),
+                .fixed(PodTableLayout.favoriteColumnWidth)
+            ]
+        )
+        return (
+            selection: widths[0],
+            name: widths[1],
+            cpu: widths[2],
+            memory: widths[3],
+            restarts: widths[4],
+            age: widths[5],
+            status: widths[6],
+            favorite: widths[7]
+        )
     }
 
     static func deploymentColumnWidths(visibleWidth: CGFloat) -> (name: CGFloat, replicas: CGFloat, favorite: CGFloat) {
-        let visibleWidth = min(
-            deploymentMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - deploymentTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: deploymentColumnRules
         )
-        let fixedWidth = deploymentReplicaColumnWidth + deploymentFavoriteColumnWidth
         return (
-            name: max(deploymentMinimumNameColumnWidth, visibleWidth - fixedWidth),
-            replicas: deploymentReplicaColumnWidth,
-            favorite: deploymentFavoriteColumnWidth
+            name: widths[0],
+            replicas: widths[1],
+            favorite: widths[2]
         )
     }
 
     static func serviceColumnWidths(visibleWidth: CGFloat) -> (name: CGFloat, type: CGFloat, clusterIP: CGFloat, favorite: CGFloat) {
-        let visibleWidth = min(
-            serviceMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - serviceTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: serviceColumnRules
         )
-        let fixedWidth = serviceTypeColumnWidth + serviceClusterIPColumnWidth + serviceFavoriteColumnWidth
         return (
-            name: max(serviceMinimumNameColumnWidth, visibleWidth - fixedWidth),
-            type: serviceTypeColumnWidth,
-            clusterIP: serviceClusterIPColumnWidth,
-            favorite: serviceFavoriteColumnWidth
+            name: widths[0],
+            type: widths[1],
+            clusterIP: widths[2],
+            favorite: widths[3]
         )
     }
 
     static func genericColumnWidths(
         visibleWidth: CGFloat
     ) -> (selection: CGFloat, name: CGFloat, primary: CGFloat, secondary: CGFloat, namespace: CGFloat, favorite: CGFloat) {
-        let visibleWidth = min(
-            genericMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - genericTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: genericColumnRules
         )
-        let fixedWidth = genericSelectionColumnWidth
-            + genericPrimaryColumnWidth
-            + genericSecondaryColumnWidth
-            + genericNamespaceColumnWidth
-            + genericFavoriteColumnWidth
         return (
-            selection: genericSelectionColumnWidth,
-            name: max(genericMinimumNameColumnWidth, visibleWidth - fixedWidth),
-            primary: genericPrimaryColumnWidth,
-            secondary: genericSecondaryColumnWidth,
-            namespace: genericNamespaceColumnWidth,
-            favorite: genericFavoriteColumnWidth
+            selection: widths[0],
+            name: widths[1],
+            primary: widths[2],
+            secondary: widths[3],
+            namespace: widths[4],
+            favorite: widths[5]
         )
     }
 
     static func helmColumnWidths(
         visibleWidth: CGFloat
     ) -> (name: CGFloat, status: CGFloat, namespace: CGFloat, revision: CGFloat, chart: CGFloat, appVersion: CGFloat) {
-        let visibleWidth = min(
-            helmMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - helmTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: helmColumnRules
         )
-        let fixedWidth = helmStatusColumnWidth
-            + helmNamespaceColumnWidth
-            + helmRevisionColumnWidth
-            + helmChartColumnWidth
-            + helmAppVersionColumnWidth
         return (
-            name: max(helmMinimumNameColumnWidth, visibleWidth - fixedWidth),
-            status: helmStatusColumnWidth,
-            namespace: helmNamespaceColumnWidth,
-            revision: helmRevisionColumnWidth,
-            chart: helmChartColumnWidth,
-            appVersion: helmAppVersionColumnWidth
+            name: widths[0],
+            status: widths[1],
+            namespace: widths[2],
+            revision: widths[3],
+            chart: widths[4],
+            appVersion: widths[5]
         )
     }
 
     static func eventColumnWidths(
         visibleWidth: CGFloat
     ) -> (reason: CGFloat, type: CGFloat, object: CGFloat, namespace: CGFloat, lastSeen: CGFloat, message: CGFloat) {
-        let visibleWidth = min(
-            eventMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - eventTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: eventColumnRules
         )
-        let fixedWidth = eventTypeColumnWidth
-            + eventObjectColumnWidth
-            + eventNamespaceColumnWidth
-            + eventLastSeenColumnWidth
-            + eventMessageColumnWidth
         return (
-            reason: max(eventMinimumReasonColumnWidth, visibleWidth - fixedWidth),
-            type: eventTypeColumnWidth,
-            object: eventObjectColumnWidth,
-            namespace: eventNamespaceColumnWidth,
-            lastSeen: eventLastSeenColumnWidth,
-            message: eventMessageColumnWidth
+            reason: widths[0],
+            type: widths[1],
+            object: widths[2],
+            namespace: widths[3],
+            lastSeen: widths[4],
+            message: widths[5]
         )
     }
 
     static func operatorColumnWidths(
         visibleWidth: CGFloat
     ) -> (name: CGFloat, family: CGFloat, kind: CGFloat, namespace: CGFloat, status: CGFloat, printerColumns: CGFloat, apiPath: CGFloat, favorite: CGFloat) {
-        let visibleWidth = min(
-            operatorMaximumContentWidth,
-            max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - operatorTrailingBreathingRoom)
+        let widths = solveColumnWidths(
+            visibleWidth: visibleWidth,
+            rules: operatorColumnRules
         )
-        let fixedWidth = operatorFamilyColumnWidth
-            + operatorKindColumnWidth
-            + operatorNamespaceColumnWidth
-            + operatorStatusColumnWidth
-            + operatorPrinterColumnsColumnWidth
-            + operatorAPIPathColumnWidth
-            + operatorFavoriteColumnWidth
         return (
-            name: max(operatorMinimumNameColumnWidth, visibleWidth - fixedWidth),
-            family: operatorFamilyColumnWidth,
-            kind: operatorKindColumnWidth,
-            namespace: operatorNamespaceColumnWidth,
-            status: operatorStatusColumnWidth,
-            printerColumns: operatorPrinterColumnsColumnWidth,
-            apiPath: operatorAPIPathColumnWidth,
-            favorite: operatorFavoriteColumnWidth
+            name: widths[0],
+            family: widths[1],
+            kind: widths[2],
+            namespace: widths[3],
+            status: widths[4],
+            printerColumns: widths[5],
+            apiPath: widths[6],
+            favorite: widths[7]
+        )
+    }
+}
+
+struct RuneGenericResourceColumnPresentation {
+    let primaryTitle: String
+    let secondaryTitle: String
+    let primaryAlignment: NSTextAlignment
+    let secondaryAlignment: NSTextAlignment
+
+    static func resolve(for kind: KubeResourceKind?) -> RuneGenericResourceColumnPresentation {
+        switch kind {
+        case .statefulSet, .daemonSet, .replicaSet:
+            return presentation("Ready", "Selector", primary: .right)
+        case .job:
+            return presentation("Status", "Progress")
+        case .cronJob:
+            return presentation("Schedule", "Status")
+        case .endpoint:
+            return presentation("Ready", "Ports", primary: .right)
+        case .ingress:
+            return presentation("Host", "Backend")
+        case .configMap:
+            return presentation("Keys", "Data", primary: .right)
+        case .secret:
+            return presentation("Type", "Values", secondary: .right)
+        case .node:
+            return presentation("Status", "Version")
+        case .serviceAccount:
+            return presentation("Secrets", "Token Policy", primary: .right)
+        case .role, .clusterRole:
+            return presentation("Rules", "Scope", primary: .right)
+        case .roleBinding, .clusterRoleBinding:
+            return presentation("Role", "Subjects", secondary: .right)
+        case .persistentVolumeClaim:
+            return presentation("Status", "Volume")
+        case .persistentVolume:
+            return presentation("Status", "Capacity", secondary: .right)
+        case .storageClass:
+            return presentation("Provisioner", "Default")
+        case .horizontalPodAutoscaler:
+            return presentation("Replicas", "Target", primary: .right)
+        case .networkPolicy:
+            return presentation("Policy Types", "Pod Selector")
+        case .pod:
+            return presentation("Status", "Node")
+        case .deployment:
+            return presentation("Ready", "Status", primary: .right)
+        case .service:
+            return presentation("Type", "Cluster IP", secondary: .right)
+        case .event:
+            return presentation("Type", "Message")
+        case nil:
+            return presentation("Detail", "Info")
+        }
+    }
+
+    static func tableID(for kind: KubeResourceKind?) -> String {
+        "genericResources.\(kind?.rawValue ?? "unknown")"
+    }
+
+    private static func presentation(
+        _ primaryTitle: String,
+        _ secondaryTitle: String,
+        primary primaryAlignment: NSTextAlignment = .left,
+        secondary secondaryAlignment: NSTextAlignment = .left
+    ) -> RuneGenericResourceColumnPresentation {
+        RuneGenericResourceColumnPresentation(
+            primaryTitle: primaryTitle,
+            secondaryTitle: secondaryTitle,
+            primaryAlignment: primaryAlignment,
+            secondaryAlignment: secondaryAlignment
         )
     }
 }
@@ -265,12 +538,12 @@ func applyResourceTableSelection<Row>(
 }
 
 @MainActor
-private enum RuneAppKitResourceTableStyle {
+enum RuneAppKitResourceTableStyle {
     static let headerHeight: CGFloat = 24
     static let rowHeight: CGFloat = 34
-    static let rowGap: CGFloat = 4
-    static let rowHorizontalInset: CGFloat = 6
-    static let actionColumnTrailingPadding: CGFloat = 18
+    static let rowGap: CGFloat = 0
+    static let rowHorizontalInset: CGFloat = 0
+    static let actionColumnTrailingPadding = RuneAppKitResourceListLayout.viewportTrailingPadding
     static let contentLeadingInset: CGFloat = 10
     static let contentTrailingInset: CGFloat = 10
     static let sortIndicatorGap: CGFloat = 4
@@ -297,11 +570,17 @@ private enum RuneAppKitResourceTableStyle {
     }
 
     static func columnContentWidth(in tableView: NSTableView) -> CGFloat {
-        tableView.tableColumns.reduce(CGFloat(0)) { $0 + $1.width }
+        tableView.tableColumns.reduce(CGFloat(0)) { width, column in
+            column.isHidden ? width : width + column.width
+        }
     }
 
     static func renderedTableWidth(in tableView: NSTableView) -> CGFloat {
-        columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding
+        let minimumContentWidth = columnContentWidth(in: tableView)
+            + (rowHorizontalInset * 2)
+            + actionColumnTrailingPadding
+        let viewportWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? 0
+        return max(minimumContentWidth, viewportWidth.rounded(.toNearestOrAwayFromZero))
     }
 
     static func updateRenderedTableWidth(on tableView: NSTableView?, updatesVisibleCellsImmediately: Bool = true) {
@@ -485,6 +764,21 @@ func isSuppressedSynchronizedResourceColumnResize(_ notification: Notification) 
 }
 
 @MainActor
+private func synchronizeResourceTableSortDescriptors(
+    on tableView: NSTableView,
+    key: String,
+    ascending: Bool
+) {
+    if tableView.sortDescriptors.count == 1,
+       let current = tableView.sortDescriptors.first,
+       current.key == key,
+       current.ascending == ascending {
+        return
+    }
+    tableView.sortDescriptors = [NSSortDescriptor(key: key, ascending: ascending)]
+}
+
+@MainActor
 @discardableResult
 func applySynchronizedResourceColumnResize(
     _ proposedWidth: CGFloat,
@@ -663,9 +957,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
-                self.updateNameColumnWidthIfNeeded(on: tableView, width: self.parent.nameColumnWidth)
-                self.updateStoredColumnWidthsIfNeeded(on: tableView)
-                self.updateTableWidth(on: tableView)
+                self.updateColumnWidths(on: tableView)
                 tableView.reloadData()
                 self.applySelection(on: tableView)
                 self.updateSortIndicator(on: tableView)
@@ -905,53 +1197,15 @@ struct AppKitPodTableView: NSViewRepresentable {
             }
         }
 
-        private func updateNameColumnWidthIfNeeded(on tableView: NSTableView, width: CGFloat) {
-            guard let column = tableView.tableColumns.first(where: { $0.identifier.rawValue == PodColumn.name.rawValue }) else { return }
-            let clamped = PodTableLayout.clampedNameColumnWidth(
-                RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: PodColumn.name.rawValue) ?? width
-            )
-            column.minWidth = PodTableLayout.nameColumnMinimumWidth
-            column.maxWidth = PodTableLayout.nameColumnMaximumWidth
-            if abs(column.width - clamped) >= 1 {
-                column.width = clamped
-            }
-        }
-
         func resetColumnWidth(_ columnID: String) {
             guard let columnKind = PodColumn(rawValue: columnID) else { return }
             RuneAppKitColumnWidthStore.shared.removeWidth(tableID: tableID, columnID: columnID)
-            guard columnKind == .name else {
-                guard let tableView,
-                      let tableColumn = tableView.tableColumns.first(where: { $0.identifier.rawValue == columnID }) else { return }
-                let width = columnKind.width(nameColumnWidth: PodTableLayout.nameColumnDefaultWidth)
-                tableColumn.width = width
-                updateTableWidth(on: tableView)
-                return
-            }
-
-            nameColumnPersistWorkItem?.cancel()
-            guard let tableView,
-                  let column = tableView.tableColumns.first(where: { $0.identifier.rawValue == PodColumn.name.rawValue }) else {
+            if columnKind == .name {
+                nameColumnPersistWorkItem?.cancel()
                 parent.onNameColumnWidthChanged(PodTableLayout.nameColumnDefaultWidth)
-                return
             }
-            let width = PodTableLayout.nameColumnDefaultWidth
-            column.width = width
-            updateTableWidth(on: tableView)
-            parent.onNameColumnWidthChanged(width)
-        }
-
-        private func updateStoredColumnWidthsIfNeeded(on tableView: NSTableView) {
-            for tableColumn in tableView.tableColumns {
-                guard tableColumn.identifier.rawValue != PodColumn.name.rawValue,
-                      let column = PodColumn(rawValue: tableColumn.identifier.rawValue),
-                      column.isUserResizable,
-                      let width = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: column.rawValue) else { continue }
-                let clamped = min(max(width, tableColumn.minWidth), tableColumn.maxWidth)
-                if abs(tableColumn.width - clamped) >= 1 {
-                    tableColumn.width = clamped
-                }
-            }
+            guard let tableView else { return }
+            updateColumnWidths(on: tableView)
         }
 
         private func updateTableWidth(on tableView: NSTableView?) {
@@ -959,6 +1213,62 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         func updateTableGeometry() {
+            guard let tableView else { return }
+            updateColumnWidths(on: tableView)
+        }
+
+        private func updateColumnWidths(on tableView: NSTableView) {
+            let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
+            let widths = RuneAppKitResourceListLayout.podColumnWidths(
+                visibleWidth: visibleWidth,
+                minimumNameWidth: parent.nameColumnWidth
+            )
+            var projected: [PodColumn: CGFloat] = [
+                .selection: widths.selection,
+                .name: widths.name,
+                .cpu: widths.cpu,
+                .memory: widths.memory,
+                .restarts: widths.restarts,
+                .age: widths.age,
+                .status: widths.status,
+                .favorite: widths.favorite
+            ]
+
+            for column in PodColumn.allCases where column.isUserResizable {
+                guard projected[column] != nil,
+                      let storedWidth = RuneAppKitColumnWidthStore.shared.width(
+                          tableID: tableID,
+                          columnID: column.rawValue
+                      ) else { continue }
+                projected[column] = min(
+                    max(storedWidth, column.minimumWidth),
+                    column.maximumWidth
+                )
+            }
+            let occupiedWidth = projected.reduce(CGFloat(0)) { partialResult, element in
+                element.key == .name ? partialResult : partialResult + element.value
+            }
+            projected[.name] = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: projected[.name] ?? widths.name,
+                occupiedWidth: occupiedWidth,
+                visibleWidth: visibleWidth,
+                minimumWidth: PodColumn.name.minimumWidth,
+                maximumWidth: PodColumn.name.maximumWidth
+            )
+
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = PodColumn(rawValue: tableColumn.identifier.rawValue),
+                          let projectedWidth = projected[column] else { continue }
+                    let width = min(
+                        max(projectedWidth, tableColumn.minWidth),
+                        tableColumn.maxWidth
+                    )
+                    if abs(tableColumn.width - width) >= 1 {
+                        tableColumn.width = width
+                    }
+                }
+            }
             updateTableWidth(on: tableView)
         }
 
@@ -969,6 +1279,11 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         private func updateSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = PodColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -1330,10 +1645,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.deploymentMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.deploymentTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             let storedReplicas = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: DeploymentColumn.replicas.rawValue)
             let replicasWidth = min(max(storedReplicas ?? widths.replicas, DeploymentColumn.replicas.minimumWidth), DeploymentColumn.replicas.maximumWidth)
             let dynamicNameWidth = max(
@@ -1341,13 +1653,21 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                 projectedWidth - replicasWidth - widths.favorite
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: DeploymentColumn.name.rawValue)
-            let nameWidth = min(max(storedName ?? dynamicNameWidth, DeploymentColumn.name.minimumWidth), DeploymentColumn.name.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .name: tableColumn.width = nameWidth
-                case .replicas: tableColumn.width = replicasWidth
-                case .favorite: tableColumn.width = widths.favorite
+            let nameWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedName ?? dynamicNameWidth,
+                occupiedWidth: replicasWidth + widths.favorite,
+                visibleWidth: visibleWidth,
+                minimumWidth: DeploymentColumn.name.minimumWidth,
+                maximumWidth: DeploymentColumn.name.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .name: tableColumn.width = nameWidth
+                    case .replicas: tableColumn.width = replicasWidth
+                    case .favorite: tableColumn.width = widths.favorite
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -1363,6 +1683,11 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         private func updateDeploymentSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -1652,10 +1977,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.serviceMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.serviceTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             let storedType = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: ServiceColumn.type.rawValue)
             let typeWidth = min(max(storedType ?? widths.type, ServiceColumn.type.minimumWidth), ServiceColumn.type.maximumWidth)
             let storedClusterIP = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: ServiceColumn.clusterIP.rawValue)
@@ -1665,14 +1987,22 @@ struct AppKitServiceListView: NSViewRepresentable {
                 projectedWidth - typeWidth - clusterIPWidth - widths.favorite
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: ServiceColumn.name.rawValue)
-            let nameWidth = min(max(storedName ?? dynamicNameWidth, ServiceColumn.name.minimumWidth), ServiceColumn.name.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .name: tableColumn.width = nameWidth
-                case .type: tableColumn.width = typeWidth
-                case .clusterIP: tableColumn.width = clusterIPWidth
-                case .favorite: tableColumn.width = widths.favorite
+            let nameWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedName ?? dynamicNameWidth,
+                occupiedWidth: typeWidth + clusterIPWidth + widths.favorite,
+                visibleWidth: visibleWidth,
+                minimumWidth: ServiceColumn.name.minimumWidth,
+                maximumWidth: ServiceColumn.name.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .name: tableColumn.width = nameWidth
+                    case .type: tableColumn.width = typeWidth
+                    case .clusterIP: tableColumn.width = clusterIPWidth
+                    case .favorite: tableColumn.width = widths.favorite
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -1688,6 +2018,11 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         private func updateServiceSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -1730,6 +2065,7 @@ struct AppKitServiceListView: NSViewRepresentable {
 }
 
 struct AppKitGenericResourceListView: NSViewRepresentable {
+    var kind: KubeResourceKind? = nil
     let resources: [ClusterResourceSummary]
     let selectedResourceID: String?
     let selectedResourceIDs: Set<String>
@@ -1746,6 +2082,14 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     let onDelete: (ClusterResourceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
 
+    var resolvedResourceKind: KubeResourceKind? {
+        kind ?? resources.first?.kind
+    }
+
+    var columnPresentation: RuneGenericResourceColumnPresentation {
+        RuneGenericResourceColumnPresentation.resolve(for: resolvedResourceKind)
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -1754,7 +2098,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         let scrollView = RuneAppKitResourceTableHost.make(
             coordinator: context.coordinator,
             resolvedTheme: resolvedTheme,
-            columns: GenericResourceColumn.allCases.map { $0.tableColumn() },
+            columns: GenericResourceColumn.allCases.map { $0.tableColumn(presentation: columnPresentation) },
             resizableColumnIdentifiers: Set(GenericResourceColumn.allCases.filter(\.isUserResizable).map(\.rawValue)),
             onResetColumn: { [weak coordinator = context.coordinator] in coordinator?.resetColumnWidth($0) },
             onColumnResize: { [weak coordinator = context.coordinator] in coordinator?.tableViewColumnDidResize($0) },
@@ -1789,7 +2133,9 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
-        private let tableID = "genericResources"
+        private var tableID: String {
+            RuneGenericResourceColumnPresentation.tableID(for: parent.resolvedResourceKind)
+        }
 
         init(_ parent: AppKitGenericResourceListView) {
             self.parent = parent
@@ -1803,10 +2149,10 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                self.updateGenericSortIndicator(on: tableView)
                 self.updateColumnWidths(on: tableView)
                 tableView.reloadData()
                 self.applySelection(on: tableView)
-                self.updateGenericSortIndicator(on: tableView)
             }
         }
 
@@ -1848,9 +2194,19 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .primary:
-                return RuneAppKitCenteredLabelCell(text: resource.primaryText, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), alignment: .right, tooltip: resource.primaryText)
+                return RuneAppKitCenteredLabelCell(
+                    text: resource.primaryText,
+                    font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                    alignment: parent.columnPresentation.primaryAlignment,
+                    tooltip: resource.primaryText
+                )
             case .secondary:
-                return RuneAppKitCenteredLabelCell(text: resource.secondaryText, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular), alignment: .left, tooltip: resource.secondaryText)
+                return RuneAppKitCenteredLabelCell(
+                    text: resource.secondaryText,
+                    font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                    alignment: parent.columnPresentation.secondaryAlignment,
+                    tooltip: resource.secondaryText
+                )
             case .namespace:
                 return RuneAppKitCenteredLabelCell(text: resource.namespace ?? "Cluster", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular), alignment: .left, tooltip: resource.namespace ?? "Cluster scoped")
             case .favorite:
@@ -2004,31 +2360,46 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.genericMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.genericTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
+            let presentation = parent.columnPresentation
             let storedPrimary = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: GenericResourceColumn.primary.rawValue)
-            let primaryWidth = min(max(storedPrimary ?? widths.primary, GenericResourceColumn.primary.minimumWidth), GenericResourceColumn.primary.maximumWidth)
+            let primaryWidth = min(
+                max(storedPrimary ?? widths.primary, GenericResourceColumn.primary.minimumWidth(presentation: presentation)),
+                GenericResourceColumn.primary.maximumWidth
+            )
             let storedSecondary = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: GenericResourceColumn.secondary.rawValue)
-            let secondaryWidth = min(max(storedSecondary ?? widths.secondary, GenericResourceColumn.secondary.minimumWidth), GenericResourceColumn.secondary.maximumWidth)
+            let secondaryWidth = min(
+                max(storedSecondary ?? widths.secondary, GenericResourceColumn.secondary.minimumWidth(presentation: presentation)),
+                GenericResourceColumn.secondary.maximumWidth
+            )
             let storedNamespace = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: GenericResourceColumn.namespace.rawValue)
-            let namespaceWidth = min(max(storedNamespace ?? widths.namespace, GenericResourceColumn.namespace.minimumWidth), GenericResourceColumn.namespace.maximumWidth)
+            let namespaceWidth = min(
+                max(storedNamespace ?? widths.namespace, GenericResourceColumn.namespace.minimumWidth(presentation: presentation)),
+                GenericResourceColumn.namespace.maximumWidth
+            )
             let dynamicNameWidth = max(
                 RuneAppKitResourceListLayout.genericMinimumNameColumnWidth,
                 projectedWidth - widths.selection - primaryWidth - secondaryWidth - namespaceWidth - widths.favorite
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: GenericResourceColumn.name.rawValue)
-            let nameWidth = min(max(storedName ?? dynamicNameWidth, GenericResourceColumn.name.minimumWidth), GenericResourceColumn.name.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .selection: tableColumn.width = widths.selection
-                case .name: tableColumn.width = nameWidth
-                case .primary: tableColumn.width = primaryWidth
-                case .secondary: tableColumn.width = secondaryWidth
-                case .namespace: tableColumn.width = namespaceWidth
-                case .favorite: tableColumn.width = widths.favorite
+            let nameWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedName ?? dynamicNameWidth,
+                occupiedWidth: widths.selection + primaryWidth + secondaryWidth + namespaceWidth + widths.favorite,
+                visibleWidth: visibleWidth,
+                minimumWidth: GenericResourceColumn.name.minimumWidth(presentation: presentation),
+                maximumWidth: GenericResourceColumn.name.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .selection: tableColumn.width = widths.selection
+                    case .name: tableColumn.width = nameWidth
+                    case .primary: tableColumn.width = primaryWidth
+                    case .secondary: tableColumn.width = secondaryWidth
+                    case .namespace: tableColumn.width = namespaceWidth
+                    case .favorite: tableColumn.width = widths.favorite
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -2044,14 +2415,25 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         private func updateGenericSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
+            let presentation = parent.columnPresentation
             for tableColumn in tableView.tableColumns {
                 guard let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                let title = column.title(presentation: presentation)
+                tableColumn.title = title
+                tableColumn.headerToolTip = column.headerToolTip(presentation: presentation)
+                tableColumn.minWidth = column.minimumWidth(presentation: presentation)
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
                     headerCell.configure(
-                        title: column.title,
+                        title: title,
                         isSorted: column.sortColumn == parent.sortColumn,
                         ascending: parent.sortAscending,
-                        reservesSortIndicator: column.sortColumn != nil
+                        reservesSortIndicator: column.sortColumn != nil,
+                        alignment: column.alignment(presentation: presentation)
                     )
                 }
                 if column.sortColumn == parent.sortColumn {
@@ -2288,10 +2670,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.helmMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.helmTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             let storedStatus = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: HelmReleaseColumn.status.rawValue)
             let statusWidth = min(max(storedStatus ?? widths.status, HelmReleaseColumn.status.minimumWidth), HelmReleaseColumn.status.maximumWidth)
             let storedNamespace = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: HelmReleaseColumn.namespace.rawValue)
@@ -2307,16 +2686,24 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                 projectedWidth - statusWidth - namespaceWidth - revisionWidth - chartWidth - appVersionWidth
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: HelmReleaseColumn.name.rawValue)
-            let nameWidth = min(max(storedName ?? dynamicNameWidth, HelmReleaseColumn.name.minimumWidth), HelmReleaseColumn.name.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .name: tableColumn.width = nameWidth
-                case .status: tableColumn.width = statusWidth
-                case .namespace: tableColumn.width = namespaceWidth
-                case .revision: tableColumn.width = revisionWidth
-                case .chart: tableColumn.width = chartWidth
-                case .appVersion: tableColumn.width = appVersionWidth
+            let nameWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedName ?? dynamicNameWidth,
+                occupiedWidth: statusWidth + namespaceWidth + revisionWidth + chartWidth + appVersionWidth,
+                visibleWidth: visibleWidth,
+                minimumWidth: HelmReleaseColumn.name.minimumWidth,
+                maximumWidth: HelmReleaseColumn.name.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .name: tableColumn.width = nameWidth
+                    case .status: tableColumn.width = statusWidth
+                    case .namespace: tableColumn.width = namespaceWidth
+                    case .revision: tableColumn.width = revisionWidth
+                    case .chart: tableColumn.width = chartWidth
+                    case .appVersion: tableColumn.width = appVersionWidth
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -2332,6 +2719,11 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         private func updateHelmSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -2609,10 +3001,7 @@ struct AppKitEventListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.eventMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.eventTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             let storedType = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: EventColumn.type.rawValue)
             let typeWidth = min(max(storedType ?? widths.type, EventColumn.type.minimumWidth), EventColumn.type.maximumWidth)
             let storedObject = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: EventColumn.object.rawValue)
@@ -2628,16 +3017,24 @@ struct AppKitEventListView: NSViewRepresentable {
                 projectedWidth - typeWidth - objectWidth - namespaceWidth - lastSeenWidth - messageWidth
             )
             let storedReason = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: EventColumn.reason.rawValue)
-            let reasonWidth = min(max(storedReason ?? dynamicReasonWidth, EventColumn.reason.minimumWidth), EventColumn.reason.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = EventColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .reason: tableColumn.width = reasonWidth
-                case .type: tableColumn.width = typeWidth
-                case .object: tableColumn.width = objectWidth
-                case .namespace: tableColumn.width = namespaceWidth
-                case .lastSeen: tableColumn.width = lastSeenWidth
-                case .message: tableColumn.width = messageWidth
+            let reasonWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedReason ?? dynamicReasonWidth,
+                occupiedWidth: typeWidth + objectWidth + namespaceWidth + lastSeenWidth + messageWidth,
+                visibleWidth: visibleWidth,
+                minimumWidth: EventColumn.reason.minimumWidth,
+                maximumWidth: EventColumn.reason.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = EventColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .reason: tableColumn.width = reasonWidth
+                    case .type: tableColumn.width = typeWidth
+                    case .object: tableColumn.width = objectWidth
+                    case .namespace: tableColumn.width = namespaceWidth
+                    case .lastSeen: tableColumn.width = lastSeenWidth
+                    case .message: tableColumn.width = messageWidth
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -2653,6 +3050,11 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         private func updateEventSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = EventColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -2975,10 +3377,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         private func updateColumnWidths(on tableView: NSTableView) {
             let visibleWidth = tableView.enclosingScrollView?.contentView.bounds.width ?? tableView.bounds.width
             let widths = RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)
-            let projectedWidth = min(
-                RuneAppKitResourceListLayout.operatorMaximumContentWidth,
-                max(0, visibleWidth.rounded(.toNearestOrAwayFromZero) - RuneAppKitResourceListLayout.operatorTrailingBreathingRoom)
-            )
+            let projectedWidth = RuneAppKitResourceListLayout.availableColumnWidth(visibleWidth: visibleWidth)
             let storedFamily = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.family.rawValue)
             let familyWidth = min(max(storedFamily ?? widths.family, OperatorResourceColumn.family.minimumWidth), OperatorResourceColumn.family.maximumWidth)
             let storedKind = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.kind.rawValue)
@@ -2998,20 +3397,28 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 projectedWidth - familyWidth - kindWidth - namespaceWidth - statusWidth - printerColumnsWidth - apiPathWidth - widths.favorite
             )
             let storedName = RuneAppKitColumnWidthStore.shared.width(tableID: tableID, columnID: OperatorResourceColumn.name.rawValue)
-            let nameWidth = min(max(storedName ?? dynamicNameWidth, OperatorResourceColumn.name.minimumWidth), OperatorResourceColumn.name.maximumWidth)
-            for tableColumn in tableView.tableColumns {
-                guard let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
-                switch column {
-                case .name: tableColumn.width = nameWidth
-                case .family: tableColumn.width = familyWidth
-                case .kind: tableColumn.width = kindWidth
-                case .namespace: tableColumn.width = namespaceWidth
-                case .status: tableColumn.width = statusWidth
-                case .printerColumns:
-                    tableColumn.isHidden = !parent.showsPrinterColumns
-                    tableColumn.width = printerColumnsWidth
-                case .apiPath: tableColumn.width = apiPathWidth
-                case .favorite: tableColumn.width = widths.favorite
+            let nameWidth = RuneAppKitResourceListLayout.viewportFillingFlexibleWidth(
+                baseWidth: storedName ?? dynamicNameWidth,
+                occupiedWidth: familyWidth + kindWidth + namespaceWidth + statusWidth + printerColumnsWidth + apiPathWidth + widths.favorite,
+                visibleWidth: visibleWidth,
+                minimumWidth: OperatorResourceColumn.name.minimumWidth,
+                maximumWidth: OperatorResourceColumn.name.maximumWidth
+            )
+            RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView) {
+                for tableColumn in tableView.tableColumns {
+                    guard let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
+                    switch column {
+                    case .name: tableColumn.width = nameWidth
+                    case .family: tableColumn.width = familyWidth
+                    case .kind: tableColumn.width = kindWidth
+                    case .namespace: tableColumn.width = namespaceWidth
+                    case .status: tableColumn.width = statusWidth
+                    case .printerColumns:
+                        tableColumn.isHidden = !parent.showsPrinterColumns
+                        tableColumn.width = printerColumnsWidth
+                    case .apiPath: tableColumn.width = apiPathWidth
+                    case .favorite: tableColumn.width = widths.favorite
+                    }
                 }
             }
             updateTableWidth(on: tableView)
@@ -3027,6 +3434,11 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         private func updateOperatorResourceSortIndicator(on tableView: NSTableView) {
+            synchronizeResourceTableSortDescriptors(
+                on: tableView,
+                key: parent.sortColumn.rawValue,
+                ascending: parent.sortAscending
+            )
             for tableColumn in tableView.tableColumns {
                 guard let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                 if let headerCell = tableColumn.headerCell as? RuneAppKitResourceTableHeaderCell {
@@ -3108,11 +3520,48 @@ private func runeAppKitEventIsFavoriteToggle(_ event: NSEvent) -> Bool {
     return event.charactersIgnoringModifiers?.lowercased() == "f"
 }
 
-private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
+final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
     var resizableColumnIdentifiers: Set<String> = []
     var onResetColumn: ((String) -> Void)?
     var onColumnResizeCommitted: ((NSTableColumn) -> Void)?
     var horizontalInset: CGFloat = 0
+    private var hoverTrackingArea: NSTrackingArea?
+    private var hoveredSortableColumnIdentifier: String?
+
+    var hoveredSortableColumnIdentifierForTesting: String? {
+        hoveredSortableColumnIdentifier
+    }
+
+    func updateHoveredSortableColumnForTesting(at point: NSPoint) {
+        updateHoveredColumn(at: point)
+    }
+
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateHoveredColumn(for: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredColumn(for: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHoveredSortableColumnIdentifier(nil)
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2, let columnID = resizableColumnIdentifier(near: event) {
@@ -3137,8 +3586,18 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
                 guard rect.intersects(dirtyRect) else { continue }
                 let column = tableView.tableColumns[columnIndex]
                 column.headerCell.draw(withFrame: rect, in: self)
-                if let indicatorImage = tableView.indicatorImage(in: column) {
-                    drawSortIndicator(indicatorImage, in: rect, column: column)
+                if let headerCell = column.headerCell as? RuneAppKitResourceTableHeaderCell {
+                    let showsHoverPreview = hoveredSortableColumnIdentifier == column.identifier.rawValue
+                        && headerCell.reservesSortIndicator
+                        && !headerCell.isSorted
+                    if headerCell.isSorted || showsHoverPreview {
+                        drawSortIndicator(
+                            ascending: headerCell.isSorted ? headerCell.sortAscending : true,
+                            active: headerCell.isSorted,
+                            in: rect,
+                            column: column
+                        )
+                    }
                 }
                 drawColumnDivider(at: rect.maxX, isResizable: resizableColumnIdentifiers.contains(column.identifier.rawValue))
             }
@@ -3178,11 +3637,13 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
     private func resizableColumnResizeTarget(near event: NSEvent) -> NSTableColumn? {
         guard let tableView else { return nil }
         let point = convert(event.locationInWindow, from: nil)
+        let resizeHitSlop = RuneAppKitResourceListLayout.sortIndicatorTrailingInset
+            - RuneAppKitResourceListLayout.sortIndicatorResizeSafetyGap
         for columnIndex in 0..<tableView.tableColumns.count {
             let column = tableView.tableColumns[columnIndex]
             guard resizableColumnIdentifiers.contains(column.identifier.rawValue) else { continue }
             let dividerX = headerRect(ofColumn: columnIndex).maxX
-            if abs(point.x - dividerX) <= 7 {
+            if abs(point.x - dividerX) <= resizeHitSlop {
                 return column
             }
         }
@@ -3244,22 +3705,64 @@ private final class RuneAppKitResourceTableHeaderView: NSTableHeaderView {
         NSRect(x: x.rounded(.down), y: bounds.minY + 4, width: 1, height: max(0, bounds.height - 8)).fill()
     }
 
-    private func drawSortIndicator(_ image: NSImage, in rect: NSRect, column: NSTableColumn) {
+    private func updateHoveredColumn(for event: NSEvent) {
+        updateHoveredColumn(at: convert(event.locationInWindow, from: nil))
+    }
+
+    private func updateHoveredColumn(at point: NSPoint) {
+        guard let tableView else {
+            setHoveredSortableColumnIdentifier(nil)
+            return
+        }
+        let resizeHitSlop = RuneAppKitResourceListLayout.sortIndicatorTrailingInset
+            - RuneAppKitResourceListLayout.sortIndicatorResizeSafetyGap
+        for columnIndex in 0..<tableView.tableColumns.count {
+            let column = tableView.tableColumns[columnIndex]
+            let rect = headerRect(ofColumn: columnIndex)
+            guard rect.contains(point) else { continue }
+            let nearResizeHandle = resizableColumnIdentifiers.contains(column.identifier.rawValue)
+                && abs(point.x - rect.maxX) <= resizeHitSlop
+            let isSortable = (column.headerCell as? RuneAppKitResourceTableHeaderCell)?.reservesSortIndicator == true
+            setHoveredSortableColumnIdentifier(isSortable && !nearResizeHandle ? column.identifier.rawValue : nil)
+            return
+        }
+        setHoveredSortableColumnIdentifier(nil)
+    }
+
+    private func setHoveredSortableColumnIdentifier(_ identifier: String?) {
+        guard hoveredSortableColumnIdentifier != identifier else { return }
+        hoveredSortableColumnIdentifier = identifier
+        needsDisplay = true
+    }
+
+    private func drawSortIndicator(ascending: Bool, active: Bool, in rect: NSRect, column: NSTableColumn) {
         guard column.identifier.rawValue != PodColumn.selection.rawValue,
               column.identifier.rawValue != PodColumn.favorite.rawValue else { return }
-        let imageSize = RuneAppKitResourceListLayout.sortIndicatorSize
-        let x = rect.maxX - RuneAppKitResourceTableStyle.contentTrailingInset - imageSize.width
-        let y = rect.midY - (imageSize.height / 2)
-        image.draw(in: NSRect(x: x, y: y, width: imageSize.width, height: imageSize.height))
+        let indicatorRect = RuneAppKitResourceListLayout.sortIndicatorRect(in: rect)
+        let verticalDirection: CGFloat = isFlipped ? -1 : 1
+        let apexDirection = ascending ? verticalDirection : -verticalDirection
+        let apexY = indicatorRect.midY + (apexDirection * 2)
+        let baseY = indicatorRect.midY - (apexDirection * 2)
+
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: indicatorRect.minX + 1, y: baseY))
+        path.line(to: NSPoint(x: indicatorRect.midX, y: apexY))
+        path.line(to: NSPoint(x: indicatorRect.maxX - 1, y: baseY))
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        let headerColor = RuneAppKitResourceTableTheme.resolved(for: self).headerText
+        (active ? headerColor : headerColor.withAlphaComponent(0.48)).setStroke()
+        path.stroke()
     }
 }
 
-private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
-    private let textAlignment: NSTextAlignment
+final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
+    private var textAlignment: NSTextAlignment
     private var baseTitle = ""
-    private var isSorted = false
-    private var sortAscending = true
-    private var reservesSortIndicator = false
+    private(set) var isSorted = false
+    private(set) var sortAscending = true
+    private(set) var reservesSortIndicator = false
 
     init(alignment: NSTextAlignment) {
         self.textAlignment = alignment
@@ -3272,12 +3775,32 @@ private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
         super.init(coder: coder)
     }
 
-    func configure(title: String, isSorted: Bool, ascending: Bool, reservesSortIndicator: Bool) {
+    func configure(
+        title: String,
+        isSorted: Bool,
+        ascending: Bool,
+        reservesSortIndicator: Bool,
+        alignment: NSTextAlignment? = nil
+    ) {
         self.baseTitle = title
         self.isSorted = isSorted
         self.sortAscending = ascending
         self.reservesSortIndicator = reservesSortIndicator
+        if let alignment {
+            textAlignment = alignment
+            self.alignment = alignment
+        }
         stringValue = title
+        setAccessibilityLabel(title)
+        if reservesSortIndicator {
+            setAccessibilityHelp("Click to sort by \(title)")
+            setAccessibilityValue(isSorted ? (ascending ? "Sorted ascending" : "Sorted descending") : "Not sorted")
+            setAccessibilitySortDirection(isSorted ? (ascending ? .ascending : .descending) : .unknown)
+        } else {
+            setAccessibilityHelp(nil)
+            setAccessibilityValue(nil)
+            setAccessibilitySortDirection(.unknown)
+        }
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
@@ -3295,6 +3818,9 @@ private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
         ]
         let title = NSAttributedString(string: baseTitle.isEmpty ? stringValue : baseTitle, attributes: attributes)
         let leadingInset = RuneAppKitResourceTableStyle.contentLeadingInset
+            + (textAlignment == .center && reservesSortIndicator
+                ? RuneAppKitResourceListLayout.sortIndicatorSize.width + RuneAppKitResourceTableStyle.sortIndicatorGap
+                : 0)
         let trailingInset = RuneAppKitResourceTableStyle.contentTrailingInset
             + (reservesSortIndicator ? RuneAppKitResourceListLayout.sortIndicatorSize.width + RuneAppKitResourceTableStyle.sortIndicatorGap : 0)
         let textSize = title.size()
@@ -3308,16 +3834,16 @@ private final class RuneAppKitResourceTableHeaderCell: NSTableHeaderCell {
     }
 }
 
-private final class RuneAppKitResourceTableRowView: NSTableRowView {
+final class RuneAppKitResourceTableRowView: NSTableRowView {
     private let horizontalInset: CGFloat
 
-    init(horizontalInset: CGFloat = 4) {
+    init(horizontalInset: CGFloat = RuneAppKitResourceTableStyle.rowHorizontalInset) {
         self.horizontalInset = horizontalInset
         super.init(frame: .zero)
     }
 
     required init?(coder: NSCoder) {
-        self.horizontalInset = 4
+        self.horizontalInset = RuneAppKitResourceTableStyle.rowHorizontalInset
         super.init(coder: coder)
     }
 
@@ -3333,22 +3859,25 @@ private final class RuneAppKitResourceTableRowView: NSTableRowView {
             .map(RuneAppKitResourceTableStyle.renderedTableWidth(in:)) ?? bounds.width
         let rowRect = NSRect(
             x: bounds.minX + horizontalInset,
-            y: bounds.minY + 1,
+            y: bounds.minY,
             width: max(0, min(bounds.width, contentWidth) - (horizontalInset * 2)),
-            height: max(0, bounds.height - 2)
+            height: bounds.height
         )
-        let path = NSBezierPath(roundedRect: rowRect, xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, yRadius: RuneUILayoutMetrics.compactGlyphCornerRadius)
         let tableTheme = RuneAppKitResourceTableTheme.resolved(for: self)
         let fill = isSelected
             ? tableTheme.selectedRowFill
             : tableTheme.rowFill
         fill.setFill()
-        path.fill()
+        rowRect.fill()
 
         if !isSelected {
-            tableTheme.rowStroke.setStroke()
-            path.lineWidth = 1
-            path.stroke()
+            tableTheme.rowStroke.setFill()
+            NSRect(
+                x: rowRect.minX,
+                y: max(rowRect.minY, rowRect.maxY - 1),
+                width: rowRect.width,
+                height: 1
+            ).fill()
         }
     }
 }
@@ -3382,7 +3911,7 @@ struct RuneHorizontalTableOverflowState: Equatable, Sendable {
     }
 }
 
-private final class RuneHorizontalTableOverflowIndicatorView: NSView {
+final class RuneHorizontalTableOverflowIndicatorView: NSView {
     var state = RuneHorizontalTableOverflowState.resolve(
         visibleOriginX: 0,
         visibleWidth: 0,
@@ -3390,7 +3919,7 @@ private final class RuneHorizontalTableOverflowIndicatorView: NSView {
     ) {
         didSet {
             guard state != oldValue else { return }
-            isHidden = !state.showsLeadingIndicator
+            isHidden = !(state.showsLeadingIndicator || state.showsTrailingIndicator)
             needsDisplay = true
         }
     }
@@ -3404,6 +3933,9 @@ private final class RuneHorizontalTableOverflowIndicatorView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         if state.showsLeadingIndicator {
             drawIndicator(atLeadingEdge: true)
+        }
+        if state.showsTrailingIndicator {
+            drawIndicator(atLeadingEdge: false)
         }
     }
 
@@ -3428,8 +3960,11 @@ private final class RuneHorizontalTableOverflowIndicatorView: NSView {
 }
 
 @MainActor
-private final class RuneAppKitResourceListScrollView: NSScrollView {
+final class RuneAppKitResourceListScrollView: NSScrollView {
     var onVisibleWidthChanged: (() -> Void)?
+    var horizontalOverflowStateForTesting: RuneHorizontalTableOverflowState {
+        horizontalOverflowIndicator.state
+    }
     private var lastVisibleWidth: CGFloat = -1
     private var isSendingVisibleWidthChange = false
     private let horizontalOverflowIndicator = RuneHorizontalTableOverflowIndicatorView()
@@ -3728,8 +4263,16 @@ private enum DeploymentColumn: String, CaseIterable {
 
     var minimumWidth: CGFloat {
         switch self {
-        case .name: return RuneAppKitResourceListLayout.deploymentMinimumNameColumnWidth
-        case .replicas: return RuneAppKitResourceListLayout.deploymentReplicaColumnWidth
+        case .name:
+            return max(
+                RuneAppKitResourceListLayout.deploymentMinimumNameColumnWidth,
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
+        case .replicas:
+            return max(
+                RuneAppKitResourceListLayout.deploymentReplicaColumnWidth,
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
         case .favorite: return width
         }
     }
@@ -3810,9 +4353,16 @@ private enum ServiceColumn: String, CaseIterable {
 
     var minimumWidth: CGFloat {
         switch self {
-        case .name: return RuneAppKitResourceListLayout.serviceMinimumNameColumnWidth
-        case .type: return RuneAppKitResourceListLayout.serviceTypeColumnWidth
-        case .clusterIP: return RuneAppKitResourceListLayout.serviceClusterIPColumnWidth
+        case .name:
+            return max(
+                RuneAppKitResourceListLayout.serviceMinimumNameColumnWidth,
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
+        case .type, .clusterIP:
+            return max(
+                width,
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
         case .favorite: return width
         }
     }
@@ -3843,18 +4393,21 @@ private enum GenericResourceColumn: String, CaseIterable {
     case favorite
 
     @MainActor
-    func tableColumn() -> NSTableColumn {
+    func tableColumn(presentation: RuneGenericResourceColumnPresentation) -> NSTableColumn {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(rawValue))
+        let alignment = alignment(presentation: presentation)
+        let title = title(presentation: presentation)
         let headerCell = RuneAppKitResourceTableHeaderCell(alignment: alignment)
         headerCell.configure(title: title, isSorted: false, ascending: true, reservesSortIndicator: sortColumn != nil)
         column.headerCell = headerCell
         column.title = title
+        column.headerToolTip = headerToolTip(presentation: presentation)
         if let sortColumn {
             column.sortDescriptorPrototype = NSSortDescriptor(key: sortColumn.rawValue, ascending: true)
         }
         column.resizingMask = isUserResizable ? .userResizingMask : []
         column.width = width
-        column.minWidth = minimumWidth
+        column.minWidth = minimumWidth(presentation: presentation)
         column.maxWidth = maximumWidth
         return column
     }
@@ -3869,21 +4422,39 @@ private enum GenericResourceColumn: String, CaseIterable {
         }
     }
 
-    var title: String {
+    func title(presentation: RuneGenericResourceColumnPresentation) -> String {
         switch self {
         case .selection: return ""
         case .name: return "Name"
-        case .primary: return "Detail"
-        case .secondary: return "Info"
+        case .primary: return presentation.primaryTitle
+        case .secondary: return presentation.secondaryTitle
         case .namespace: return "Namespace"
         case .favorite: return ""
         }
     }
 
-    var alignment: NSTextAlignment {
+    func alignment(presentation: RuneGenericResourceColumnPresentation) -> NSTextAlignment {
         switch self {
-        case .primary: return .right
-        case .secondary, .namespace, .selection, .favorite, .name: return .left
+        case .primary: return presentation.primaryAlignment
+        case .secondary: return presentation.secondaryAlignment
+        case .namespace, .selection, .favorite, .name: return .left
+        }
+    }
+
+    func headerToolTip(presentation: RuneGenericResourceColumnPresentation) -> String? {
+        switch self {
+        case .selection:
+            return "Select resources for bulk actions"
+        case .name:
+            return "Resource name. Click to sort."
+        case .primary:
+            return "\(presentation.primaryTitle) for each resource. Click to sort."
+        case .secondary:
+            return "\(presentation.secondaryTitle) for each resource. Click to sort."
+        case .namespace:
+            return "Kubernetes namespace. Click to sort."
+        case .favorite:
+            return "Favorite resource"
         }
     }
 
@@ -3910,6 +4481,17 @@ private enum GenericResourceColumn: String, CaseIterable {
         case .selection, .favorite:
             return width
         }
+    }
+
+    func minimumWidth(presentation: RuneGenericResourceColumnPresentation) -> CGFloat {
+        guard sortColumn != nil else { return minimumWidth }
+        return max(
+            minimumWidth,
+            RuneAppKitResourceListLayout.minimumHeaderColumnWidth(
+                title: title(presentation: presentation),
+                reservesSortIndicator: true
+            )
+        )
     }
 
     var maximumWidth: CGFloat {
@@ -3995,29 +4577,33 @@ private enum HelmReleaseColumn: String, CaseIterable {
     }
 
     var minimumWidth: CGFloat {
-        switch self {
-        case .name: return RuneAppKitResourceListLayout.helmMinimumNameColumnWidth
+        let base: CGFloat = switch self {
+        case .name: RuneAppKitResourceListLayout.helmMinimumNameColumnWidth
         case .status:
-            return RuneAppKitResourceListLayout.helmStatusMinimumColumnWidth
+            RuneAppKitResourceListLayout.helmStatusMinimumColumnWidth
         case .namespace:
-            return RuneAppKitResourceListLayout.helmNamespaceMinimumColumnWidth
+            RuneAppKitResourceListLayout.helmNamespaceMinimumColumnWidth
         case .revision:
-            return RuneAppKitResourceListLayout.helmRevisionMinimumColumnWidth
+            RuneAppKitResourceListLayout.helmRevisionMinimumColumnWidth
         case .chart:
-            return RuneAppKitResourceListLayout.helmChartMinimumColumnWidth
+            RuneAppKitResourceListLayout.helmChartMinimumColumnWidth
         case .appVersion:
-            return RuneAppKitResourceListLayout.helmAppVersionMinimumColumnWidth
+            RuneAppKitResourceListLayout.helmAppVersionMinimumColumnWidth
         }
+        return max(
+            base,
+            RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+        )
     }
 
     var maximumWidth: CGFloat {
         switch self {
         case .name: return 10_000
-        case .status: return 180
-        case .namespace: return 300
-        case .revision: return 120
-        case .chart: return 340
-        case .appVersion: return 220
+        case .status: return 220
+        case .namespace: return 280
+        case .revision: return 150
+        case .chart: return 420
+        case .appVersion: return 240
         }
     }
 
@@ -4093,30 +4679,37 @@ private enum EventColumn: String, CaseIterable {
     }
 
     var minimumWidth: CGFloat {
-        switch self {
+        let base: CGFloat = switch self {
         case .reason:
-            return RuneAppKitResourceListLayout.eventMinimumReasonColumnWidth
+            RuneAppKitResourceListLayout.eventMinimumReasonColumnWidth
         case .type:
-            return RuneAppKitResourceListLayout.eventTypeMinimumColumnWidth
+            RuneAppKitResourceListLayout.eventTypeMinimumColumnWidth
         case .object:
-            return RuneAppKitResourceListLayout.eventObjectMinimumColumnWidth
+            RuneAppKitResourceListLayout.eventObjectMinimumColumnWidth
         case .namespace:
-            return RuneAppKitResourceListLayout.eventNamespaceMinimumColumnWidth
+            RuneAppKitResourceListLayout.eventNamespaceMinimumColumnWidth
         case .lastSeen:
-            return RuneAppKitResourceListLayout.eventLastSeenMinimumColumnWidth
+            RuneAppKitResourceListLayout.eventLastSeenMinimumColumnWidth
         case .message:
-            return RuneAppKitResourceListLayout.eventMessageMinimumColumnWidth
+            RuneAppKitResourceListLayout.eventMessageMinimumColumnWidth
         }
+        return max(
+            base,
+            RuneAppKitResourceListLayout.minimumHeaderColumnWidth(
+                title: title,
+                reservesSortIndicator: sortColumn != nil
+            )
+        )
     }
 
     var maximumWidth: CGFloat {
         switch self {
         case .reason: return 10_000
-        case .type: return 180
-        case .object: return 360
-        case .namespace: return 260
-        case .lastSeen: return 260
-        case .message: return 520
+        case .type: return 220
+        case .object: return 420
+        case .namespace: return 280
+        case .lastSeen: return 320
+        case .message: return 10_000
         }
     }
 
@@ -4199,35 +4792,43 @@ private enum OperatorResourceColumn: String, CaseIterable {
     }
 
     var minimumWidth: CGFloat {
-        switch self {
+        let base: CGFloat = switch self {
         case .name:
-            return RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth
+            RuneAppKitResourceListLayout.operatorMinimumNameColumnWidth
         case .family:
-            return RuneAppKitResourceListLayout.operatorFamilyMinimumColumnWidth
+            RuneAppKitResourceListLayout.operatorFamilyMinimumColumnWidth
         case .kind:
-            return RuneAppKitResourceListLayout.operatorKindMinimumColumnWidth
+            RuneAppKitResourceListLayout.operatorKindMinimumColumnWidth
         case .namespace:
-            return RuneAppKitResourceListLayout.operatorNamespaceMinimumColumnWidth
+            RuneAppKitResourceListLayout.operatorNamespaceMinimumColumnWidth
         case .status:
-            return RuneAppKitResourceListLayout.operatorStatusMinimumColumnWidth
+            RuneAppKitResourceListLayout.operatorStatusMinimumColumnWidth
         case .printerColumns:
-            return 120
+            120
         case .apiPath:
-            return RuneAppKitResourceListLayout.operatorAPIPathMinimumColumnWidth
+            RuneAppKitResourceListLayout.operatorAPIPathMinimumColumnWidth
         case .favorite:
-            return width
+            width
         }
+        guard self != .favorite else { return base }
+        return max(
+            base,
+            RuneAppKitResourceListLayout.minimumHeaderColumnWidth(
+                title: title,
+                reservesSortIndicator: sortColumn != nil
+            )
+        )
     }
 
     var maximumWidth: CGFloat {
         switch self {
         case .name: return 10_000
-        case .family: return 260
+        case .family: return 280
         case .kind: return 300
-        case .namespace: return 260
-        case .status: return 220
-        case .printerColumns: return 280
-        case .apiPath: return 520
+        case .namespace: return 280
+        case .status: return 260
+        case .printerColumns: return 360
+        case .apiPath: return 10_000
         case .favorite: return width
         }
     }
@@ -4284,8 +4885,8 @@ private enum PodColumn: String, CaseIterable {
             column.sortDescriptorPrototype = NSSortDescriptor(key: sortColumn.rawValue, ascending: true)
         }
         column.width = width(nameColumnWidth: nameColumnWidth)
-        column.minWidth = minWidth
-        column.maxWidth = maxWidth
+        column.minWidth = minimumWidth
+        column.maxWidth = maximumWidth
         column.resizingMask = isUserResizable ? .userResizingMask : []
         return column
     }
@@ -4327,20 +4928,24 @@ private enum PodColumn: String, CaseIterable {
         }
     }
 
-    private var minWidth: CGFloat {
+    var minimumWidth: CGFloat {
         switch self {
-        case .name: return PodTableLayout.nameColumnMinimumWidth
-        case .cpu: return 42
-        case .memory: return 48
-        case .restarts: return 54
-        case .age: return 40
-        case .status: return 56
+        case .name:
+            return max(
+                PodTableLayout.nameColumnMinimumWidth,
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
+        case .cpu, .memory, .restarts, .age, .status:
+            return max(
+                width(nameColumnWidth: PodTableLayout.nameColumnDefaultWidth),
+                RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)
+            )
         case .selection, .favorite:
             return width(nameColumnWidth: PodTableLayout.nameColumnDefaultWidth)
         }
     }
 
-    private var maxWidth: CGFloat {
+    var maximumWidth: CGFloat {
         switch self {
         case .name: return PodTableLayout.nameColumnMaximumWidth
         case .cpu: return 160

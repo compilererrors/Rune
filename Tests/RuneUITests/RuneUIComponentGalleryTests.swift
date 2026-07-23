@@ -247,11 +247,21 @@ final class RuneUIComponentGalleryTests: XCTestCase {
         XCTAssertEqual(nativeOnly.executionMode, .nativeOnly)
         XCTAssertFalse(nativeOnly.allowsExternalCommandExecution)
         XCTAssertFalse(nativeOnly.exposesCLIOnlyActions)
-        XCTAssertEqual(nativeOnly.fields.map(\.id), [.awsAccessKeyID, .awsSecretAccessKey, .awsSessionToken])
+        XCTAssertEqual(
+            nativeOnly.fields.map(\.id),
+            [.clusterName, .region, .awsAccessKeyID, .awsSecretAccessKey, .awsSessionToken]
+        )
         XCTAssertEqual(nativeOnly.fields.filter { $0.input == .secureText }.count, 2)
 
-        let fieldIdentifiers = (direct.fields + nativeOnly.fields).map(\.accessibilityIdentifier)
-        XCTAssertEqual(Set(fieldIdentifiers).count, fieldIdentifiers.count)
+        let directFieldIdentifiers = direct.fields.map(\.accessibilityIdentifier)
+        let nativeFieldIdentifiers = nativeOnly.fields.map(\.accessibilityIdentifier)
+        XCTAssertEqual(Set(directFieldIdentifiers).count, directFieldIdentifiers.count)
+        XCTAssertEqual(Set(nativeFieldIdentifiers).count, nativeFieldIdentifiers.count)
+        XCTAssertEqual(
+            Set(direct.fields.map(\.id)).intersection(nativeOnly.fields.map(\.id)),
+            [.clusterName, .region],
+            "Both EKS modes should reuse the same cluster identity fields while keeping credentials mode-specific."
+        )
 
         let hosted = try hostGallery(
             scenario: .authenticationSurfaces,

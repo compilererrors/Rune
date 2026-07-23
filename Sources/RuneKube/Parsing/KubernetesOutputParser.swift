@@ -481,7 +481,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.readyReplicas ?? 0)/\(item.spec.replicas ?? 0) ready",
-                    secondaryText: "Stateful workload",
+                    secondaryText: Self.selectorDescription(item.spec.selector),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -497,7 +497,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(item.status.numberReady ?? 0)/\(item.status.desiredNumberScheduled ?? 0) ready",
-                    secondaryText: "Daemon workload",
+                    secondaryText: Self.selectorDescription(item.spec?.selector),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -526,7 +526,7 @@ public struct KubernetesOutputParser {
                     name: name,
                     namespace: namespace,
                     primaryText: label,
-                    secondaryText: "Job"
+                    secondaryText: "\(Self.countDescription(succeeded, singular: "completion", plural: "completions")) · \(Self.countDescription(active, singular: "active pod", plural: "active pods"))"
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -568,11 +568,11 @@ public struct KubernetesOutputParser {
         if failed > 0 {
             return "Failed (\(failed))"
         }
-        if succeeded > 0 {
-            return "Complete (\(succeeded))"
-        }
         if active > 0 {
             return "Running (\(active))"
+        }
+        if succeeded > 0 {
+            return "Complete (\(succeeded))"
         }
         return "Pending"
     }
@@ -587,12 +587,16 @@ public struct KubernetesOutputParser {
         return items
             .map { item in
                 let statusLabel = Self.jobStatusLabel(status: item.status)
+                let succeeded = item.status?.succeeded ?? 0
+                let active = item.status?.active ?? 0
+                let progress = item.spec?.completions.map { "\(succeeded)/\($0) complete" }
+                    ?? "\(Self.countDescription(succeeded, singular: "completion", plural: "completions")) · \(Self.countDescription(active, singular: "active pod", plural: "active pods"))"
                 return ClusterResourceSummary(
                     kind: .job,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: statusLabel,
-                    secondaryText: "Job",
+                    secondaryText: progress,
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -604,11 +608,11 @@ public struct KubernetesOutputParser {
         if let failed = status.failed, failed > 0 {
             return "Failed (\(failed))"
         }
-        if let succeeded = status.succeeded, succeeded > 0 {
-            return "Complete (\(succeeded))"
-        }
         if let active = status.active, active > 0 {
             return "Running (\(active))"
+        }
+        if let succeeded = status.succeeded, succeeded > 0 {
+            return "Complete (\(succeeded))"
         }
         return "Pending"
     }
@@ -647,7 +651,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "\(ready)/\(total) ready",
-                    secondaryText: "ReplicaSet",
+                    secondaryText: Self.selectorDescription(item.spec?.selector),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -702,7 +706,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: nil,
                     primaryText: provisioner,
-                    secondaryText: isDefault ? "Default" : "StorageClass"
+                    secondaryText: isDefault ? "Yes" : "No"
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -739,7 +743,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: types,
-                    secondaryText: "NetworkPolicy",
+                    secondaryText: Self.selectorDescription(item.spec?.podSelector, emptyDescription: "All pods"),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -816,8 +820,10 @@ public struct KubernetesOutputParser {
                     kind: .serviceAccount,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
-                    primaryText: "\(secrets) secrets",
-                    secondaryText: pullSecrets > 0 ? "\(pullSecrets) pull secrets, \(token)" : token,
+                    primaryText: Self.countDescription(secrets, singular: "secret", plural: "secrets"),
+                    secondaryText: pullSecrets > 0
+                        ? "\(Self.countDescription(pullSecrets, singular: "pull secret", plural: "pull secrets")) · \(token)"
+                        : token,
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -828,12 +834,18 @@ public struct KubernetesOutputParser {
         let decoded = try JSONDecoder().decode(KubeList<KubeConfigMapItem>.self, from: Data(raw.utf8))
         return decoded.items
             .map { item in
-                ClusterResourceSummary(
+                let textEntryCount = item.data?.count ?? 0
+                let binaryEntryCount = item.binaryData?.count ?? 0
+                let entryCount = textEntryCount + binaryEntryCount
+                return ClusterResourceSummary(
                     kind: .configMap,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
-                    primaryText: "\(item.data?.count ?? 0) keys",
-                    secondaryText: "Config data",
+                    primaryText: Self.countDescription(entryCount, singular: "key", plural: "keys"),
+                    secondaryText: [
+                        Self.countDescription(textEntryCount, singular: "text value", plural: "text values"),
+                        Self.countDescription(binaryEntryCount, singular: "binary value", plural: "binary values")
+                    ].joined(separator: " · "),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -849,7 +861,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: item.type ?? "Opaque",
-                    secondaryText: "\(item.data?.count ?? 0) values",
+                    secondaryText: Self.countDescription(item.data?.count ?? 0, singular: "value", plural: "values"),
                     ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
                 )
             }
@@ -938,7 +950,7 @@ public struct KubernetesOutputParser {
                     kind: .role,
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
-                    primaryText: "\(ruleCount) rules",
+                    primaryText: Self.countDescription(ruleCount, singular: "rule", plural: "rules"),
                     secondaryText: "Namespaced role"
                 )
             }
@@ -957,7 +969,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: item.metadata.namespace ?? namespace,
                     primaryText: "→ \(refKind)/\(refName)",
-                    secondaryText: "\(subjectCount) subject(s)"
+                    secondaryText: Self.countDescription(subjectCount, singular: "subject", plural: "subjects")
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -972,7 +984,7 @@ public struct KubernetesOutputParser {
                     kind: .clusterRole,
                     name: item.metadata.name,
                     namespace: nil,
-                    primaryText: "\(ruleCount) rules",
+                    primaryText: Self.countDescription(ruleCount, singular: "rule", plural: "rules"),
                     secondaryText: "Cluster role"
                 )
             }
@@ -991,7 +1003,7 @@ public struct KubernetesOutputParser {
                     name: item.metadata.name,
                     namespace: nil,
                     primaryText: "→ \(refKind)/\(refName)",
-                    secondaryText: "\(subjectCount) subject(s)"
+                    secondaryText: Self.countDescription(subjectCount, singular: "subject", plural: "subjects")
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -1091,6 +1103,10 @@ public struct KubernetesOutputParser {
         let desiredNumberScheduled: Int?
     }
 
+    private struct KubeDaemonSetSpec: Decodable {
+        let selector: KubeLabelSelector?
+    }
+
     private struct KubeDeploymentItem: Decodable {
         let metadata: KubeMetadata
         let spec: KubeDeploymentSpec
@@ -1099,12 +1115,18 @@ public struct KubernetesOutputParser {
 
     private struct KubeDaemonSetItem: Decodable {
         let metadata: KubeMetadata
+        let spec: KubeDaemonSetSpec?
         let status: KubeDaemonSetStatus
     }
 
     private struct KubeJobItem: Decodable {
         let metadata: KubeMetadata
+        let spec: KubeJobSpec?
         let status: KubeJobStatus?
+    }
+
+    private struct KubeJobSpec: Decodable {
+        let completions: Int?
     }
 
     private struct KubeJobStatus: Decodable {
@@ -1131,6 +1153,7 @@ public struct KubernetesOutputParser {
 
     private struct KubeReplicaSetSpec: Decodable {
         let replicas: Int?
+        let selector: KubeLabelSelector?
     }
 
     private struct KubeReplicaSetStatus: Decodable {
@@ -1211,6 +1234,7 @@ public struct KubernetesOutputParser {
 
     private struct KubeNetworkPolicySpec: Decodable {
         let policyTypes: [String]?
+        let podSelector: KubeLabelSelector?
     }
 
     private struct KubeNetworkPolicyItem: Decodable {
@@ -1224,6 +1248,13 @@ public struct KubernetesOutputParser {
 
     private struct KubeLabelSelector: Decodable {
         let matchLabels: [String: String]?
+        let matchExpressions: [KubeLabelSelectorRequirement]?
+    }
+
+    private struct KubeLabelSelectorRequirement: Decodable {
+        let key: String
+        let `operator`: String
+        let values: [String]?
     }
 
     private struct KubeServiceSpec: Decodable {
@@ -1265,6 +1296,55 @@ public struct KubernetesOutputParser {
         let secrets: [KubeServiceAccountSecretReference]?
         let imagePullSecrets: [KubeServiceAccountSecretReference]?
         let automountServiceAccountToken: Bool?
+    }
+
+    private static func countDescription(_ count: Int, singular: String, plural: String) -> String {
+        "\(count) \(count == 1 ? singular : plural)"
+    }
+
+    private static func selectorDescription(
+        _ selector: KubeLabelSelector?,
+        emptyDescription: String = "—"
+    ) -> String {
+        let labels = selector?.matchLabels ?? [:]
+        let labelItems = labels
+            .sorted { lhs, rhs in
+                lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+            }
+            .map { "\($0.key)=\($0.value)" }
+        let expressionItems = (selector?.matchExpressions ?? [])
+            .sorted { lhs, rhs in
+                let keyOrder = lhs.key.localizedStandardCompare(rhs.key)
+                if keyOrder != .orderedSame { return keyOrder == .orderedAscending }
+                return lhs.operator.localizedStandardCompare(rhs.operator) == .orderedAscending
+            }
+            .map(selectorRequirementDescription)
+        let items = labelItems + expressionItems
+        guard !items.isEmpty else { return emptyDescription }
+        let visibleItems = items.prefix(2)
+        let hiddenCount = max(0, items.count - visibleItems.count)
+        return hiddenCount > 0
+            ? visibleItems.joined(separator: ", ") + " +\(hiddenCount)"
+            : visibleItems.joined(separator: ", ")
+    }
+
+    private static func selectorRequirementDescription(_ requirement: KubeLabelSelectorRequirement) -> String {
+        let values = (requirement.values ?? []).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        switch requirement.operator.lowercased() {
+        case "in":
+            return "\(requirement.key) in (\(values.joined(separator: ", ")))"
+        case "notin":
+            return "\(requirement.key) notin (\(values.joined(separator: ", ")))"
+        case "exists":
+            return "\(requirement.key) exists"
+        case "doesnotexist":
+            return "!\(requirement.key)"
+        default:
+            let suffix = values.isEmpty ? "" : " (\(values.joined(separator: ", ")))"
+            return "\(requirement.key) \(requirement.operator)\(suffix)"
+        }
     }
 
     private static func endpointPortLine(from subsets: [KubeEndpointSubset]?) -> String {
@@ -1349,6 +1429,7 @@ public struct KubernetesOutputParser {
     private struct KubeConfigMapItem: Decodable {
         let metadata: KubeMetadata
         let data: [String: String]?
+        let binaryData: [String: String]?
     }
 
     private struct KubeSecretItem: Decodable {

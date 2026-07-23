@@ -8000,7 +8000,7 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testSelectedPodsForBulkActionsFollowVisibleOrderingAndFilter() {
+    func testSelectedPodsForBulkActionsPreserveHiddenSelectionsAcrossFilter() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
         state.selectedContext = KubeContext(name: "benchmark")
@@ -8020,8 +8020,18 @@ final class RuneAppStateTests: XCTestCase {
 
         viewModel.setResourceSearchQuery("api")
 
-        XCTAssertEqual(viewModel.selectedPodsForBulkActions.map(\.name), ["api-0", "api-1"])
+        XCTAssertEqual(viewModel.selectedPodsForBulkActions.map(\.name), ["api-0", "api-1", "worker-0"])
         XCTAssertEqual(viewModel.selectedPodCount, 3)
+
+        viewModel.toggleAllVisiblePodsForBulkActions()
+
+        XCTAssertEqual(viewModel.selectedPodsForBulkActions.map(\.name), ["worker-0"])
+        XCTAssertFalse(viewModel.areAllVisiblePodsSelectedForBulkActions)
+
+        viewModel.toggleAllVisiblePodsForBulkActions()
+
+        XCTAssertEqual(viewModel.selectedPodsForBulkActions.map(\.name), ["api-0", "api-1", "worker-0"])
+        XCTAssertTrue(viewModel.areAllVisiblePodsSelectedForBulkActions)
     }
 
     @MainActor
@@ -8146,11 +8156,203 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.pendingWriteActionConfirmLabel, "Delete 2")
         XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("2 selected resources"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("configmap/feature-flags"))
+        XCTAssertTrue(viewModel.pendingWriteActionMessage.contains("configmap/settings"))
         XCTAssertTrue(viewModel.pendingWriteActionIsDestructive)
     }
 
     @MainActor
-    func testSelectedGenericResourceComparisonSummarizesVisibleSelection() {
+    func testGenericSelectVisiblePreservesAndActsOnHiddenSelections() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.selectedNamespace = "synthetic-namespace"
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps([
+            ClusterResourceSummary(kind: .configMap, name: "api-a", namespace: "synthetic-namespace", primaryText: "1 key", secondaryText: "1 text value · 0 binary values"),
+            ClusterResourceSummary(kind: .configMap, name: "api-b", namespace: "synthetic-namespace", primaryText: "1 key", secondaryText: "1 text value · 0 binary values"),
+            ClusterResourceSummary(kind: .configMap, name: "worker", namespace: "synthetic-namespace", primaryText: "1 key", secondaryText: "1 text value · 0 binary values")
+        ])
+
+        viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[2])
+        viewModel.setResourceSearchQuery("api")
+        viewModel.toggleAllVisibleGenericResourcesForBulkActions()
+
+        XCTAssertEqual(viewModel.selectedGenericResourceCount, 3)
+        XCTAssertEqual(
+            Set(viewModel.selectedGenericResourcesForBulkActions.map(\.name)),
+            ["api-a", "api-b", "worker"]
+        )
+        XCTAssertTrue(viewModel.areAllVisibleGenericResourcesSelectedForBulkActions)
+
+        viewModel.toggleAllVisibleGenericResourcesForBulkActions()
+
+        XCTAssertEqual(viewModel.selectedGenericResourcesForBulkActions.map(\.name), ["worker"])
+        XCTAssertFalse(viewModel.areAllVisibleGenericResourcesSelectedForBulkActions)
+    }
+
+    @MainActor
+    func testBulkSelectionsClearWhenResourceScopeChangesEvenIfTargetHasMatchingIDs() {
+        let state = RuneAppState()
+        let store = ResourceStore()
+        let source = KubeContext(name: "synthetic-source")
+        let target = KubeContext(name: "synthetic-target")
+        let namespace = "synthetic-namespace"
+        let pod = PodSummary(name: "api-0", namespace: namespace, status: "Running")
+        let configMap = ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings",
+            namespace: namespace,
+            primaryText: "1 key",
+            secondaryText: "1 text value · 0 binary values"
+        )
+        state.selectedContext = source
+        state.selectedNamespace = namespace
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setPods([pod])
+        state.setConfigMaps([configMap])
+        state.setSelectedPodIDs([pod.id])
+        state.setSelectedGenericResourceIDs([configMap.id], validIDs: [configMap.id])
+
+        store.cacheNamespaces([namespace, "next-namespace"], context: target)
+        store.cacheSnapshot(
+            context: target,
+            namespace: namespace,
+            pods: [pod],
+            deployments: [],
+            statefulSets: [],
+            daemonSets: [],
+            jobs: [],
+            cronJobs: [],
+            replicaSets: [],
+            persistentVolumeClaims: [],
+            horizontalPodAutoscalers: [],
+            networkPolicies: [],
+            services: [],
+            endpoints: [],
+            ingresses: [],
+            configMaps: [configMap],
+            secrets: [],
+            serviceAccounts: [],
+            events: []
+        )
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            store: store
+        )
+
+        viewModel.setContext(target)
+
+        XCTAssertEqual(state.pods.map(\.id), [pod.id])
+        XCTAssertEqual(state.configMaps.map(\.id), [configMap.id])
+        XCTAssertTrue(state.selectedPodIDs.isEmpty)
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+
+        state.setSelectedPodIDs([pod.id])
+        state.setSelectedGenericResourceIDs([configMap.id], validIDs: [configMap.id])
+        viewModel.setNamespace("next-namespace")
+
+        XCTAssertTrue(state.selectedPodIDs.isEmpty)
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+
+        state.setConfigMaps([configMap])
+        state.setSelectedGenericResourceIDs([configMap.id], validIDs: [configMap.id])
+        viewModel.setWorkloadKind(.secret)
+
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setPods([pod])
+        state.setConfigMaps([configMap])
+        state.setSelectedPodIDs([pod.id])
+        state.setSelectedGenericResourceIDs([configMap.id], validIDs: [configMap.id])
+
+        viewModel.setSection(.events)
+
+        XCTAssertEqual(state.selectedSection, .events)
+        XCTAssertEqual(
+            state.selectedWorkloadKind,
+            .configMap,
+            "The regression must exercise a section-only scope change without an implicit kind change."
+        )
+        XCTAssertTrue(state.selectedPodIDs.isEmpty)
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+    }
+
+    @MainActor
+    func testBulkSelectionsClearWhenWorkspaceResolvesAnotherNamespaceInSameContext() {
+        let state = RuneAppState()
+        let store = ResourceStore()
+        let context = KubeContext(name: "synthetic-context")
+        let namespaceA = "namespace-a"
+        let namespaceB = "namespace-b"
+        let configMapA = ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings-a",
+            namespace: namespaceA,
+            primaryText: "1 key",
+            secondaryText: "1 text value · 0 binary values"
+        )
+        let configMapB = ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings-b",
+            namespace: namespaceB,
+            primaryText: "1 key",
+            secondaryText: "1 text value · 0 binary values"
+        )
+        state.setContexts([context])
+        state.selectedContext = context
+        state.selectedNamespace = namespaceA
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setConfigMaps([configMapA])
+        state.setSelectedGenericResourceIDs([configMapA.id], validIDs: [configMapA.id])
+        store.cacheNamespaces([namespaceA, namespaceB], context: context)
+        cacheSyntheticSnapshot(configMaps: [configMapA], context: context, namespace: namespaceA, store: store)
+        cacheSyntheticSnapshot(configMaps: [configMapB], context: context, namespace: namespaceB, store: store)
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            store: store
+        )
+        let workspaceA = SavedWorkspaceSnapshot(
+            name: "Namespace A",
+            contextName: context.name,
+            namespace: namespaceA,
+            section: .config,
+            workloadKind: .configMap,
+            resourceKind: nil,
+            resourceName: nil,
+            resourceNamespace: nil
+        )
+        let workspaceB = SavedWorkspaceSnapshot(
+            name: "Namespace B",
+            contextName: context.name,
+            namespace: namespaceB,
+            section: .config,
+            workloadKind: .configMap,
+            resourceKind: nil,
+            resourceName: nil,
+            resourceNamespace: nil
+        )
+
+        viewModel.openSavedWorkspace(workspaceB)
+
+        XCTAssertEqual(state.selectedNamespace, namespaceB)
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+
+        viewModel.openSavedWorkspace(workspaceA)
+
+        XCTAssertEqual(state.selectedNamespace, namespaceA)
+        XCTAssertTrue(state.selectedGenericResourceIDs.isEmpty)
+        XCTAssertEqual(viewModel.selectedGenericResourceCount, 0)
+    }
+
+    @MainActor
+    func testSelectedGenericResourceComparisonIncludesFilterHiddenSelection() {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state)
         state.selectedContext = KubeContext(name: "demo")
@@ -8163,9 +8365,11 @@ final class RuneAppStateTests: XCTestCase {
 
         viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[0])
         viewModel.toggleGenericResourceBulkSelection(viewModel.visibleConfigMaps[1])
+        viewModel.setResourceSearchQuery("settings")
 
         let comparison = viewModel.selectedGenericResourceComparisonText
 
+        XCTAssertEqual(viewModel.visibleConfigMaps.map(\.name), ["settings"])
         XCTAssertTrue(viewModel.canCopySelectedGenericResourceComparison)
         XCTAssertTrue(comparison.contains("Selected ConfigMaps Compare"))
         XCTAssertTrue(comparison.contains("Namespace: default"))
@@ -9893,28 +10097,37 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testRequestMetricsSummaryRefreshesFromKubeClientRecorder() async throws {
+        let contextName = "synthetic-metrics-context"
         let recorder = KubernetesRESTRequestMetricsRecorder()
-        await recorder.record(KubernetesRESTRequestMetric(
-            method: "GET",
-            apiPath: "/api/v1/namespaces/synthetic-namespace/pods",
-            statusCode: 200,
-            responseBytes: 1_024,
-            durationSeconds: 0.01,
-            attempt: 1,
-            outcome: .success
-        ))
-        await recorder.record(KubernetesRESTRequestMetric(
-            method: "GET",
-            apiPath: "/api/v1/namespaces/synthetic-namespace/services",
-            statusCode: 504,
-            responseBytes: 128,
-            durationSeconds: 0.20,
-            attempt: 2,
-            outcome: .httpError
-        ))
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-namespace/pods",
+                statusCode: 200,
+                responseBytes: 1_024,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .success
+            ),
+            contextName: contextName
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic-namespace/services",
+                statusCode: 504,
+                responseBytes: 128,
+                durationSeconds: 0.20,
+                attempt: 2,
+                outcome: .httpError
+            ),
+            contextName: contextName
+        )
         let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
-        let viewModel = RuneAppViewModel(state: RuneAppState(), kubeClient: client)
+        let state = RuneAppState()
+        state.selectedContext = KubeContext(name: contextName)
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client)
 
         viewModel.refreshKubernetesRequestMetricsSummary()
 
@@ -11063,6 +11276,36 @@ private func restoreUserDefaultsValue(_ value: Any?, forKey key: String) {
     } else {
         UserDefaults.standard.removeObject(forKey: key)
     }
+}
+
+@MainActor
+private func cacheSyntheticSnapshot(
+    configMaps: [ClusterResourceSummary],
+    context: KubeContext,
+    namespace: String,
+    store: ResourceStore
+) {
+    store.cacheSnapshot(
+        context: context,
+        namespace: namespace,
+        pods: [],
+        deployments: [],
+        statefulSets: [],
+        daemonSets: [],
+        jobs: [],
+        cronJobs: [],
+        replicaSets: [],
+        persistentVolumeClaims: [],
+        horizontalPodAutoscalers: [],
+        networkPolicies: [],
+        services: [],
+        endpoints: [],
+        ingresses: [],
+        configMaps: configMaps,
+        secrets: [],
+        serviceAccounts: [],
+        events: []
+    )
 }
 
 private func waitUntilForRuneAppState(

@@ -723,12 +723,28 @@ final class RuneSidebarChromeContractTests: XCTestCase {
                 "RBACCanISimulatorPanel.swift",
                 "ResourceLogsInspectorView.swift",
                 "RunePreferencesView.swift",
+                "RuneSegmentedPickerInScroll.swift",
                 "TerminalPodSelectorRow.swift",
                 "TerminalPortForwardPanelView.swift",
                 "PortForwardControlComponents.swift"
             ]
             guard !adaptiveStandaloneViews.contains(url.lastPathComponent) else { continue }
-            let source = try String(contentsOf: url, encoding: .utf8)
+            var source = try String(contentsOf: url, encoding: .utf8)
+            if url.lastPathComponent == "RuneRootView.swift" {
+                let allowedAdaptiveBlocks = [
+                    try functionBlock(
+                        named: "private var operatorResourceToolbarActions: some View {",
+                        endingBefore: "private func operatorResourceFocusMenu(compact: Bool) -> some View {",
+                        in: source
+                    )
+                ]
+                XCTAssertTrue(allowedAdaptiveBlocks.allSatisfy {
+                    $0.components(separatedBy: "ViewThatFits(in: .horizontal)").count - 1 == 1
+                })
+                for block in allowedAdaptiveBlocks {
+                    source = source.replacingOccurrences(of: block, with: "")
+                }
+            }
             if source.contains("ViewThatFits(in: .horizontal)") {
                 offenders.append(url.lastPathComponent)
             }
@@ -784,7 +800,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains("height: RuneUILayoutMetrics.wideDialogHeight"))
     }
 
-    func testBulkSelectionBarsAvoidBreakpointWrappingThatCausesVerticalJumps() throws {
+    func testBulkSelectionBarsUseStableRegularAndCompactControlGroups() throws {
         let source = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
         let selectionBar = try functionBlock(
             named: "struct RuneBulkSelectionBar<Actions: View>: View {",
@@ -792,9 +808,11 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: source
         )
 
-        XCTAssertTrue(selectionBar.contains("ScrollView(.horizontal, showsIndicators: false)"))
-        XCTAssertTrue(selectionBar.contains("HStack(spacing: 8)"))
-        XCTAssertFalse(selectionBar.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(selectionBar.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(selectionBar.contains("regularControls"))
+        XCTAssertTrue(selectionBar.contains("compactControls"))
+        XCTAssertTrue(selectionBar.contains("HStack(spacing: 6)"))
+        XCTAssertTrue(selectionBar.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertFalse(selectionBar.contains("VStack(alignment: .leading"))
     }
 
@@ -1063,7 +1081,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(controls.contains("systemImage: \"xmark.circle.fill\""))
         XCTAssertTrue(controls.contains("viewModel.setResourceSearchQuery(\"\")"))
         XCTAssertTrue(controls.contains("textInputFocus = .resourceFilter"))
-        XCTAssertTrue(controls.contains(".frame(maxWidth: 312, alignment: .leading)"))
+        XCTAssertTrue(controls.contains("maxWidth: RuneUILayoutMetrics.resourceFilterFieldMaximumWidth"))
+        XCTAssertTrue(controls.contains("maxWidth: RuneUILayoutMetrics.resourceFilterControlsMaximumWidth"))
+        XCTAssertTrue(controls.contains("TextField(resourceFilterPrompt"))
+        XCTAssertFalse(controls.contains("/ filter resources"))
         XCTAssertTrue(controls.contains(".opacity(viewModel.state.resourceSearchQuery.isEmpty ? 0 : 1)"))
         XCTAssertTrue(controls.contains("isDisabled: viewModel.state.resourceSearchQuery.isEmpty"))
         XCTAssertFalse(controls.contains(".overlay"))
@@ -1098,6 +1119,51 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(freshnessBadgeSource.contains("struct ResourceListFreshnessBadge: View"))
         XCTAssertTrue(freshnessBadgeSource.contains("ResourceListFreshnessPresentation.text(for: freshness.status)"))
         XCTAssertTrue(freshnessBadgeSource.contains("case .reconnecting: return \"Reconnecting\""))
+    }
+
+    func testResourceListsShareFamilyThenToolbarChromeWithoutPaneLocalBulkRows() throws {
+        let source = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let designSource = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
+        let adaptivePickerPath = URL(fileURLWithPath: runeRootViewPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("RuneSegmentedPickerInScroll.swift")
+            .path
+        let adaptivePickerSource = try String(contentsOfFile: adaptivePickerPath, encoding: .utf8)
+        let header = try functionBlock(
+            named: "private var contentHeader: some View {",
+            endingBefore: "private var contentHeaderStatusStrip",
+            in: source
+        )
+        let kindPicker = try functionBlock(
+            named: "private func resourceKindPicker(kinds: [KubeResourceKind]) -> some View {",
+            endingBefore: "private var helmBrowserPicker",
+            in: source
+        )
+        let workloads = try functionBlock(
+            named: "private var workloadsContent: some View {",
+            endingBefore: "private var networkingPane",
+            in: source
+        )
+        let genericList = try functionBlock(
+            named: "private func genericResourceList(",
+            endingBefore: "@ViewBuilder\n    private func resourceListGate",
+            in: source
+        )
+
+        let familyRange = try XCTUnwrap(header.range(of: "resourceFamilyControlRow"))
+        let toolbarRange = try XCTUnwrap(header.range(of: "resourceListToolbar"))
+        XCTAssertLessThan(familyRange.lowerBound, toolbarRange.lowerBound)
+        XCTAssertTrue(source.contains("private var resourceFamilyControlRow: some View"))
+        XCTAssertTrue(source.contains("sectionSpecificControls\n            }\n        }\n        .frame("))
+        XCTAssertTrue(kindPicker.contains("RuneAdaptiveSegmentedPicker("))
+        XCTAssertTrue(kindPicker.contains("labelsHidden: true"))
+        XCTAssertTrue(kindPicker.contains("resourceFamilyCompactPickerMaximumWidth"))
+        XCTAssertTrue(adaptivePickerSource.contains("overflowBehavior: .intrinsic"))
+        XCTAssertTrue(adaptivePickerSource.contains(".pickerStyle(.menu)"))
+        XCTAssertTrue(designSource.contains("struct RuneResourceListToolbar<Primary: View, Actions: View>: View"))
+        XCTAssertTrue(designSource.contains("resourceListToolbarMinimumHeight"))
+        XCTAssertFalse(workloads.contains("podBulkSelectionControls"))
+        XCTAssertFalse(genericList.contains("genericResourceBulkSelectionControls"))
     }
 
     func testLocalK8sIntegrationReportScriptUsesSandboxSafeSwiftHarness() throws {
@@ -1785,7 +1851,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
         XCTAssertTrue(rootViewSource.contains("let shouldOfferReplicaSetHistoryLoad = simpleMode && relatedReplicaSets.isEmpty"))
         XCTAssertTrue(rootViewSource.contains("viewModel.refreshReplicaSetsForCurrentNamespace()"))
-        XCTAssertTrue(rootViewSource.contains("if viewModel.state.selectedSection != .terminal"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.state.selectedSection != .terminal"))
         XCTAssertTrue(viewModelSource.contains("if !UserDefaults.standard.runeSimpleMode {\n                    self.runAuthDoctor()"))
         XCTAssertTrue(viewModelSource.contains("static func forSelection(section: RuneSection, kind: KubeResourceKind, simpleMode: Bool = false)"))
         XCTAssertTrue(viewModelSource.contains("if !simpleMode {\n                plan.events = true"))
@@ -2054,7 +2120,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("NSImage.Name(parent.sortAscending ? \"NSAscendingSortIndicator\" : \"NSDescendingSortIndicator\")"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableTheme.resolved(for: controlView).headerText"))
         XCTAssertTrue(appKitPodTableSource.contains("label.centerYAnchor.constraint(equalTo: container.centerYAnchor)"))
-        XCTAssertTrue(appKitPodTableSource.contains("drawSortIndicator(indicatorImage"))
+        XCTAssertTrue(appKitPodTableSource.contains("drawSortIndicator(\n                            ascending:"))
+        XCTAssertTrue(appKitPodTableSource.contains("active: headerCell.isSorted"))
         XCTAssertTrue(appKitPodTableSource.contains("resetColumnWidth(_ columnID: String)"))
         XCTAssertTrue(appKitPodTableSource.contains("event.clickCount == 2"))
         XCTAssertTrue(appKitPodTableSource.contains("drawColumnDivider"))
@@ -2093,15 +2160,17 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("case .favorite: return false"))
         XCTAssertTrue(appKitPodTableSource.contains("case .replicas: return RuneAppKitResourceListLayout.deploymentReplicaColumnWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .type: return RuneAppKitResourceListLayout.serviceTypeColumnWidth"))
-        XCTAssertTrue(appKitPodTableSource.contains("genericPrimaryMinimumColumnWidth: CGFloat = 96"))
-        XCTAssertTrue(appKitPodTableSource.contains("genericSecondaryMinimumColumnWidth: CGFloat = 72"))
-        XCTAssertTrue(appKitPodTableSource.contains("genericNamespaceMinimumColumnWidth: CGFloat = 104"))
+        XCTAssertTrue(appKitPodTableSource.contains("genericPrimaryMinimumColumnWidth: CGFloat = 128"))
+        XCTAssertTrue(appKitPodTableSource.contains("genericSecondaryMinimumColumnWidth: CGFloat = 128"))
+        XCTAssertTrue(appKitPodTableSource.contains("genericNamespaceMinimumColumnWidth: CGFloat = 120"))
         XCTAssertTrue(appKitPodTableSource.contains("case .primary:\n            return RuneAppKitResourceListLayout.genericPrimaryMinimumColumnWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .secondary:\n            return RuneAppKitResourceListLayout.genericSecondaryMinimumColumnWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .namespace:\n            return RuneAppKitResourceListLayout.genericNamespaceMinimumColumnWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("private var applyGeneration = 0"))
         XCTAssertTrue(appKitPodTableSource.contains("DispatchQueue.main.async { [weak self, weak tableView] in"))
         XCTAssertTrue(appKitPodTableSource.contains("generation == self.applyGeneration"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("private func synchronizeResourceTableSortDescriptors("))
         XCTAssertFalse(appKitPodTableSource.contains("column.resizingMask = self == .name ? .userResizingMask : []"))
         XCTAssertFalse(appKitPodTableSource.contains("column.resizingMask = self == .name ? .autoresizingMask : []"))
         XCTAssertFalse(appKitPodTableSource.contains("resizableColumnIdentifier: String?"))
@@ -2144,18 +2213,20 @@ final class RuneSidebarChromeContractTests: XCTestCase {
     func testAppKitResourceTablesUseSharedNativeTableStyle() throws {
         let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
 
-        XCTAssertTrue(appKitPodTableSource.contains("private enum RuneAppKitResourceTableStyle"))
+        XCTAssertTrue(appKitPodTableSource.contains("enum RuneAppKitResourceTableStyle"))
         XCTAssertTrue(appKitPodTableSource.contains("static let headerHeight: CGFloat = 24"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowHeight: CGFloat = 34"))
-        XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 4"))
-        XCTAssertTrue(appKitPodTableSource.contains("static let rowHorizontalInset: CGFloat = 6"))
+        XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 0"))
+        XCTAssertTrue(appKitPodTableSource.contains("static let rowHorizontalInset: CGFloat = 0"))
         XCTAssertTrue(appKitPodTableSource.contains("static let contentLeadingInset: CGFloat = 10"))
         XCTAssertTrue(appKitPodTableSource.contains("static let contentTrailingInset: CGFloat = 10"))
         XCTAssertTrue(appKitPodTableSource.contains("static let sortIndicatorGap: CGFloat = 4"))
+        XCTAssertTrue(appKitPodTableSource.contains("static let actionColumnTrailingPadding = RuneAppKitResourceListLayout.viewportTrailingPadding"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.horizontalInset = rowHorizontalInset"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.frame = NSRect(x: 0, y: 0, width: 0, height: headerHeight)"))
         XCTAssertTrue(appKitPodTableSource.contains("let headerSize = NSSize(width: tableWidth, height: headerHeight)"))
-        XCTAssertTrue(appKitPodTableSource.contains("private final class RuneAppKitResourceListScrollView: NSScrollView"))
+        XCTAssertTrue(appKitPodTableSource.contains("return max(minimumContentWidth, viewportWidth.rounded(.toNearestOrAwayFromZero))"))
+        XCTAssertTrue(appKitPodTableSource.contains("final class RuneAppKitResourceListScrollView: NSScrollView"))
         XCTAssertTrue(appKitPodTableSource.contains("override func setFrameSize(_ newSize: NSSize)"))
         XCTAssertTrue(appKitPodTableSource.contains("override func setBoundsSize(_ newSize: NSSize)"))
         XCTAssertTrue(appKitPodTableSource.contains("override func viewWillStartLiveResize()"))
@@ -2204,10 +2275,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(layout.contains("min(nameColumnMaximumWidth, max(nameColumnMinimumWidth, pixelAlignedWidth))"))
         XCTAssertTrue(layout.contains("nameColumnDefaultWidth: CGFloat = 260"))
         XCTAssertTrue(layout.contains("nameColumnMinimumWidth: CGFloat = 104"))
-        XCTAssertTrue(layout.contains("cpuWidth: CGFloat = 58"))
-        XCTAssertTrue(layout.contains("memoryWidth: CGFloat = 64"))
-        XCTAssertTrue(layout.contains("restartsWidth: CGFloat = 72"))
-        XCTAssertTrue(layout.contains("ageWidth: CGFloat = 54"))
+        XCTAssertTrue(layout.contains("cpuWidth: CGFloat = 74"))
+        XCTAssertTrue(layout.contains("memoryWidth: CGFloat = 80"))
+        XCTAssertTrue(layout.contains("restartsWidth: CGFloat = 100"))
+        XCTAssertTrue(layout.contains("ageWidth: CGFloat = 74"))
         XCTAssertTrue(layout.contains("statusTextWidth: CGFloat = 94"))
         XCTAssertTrue(layout.contains("favoriteColumnWidth: CGFloat = 34"))
         XCTAssertTrue(layout.contains("defaultAppKitTableWidth"))
@@ -2256,14 +2327,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("container.layer?.masksToBounds = true"))
         XCTAssertTrue(appKitPodTableSource.contains("let maxPillWidth = pill.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -8)"))
         XCTAssertTrue(appKitPodTableSource.contains("maxPillWidth.priority = .defaultHigh"))
-        XCTAssertTrue(appKitPodTableSource.contains("case .cpu: return 42"))
-        XCTAssertTrue(appKitPodTableSource.contains("case .memory: return 48"))
-        XCTAssertTrue(appKitPodTableSource.contains("case .restarts: return 54"))
-        XCTAssertTrue(appKitPodTableSource.contains("case .age: return 40"))
-        XCTAssertTrue(appKitPodTableSource.contains("case .status: return 56"))
+        XCTAssertTrue(appKitPodTableSource.contains("static func podColumnWidths("))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .cpu: return 160"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .memory: return 180"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .restarts: return 180"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .age: return 140"))
+        XCTAssertTrue(appKitPodTableSource.contains("case .status: return 240"))
         XCTAssertTrue(appKitPodTableSource.contains("return favoriteCell(isFavorite: parent.isFavorite(pod), row: row)"))
         XCTAssertTrue(appKitPodTableSource.contains("@objc private func toggleFavoriteButton"))
-        XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 4"))
+        XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 0"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.intercellSpacing = NSSize(width: 0, height: rowGap)"))
         XCTAssertTrue(appKitPodTableSource.contains("x: bounds.minX + horizontalInset"))
         XCTAssertFalse(appKitPodTableSource.contains("drawInterior(withFrame: cellFrame.insetBy(dx: 4, dy: 0)"))
@@ -2402,7 +2475,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(designSource.contains("struct RuneInspectorSection"))
         XCTAssertFalse(designSource.contains("func runeEditorCard"))
         XCTAssertFalse(designSource.contains("func runeListRowCard"))
-        XCTAssertTrue(designSource.contains("allVisibleSelected ? \"Deselect All\" : \"Select All\""))
+        XCTAssertTrue(designSource.contains("allVisibleSelected ? \"Deselect Visible\" : \"Select Visible\""))
+        XCTAssertTrue(designSource.contains("Deselect all visible rows"))
+        XCTAssertTrue(designSource.contains("Select all visible rows"))
+        XCTAssertFalse(designSource.contains("visible pods"))
     }
 
     func testEmptyKubernetesWorkspaceUsesOneFocusedOnboardingBranch() throws {
@@ -3188,17 +3264,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn)"))
         XCTAssertTrue(appKitPodTableSource.contains("case replicas"))
         XCTAssertTrue(appKitPodTableSource.contains("case favorite"))
-        XCTAssertTrue(appKitPodTableSource.contains("deploymentTrailingBreathingRoom: CGFloat = 14"))
-        XCTAssertTrue(appKitPodTableSource.contains("resourceMaximumContentWidth: CGFloat = 860"))
-        XCTAssertTrue(appKitPodTableSource.contains("deploymentMaximumContentWidth: CGFloat = 620"))
-        XCTAssertTrue(appKitPodTableSource.contains("serviceMaximumContentWidth: CGFloat = 740"))
-        XCTAssertTrue(appKitPodTableSource.contains("genericMaximumContentWidth: CGFloat = 820"))
+        XCTAssertFalse(appKitPodTableSource.contains("deploymentTrailingBreathingRoom"))
+        XCTAssertFalse(appKitPodTableSource.contains("resourceMaximumContentWidth"))
+        XCTAssertFalse(appKitPodTableSource.contains("deploymentMaximumContentWidth"))
+        XCTAssertFalse(appKitPodTableSource.contains("serviceMaximumContentWidth"))
+        XCTAssertFalse(appKitPodTableSource.contains("genericMaximumContentWidth"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.podColumnWidths("))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.deploymentColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.serviceColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.helmColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.operatorColumnWidths(visibleWidth: visibleWidth)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.enclosingScrollView?.contentView.bounds.width"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))"))
         XCTAssertTrue(appKitPodTableSource.contains("static func renderedTableWidth(in tableView: NSTableView) -> CGFloat"))
-        XCTAssertTrue(appKitPodTableSource.contains("actionColumnTrailingPadding: CGFloat = 18"))
-        XCTAssertTrue(appKitPodTableSource.contains("columnContentWidth(in: tableView) + (rowHorizontalInset * 2) + actionColumnTrailingPadding"))
+        XCTAssertTrue(appKitPodTableSource.contains("actionColumnTrailingPadding = RuneAppKitResourceListLayout.viewportTrailingPadding"))
+        XCTAssertTrue(appKitPodTableSource.contains("let minimumContentWidth = columnContentWidth(in: tableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("return max(minimumContentWidth, viewportWidth.rounded(.toNearestOrAwayFromZero))"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceColumnResizeNotificationGate.withSuppressedNotifications(for: tableView)"))
+        XCTAssertTrue(appKitPodTableSource.contains("synchronizeResourceTableSortDescriptors("))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneGenericResourceColumnPresentation.resolve(for:"))
+        XCTAssertTrue(appKitPodTableSource.contains("RuneGenericResourceColumnPresentation.tableID(for:"))
+        XCTAssertTrue(appKitPodTableSource.contains("tableColumn.headerToolTip = column.headerToolTip(presentation: presentation)"))
         XCTAssertTrue(appKitPodTableSource.contains("static func updateRenderedTableWidth(on tableView: NSTableView?, updatesVisibleCellsImmediately: Bool = true)"))
         XCTAssertTrue(appKitPodTableSource.contains("headerView.setFrameSize(headerSize)"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.headerView?.needsDisplay = true"))
@@ -3256,7 +3344,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("AppKitHelmReleaseListView("))
         XCTAssertTrue(rootViewSource.contains("enum HelmBrowserTab"))
         XCTAssertTrue(rootViewSource.contains("@State private var helmBrowserTab: HelmBrowserTab = .releases"))
-        XCTAssertTrue(rootViewSource.contains("RuneSegmentedPickerInScroll("))
+        XCTAssertTrue(rootViewSource.contains("RuneAdaptiveSegmentedPicker("))
         XCTAssertTrue(rootViewSource.contains("get: { helmBrowserTab }"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
         XCTAssertTrue(rootViewSource.contains("case .releases:"))
@@ -3311,7 +3399,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
         let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
 
-        XCTAssertTrue(rootViewSource.contains("Label(\"Compare\", systemImage: \"rectangle.split.2x1\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Compare Selected\", systemImage: \"rectangle.split.2x1\")"))
+        XCTAssertTrue(rootViewSource.contains("Label(\"Actions\", systemImage: \"ellipsis.circle\")"))
         XCTAssertTrue(rootViewSource.contains("isGenericResourceComparisonPresented = true"))
         XCTAssertTrue(rootViewSource.contains("genericResourceComparisonPopover"))
         XCTAssertTrue(rootViewSource.contains("Button(\"Copy Summary\")"))
@@ -3922,8 +4011,11 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("toggleOperatorResourceSort"))
         XCTAssertTrue(rootViewSource.contains("Operator resource focus"))
         XCTAssertTrue(rootViewSource.contains("ForEach(OperatorResourceFocus.allCases)"))
-        XCTAssertTrue(rootViewSource.contains("viewModel.setOperatorResourceFocus($0)"))
-        XCTAssertTrue(rootViewSource.contains("scopeDescription: \"the selected operator focus\""))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setOperatorResourceFocus(focus)"))
+        XCTAssertTrue(rootViewSource.contains("scopeDescription: operatorResourceScopeDescription"))
+        XCTAssertTrue(rootViewSource.contains("private var helmResourceListToolbarActions: some View"))
+        XCTAssertTrue(rootViewSource.contains("private var operatorResourceToolbarActions: some View"))
+        XCTAssertTrue(rootViewSource.contains("helmNamespaceScopeMenu(compact:"))
         XCTAssertTrue(rootViewSource.contains("AppKitOperatorResourceListView("))
         XCTAssertTrue(rootViewSource.contains("resources: viewModel.pagedOperatorResources"))
         XCTAssertTrue(rootViewSource.contains("sortColumn: viewModel.operatorResourceSortColumn"))

@@ -27,6 +27,16 @@ enum RuneUILayoutMetrics {
     static let contentControlSpacing: CGFloat = 8
     static let contentModuleSpacing: CGFloat = 12
     static let contentSectionSpacing: CGFloat = 16
+    /// Shared chrome immediately above resource tables.
+    static let resourceListToolbarMinimumHeight: CGFloat = 30
+    static let resourceListToolbarAccessibilityMinimumHeight: CGFloat = 44
+    static let resourceFilterFieldMinimumWidth: CGFloat = 160
+    static let resourceFilterFieldIdealWidth: CGFloat = 240
+    static let resourceFilterFieldMaximumWidth: CGFloat = 280
+    static let resourceFilterControlsMaximumWidth: CGFloat = 312
+    static let resourceFamilyCompactPickerMaximumWidth: CGFloat = 240
+    static let resourceListActionsRailMinimumWidth: CGFloat = 320
+    static let resourceListCompactRowSpacing: CGFloat = 6
     /// Minimum width for the resource list column (`NavigationSplitView` content).
     static let splitContentColumnMinWidth: CGFloat = 360
     /// Matches first-ship column cap (`49c6517` First draft).

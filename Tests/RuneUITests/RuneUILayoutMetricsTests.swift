@@ -43,6 +43,20 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         XCTAssertEqual(RuneUILayoutMetrics.contentControlSpacing, 8)
         XCTAssertEqual(RuneUILayoutMetrics.contentModuleSpacing, 12)
         XCTAssertEqual(RuneUILayoutMetrics.contentSectionSpacing, 16)
+        XCTAssertEqual(RuneUILayoutMetrics.resourceListToolbarMinimumHeight, 30)
+        XCTAssertEqual(RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight, 44)
+        XCTAssertGreaterThan(
+            RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight,
+            RuneUILayoutMetrics.resourceListToolbarMinimumHeight
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.resourceFilterFieldMinimumWidth,
+            RuneUILayoutMetrics.resourceFilterFieldIdealWidth
+        )
+        XCTAssertLessThan(
+            RuneUILayoutMetrics.resourceFilterFieldIdealWidth,
+            RuneUILayoutMetrics.resourceFilterFieldMaximumWidth
+        )
         XCTAssertLessThan(
             RuneUILayoutMetrics.contentControlSpacing,
             RuneUILayoutMetrics.contentModuleSpacing

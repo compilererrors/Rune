@@ -227,8 +227,8 @@ final class RuneDisclosureSectionTests: XCTestCase {
         XCTAssertTrue(commandPalette.contains("Label(\"All Prefixes\", systemImage: \"questionmark.circle\")\n                .runeMinimumInteractiveTarget()"))
         XCTAssertTrue(inspectorFind.contains(".runeMinimumInteractiveTarget(minWidth: 74, alignment: .trailing)"))
         XCTAssertFalse(terminal.contains("height: 26"))
-        XCTAssertTrue(root.contains("RuneIconButton(\n                        \"Previous operator resource page\""))
-        XCTAssertTrue(root.contains("RuneIconButton(\n                        \"Next operator resource page\""))
+        XCTAssertTrue(root.contains("RuneIconButton(\n                \"Previous operator resource page\""))
+        XCTAssertTrue(root.contains("RuneIconButton(\n                \"Next operator resource page\""))
         XCTAssertTrue(root.contains(".frame(minHeight: RuneUILayoutMetrics.iconButtonSize)\n                .background(Capsule()"))
     }
 

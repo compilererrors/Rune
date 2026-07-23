@@ -658,7 +658,7 @@ final class KubernetesClientTests: XCTestCase {
 
         XCTAssertEqual(bindings.first?.name, "api-readers")
         XCTAssertEqual(bindings.first?.primaryText, "→ ClusterRole/view")
-        XCTAssertEqual(bindings.first?.secondaryText, "1 subject(s)")
+        XCTAssertEqual(bindings.first?.secondaryText, "1 subject")
     }
 
     func testKubernetesListJSONReadsRemainingItemCount() {
