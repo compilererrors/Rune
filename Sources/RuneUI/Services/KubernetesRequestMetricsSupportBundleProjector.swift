@@ -53,6 +53,27 @@ public enum KubernetesRequestMetricsSupportBundleProjector {
             .map(\.supportBundleGroup)
     }
 
+    public static func groups(
+        from groups: [KubernetesRESTRequestMetricGroup]
+    ) -> [SupportBundleRequestMetricGroup] {
+        groups.map { group in
+            SupportBundleRequestMetricGroup(
+                sourcePath: group.sourcePath,
+                method: group.method,
+                apiPath: group.apiPath,
+                requestCount: group.requestCount,
+                successCount: group.successCount,
+                failureCount: group.failureCount,
+                cancelledCount: group.cancelledCount,
+                responseBytes: group.responseBytes,
+                totalDurationSeconds: group.totalDurationSeconds,
+                maxDurationSeconds: group.maxDurationSeconds,
+                latestStatusCode: group.latestStatusCode,
+                latestOutcome: group.latestOutcome.rawValue
+            )
+        }
+    }
+
     public static func summary(from summary: KubernetesRESTRequestMetricsSummary) -> SupportBundleRequestMetricsSummary {
         SupportBundleRequestMetricsSummary(
             requestCount: summary.requestCount,

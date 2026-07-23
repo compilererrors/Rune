@@ -1840,7 +1840,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{OverviewClusterSignalsPanelView("))
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{OverviewRecentEventsPanelView("))
-        XCTAssertTrue(compactRootSource.contains("if!simpleMode{OverviewStatCard(title:\"Events\""))
+        XCTAssertTrue(compactRootSource.contains("case.events:returnOverviewCardPresentation("))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n            modules.append(.events)"))
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{authDoctorPanel"))
         XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return false }"))
@@ -1878,6 +1878,29 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(clusterSignalsSource.contains("@AppStorage(RuneSettingsKeys.showHoverTooltips)"))
         XCTAssertTrue(rootViewSource.contains(".runeHelp("))
         XCTAssertTrue(clusterSignalsSource.contains(".runeHelp("))
+    }
+
+    func testPreferencesExposeSharedResourceTableScrollEdgeGlowSetting() throws {
+        let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
+        let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
+        let tableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("showResourceTableScrollEdgeGlow"))
+        XCTAssertTrue(settingsSource.contains("runeShowResourceTableScrollEdgeGlow"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow)"))
+        XCTAssertTrue(preferencesSource.contains("settingsString(.settingsShowResourceTableScrollEdgeGlow)"))
+        XCTAssertEqual(
+            tableSource.components(
+                separatedBy: "@AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow)"
+            ).count - 1,
+            7
+        )
+        XCTAssertEqual(
+            tableSource.components(
+                separatedBy: "RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow("
+            ).count - 1,
+            14
+        )
     }
 
     func testPreferencesExposeConfiguredExportDestinationSettings() throws {
@@ -2536,7 +2559,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(emptyBranch.contains("OverviewStatCard("))
         XCTAssertTrue(connectedBranch.contains("overviewStatusBanner"))
         XCTAssertTrue(connectedBranch.contains("authDoctorPanel"))
-        XCTAssertTrue(connectedBranch.contains("OverviewStatCard("))
+        XCTAssertTrue(connectedBranch.contains("overviewStatCard(module: module, index: index)"))
 
         XCTAssertTrue(
             onboardingSource.contains("@Binding var favoriteImportedContexts: Bool")
@@ -2681,6 +2704,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let providerCredentialFieldSource = try String(contentsOfFile: addClusterProviderCredentialFieldPath, encoding: .utf8)
         let nativeContextSectionSource = try String(contentsOfFile: addClusterNativeContextSectionPath, encoding: .utf8)
         let addClusterPopoverSource = try String(contentsOfFile: addClusterPopoverViewPath, encoding: .utf8)
+        guard let genericPickerStart = pickerSource.range(
+            of: "public final class OpenPanelKubeConfigPicker"
+        ) else {
+            XCTFail("Could not locate the generic kubeconfig picker.")
+            return
+        }
+        let genericPickerSource = String(pickerSource[genericPickerStart.lowerBound...])
 
         XCTAssertTrue(rootViewSource.contains("AddClusterPopoverView("))
         XCTAssertFalse(addClusterPopoverSource.contains("RuneAppViewModel"))
@@ -2895,7 +2925,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("merged.append(source)"))
         XCTAssertTrue(pickerSource.contains("func pickDefaultKubeConfig(at defaultURL: URL) throws -> URL?"))
         XCTAssertTrue(pickerSource.contains("panel.showsHiddenFiles = true"))
-        XCTAssertFalse(pickerSource.contains("allowedContentTypes"))
+        XCTAssertFalse(genericPickerSource.contains("allowedContentTypes"))
+        XCTAssertTrue(pickerSource.contains("panel.allowedContentTypes = [.json]"))
         XCTAssertTrue(kubernetesClientSource.contains("access.retainAccess(to: url)"))
     }
 
@@ -3039,12 +3070,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("KubernetesRequestMetricsDebugPresentation"))
         XCTAssertTrue(viewModelSource.contains("public func refreshKubernetesRequestMetricsSummary()"))
         XCTAssertFalse(viewModelSource.contains("kubeClient.restRequestMetricsReport()"))
-        XCTAssertTrue(viewModelSource.contains("restRequestMetricsReport(contextName: contextName)"))
+        XCTAssertFalse(viewModelSource.contains("restRequestMetricsReport(contextName:"))
+        XCTAssertTrue(viewModelSource.contains("from: selection.sources"))
+        XCTAssertTrue(viewModelSource.contains("context: selection.context"))
         XCTAssertTrue(viewModelSource.contains("KubernetesRequestMetricsDebugPresentation(report: report)"))
         XCTAssertTrue(viewModelSource.contains("stableSelectedContextRequestMetricsReport()"))
-        XCTAssertTrue(viewModelSource.contains("guard let contextName else { return .empty }"))
-        XCTAssertTrue(viewModelSource.contains("report = .empty"))
-        XCTAssertTrue(viewModelSource.contains("guard state.selectedContext?.name == contextName else { continue }"))
+        XCTAssertTrue(viewModelSource.contains("sourceFingerprint: KubeConfigSourceFingerprint"))
+        XCTAssertTrue(viewModelSource.contains("guard !selection.sources.isEmpty else { return .empty }"))
+        XCTAssertTrue(viewModelSource.contains("selectedKubernetesRequestMetricsSelection() == selection"))
     }
 
     func testAuthDoctorStaysReadOnlyAndDoesNotRunMutatingActions() throws {

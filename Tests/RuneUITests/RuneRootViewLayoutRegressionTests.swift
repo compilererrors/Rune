@@ -1018,6 +1018,83 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         }
     }
 
+    func testResourceVisualReleaseMatrixKeepsNativeChromeOnTheSharedGrid() async throws {
+        let themes: [ResourceVisualTheme] = [
+            ResourceVisualTheme(
+                label: "native-light",
+                resolvedTheme: RuneAppearanceTheme.native.resolvedTheme,
+                colorScheme: .light
+            ),
+            ResourceVisualTheme(
+                label: "native-dark",
+                resolvedTheme: RuneAppearanceTheme.native.resolvedTheme,
+                colorScheme: .dark
+            ),
+            ResourceVisualTheme(
+                label: "custom-fjord",
+                resolvedTheme: RuneAppearanceTheme.fjord.resolvedTheme,
+                colorScheme: .dark
+            )
+        ]
+        let textSizes: [(String, DynamicTypeSize)] = [
+            ("default-text", .large),
+            ("accessibility-text", .accessibility2)
+        ]
+        var themeBaselines: [String: ResourceVisualSnapshot] = [:]
+
+        for shellVariant in RuneRootShellVariant.allCases {
+            for (windowWidth, expectsCompactToolbar) in [
+                (CGFloat(1_600), false),
+                (CGFloat(1_160), true)
+            ] {
+                for (textLabel, dynamicTypeSize) in textSizes {
+                    for theme in themes {
+                        let pod = PodSummary(
+                            name: "sample-pod",
+                            namespace: "sample-namespace",
+                            status: "Running",
+                            totalRestarts: 0,
+                            ageDescription: "5m"
+                        )
+                        let label = [
+                            shellVariant.debugLabel,
+                            "\(Int(windowWidth))pt",
+                            textLabel,
+                            theme.label
+                        ].joined(separator: " · ")
+                        let snapshot = try await hostResourceVisualSnapshot(
+                            viewModel: makePodViewModel(pod: pod),
+                            shellVariant: shellVariant,
+                            windowWidth: windowWidth,
+                            theme: theme,
+                            dynamicTypeSize: dynamicTypeSize
+                        )
+                        assertResourceVisualGrid(
+                            snapshot,
+                            label: label,
+                            expectsCompactToolbar: expectsCompactToolbar
+                        )
+
+                        let baselineKey = [
+                            shellVariant.rawValue,
+                            "\(Int(windowWidth))",
+                            textLabel
+                        ].joined(separator: ":")
+                        if let baseline = themeBaselines[baselineKey] {
+                            assertThemeDoesNotMoveResourceChrome(
+                                baseline: baseline,
+                                candidate: snapshot,
+                                label: label
+                            )
+                        } else {
+                            themeBaselines[baselineKey] = snapshot
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func testWorkloadResourceToolbarKeepsTableTopStableAcrossKindsAndSelectionState() async throws {
         let pod = PodSummary(
             name: "sample-pod",
@@ -2402,6 +2479,345 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let contentHeight: CGFloat
         let tableFrame: CGRect
         let layout: RuneRootLayoutSnapshot
+    }
+
+    private struct ResourceVisualTheme {
+        let label: String
+        let resolvedTheme: RuneResolvedTheme
+        let colorScheme: ColorScheme
+    }
+
+    private struct ResourceVisualSnapshot {
+        let layout: RuneRootLayoutSnapshot
+        let nativeChromeFrame: CGRect
+        let headerViewportFrame: CGRect
+        let firstRowViewportFrame: CGRect
+        let sortedColumnFrame: CGRect
+        let sortIndicatorFrame: CGRect
+        let sortIndicatorLuminanceRange: CGFloat
+    }
+
+    private func hostResourceVisualSnapshot(
+        viewModel: RuneAppViewModel,
+        shellVariant: RuneRootShellVariant,
+        windowWidth: CGFloat,
+        theme: ResourceVisualTheme,
+        dynamicTypeSize: DynamicTypeSize
+    ) async throws -> ResourceVisualSnapshot {
+        prepareLayoutTestViewModel(viewModel)
+        viewModel.state.selectedSection = .workloads
+        viewModel.state.selectedWorkloadKind = .pod
+        var layoutSnapshots: [RuneRootLayoutSnapshot] = []
+
+        let rootView = RuneRootView(
+            viewModel: viewModel,
+            onLayoutSnapshotChange: { snapshot in
+                layoutSnapshots.append(snapshot)
+            },
+            debugDisableBootstrap: true,
+            shellVariant: shellVariant,
+            initialSidebarWidthOverride: 280,
+            initialDetailWidthOverride: 520
+        )
+        .runeAppearanceTheme(theme.resolvedTheme)
+        .preferredColorScheme(theme.colorScheme)
+        .dynamicTypeSize(dynamicTypeSize)
+        let host = NSHostingController(rootView: rootView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: 900))
+        window.contentView = container
+        let hostView = host.view
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let timeout = Date().addingTimeInterval(2.0)
+        while Date() < timeout {
+            container.layoutSubtreeIfNeeded()
+            await Task.yield()
+
+            if let tableView = firstTableView(in: container),
+               tableView.numberOfRows > 0,
+               let scrollView = tableView.enclosingScrollView,
+               let headerView = tableView.headerView as? RuneAppKitResourceTableHeaderView,
+               let headerClipView = headerView.superview as? NSClipView,
+               let sortedColumnIndex = tableView.tableColumns.firstIndex(where: {
+                   ($0.headerCell as? RuneAppKitResourceTableHeaderCell)?.isSorted == true
+               }),
+               let layout = layoutSnapshots.last(where: {
+                   $0.section == .workloads
+                       && $0.workloadKind == .pod
+                       && $0.resourceFamilyFrame != nil
+                       && $0.resourceToolbarFrame != nil
+                       && $0.resourceTableSurfaceFrame != nil
+               }) {
+                let sortedColumnRect = headerView.headerRect(ofColumn: sortedColumnIndex)
+                let indicatorRect = RuneAppKitResourceListLayout.sortIndicatorRect(
+                    in: sortedColumnRect
+                )
+                guard let sortIndicatorLuminanceRange = renderedLuminanceRange(
+                    in: indicatorRect,
+                    of: headerView
+                ) else {
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                    continue
+                }
+                let visibleFirstRow = tableView.rect(ofRow: 0).intersection(tableView.visibleRect)
+                guard !visibleFirstRow.isNull, visibleFirstRow.width > 1 else {
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                    continue
+                }
+                let nativeBoundsFrame = topOriginRect(
+                    scrollView.bounds,
+                    from: scrollView,
+                    in: container
+                )
+                let nativeChromeFrame = topOriginFrame(of: scrollView, in: container)
+                let nativeCoordinateOffset = CGPoint(
+                    x: nativeChromeFrame.minX - nativeBoundsFrame.minX,
+                    y: nativeChromeFrame.minY - nativeBoundsFrame.minY
+                )
+
+                func nativeViewportRect(_ rect: CGRect, from view: NSView) -> CGRect {
+                    topOriginRect(rect, from: view, in: container)
+                        .offsetBy(
+                            dx: nativeCoordinateOffset.x,
+                            dy: nativeCoordinateOffset.y
+                        )
+                }
+
+                return ResourceVisualSnapshot(
+                    layout: layout,
+                    nativeChromeFrame: nativeChromeFrame,
+                    headerViewportFrame: nativeViewportRect(
+                        headerClipView.bounds,
+                        from: headerClipView
+                    ),
+                    firstRowViewportFrame: nativeViewportRect(
+                        visibleFirstRow,
+                        from: tableView
+                    ),
+                    sortedColumnFrame: nativeViewportRect(
+                        sortedColumnRect,
+                        from: headerView
+                    ),
+                    sortIndicatorFrame: nativeViewportRect(
+                        indicatorRect,
+                        from: headerView
+                    ),
+                    sortIndicatorLuminanceRange: sortIndicatorLuminanceRange
+                )
+            }
+
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTFail("Timed out waiting for the complete native resource visual hierarchy")
+        throw CancellationError()
+    }
+
+    private func topOriginRect(_ rect: CGRect, from view: NSView, in root: NSView) -> CGRect {
+        let converted = view.convert(rect, to: root)
+        return CGRect(
+            x: converted.minX,
+            y: root.bounds.height - converted.maxY,
+            width: converted.width,
+            height: converted.height
+        )
+    }
+
+    private func topOriginFrame(of view: NSView, in root: NSView) -> CGRect {
+        guard let superview = view.superview else {
+            return topOriginRect(view.bounds, from: view, in: root)
+        }
+        return topOriginRect(view.frame, from: superview, in: root)
+    }
+
+    private func renderedLuminanceRange(
+        in rect: NSRect,
+        of view: NSView
+    ) -> CGFloat? {
+        let sampledRect = rect.integral.intersection(view.bounds)
+        guard sampledRect.width > 0,
+              sampledRect.height > 0,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: sampledRect) else {
+            return nil
+        }
+
+        view.cacheDisplay(in: sampledRect, to: bitmap)
+        var minimum = CGFloat.greatestFiniteMagnitude
+        var maximum = -CGFloat.greatestFiniteMagnitude
+        for x in 0..<bitmap.pixelsWide {
+            for y in 0..<bitmap.pixelsHigh {
+                guard let color = bitmap.colorAt(x: x, y: y)?
+                    .usingColorSpace(.sRGB),
+                    color.alphaComponent > 0.2 else {
+                    continue
+                }
+                let luminance = 0.2126 * color.redComponent
+                    + 0.7152 * color.greenComponent
+                    + 0.0722 * color.blueComponent
+                minimum = min(minimum, luminance)
+                maximum = max(maximum, luminance)
+            }
+        }
+        guard minimum.isFinite, maximum.isFinite else { return nil }
+        return maximum - minimum
+    }
+
+    private func assertResourceVisualGrid(
+        _ snapshot: ResourceVisualSnapshot,
+        label: String,
+        expectsCompactToolbar: Bool
+    ) {
+        guard let family = snapshot.layout.resourceFamilyFrame,
+              let toolbar = snapshot.layout.resourceToolbarFrame,
+              let filter = snapshot.layout.resourceFilterRailFrame,
+              let actions = snapshot.layout.resourceActionsRailFrame,
+              let tableSurface = snapshot.layout.resourceTableSurfaceFrame else {
+            XCTFail("\(label) did not report every shared resource rail.")
+            return
+        }
+
+        for (name, frame) in [
+            ("family", family),
+            ("toolbar", toolbar),
+            ("filter", filter),
+            ("actions", actions),
+            ("table-surface", tableSurface),
+            ("native-table", snapshot.nativeChromeFrame),
+            ("native-header", snapshot.headerViewportFrame),
+            ("first-row", snapshot.firstRowViewportFrame),
+            ("sort-indicator", snapshot.sortIndicatorFrame)
+        ] {
+            XCTAssertGreaterThan(frame.width, 1, "\(label) \(name) width collapsed.")
+            XCTAssertGreaterThan(frame.height, 1, "\(label) \(name) height collapsed.")
+        }
+
+        XCTAssertEqual(family.minX, toolbar.minX, accuracy: 1, "\(label) family/toolbar leading drift.")
+        XCTAssertEqual(toolbar.minX, tableSurface.minX, accuracy: 1, "\(label) toolbar/table leading drift.")
+        XCTAssertEqual(family.maxX, toolbar.maxX, accuracy: 1, "\(label) family/toolbar trailing drift.")
+        XCTAssertEqual(toolbar.maxX, tableSurface.maxX, accuracy: 1, "\(label) toolbar/table trailing drift.")
+        XCTAssertEqual(
+            tableSurface.minX,
+            snapshot.nativeChromeFrame.minX,
+            accuracy: 1,
+            "\(label) native table missed the shared leading grid."
+        )
+        XCTAssertEqual(
+            tableSurface.maxX,
+            snapshot.nativeChromeFrame.maxX,
+            accuracy: 1,
+            "\(label) native table missed the shared trailing grid."
+        )
+        XCTAssertEqual(
+            snapshot.nativeChromeFrame.minY,
+            snapshot.headerViewportFrame.minY,
+            accuracy: 1,
+            "\(label) native header did not start at the scroll chrome's top edge."
+        )
+
+        XCTAssertEqual(
+            snapshot.headerViewportFrame.minX,
+            snapshot.firstRowViewportFrame.minX,
+            accuracy: 1,
+            "\(label) header and first row leading edges drifted."
+        )
+        XCTAssertEqual(
+            snapshot.headerViewportFrame.maxX,
+            snapshot.firstRowViewportFrame.maxX,
+            accuracy: 1,
+            "\(label) header and first row trailing edges drifted."
+        )
+        XCTAssertEqual(
+            snapshot.firstRowViewportFrame.minY - snapshot.headerViewportFrame.maxY,
+            5,
+            accuracy: 1,
+            "\(label) native header-to-first-row spacing drifted."
+        )
+
+        XCTAssertTrue(
+            snapshot.sortedColumnFrame.contains(snapshot.sortIndicatorFrame),
+            "\(label) active sort indicator escaped its column header."
+        )
+        XCTAssertEqual(
+            snapshot.sortedColumnFrame.maxX - snapshot.sortIndicatorFrame.maxX,
+            RuneAppKitResourceListLayout.sortIndicatorTrailingInset,
+            accuracy: 0.75,
+            "\(label) active sort indicator moved into the resize zone."
+        )
+        XCTAssertGreaterThan(
+            snapshot.sortIndicatorLuminanceRange,
+            0.12,
+            "\(label) active sort indicator did not render with visible contrast."
+        )
+
+        if expectsCompactToolbar {
+            XCTAssertEqual(filter.minX, actions.minX, accuracy: 1, "\(label) compact rails have different starts.")
+            XCTAssertEqual(filter.width, actions.width, accuracy: 1, "\(label) compact rails have different widths.")
+            XCTAssertEqual(
+                actions.minY - filter.maxY,
+                RuneUILayoutMetrics.resourceListCompactRowSpacing,
+                accuracy: 1,
+                "\(label) compact rail gap drifted."
+            )
+        } else {
+            XCTAssertEqual(filter.midY, actions.midY, accuracy: 1, "\(label) default rails lost their baseline.")
+            XCTAssertEqual(
+                actions.minX - filter.maxX,
+                RuneUILayoutMetrics.contentControlSpacing,
+                accuracy: 1,
+                "\(label) default rail gutter drifted."
+            )
+        }
+    }
+
+    private func assertThemeDoesNotMoveResourceChrome(
+        baseline: ResourceVisualSnapshot,
+        candidate: ResourceVisualSnapshot,
+        label: String
+    ) {
+        let baselineFrames = [
+            baseline.layout.resourceFamilyFrame,
+            baseline.layout.resourceToolbarFrame,
+            baseline.layout.resourceTableSurfaceFrame,
+            baseline.nativeChromeFrame,
+            baseline.headerViewportFrame,
+            baseline.firstRowViewportFrame,
+            baseline.sortIndicatorFrame
+        ]
+        let candidateFrames = [
+            candidate.layout.resourceFamilyFrame,
+            candidate.layout.resourceToolbarFrame,
+            candidate.layout.resourceTableSurfaceFrame,
+            candidate.nativeChromeFrame,
+            candidate.headerViewportFrame,
+            candidate.firstRowViewportFrame,
+            candidate.sortIndicatorFrame
+        ]
+
+        for (index, pair) in zip(baselineFrames, candidateFrames).enumerated() {
+            guard let baselineFrame = pair.0, let candidateFrame = pair.1 else {
+                XCTFail("\(label) theme comparison frame \(index) was missing.")
+                continue
+            }
+            XCTAssertEqual(baselineFrame.minX, candidateFrame.minX, accuracy: 1, "\(label) theme moved frame \(index) horizontally.")
+            XCTAssertEqual(baselineFrame.minY, candidateFrame.minY, accuracy: 1, "\(label) theme moved frame \(index) vertically.")
+            XCTAssertEqual(baselineFrame.width, candidateFrame.width, accuracy: 1, "\(label) theme resized frame \(index).")
+            XCTAssertEqual(baselineFrame.height, candidateFrame.height, accuracy: 1, "\(label) theme changed frame \(index) height.")
+        }
     }
 
     private func hostMiddlePanelTableSnapshot(

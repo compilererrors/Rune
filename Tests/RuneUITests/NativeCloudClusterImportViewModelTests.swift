@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import RuneCore
 @testable import RuneDiagnostics
+@testable import RuneExport
 @testable import RuneFakeK8sSupport
 @testable import RuneKube
 @testable import RuneSecurity
@@ -282,11 +283,142 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertNil(state.lastError)
     }
 
+    func testNativeImportRejectsCredentialConnectAndDisconnectWithoutPresentationMutation() async throws {
+        let importer = HangingNativeCloudClusterImporter()
+        let configurator = RecordingNativeCloudCredentialConfigurator()
+        let state = RuneAppState()
+        state.setAuthDoctorChecks([
+            RuneHealthCheck(
+                id: "synthetic-baseline",
+                title: "Synthetic baseline",
+                status: .passed,
+                message: "Synthetic diagnostic remains unchanged."
+            )
+        ])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            nativeCloudClusterImporter: importer,
+            nativeAuthConfigurator: configurator,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = KubernetesNativeCredentialRequest(
+            bindingID: "synthetic-binding",
+            provider: .awsEKS,
+            contextName: "synthetic-context",
+            clusterName: "synthetic-cluster",
+            userName: "synthetic-user",
+            server: "https://cluster.example.invalid",
+            exec: KubernetesNativeAuthExecDescriptor(command: "synthetic-auth-plugin"),
+            authProvider: nil
+        )
+
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil { await importer.hasStarted() }
+        let cloudStatus = viewModel.cloudKubeConfigImportStatus
+        let nativeStatus = viewModel.nativeKubernetesAuthStatus
+        let checks = state.authDoctorChecks
+        let error = state.lastError
+
+        viewModel.connectEKSNativeAuth(
+            request: request,
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.disconnectNativeAuth(request: request, expectedProvider: .awsEKS)
+
+        XCTAssertTrue(viewModel.isRunningNativeCloudClusterImport)
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, cloudStatus)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, nativeStatus)
+        XCTAssertEqual(state.authDoctorChecks, checks)
+        XCTAssertEqual(state.lastError, error)
+        let awsCall = await configurator.awsCall()
+        let removedBindingIDs = await configurator.removedBindingIDs()
+        XCTAssertNil(awsCall)
+        XCTAssertEqual(removedBindingIDs, [])
+
+        viewModel.cancelNativeCloudClusterImport()
+        try await waitUntil { !viewModel.isRunningNativeCloudClusterImport }
+    }
+
+    func testGKEFileSelectionRejectsCredentialConnectAndDisconnectWithoutPresentationMutation() async {
+        let picker = HoldingGKECredentialFilePicker()
+        let configurator = RecordingNativeCloudCredentialConfigurator()
+        let state = RuneAppState()
+        state.setAuthDoctorChecks([
+            RuneHealthCheck(
+                id: "synthetic-baseline",
+                title: "Synthetic baseline",
+                status: .passed,
+                message: "Synthetic diagnostic remains unchanged."
+            )
+        ])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            gkeCredentialFilePicker: picker,
+            nativeAuthConfigurator: configurator,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = KubernetesNativeCredentialRequest(
+            bindingID: "synthetic-binding",
+            provider: .awsEKS,
+            contextName: "synthetic-context",
+            clusterName: "synthetic-cluster",
+            userName: "synthetic-user",
+            server: "https://cluster.example.invalid",
+            exec: KubernetesNativeAuthExecDescriptor(command: "synthetic-auth-plugin"),
+            authProvider: nil
+        )
+
+        viewModel.chooseAndRunNativeGKEClusterImport(
+            projectID: "synthetic-project",
+            location: "synthetic-location",
+            clusterName: "synthetic-cluster"
+        )
+        XCTAssertEqual(picker.beginCount, 1)
+        XCTAssertTrue(viewModel.isRunningNativeCloudClusterImport)
+        let cloudStatus = viewModel.cloudKubeConfigImportStatus
+        let nativeStatus = viewModel.nativeKubernetesAuthStatus
+        let checks = state.authDoctorChecks
+        let error = state.lastError
+
+        viewModel.connectEKSNativeAuth(
+            request: request,
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.disconnectNativeAuth(request: request, expectedProvider: .awsEKS)
+        await Task.yield()
+        let awsCall = await configurator.awsCall()
+        let removedBindingIDs = await configurator.removedBindingIDs()
+
+        XCTAssertTrue(viewModel.isRunningNativeCloudClusterImport)
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, cloudStatus)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, nativeStatus)
+        XCTAssertEqual(state.authDoctorChecks, checks)
+        XCTAssertEqual(state.lastError, error)
+        XCTAssertNil(awsCall)
+        XCTAssertEqual(removedBindingIDs, [])
+
+        viewModel.cancelNativeCloudClusterImport()
+        XCTAssertEqual(picker.cancelCount, 1)
+        XCTAssertFalse(viewModel.isRunningNativeCloudClusterImport)
+    }
+
     func testNativeImportFailurePublishesActionablePrivacySafeDiagnostic() async throws {
         let sensitiveValue = "synthetic-sensitive-native-import-payload"
         let state = RuneAppState()
+        let exporter = NativeImportRecordingExporter()
         let viewModel = RuneAppViewModel(
             state: state,
+            exporter: exporter,
             nativeCloudClusterImporter: SensitiveFailingNativeCloudClusterImporter(
                 message: sensitiveValue
             ),
@@ -328,6 +460,76 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertTrue(state.kubeConfigSources.isEmpty)
         XCTAssertFalse(surfaced.contains(sensitiveValue))
         XCTAssertFalse(surfaced.contains("synthetic-secret-material"))
+
+        let authDoctorMessage = try XCTUnwrap(
+            state.authDoctorChecks.first { $0.id == "cloud-login-eks" }?.message
+        )
+        XCTAssertTrue(authDoctorMessage.contains(diagnostic.classification))
+        XCTAssertTrue(authDoctorMessage.contains(diagnostic.nextAction))
+
+        viewModel.saveSupportBundle()
+        try await waitUntil { exporter.saves.count == 1 }
+        let bundle = try JSONDecoder().decode(
+            SupportBundleRequest.self,
+            from: try XCTUnwrap(exporter.saves.first)
+        )
+        XCTAssertEqual(bundle.cloudImportDiagnostic?.classification, diagnostic.classification)
+        XCTAssertEqual(bundle.cloudImportDiagnostic?.nextAction, diagnostic.nextAction)
+        XCTAssertFalse(String(decoding: exporter.saves[0], as: UTF8.self).contains(sensitiveValue))
+        XCTAssertFalse(String(decoding: exporter.saves[0], as: UTF8.self).contains("synthetic-secret-material"))
+    }
+
+    func testClassifiedNativeFailureSurvivesAuthDoctorAndSupportBundleProjection() async throws {
+        let state = RuneAppState()
+        let exporter = NativeImportRecordingExporter()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            exporter: exporter,
+            nativeCloudClusterImporter: DeniedEKSNativeCloudClusterImporter(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil {
+            viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
+                && !viewModel.isRunningNativeCloudClusterImport
+        }
+
+        let diagnostic = try XCTUnwrap(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertEqual(diagnostic.classification, "Authorization failed")
+        XCTAssertTrue(diagnostic.nextAction.contains("eks:DescribeCluster"))
+        let authDoctorMessage = try XCTUnwrap(
+            state.authDoctorChecks.first { $0.id == "cloud-login-eks" }?.message
+        )
+        XCTAssertTrue(authDoctorMessage.contains("Classification: Authorization failed"))
+        XCTAssertTrue(authDoctorMessage.contains(diagnostic.nextAction))
+
+        viewModel.runAuthDoctor()
+        try await waitUntil {
+            !state.isRunningAuthDoctor
+                && state.authDoctorChecks.contains { $0.id == "kubeconfig" }
+        }
+        let diagnosticAfterAuthDoctor = try XCTUnwrap(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertEqual(diagnosticAfterAuthDoctor, diagnostic)
+
+        viewModel.saveSupportBundle()
+        try await waitUntil { exporter.saves.count == 1 }
+        let bundle = try JSONDecoder().decode(
+            SupportBundleRequest.self,
+            from: try XCTUnwrap(exporter.saves.first)
+        )
+        XCTAssertEqual(bundle.cloudImportDiagnostic?.classification, "Authorization failed")
+        XCTAssertEqual(bundle.cloudImportDiagnostic?.nextAction, diagnosticAfterAuthDoctor.nextAction)
+        XCTAssertTrue(bundle.authDoctorChecks.contains { $0.id == "kubeconfig" })
+        let bundleJSON = String(decoding: exporter.saves[0], as: UTF8.self)
+        XCTAssertFalse(bundleJSON.contains("SYNTHETICACCESSKEY"))
+        XCTAssertFalse(bundleJSON.contains("synthetic-secret-material"))
     }
 
     func testImportAsCopyBindsCredentialsToFinalRenamedContext() async throws {
@@ -562,6 +764,29 @@ private struct SensitiveNativeImportFailure: LocalizedError, Sendable {
     var errorDescription: String? { message }
 }
 
+private struct DeniedEKSNativeCloudClusterImporter: NativeCloudClusterImporting {
+    func importAKS(
+        _: AKSNativeClusterImportRequest,
+        clientSecret _: String
+    ) async throws -> NativeCloudClusterImportResult {
+        throw CancellationError()
+    }
+
+    func importEKS(
+        _: AWSEKSClusterImportRequest,
+        credentials _: AWSEKSCredentials
+    ) async throws -> NativeCloudClusterImportResult {
+        throw AWSEKSClusterImportError.accessDenied
+    }
+
+    func importGKE(
+        _: GKENativeClusterImportRequest,
+        serviceAccountJSON _: Data
+    ) async throws -> NativeCloudClusterImportResult {
+        throw CancellationError()
+    }
+}
+
 private actor RecordingNativeCloudCredentialConfigurator:
     KubernetesNativeAuthConfiguring,
     KubernetesNativeCredentialProviding {
@@ -571,6 +796,7 @@ private actor RecordingNativeCloudCredentialConfigurator:
     }
 
     private var recordedAWSCall: AWSCall?
+    private var recordedRemovedBindingIDs: [String] = []
     private let bindingDelayNanoseconds: UInt64
     private let shouldFailBinding: Bool
     private var bindingStarted = false
@@ -619,7 +845,8 @@ private actor RecordingNativeCloudCredentialConfigurator:
         displayName _: String
     ) async throws {}
 
-    func removeProfile(for _: String) async throws {
+    func removeProfile(for bindingID: String) async throws {
+        recordedRemovedBindingIDs.append(bindingID)
         recordedAWSCall = nil
     }
 
@@ -634,7 +861,37 @@ private actor RecordingNativeCloudCredentialConfigurator:
     func invalidateCredential(for _: String) async {}
 
     func awsCall() -> AWSCall? { recordedAWSCall }
+    func removedBindingIDs() -> [String] { recordedRemovedBindingIDs }
     func hasStartedBinding() -> Bool { bindingStarted }
+}
+
+@MainActor
+private final class NativeImportRecordingExporter: FileExporting {
+    private(set) var saves: [Data] = []
+
+    func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
+        saves.append(data)
+        return FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+    }
+}
+
+@MainActor
+private final class HoldingGKECredentialFilePicker: GKECredentialFilePicking {
+    private(set) var beginCount = 0
+    private(set) var cancelCount = 0
+    private var completion: (@MainActor (GKECredentialFileSelection) -> Void)?
+
+    func beginSelection(
+        completion: @escaping @MainActor (GKECredentialFileSelection) -> Void
+    ) {
+        beginCount += 1
+        self.completion = completion
+    }
+
+    func cancelSelection() {
+        cancelCount += 1
+        completion = nil
+    }
 }
 
 private struct SyntheticNativeCredentialBindingError: LocalizedError {

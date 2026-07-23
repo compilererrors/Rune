@@ -23,14 +23,16 @@ public final class DiagnosticsRecorder {
     /// Persistent verbose trace (timestamp, category, message). Gated by `runeVerboseDebugTrace` or `RUNE_VERBOSE_DEBUG_TRACE=1` at launch.
     public func trace(_ category: String, _ message: String) {
         guard UserDefaults.standard.runeVerboseDebugTrace else { return }
+        let safeCategory = VerboseKubeTrace.privacySafeMessage(category)
+        let safeMessage = VerboseKubeTrace.privacySafeMessage(message)
         if RuneLaunchEnvironment.isMirroringDiagnosticsToStderr {
             Self.stderrQueue.async {
-                let line = "[Rune trace] [\(category)] \(message)\n"
+                let line = "[Rune trace] [\(safeCategory)] \(safeMessage)\n"
                 if let data = line.data(using: .utf8) {
                     try? FileHandle.standardError.write(contentsOf: data)
                 }
             }
         }
-        DebugTraceWriter.append(category: category, message: message)
+        DebugTraceWriter.append(category: safeCategory, message: safeMessage)
     }
 }

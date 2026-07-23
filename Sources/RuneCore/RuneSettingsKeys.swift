@@ -65,6 +65,8 @@ public enum RuneSettingsKeys {
     public static let simpleMode = "rune.settings.appearance.simpleMode"
     /// When true, Rune shows native hover help for explanatory labels and controls.
     public static let showHoverTooltips = "rune.settings.appearance.showHoverTooltips"
+    /// When true, horizontally scrollable resource tables show a subtle glow at edges with hidden columns.
+    public static let showResourceTableScrollEdgeGlow = "rune.settings.appearance.showResourceTableScrollEdgeGlow"
     /// BCP-47-ish language code for UI strings that have been migrated to Rune's local string catalog.
     public static let interfaceLanguage = "rune.settings.appearance.interfaceLanguage"
     public static let interfaceLanguageDefault = "en"
@@ -167,6 +169,7 @@ public enum RuneSettingsKeys {
             hideManagedFieldsByDefault: true,
             simpleMode: false,
             showHoverTooltips: true,
+            showResourceTableScrollEdgeGlow: true,
             interfaceLanguage: interfaceLanguageDefault,
             appearanceTheme: appearanceThemeDefault,
             appearanceRecentThemes: [appearanceThemeDefault],
@@ -367,6 +370,11 @@ public extension UserDefaults {
     var runeShowHoverTooltips: Bool {
         get { (object(forKey: RuneSettingsKeys.showHoverTooltips) as? Bool) ?? true }
         set { set(newValue, forKey: RuneSettingsKeys.showHoverTooltips) }
+    }
+
+    var runeShowResourceTableScrollEdgeGlow: Bool {
+        get { (object(forKey: RuneSettingsKeys.showResourceTableScrollEdgeGlow) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.showResourceTableScrollEdgeGlow) }
     }
 
     var runeInterfaceLanguage: String {

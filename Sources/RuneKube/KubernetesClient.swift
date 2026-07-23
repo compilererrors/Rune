@@ -108,12 +108,14 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         self.access = access
     }
 
+    @available(*, deprecated, message: "Use restRequestMetricsReport().metrics so metrics and summary are captured atomically.")
     public func restRequestMetricsSnapshot() async -> [KubernetesRESTRequestMetric] {
-        await requestMetricsRecorder.snapshot()
+        await requestMetricsRecorder.report().metrics
     }
 
+    @available(*, deprecated, message: "Use restRequestMetricsReport(contextName:).metrics so metrics and summary are captured atomically.")
     public func restRequestMetricsSnapshot(contextName: String) async -> [KubernetesRESTRequestMetric] {
-        await requestMetricsRecorder.snapshot(contextName: contextName)
+        await requestMetricsRecorder.report(contextName: contextName).metrics
     }
 
     public func restRequestMetricsSummary() async -> KubernetesRESTRequestMetricsSummary {
@@ -130,6 +132,23 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
     public func restRequestMetricsReport(contextName: String) async -> KubernetesRESTRequestMetricsReport {
         await requestMetricsRecorder.report(contextName: contextName)
+    }
+
+    public func restRequestMetricsReport(
+        from sources: [KubeConfigSource],
+        context: KubeContext
+    ) async -> KubernetesRESTRequestMetricsReport {
+        guard let environment = try? kubeconfigEnvironment(from: sources),
+              let scopeIdentity = try? await restClient.requestMetricsScopeIdentity(
+                  environment: environment,
+                  contextName: context.name
+              ) else {
+            return .empty
+        }
+        return await requestMetricsRecorder.report(
+            contextName: context.name,
+            scopeIdentity: scopeIdentity
+        )
     }
 
     public func listContexts(from sources: [KubeConfigSource]) async throws -> [KubeContext] {
@@ -1686,23 +1705,55 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     ) async throws {
         let env = try kubeconfigEnvironment(from: sources)
         let registrationGeneration = await terminalSessionRegistry.beginStart(id: sessionID)
-        let handle = try await restClient.startPodTerminalSession(
-            environment: env,
-            contextName: context.name,
-            namespace: namespace,
-            podName: podName,
-            container: container,
-            shellCommand: shellCommand,
-            onOutput: onOutput,
-            onTermination: onTermination
-        )
-        let didInsert = await terminalSessionRegistry.insert(
-            handle: handle,
-            id: sessionID,
-            generation: registrationGeneration
-        )
-        guard didInsert else {
-            throw CancellationError()
+        do {
+            try Task.checkCancellation()
+            if await terminalSessionRegistry.isStopRequested(
+                id: sessionID,
+                generation: registrationGeneration
+            ) {
+                _ = await terminalSessionRegistry.finishStart(
+                    id: sessionID,
+                    generation: registrationGeneration
+                )
+                throw CancellationError()
+            }
+            let handle = try await restClient.startPodTerminalSession(
+                environment: env,
+                contextName: context.name,
+                namespace: namespace,
+                podName: podName,
+                container: container,
+                shellCommand: shellCommand,
+                onOutput: onOutput,
+                onTermination: { [terminalSessionRegistry] exitCode in
+                    Task {
+                        let shouldNotify = await terminalSessionRegistry.complete(
+                            id: sessionID,
+                            generation: registrationGeneration
+                        )
+                        guard shouldNotify else { return }
+                        onTermination(exitCode)
+                    }
+                }
+            )
+            if Task.isCancelled {
+                handle.terminate()
+                throw CancellationError()
+            }
+            let didInsert = await terminalSessionRegistry.insert(
+                handle: handle,
+                id: sessionID,
+                generation: registrationGeneration
+            )
+            guard didInsert else {
+                throw CancellationError()
+            }
+        } catch {
+            _ = await terminalSessionRegistry.finishStart(
+                id: sessionID,
+                generation: registrationGeneration
+            )
+            throw error
         }
     }
 
@@ -1721,7 +1772,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     }
 
     public func stopPodTerminalSession(id: String) async {
-        let handle = await terminalSessionRegistry.remove(id: id)
+        let handle = await terminalSessionRegistry.remove(
+            id: id,
+            rememberIfNotStarted: true
+        )
         handle?.terminate()
     }
 
@@ -1908,6 +1962,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             status: .starting
         )
 
+        let registrationGeneration = await portForwardRegistry.beginStart(id: sessionID)
         onEvent(baseSession)
 
         func stoppedSession(message: String) -> PortForwardSession {
@@ -1946,6 +2001,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             case .pod:
                 podName = targetName
             case .service:
+                try Task.checkCancellation()
                 let selectorMap = try await requiredServiceSelectorViaREST(
                     environment: env,
                     context: context,
@@ -1972,7 +2028,15 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 podName = selectedPod.name
             }
 
-            if await portForwardRegistry.isStopRequested(id: sessionID) {
+            try Task.checkCancellation()
+            if await portForwardRegistry.isStopRequested(
+                id: sessionID,
+                generation: registrationGeneration
+            ) {
+                _ = await portForwardRegistry.finishStart(
+                    id: sessionID,
+                    generation: registrationGeneration
+                )
                 let session = stoppedSession(message: "Port-forward stopped before it connected.")
                 onEvent(session)
                 return session
@@ -1987,26 +2051,40 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 remotePort: remotePort,
                 address: address,
                 onReady: {
-                    onEvent(
-                        PortForwardSession(
+                    Task {
+                        guard await self.portForwardRegistry.shouldDeliverReady(
                             id: sessionID,
-                            contextName: context.name,
-                            namespace: namespace,
-                            targetKind: targetKind,
-                            targetName: targetName,
-                            localPort: localPort,
-                            remotePort: remotePort,
-                            address: address,
-                            status: .active,
-                            lastMessage: "Forwarding \(address):\(localPort) to \(podName):\(remotePort)"
+                            generation: registrationGeneration
+                        ) else {
+                            return
+                        }
+                        onEvent(
+                            PortForwardSession(
+                                id: sessionID,
+                                contextName: context.name,
+                                namespace: namespace,
+                                targetKind: targetKind,
+                                targetName: targetName,
+                                localPort: localPort,
+                                remotePort: remotePort,
+                                address: address,
+                                status: .active,
+                                lastMessage: "Forwarding \(address):\(localPort) to \(podName):\(remotePort)"
+                            )
                         )
-                    )
+                    }
                 },
                 onFailure: { message in
                     Task {
-                        if let handle = await self.portForwardRegistry.remove(id: sessionID) {
-                            handle.terminate()
+                        let disposition = await self.portForwardRegistry.recordFailure(
+                            message: message,
+                            id: sessionID,
+                            generation: registrationGeneration
+                        )
+                        guard case let .active(handle) = disposition else {
+                            return
                         }
+                        handle.terminate()
                         onEvent(
                             PortForwardSession(
                                 id: sessionID,
@@ -2024,27 +2102,44 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     }
                 }
             )
-            let didInsert = await portForwardRegistry.insert(handle: handle, id: sessionID)
-            guard didInsert else {
+            if Task.isCancelled {
                 handle.terminate()
+                throw CancellationError()
+            }
+            let registrationResult = await portForwardRegistry.register(
+                handle: handle,
+                id: sessionID,
+                generation: registrationGeneration
+            )
+            switch registrationResult {
+            case .inserted:
+                return PortForwardSession(
+                    id: sessionID,
+                    contextName: context.name,
+                    namespace: namespace,
+                    targetKind: targetKind,
+                    targetName: targetName,
+                    localPort: localPort,
+                    remotePort: remotePort,
+                    address: address,
+                    status: .starting,
+                    lastMessage: "Starting port-forward to \(podName):\(remotePort)"
+                )
+            case .failed(let message):
+                let session = failedSession(message: message)
+                onEvent(session)
+                return session
+            case .stopped, .stale:
                 let session = stoppedSession(message: "Port-forward stopped before it became ready.")
                 onEvent(session)
                 return session
             }
-            return PortForwardSession(
-                id: sessionID,
-                contextName: context.name,
-                namespace: namespace,
-                targetKind: targetKind,
-                targetName: targetName,
-                localPort: localPort,
-                remotePort: remotePort,
-                address: address,
-                status: .starting,
-                lastMessage: "Starting port-forward to \(podName):\(remotePort)"
-            )
         } catch {
-            guard await portForwardRegistry.isStopRequested(id: sessionID) else {
+            let wasStopRequested = await portForwardRegistry.finishStart(
+                id: sessionID,
+                generation: registrationGeneration
+            )
+            guard wasStopRequested || error is CancellationError else {
                 onEvent(failedSession(message: error.localizedDescription))
                 throw error
             }
@@ -3580,56 +3675,357 @@ private enum GzipInflator {
 
 }
 
-private actor PortForwardRegistry {
-    private var handles: [String: any RunningCommandControlling] = [:]
-    private var stopRequestedIDs: Set<String> = []
+struct RunningCommandRegistryMetadataSnapshot: Equatable, Sendable {
+    let activeHandleCount: Int
+    let pendingStartCount: Int
+    let stopRequestedStartCount: Int
+    let preStartStopIntentCount: Int
 
-    func insert(handle: any RunningCommandControlling, id: String) -> Bool {
-        if stopRequestedIDs.remove(id) != nil {
-            return false
-        }
-        handles[id] = handle
-        return true
+    init(
+        activeHandleCount: Int,
+        pendingStartCount: Int,
+        stopRequestedStartCount: Int,
+        preStartStopIntentCount: Int = 0
+    ) {
+        self.activeHandleCount = activeHandleCount
+        self.pendingStartCount = pendingStartCount
+        self.stopRequestedStartCount = stopRequestedStartCount
+        self.preStartStopIntentCount = preStartStopIntentCount
+    }
+}
+
+enum PortForwardRegistrationResult: Equatable, Sendable {
+    case inserted
+    case stopped
+    case failed(String)
+    case stale
+}
+
+enum PortForwardFailureDisposition: Sendable {
+    case deferred
+    case active(any RunningCommandControlling)
+    case ignored
+}
+
+actor PortForwardRegistry {
+    private struct PendingStart {
+        let generation: UInt64
+        var isStopRequested: Bool
+        var failureMessage: String?
     }
 
-    func isStopRequested(id: String) -> Bool {
-        stopRequestedIDs.contains(id)
+    private struct RegisteredHandle {
+        let generation: UInt64
+        let handle: any RunningCommandControlling
+    }
+
+    private var handles: [String: RegisteredHandle] = [:]
+    private var pendingStarts: [String: PendingStart] = [:]
+    private var nextGeneration: UInt64 = 0
+
+    func beginStart(id: String) -> UInt64 {
+        handles.removeValue(forKey: id)?.handle.terminate()
+        nextGeneration &+= 1
+        let generation = nextGeneration
+        pendingStarts[id] = PendingStart(
+            generation: generation,
+            isStopRequested: false,
+            failureMessage: nil
+        )
+        return generation
+    }
+
+    func register(
+        handle: any RunningCommandControlling,
+        id: String,
+        generation: UInt64
+    ) -> PortForwardRegistrationResult {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
+            handle.terminate()
+            return .stale
+        }
+        pendingStarts.removeValue(forKey: id)
+        if pending.isStopRequested {
+            handle.terminate()
+            return .stopped
+        }
+        if let failureMessage = pending.failureMessage {
+            handle.terminate()
+            return .failed(failureMessage)
+        }
+        handles.updateValue(
+            RegisteredHandle(generation: generation, handle: handle),
+            forKey: id
+        )?.handle.terminate()
+        return .inserted
+    }
+
+    func insert(
+        handle: any RunningCommandControlling,
+        id: String,
+        generation: UInt64
+    ) -> Bool {
+        if case .inserted = register(
+            handle: handle,
+            id: id,
+            generation: generation
+        ) {
+            return true
+        }
+        return false
+    }
+
+    func recordFailure(
+        message: String,
+        id: String,
+        generation: UInt64
+    ) -> PortForwardFailureDisposition {
+        if var pending = pendingStarts[id],
+           pending.generation == generation {
+            guard !pending.isStopRequested, pending.failureMessage == nil else {
+                return .ignored
+            }
+            pending.failureMessage = message
+            pendingStarts[id] = pending
+            return .deferred
+        }
+        if let registered = handles[id],
+           registered.generation == generation {
+            handles.removeValue(forKey: id)
+            return .active(registered.handle)
+        }
+        return .ignored
+    }
+
+    func shouldDeliverReady(id: String, generation: UInt64) -> Bool {
+        if let pending = pendingStarts[id],
+           pending.generation == generation {
+            return !pending.isStopRequested && pending.failureMessage == nil
+        }
+        return handles[id]?.generation == generation
+    }
+
+    func isStopRequested(id: String, generation: UInt64) -> Bool {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
+            return false
+        }
+        return pending.isStopRequested
+    }
+
+    @discardableResult
+    func finishStart(id: String, generation: UInt64) -> Bool {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
+            return false
+        }
+        pendingStarts.removeValue(forKey: id)
+        return pending.isStopRequested
     }
 
     func remove(id: String) -> (any RunningCommandControlling)? {
-        if let handle = handles.removeValue(forKey: id) {
-            return handle
+        if var pending = pendingStarts[id] {
+            pending.isStopRequested = true
+            pendingStarts[id] = pending
         }
-        stopRequestedIDs.insert(id)
-        return nil
+        return handles.removeValue(forKey: id)?.handle
+    }
+
+    func _testMetadataSnapshot() -> RunningCommandRegistryMetadataSnapshot {
+        RunningCommandRegistryMetadataSnapshot(
+            activeHandleCount: handles.count,
+            pendingStartCount: pendingStarts.count,
+            stopRequestedStartCount: pendingStarts.values.lazy.filter(\.isStopRequested).count
+        )
     }
 }
 
 actor TerminalSessionRegistry {
-    private var handles: [String: any RunningCommandControlling] = [:]
-    private var generations: [String: UInt64] = [:]
+    private struct PendingStart {
+        let generation: UInt64
+        var isStopRequested: Bool
+    }
+
+    private struct RegisteredHandle {
+        let generation: UInt64
+        let handle: any RunningCommandControlling
+    }
+
+    private struct PreStartStopIntent {
+        let expiresAt: Date
+        let sequence: UInt64
+    }
+
+    private var handles: [String: RegisteredHandle] = [:]
+    private var pendingStarts: [String: PendingStart] = [:]
+    private var preStartStopIntents: [String: PreStartStopIntent] = [:]
+    private var nextGeneration: UInt64 = 0
+    private var nextStopIntentSequence: UInt64 = 0
+    private let preStartStopIntentCapacity: Int
+    private let preStartStopIntentTTL: TimeInterval
+    private var stopIntentCleanupTask: Task<Void, Never>?
+
+    init(
+        preStartStopIntentCapacity: Int = 128,
+        preStartStopIntentTTL: TimeInterval = 1
+    ) {
+        self.preStartStopIntentCapacity = max(1, preStartStopIntentCapacity)
+        self.preStartStopIntentTTL = max(0.01, preStartStopIntentTTL)
+    }
+
+    deinit {
+        stopIntentCleanupTask?.cancel()
+    }
 
     func beginStart(id: String) -> UInt64 {
-        let generation = generations[id, default: 0] &+ 1
-        generations[id] = generation
+        purgeExpiredStopIntents(now: Date())
+        let rememberedStop = preStartStopIntents.removeValue(forKey: id) != nil
+        scheduleStopIntentCleanup()
+        handles.removeValue(forKey: id)?.handle.terminate()
+        nextGeneration &+= 1
+        let generation = nextGeneration
+        pendingStarts[id] = PendingStart(
+            generation: generation,
+            isStopRequested: rememberedStop
+        )
         return generation
     }
 
     func insert(handle: any RunningCommandControlling, id: String, generation: UInt64) -> Bool {
-        guard generations[id] == generation else {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
             handle.terminate()
             return false
         }
-        handles[id] = handle
+        pendingStarts.removeValue(forKey: id)
+        guard !pending.isStopRequested else {
+            handle.terminate()
+            return false
+        }
+        handles.updateValue(
+            RegisteredHandle(generation: generation, handle: handle),
+            forKey: id
+        )?.handle.terminate()
         return true
     }
 
     func handle(id: String) -> (any RunningCommandControlling)? {
-        handles[id]
+        handles[id]?.handle
     }
 
-    func remove(id: String) -> (any RunningCommandControlling)? {
-        generations[id, default: 0] &+= 1
-        return handles.removeValue(forKey: id)
+    func isStopRequested(id: String, generation: UInt64) -> Bool {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
+            return false
+        }
+        return pending.isStopRequested
+    }
+
+    /// Removes only the exact generation that terminated. A callback from an
+    /// older handle can never clear a replacement registered under the same ID.
+    /// The return value suppresses a stale callback once a newer generation exists.
+    func complete(id: String, generation: UInt64) -> Bool {
+        var shouldNotify = false
+        if let pending = pendingStarts[id],
+           pending.generation == generation {
+            pendingStarts.removeValue(forKey: id)
+            shouldNotify = !pending.isStopRequested
+        }
+        if let registered = handles[id],
+           registered.generation == generation {
+            handles.removeValue(forKey: id)
+            shouldNotify = true
+        }
+
+        let hasNewerGeneration =
+            pendingStarts[id].map { $0.generation != generation } == true
+            || handles[id].map { $0.generation != generation } == true
+        return shouldNotify && !hasNewerGeneration
+    }
+
+    @discardableResult
+    func finishStart(id: String, generation: UInt64) -> Bool {
+        guard let pending = pendingStarts[id],
+              pending.generation == generation else {
+            return false
+        }
+        pendingStarts.removeValue(forKey: id)
+        return pending.isStopRequested
+    }
+
+    func remove(
+        id: String,
+        rememberIfNotStarted: Bool = false
+    ) -> (any RunningCommandControlling)? {
+        purgeExpiredStopIntents(now: Date())
+        var foundKnownGeneration = false
+        if var pending = pendingStarts[id] {
+            pending.isStopRequested = true
+            pendingStarts[id] = pending
+            foundKnownGeneration = true
+        }
+        if let registered = handles.removeValue(forKey: id) {
+            foundKnownGeneration = true
+            return registered.handle
+        }
+        if rememberIfNotStarted, !foundKnownGeneration {
+            rememberPreStartStop(id: id, now: Date())
+        }
+        return nil
+    }
+
+    func _testMetadataSnapshot() -> RunningCommandRegistryMetadataSnapshot {
+        purgeExpiredStopIntents(now: Date())
+        return RunningCommandRegistryMetadataSnapshot(
+            activeHandleCount: handles.count,
+            pendingStartCount: pendingStarts.count,
+            stopRequestedStartCount: pendingStarts.values.lazy.filter(\.isStopRequested).count,
+            preStartStopIntentCount: preStartStopIntents.count
+        )
+    }
+
+    private func rememberPreStartStop(id: String, now: Date) {
+        nextStopIntentSequence &+= 1
+        preStartStopIntents[id] = PreStartStopIntent(
+            expiresAt: now.addingTimeInterval(preStartStopIntentTTL),
+            sequence: nextStopIntentSequence
+        )
+        if preStartStopIntents.count > preStartStopIntentCapacity,
+           let oldestID = preStartStopIntents.min(
+               by: { $0.value.sequence < $1.value.sequence }
+           )?.key {
+            preStartStopIntents.removeValue(forKey: oldestID)
+        }
+        scheduleStopIntentCleanup()
+    }
+
+    private func purgeExpiredStopIntents(now: Date) {
+        preStartStopIntents = preStartStopIntents.filter { $0.value.expiresAt > now }
+    }
+
+    private func scheduleStopIntentCleanup() {
+        stopIntentCleanupTask?.cancel()
+        guard let nextExpiration = preStartStopIntents.values
+            .map(\.expiresAt)
+            .min() else {
+            stopIntentCleanupTask = nil
+            return
+        }
+        let delay = max(0, nextExpiration.timeIntervalSinceNow)
+        stopIntentCleanupTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            await self?.expireStopIntentsAndReschedule()
+        }
+    }
+
+    private func expireStopIntentsAndReschedule() {
+        stopIntentCleanupTask = nil
+        purgeExpiredStopIntents(now: Date())
+        scheduleStopIntentCleanup()
     }
 }

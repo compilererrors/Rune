@@ -81,6 +81,39 @@ final class AuthDoctorRBACPreflightRunnerTests: XCTestCase {
         XCTAssertEqual(maximumObserved, 1)
     }
 
+    func testCancellationStopsSchedulingRemainingChecks() async throws {
+        let targets = (0..<20).map {
+            target(id: "cancel-\($0)", resource: "resource-\($0)", scope: .namespace)
+        }
+        let tracker = ConcurrencyTracker()
+        let task = Task {
+            await AuthDoctorRBACPreflightRunner.run(
+                targets: targets,
+                activeNamespace: "synthetic",
+                maxConcurrentChecks: 2
+            ) { _, _ in
+                await tracker.started()
+                defer {
+                    Task {
+                        await tracker.finished()
+                    }
+                }
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                return true
+            }
+        }
+
+        for _ in 0..<100 where await tracker.startedCount() < 2 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        task.cancel()
+        let results = await task.value
+        let startedCount = await tracker.startedCount()
+
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(startedCount, 2)
+    }
+
     private func target(
         id: String,
         resource: String,
@@ -102,9 +135,11 @@ final class AuthDoctorRBACPreflightRunnerTests: XCTestCase {
 private actor ConcurrencyTracker {
     private var current = 0
     private var maximum = 0
+    private var totalStarted = 0
 
     func started() {
         current += 1
+        totalStarted += 1
         maximum = max(maximum, current)
     }
 
@@ -114,6 +149,10 @@ private actor ConcurrencyTracker {
 
     func maximumObserved() -> Int {
         maximum
+    }
+
+    func startedCount() -> Int {
+        totalStarted
     }
 }
 

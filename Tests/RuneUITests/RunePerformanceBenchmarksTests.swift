@@ -436,8 +436,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             method: "GET",
             server: "https://cluster.example.test",
             contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
             apiPath: "/api/v1/pods",
-            headers: ["Accept": "application/json"]
+            headers: ["Accept": "application/json"],
+            timeout: 5
         )
 
         let started = ContinuousClock.now
@@ -592,8 +595,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
                 cancellationReason: index.isMultiple(of: 2) ? "task-cancelled" : "urlsession-cancelled"
             ))
         }
-        let summary = await recorder.summary()
-        let snapshot = await recorder.snapshot()
+        let report = await recorder.report()
+        let summary = report.summary
+        let snapshot = report.metrics
         let elapsed = started.duration(to: .now)
 
         XCTAssertEqual(summary.requestCount, 5_000)

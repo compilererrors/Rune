@@ -879,7 +879,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             namespace: namespace
         )
         let stateBeforeAuthDoctor = ViewModelResourceStateSnapshot(state: harness.state)
-        let requestMetricCountBeforeAuthDoctor = await harness.kubeClient.restRequestMetricsSnapshot().count
+        let requestMetricCountBeforeAuthDoctor = await harness.kubeClient.restRequestMetricsReport().metrics.count
 
         harness.viewModel.runAuthDoctor()
 
@@ -897,7 +897,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(clusterAfterAuthDoctor, clusterBefore)
         XCTAssertEqual(ViewModelResourceStateSnapshot(state: harness.state), stateBeforeAuthDoctor)
-        let authDoctorRequestMetrics = await harness.kubeClient.restRequestMetricsSnapshot()
+        let authDoctorRequestMetrics = await harness.kubeClient.restRequestMetricsReport().metrics
         let authDoctorRequests = authDoctorRequestMetrics.dropFirst(requestMetricCountBeforeAuthDoctor)
         XCTAssertFalse(authDoctorRequests.contains(where: isMutatingAuthDoctorRequest))
         XCTAssertEqual(harness.state.writeAuditLog.count, 0)

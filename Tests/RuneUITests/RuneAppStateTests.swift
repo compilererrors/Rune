@@ -2920,6 +2920,61 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSamePathKubeconfigContentChangeClearsCompletedAuthDoctorScope() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        UserDefaults.standard.runeSimpleMode = true
+        defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
+
+        let server = try await RuneFakeK8sRESTServer.start(fixture: RuneFakeK8sFixture())
+        defer { server.stop() }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.authDoctorConfigRevision.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        let initialConfig = server.kubeconfigYAML()
+        try initialConfig.write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let discoverer = MutableKubeConfigDiscoverer()
+        discoverer.urls = [kubeconfig]
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: RejectingBookmarkStore()),
+            kubeConfigDiscoverer: discoverer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        _ = try await viewModel.syncKubeConfigSourcesFromDiscovery(reason: "test-initial")
+        try await waitUntilForRuneAppState {
+            state.selectedContext?.name == RuneFakeK8sFixture.defaultContextName
+                && !state.selectedNamespace.isEmpty
+        }
+
+        viewModel.runAuthDoctor()
+        try await waitUntilForRuneAppState(timeout: 10) {
+            !state.isRunningAuthDoctor
+                && state.authDoctorChecks.contains { $0.id == "selected-context" }
+        }
+
+        let sourcesBeforeChange = state.kubeConfigSources
+        try (initialConfig + "\n# synthetic revision\n")
+            .write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let changed = try await viewModel.syncKubeConfigSourcesFromDiscovery(
+            reason: "test-content-change"
+        )
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(state.kubeConfigSources, sourcesBeforeChange)
+        XCTAssertTrue(
+            state.authDoctorChecks.isEmpty,
+            "Diagnostics from the previous kubeconfig bytes must not remain visible or exportable."
+        )
+    }
+
+    @MainActor
     func testDiscoverySyncRetainsConfirmedSessionImportWhenBookmarkReloadIsUnavailable() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.sessionImportSync.\(UUID().uuidString)", isDirectory: true)
@@ -10014,10 +10069,19 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testSaveSupportBundleIncludesKubernetesRequestMetrics() async throws {
+        let contextName = "synthetic-context"
+        let fixture = try makeSyntheticMetricsKubeconfig(contextName: contextName)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let state = RuneAppState()
-        state.selectedContext = KubeContext(name: "synthetic-context")
+        state.setSources([KubeConfigSource(url: fixture.kubeconfig)])
+        state.selectedContext = KubeContext(name: contextName)
         state.selectedNamespace = "default"
         let recorder = KubernetesRESTRequestMetricsRecorder()
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let scopeIdentity = try await restClient.requestMetricsScopeIdentity(
+            environment: ["KUBECONFIG": fixture.kubeconfig.path],
+            contextName: contextName
+        )
         await recorder.record(
             KubernetesRESTRequestMetric(
                 method: "GET",
@@ -10028,7 +10092,8 @@ final class RuneAppStateTests: XCTestCase {
                 attempt: 1,
                 outcome: .success
             ),
-            contextName: "synthetic-context"
+            contextName: contextName,
+            scopeIdentity: scopeIdentity
         )
         await recorder.record(
             KubernetesRESTRequestMetric(
@@ -10040,7 +10105,8 @@ final class RuneAppStateTests: XCTestCase {
                 attempt: 1,
                 outcome: .httpError
             ),
-            contextName: "synthetic-context"
+            contextName: contextName,
+            scopeIdentity: scopeIdentity
         )
         await recorder.record(
             KubernetesRESTRequestMetric(
@@ -10054,7 +10120,6 @@ final class RuneAppStateTests: XCTestCase {
             ),
             contextName: "synthetic-other-context"
         )
-        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let exporter = RecordingFileExporter()
         let viewModel = RuneAppViewModel(state: state, kubeClient: client, exporter: exporter)
@@ -10098,7 +10163,14 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testRequestMetricsSummaryRefreshesFromKubeClientRecorder() async throws {
         let contextName = "synthetic-metrics-context"
+        let fixture = try makeSyntheticMetricsKubeconfig(contextName: contextName)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let recorder = KubernetesRESTRequestMetricsRecorder()
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let scopeIdentity = try await restClient.requestMetricsScopeIdentity(
+            environment: ["KUBECONFIG": fixture.kubeconfig.path],
+            contextName: contextName
+        )
         await recorder.record(
             KubernetesRESTRequestMetric(
                 method: "GET",
@@ -10109,7 +10181,8 @@ final class RuneAppStateTests: XCTestCase {
                 attempt: 1,
                 outcome: .success
             ),
-            contextName: contextName
+            contextName: contextName,
+            scopeIdentity: scopeIdentity
         )
         await recorder.record(
             KubernetesRESTRequestMetric(
@@ -10121,11 +10194,12 @@ final class RuneAppStateTests: XCTestCase {
                 attempt: 2,
                 outcome: .httpError
             ),
-            contextName: contextName
+            contextName: contextName,
+            scopeIdentity: scopeIdentity
         )
-        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: fixture.kubeconfig)])
         state.selectedContext = KubeContext(name: contextName)
         let viewModel = RuneAppViewModel(state: state, kubeClient: client)
 
@@ -10147,7 +10221,89 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testAuthDoctorAutomaticallyRefreshesMetricsForSelectedContextOnEarlyExit() async throws {
+    func testMetricsUIAndSupportBundleRejectPreviousScopeAfterSamePathKubeconfigReplacement() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let firstServer = try await RuneFakeK8sRESTServer.start()
+        let secondServer = try await RuneFakeK8sRESTServer.start()
+        defer {
+            firstServer.stop()
+            secondServer.stop()
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.metricsScope.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try firstServer.kubeconfigYAML().write(
+            to: kubeconfig,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        _ = try await client.listPodStatuses(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone"
+        )
+
+        let state = RuneAppState()
+        state.setSources(sources)
+        state.selectedContext = context
+        state.selectedNamespace = "alpha-zone"
+        let exporter = RecordingFileExporter()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: client,
+            exporter: exporter
+        )
+
+        viewModel.refreshKubernetesRequestMetricsSummary()
+        try await waitUntilForRuneAppState {
+            !viewModel.isRefreshingKubernetesRequestMetricsSummary
+                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "1 API attempt"
+        }
+
+        try secondServer.kubeconfigYAML().write(
+            to: kubeconfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 2)],
+            ofItemAtPath: kubeconfig.path
+        )
+
+        viewModel.refreshKubernetesRequestMetricsSummary()
+        try await waitUntilForRuneAppState {
+            !viewModel.isRefreshingKubernetesRequestMetricsSummary
+                && viewModel.kubernetesRequestMetricsSummary == .empty
+        }
+
+        viewModel.saveSupportBundle()
+        try await waitUntilForRuneAppState {
+            exporter.saves.count == 1
+        }
+        let data = try XCTUnwrap(exporter.saves.first?.data)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(decoded.requestMetrics.isEmpty)
+        XCTAssertTrue(decoded.requestMetricGroups.isEmpty)
+        XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 0)
+        XCTAssertEqual(decoded.contextName, "<context-name>")
+        XCTAssertFalse(json.contains(context.name))
+    }
+
+    @MainActor
+    func testAuthDoctorDoesNotReuseNameOnlyMetricsWhenSelectedContextHasNoSource() async throws {
         let selectedContextName = "synthetic-selected-context"
         let recorder = KubernetesRESTRequestMetricsRecorder()
         await recorder.record(
@@ -10178,23 +10334,32 @@ final class RuneAppStateTests: XCTestCase {
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: selectedContextName)
-        let viewModel = RuneAppViewModel(state: state, kubeClient: client)
+        let exporter = RecordingFileExporter()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: client,
+            exporter: exporter
+        )
 
         viewModel.runAuthDoctor()
 
         try await waitUntilForRuneAppState {
             !state.isRunningAuthDoctor
                 && !viewModel.isRefreshingKubernetesRequestMetricsSummary
-                && viewModel.kubernetesRequestMetricsSummary.requestCountText == "1 API attempt"
         }
-        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.outcomeText, "1 ok • 0 failed • 0 cancelled")
-        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.retainedText, "1 retained")
-        XCTAssertFalse(viewModel.kubernetesRequestMetricsSummary.hasFailures)
-        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.map(\.apiPath), [
-            "/api/v1/namespaces/<namespace>/pods"
-        ])
-        XCTAssertTrue(viewModel.kubernetesRequestMetricsSummary.endpointHighlights.allSatisfy { !$0.hasIssues })
+        XCTAssertEqual(viewModel.kubernetesRequestMetricsSummary, .empty)
         XCTAssertTrue(state.authDoctorChecks.contains { $0.id == "kubeconfig" && $0.status == .failed })
+
+        viewModel.saveSupportBundle()
+        try await waitUntilForRuneAppState {
+            exporter.saves.count == 1
+        }
+        let data = try XCTUnwrap(exporter.saves.first?.data)
+        let decoded = try JSONDecoder().decode(SupportBundleRequest.self, from: data)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(decoded.requestMetrics.isEmpty)
+        XCTAssertEqual(decoded.requestMetricsSummary?.requestCount, 0)
+        XCTAssertFalse(json.contains(selectedContextName))
     }
 
     @MainActor
@@ -10985,6 +11150,41 @@ private final class RecordingPortForwardBrowserOpener: PortForwardBrowserOpening
 private struct CancelledFileExporter: FileExporting {
     func save(data: Data, suggestedName: String, allowedFileTypes: [String]) throws -> URL {
         throw FileExportError.userCancelled
+    }
+}
+
+private func makeSyntheticMetricsKubeconfig(
+    contextName: String
+) throws -> (directory: URL, kubeconfig: URL) {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RuneAppStateTests.metricsFixture.\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let kubeconfig = directory.appendingPathComponent("config.yaml")
+    let yaml = """
+    apiVersion: v1
+    kind: Config
+    current-context: \(contextName)
+    contexts:
+    - name: \(contextName)
+      context:
+        cluster: synthetic-cluster
+        user: synthetic-user
+        namespace: default
+    clusters:
+    - name: synthetic-cluster
+      cluster:
+        server: https://api.synthetic.invalid
+    users:
+    - name: synthetic-user
+      user:
+        token: synthetic-token
+    """
+    do {
+        try yaml.write(to: kubeconfig, atomically: true, encoding: .utf8)
+        return (directory, kubeconfig)
+    } catch {
+        try? FileManager.default.removeItem(at: directory)
+        throw error
     }
 }
 

@@ -683,8 +683,9 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             )
         }
 
-        let metrics = await recorder.snapshot()
-        let summary = await recorder.summary()
+        let report = await recorder.report()
+        let metrics = report.metrics
+        let summary = report.summary
         let metric = try XCTUnwrap(metrics.first { $0.apiPath.contains("/api/v1/namespaces") })
 
         XCTAssertEqual(metric.outcome, .networkError)

@@ -121,11 +121,15 @@ final class OverviewStatCardTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertEqual(source.components(separatedBy: "OverviewStatCard(").count - 1, 8)
-        XCTAssertFalse(source.contains("private func overviewStatCard("))
-        XCTAssertTrue(source.contains("overviewCardSelectionIndex = 0"))
-        XCTAssertTrue(source.contains("viewModel.openOverviewModule(.pods)"))
-        XCTAssertTrue(source.contains("viewModel.openOverviewModule(.events)"))
+        XCTAssertEqual(source.components(separatedBy: "OverviewStatCard(").count - 1, 1)
+        XCTAssertTrue(source.contains("private func overviewStatCard(module: OverviewModule, index: Int)"))
+        XCTAssertTrue(source.contains(
+            "var modules: [OverviewModule] = [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes]"
+        ))
+        XCTAssertTrue(source.contains("modules.append(.events)"))
+        XCTAssertTrue(source.contains("overviewCardSelectionIndex = index"))
+        XCTAssertTrue(source.contains("viewModel.openOverviewModule(module)"))
+        XCTAssertTrue(source.contains("RuneBalancedOverviewGrid("))
     }
 
     private func card(

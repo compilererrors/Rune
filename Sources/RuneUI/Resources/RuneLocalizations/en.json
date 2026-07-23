@@ -103,6 +103,8 @@
   "settingsShowDemoClusterContextHelp": "Adds rune-demo to the context list and keeps the Rune menu demo action available for screenshots and first-run evaluation. It does not start a server or keep background resources alive.",
   "settingsShowHoverTooltips": "Show hover tooltips",
   "settingsShowHoverTooltipsHelp": "Shows short native hover explanations for less obvious labels, tabs, and controls such as Cluster Signals. Turn this off if tooltips get in the way.",
+  "settingsShowResourceTableScrollEdgeGlow": "Show table scroll-edge glow",
+  "settingsShowResourceTableScrollEdgeGlowHelp": "Shows a subtle glow at the left or right edge of resource tables when more columns are available. Horizontal scrolling still works when this is off.",
   "settingsSimpleMode": "Simple mode",
   "settingsSimpleModeHelp": "Uses a lighter interface for fast navigation: advanced optional panels are skipped, Kubernetes managedFields stay hidden in read-only YAML and Describe output, and terminal logs stay closer to a compact k9s-style workflow.",
   "settingsSimpleModeManagedFieldsNote": "Simple mode keeps the UI lean: managedFields stay hidden in read-only YAML and Describe views, and heavyweight troubleshooting panels are available again when Simple mode is off.",

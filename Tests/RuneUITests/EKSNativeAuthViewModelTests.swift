@@ -403,7 +403,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         assertSecretsAreAbsent([secret], from: [viewModel.nativeKubernetesAuthStatus, state.lastError])
     }
 
-    func testConnectSelectedGKENativeAuthBindsSelectedContextWithoutPersistingJSONInStatus() async throws {
+    func testInjectedGKEChooserBindsSelectedContextWithoutPersistingJSONInStatus() async throws {
         let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
@@ -417,14 +417,16 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         state.setContexts([context])
         state.selectedContext = context
         let configurator = RecordingNativeAuthConfigurator()
+        let json = Data(#"{"type":"service_account","synthetic_secret":"must-not-appear"}"#.utf8)
+        let picker = ImmediateNativeAuthGKECredentialPicker(selection: .selected(json))
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            gkeCredentialFilePicker: picker,
             nativeAuthConfigurator: configurator
         )
-        let json = Data(#"{"type":"service_account","synthetic_secret":"must-not-appear"}"#.utf8)
 
-        viewModel.connectSelectedGKENativeAuth(serviceAccountJSON: json)
+        viewModel.chooseAndConnectSelectedGKENativeAuth()
         try await waitUntil { !viewModel.isConnectingNativeKubernetesAuth }
 
         let recordedCall = await configurator.recordedGCPCall()
@@ -432,6 +434,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         XCTAssertEqual(call.request.provider, .googleGKE)
         XCTAssertEqual(call.serviceAccountJSON, json)
         XCTAssertEqual(call.displayName, "Google GKE")
+        XCTAssertEqual(picker.selectionCount, 1)
         XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, "Google native authentication is connected.")
         assertSecretsAreAbsent(["must-not-appear"], from: [viewModel.nativeKubernetesAuthStatus, state.lastError])
     }
@@ -440,16 +443,17 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let source = try String(contentsOf: runeRootViewURL, encoding: .utf8)
         let fieldSource = try String(contentsOf: providerCredentialFieldURL, encoding: .utf8)
         let viewModelSource = try String(contentsOf: runeAppViewModelURL, encoding: .utf8)
+        let pickerSource = try String(contentsOf: kubeConfigPickerURL, encoding: .utf8)
 
         XCTAssertTrue(source.contains("case .azureClientSecret:"))
         XCTAssertTrue(fieldSource.contains("SecureField(\"\", text: $text)"))
         XCTAssertTrue(source.contains("cloudCredentialDraft.nativeAKSClientSecret = \"\""))
         XCTAssertTrue(source.contains("viewModel.connectAKSNativeAuth(request: nativeContext.request, clientSecret: secret)"))
         XCTAssertTrue(source.contains("viewModel.chooseAndConnectGKENativeAuth(request: nativeContext.request)"))
-        XCTAssertTrue(viewModelSource.contains("let panel = NSOpenPanel()"))
-        XCTAssertTrue(viewModelSource.contains("panel.allowedContentTypes = [.json]"))
-        XCTAssertTrue(viewModelSource.contains("read(upToCount: 1_048_577)"))
-        XCTAssertTrue(viewModelSource.contains("startAccessingSecurityScopedResource()"))
+        XCTAssertTrue(viewModelSource.contains("gkeCredentialFilePicker.beginSelection"))
+        XCTAssertTrue(pickerSource.contains("panel.allowedContentTypes = [.json]"))
+        XCTAssertTrue(pickerSource.contains("read(upToCount: maximumCredentialBytes + 1)"))
+        XCTAssertTrue(pickerSource.contains("startAccessingSecurityScopedResource()"))
     }
 
     private func eksKubeconfig(from base: String) -> String {
@@ -620,6 +624,31 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         runeRootViewURL.deletingLastPathComponent()
             .appendingPathComponent("AddClusterProviderCredentialField.swift")
     }
+
+    private var kubeConfigPickerURL: URL {
+        runeRootViewURL.deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Services/KubeConfigPicker.swift")
+    }
+}
+
+@MainActor
+private final class ImmediateNativeAuthGKECredentialPicker: GKECredentialFilePicking {
+    let selection: GKECredentialFileSelection
+    private(set) var selectionCount = 0
+
+    init(selection: GKECredentialFileSelection) {
+        self.selection = selection
+    }
+
+    func beginSelection(
+        completion: @escaping @MainActor (GKECredentialFileSelection) -> Void
+    ) {
+        selectionCount += 1
+        completion(selection)
+    }
+
+    func cancelSelection() {}
 }
 
 private actor RecordingNativeAuthConfigurator: KubernetesNativeAuthConfiguring, KubernetesNativeCredentialProviding {

@@ -103,6 +103,8 @@
   "settingsShowDemoClusterContextHelp": "Ajoute rune-demo a la liste des contextes et garde l'action demo du menu Rune disponible pour les captures et la premiere evaluation. Ne demarre pas de serveur et ne garde pas de ressources en arriere-plan.",
   "settingsShowHoverTooltips": "Afficher les infobulles au survol",
   "settingsShowHoverTooltipsHelp": "Affiche de courtes explications natives au survol pour les libelles, onglets et controles moins evidents comme Cluster Signals. Desactivez-les si elles genent.",
+  "settingsShowResourceTableScrollEdgeGlow": "Afficher la lueur aux bords du defilement",
+  "settingsShowResourceTableScrollEdgeGlowHelp": "Affiche une lueur discrete sur le bord gauche ou droit des tableaux de ressources lorsque d'autres colonnes sont disponibles. Le defilement horizontal reste actif si cette option est desactivee.",
   "settingsSimpleMode": "Mode simple",
   "settingsSimpleModeHelp": "Utilise une interface plus legere pour une navigation rapide: les panneaux optionnels avances sont ignores, les managedFields Kubernetes restent masques dans YAML et Describe en lecture seule, et les logs de terminal restent proches d'un flux compact style k9s.",
   "settingsSimpleModeManagedFieldsNote": "Le mode simple masque toujours managedFields dans les vues YAML et Describe en lecture seule.",

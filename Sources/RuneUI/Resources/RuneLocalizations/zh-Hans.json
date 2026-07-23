@@ -103,6 +103,8 @@
   "settingsShowDemoClusterContextHelp": "将 rune-demo 添加到上下文列表，并保留 Rune 菜单演示操作用于截图和首次评估。它不会启动服务器或保留后台资源。",
   "settingsShowHoverTooltips": "显示悬停提示",
   "settingsShowHoverTooltipsHelp": "为不太明显的标签、标签页和控件（例如 Cluster Signals）显示简短原生悬停说明。如果提示碍事可关闭。",
+  "settingsShowResourceTableScrollEdgeGlow": "显示表格滚动边缘光效",
+  "settingsShowResourceTableScrollEdgeGlowHelp": "当资源表格左右还有更多列时，在相应边缘显示柔和光效。关闭后仍可水平滚动。",
   "settingsSimpleMode": "简单模式",
   "settingsSimpleModeHelp": "使用更轻量的界面以便快速导航：跳过高级可选面板，在只读 YAML 和 Describe 输出中隐藏 Kubernetes managedFields，并让终端日志更接近紧凑的 k9s 风格流程。",
   "settingsSimpleModeManagedFieldsNote": "简单模式始终在只读 YAML 和 Describe 视图中隐藏 managedFields。",

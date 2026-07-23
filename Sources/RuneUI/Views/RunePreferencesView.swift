@@ -426,6 +426,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showResourceTableScrollEdgeGlow = true
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
@@ -615,6 +616,14 @@ public struct RunePreferencesView: View {
                     settingsString(.settingsShowHoverTooltips),
                     help: settingsString(.settingsShowHoverTooltipsHelp),
                     isOn: $showHoverTooltips
+                )
+
+                Divider()
+
+                settingsToggleRow(
+                    settingsString(.settingsShowResourceTableScrollEdgeGlow),
+                    help: settingsString(.settingsShowResourceTableScrollEdgeGlowHelp),
+                    isOn: $showResourceTableScrollEdgeGlow
                 )
 
                 Divider()

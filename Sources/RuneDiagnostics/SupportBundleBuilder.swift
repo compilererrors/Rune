@@ -25,6 +25,7 @@ public struct SupportBundleRequest: Codable, Sendable {
     public let requestMetricsSummary: SupportBundleRequestMetricsSummary?
     public let requestMetricGroups: [SupportBundleRequestMetricGroup]
     public let resourceListFreshness: [SupportBundleResourceListFreshness]
+    public let cloudImportDiagnostic: SupportBundleCloudImportDiagnostic?
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt
@@ -50,6 +51,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         case requestMetricsSummary
         case requestMetricGroups
         case resourceListFreshness
+        case cloudImportDiagnostic
     }
 
     public init(
@@ -75,7 +77,8 @@ public struct SupportBundleRequest: Codable, Sendable {
         requestMetrics: [SupportBundleRequestMetric] = [],
         requestMetricsSummary: SupportBundleRequestMetricsSummary? = nil,
         requestMetricGroups: [SupportBundleRequestMetricGroup] = [],
-        resourceListFreshness: [SupportBundleResourceListFreshness] = []
+        resourceListFreshness: [SupportBundleResourceListFreshness] = [],
+        cloudImportDiagnostic: SupportBundleCloudImportDiagnostic? = nil
     ) {
         self.generatedAt = generatedAt
         self.contextName = contextName
@@ -100,6 +103,7 @@ public struct SupportBundleRequest: Codable, Sendable {
         self.requestMetricsSummary = requestMetricsSummary
         self.requestMetricGroups = requestMetricGroups
         self.resourceListFreshness = resourceListFreshness
+        self.cloudImportDiagnostic = cloudImportDiagnostic
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,6 +131,32 @@ public struct SupportBundleRequest: Codable, Sendable {
         requestMetricsSummary = try container.decodeIfPresent(SupportBundleRequestMetricsSummary.self, forKey: .requestMetricsSummary)
         requestMetricGroups = try container.decodeIfPresent([SupportBundleRequestMetricGroup].self, forKey: .requestMetricGroups) ?? []
         resourceListFreshness = try container.decodeIfPresent([SupportBundleResourceListFreshness].self, forKey: .resourceListFreshness) ?? []
+        cloudImportDiagnostic = try container.decodeIfPresent(
+            SupportBundleCloudImportDiagnostic.self,
+            forKey: .cloudImportDiagnostic
+        )
+    }
+}
+
+public struct SupportBundleCloudImportDiagnostic: Codable, Sendable, Equatable {
+    public let title: String
+    public let classification: String
+    public let message: String
+    public let operationShape: String
+    public let nextAction: String
+
+    public init(
+        title: String,
+        classification: String,
+        message: String,
+        operationShape: String,
+        nextAction: String
+    ) {
+        self.title = title
+        self.classification = classification
+        self.message = message
+        self.operationShape = operationShape
+        self.nextAction = nextAction
     }
 }
 
@@ -313,7 +343,8 @@ public extension SupportBundleRequest {
         selectedResourceName: String?,
         requestMetrics: [SupportBundleRequestMetric] = [],
         requestMetricsSummary: SupportBundleRequestMetricsSummary? = nil,
-        requestMetricGroups: [SupportBundleRequestMetricGroup] = []
+        requestMetricGroups: [SupportBundleRequestMetricGroup] = [],
+        cloudImportDiagnostic: SupportBundleCloudImportDiagnostic? = nil
     ) -> SupportBundleRequest {
         let sanitizer = SupportBundleSanitizer(redactedIdentifiers: [state.selectedContext?.name].compactMap { $0 })
 
@@ -342,7 +373,8 @@ public extension SupportBundleRequest {
             requestMetricGroups: requestMetricGroups.map(sanitizer.sanitizedRequestMetricGroup),
             resourceListFreshness: state.resourceListFreshness
                 .sorted { $0.key.rawValue < $1.key.rawValue }
-                .map { sanitizer.sanitizedResourceListFreshness($0, selectedNamespace: state.selectedNamespace) }
+                .map { sanitizer.sanitizedResourceListFreshness($0, selectedNamespace: state.selectedNamespace) },
+            cloudImportDiagnostic: cloudImportDiagnostic.map(sanitizer.sanitizedCloudImportDiagnostic)
         )
     }
 
@@ -446,6 +478,18 @@ public extension SupportBundleRequest {
                 title: sanitizedText(check.title),
                 status: check.status,
                 message: sanitizedText(check.message)
+            )
+        }
+
+        func sanitizedCloudImportDiagnostic(
+            _ diagnostic: SupportBundleCloudImportDiagnostic
+        ) -> SupportBundleCloudImportDiagnostic {
+            SupportBundleCloudImportDiagnostic(
+                title: sanitizedText(diagnostic.title),
+                classification: sanitizedText(diagnostic.classification),
+                message: sanitizedText(diagnostic.message),
+                operationShape: sanitizedText(diagnostic.operationShape),
+                nextAction: sanitizedText(diagnostic.nextAction)
             )
         }
 

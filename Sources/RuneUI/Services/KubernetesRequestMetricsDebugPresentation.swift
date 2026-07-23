@@ -36,7 +36,10 @@ public struct KubernetesRequestMetricsDebugPresentation: Equatable, Sendable {
         maxEndpointHighlights: Int = 3
     ) {
         let boundedLimit = min(5, max(0, maxEndpointHighlights))
-        let rankedGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: report.metrics)
+        let reportGroups = report.endpointGroups.isEmpty
+            ? KubernetesRequestMetricsSupportBundleProjector.groups(from: report.metrics)
+            : KubernetesRequestMetricsSupportBundleProjector.groups(from: report.endpointGroups)
+        let rankedGroups = reportGroups
             .sorted { lhs, rhs in
                 let lhsIssueCount = lhs.failureCount + lhs.cancelledCount
                 let rhsIssueCount = rhs.failureCount + rhs.cancelledCount

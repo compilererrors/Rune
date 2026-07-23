@@ -258,8 +258,9 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             namespace: "alpha-zone"
         )
 
-        let metrics = await recorder.snapshot()
-        let summary = await recorder.summary()
+        let report = await recorder.report()
+        let metrics = report.metrics
+        let summary = report.summary
         let scopedReport = await recorder.report(contextName: RuneFakeK8sFixture.defaultContextName)
         let unrelatedReport = await recorder.report(contextName: "synthetic-unrelated-context")
         let podListMetric = try XCTUnwrap(metrics.first { $0.apiPath.contains("/pods") })
@@ -279,6 +280,169 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertEqual(scopedReport.summary, summary)
         XCTAssertTrue(unrelatedReport.metrics.isEmpty)
         XCTAssertEqual(unrelatedReport.summary.requestCount, 0)
+    }
+
+    func testNativeClientDoesNotMergeMetricsWhenContextNameIsReusedByAnotherKubeconfig() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let firstServer = try await RuneFakeK8sRESTServer.start()
+        let secondServer = try await RuneFakeK8sRESTServer.start()
+        defer {
+            firstServer.stop()
+            secondServer.stop()
+        }
+        let firstKubeconfig = try writeKubeconfig(firstServer.kubeconfigYAML())
+        let secondKubeconfig = try writeKubeconfig(secondServer.kubeconfigYAML())
+        defer {
+            try? FileManager.default.removeItem(at: firstKubeconfig)
+            try? FileManager.default.removeItem(at: secondKubeconfig)
+        }
+
+        let restClient = KubernetesRESTClient(requestMetricsRecorder: recorder)
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: restClient,
+            requestMetricsRecorder: recorder
+        )
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        _ = try await client.listPodStatuses(
+            from: [KubeConfigSource(url: firstKubeconfig)],
+            context: context,
+            namespace: "alpha-zone"
+        )
+        let firstReport = await recorder.report(contextName: context.name)
+
+        _ = try await client.listPodStatuses(
+            from: [KubeConfigSource(url: secondKubeconfig)],
+            context: context,
+            namespace: "alpha-zone"
+        )
+        let secondReport = await recorder.report(contextName: context.name)
+        let globalSummary = await recorder.summary()
+
+        XCTAssertEqual(firstReport.summary.requestCount, 1)
+        XCTAssertEqual(secondReport.summary.requestCount, 1)
+        XCTAssertEqual(secondReport.metrics.count, 1)
+        XCTAssertEqual(secondReport.endpointGroups.reduce(0) { $0 + $1.requestCount }, 1)
+        XCTAssertEqual(globalSummary.requestCount, 2)
+    }
+
+    func testScopedMetricsReportStaysEmptyAfterSamePathKubeconfigReplacementUntilNewRequest() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let firstServer = try await RuneFakeK8sRESTServer.start()
+        let secondServer = try await RuneFakeK8sRESTServer.start()
+        defer {
+            firstServer.stop()
+            secondServer.stop()
+        }
+        let kubeconfig = try writeKubeconfig(firstServer.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: KubernetesRESTClient(requestMetricsRecorder: recorder),
+            requestMetricsRecorder: recorder
+        )
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        _ = try await client.listPodStatuses(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone"
+        )
+        let initialReport = await client.restRequestMetricsReport(
+            from: sources,
+            context: context
+        )
+        XCTAssertEqual(initialReport.summary.requestCount, 1)
+
+        try secondServer.kubeconfigYAML().write(
+            to: kubeconfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 2)],
+            ofItemAtPath: kubeconfig.path
+        )
+
+        let replacementBeforeRequest = await client.restRequestMetricsReport(
+            from: sources,
+            context: context
+        )
+        XCTAssertEqual(replacementBeforeRequest, .empty)
+
+        _ = try await client.listPodStatuses(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone"
+        )
+        let replacementAfterRequest = await client.restRequestMetricsReport(
+            from: sources,
+            context: context
+        )
+        XCTAssertEqual(replacementAfterRequest.summary.requestCount, 1)
+        XCTAssertEqual(replacementAfterRequest.metrics.count, 1)
+    }
+
+    func testFailedReplacementScopeDoesNotExposePreviousSameNameMetrics() async throws {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let firstKubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        let unresolvedKubeconfig = try writeKubeconfig(
+            """
+            apiVersion: v1
+            kind: Config
+            current-context: \(RuneFakeK8sFixture.defaultContextName)
+            contexts:
+            - name: \(RuneFakeK8sFixture.defaultContextName)
+              context:
+                cluster: missing-cluster
+                user: missing-user
+                namespace: alpha-zone
+            clusters: []
+            users: []
+            """
+        )
+        defer {
+            try? FileManager.default.removeItem(at: firstKubeconfig)
+            try? FileManager.default.removeItem(at: unresolvedKubeconfig)
+        }
+
+        let client = KubernetesClient(
+            commandTimeout: 2,
+            restClient: KubernetesRESTClient(requestMetricsRecorder: recorder),
+            requestMetricsRecorder: recorder
+        )
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        _ = try await client.listPodStatuses(
+            from: [KubeConfigSource(url: firstKubeconfig)],
+            context: context,
+            namespace: "alpha-zone"
+        )
+        let firstReport = await recorder.report(contextName: context.name)
+        XCTAssertEqual(firstReport.summary.requestCount, 1)
+
+        do {
+            _ = try await client.listPodStatuses(
+                from: [KubeConfigSource(url: unresolvedKubeconfig)],
+                context: context,
+                namespace: "alpha-zone"
+            )
+            XCTFail("Expected the replacement kubeconfig with a missing cluster to fail.")
+        } catch {
+            // Expected: activation still advances to the replacement scope before
+            // the request can reach the network.
+        }
+
+        let replacementReport = await recorder.report(contextName: context.name)
+        let globalSummary = await recorder.summary()
+        XCTAssertTrue(replacementReport.metrics.isEmpty)
+        XCTAssertEqual(replacementReport.summary.requestCount, 0)
+        XCTAssertEqual(globalSummary.requestCount, 1)
     }
 
     func testNativeClientRecordsRESTRequestMetricsForRetriedReads() async throws {

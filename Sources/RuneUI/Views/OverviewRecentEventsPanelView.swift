@@ -8,8 +8,18 @@ struct OverviewRecentEventsPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Recent Events")
-                .font(.headline)
+            RuneSectionHeader(
+                "Recent Events",
+                systemImage: "bolt.badge.clock",
+                tint: events.contains(where: { $0.type.lowercased() == "warning" })
+                    ? .orange
+                    : .secondary
+            ) {
+                RuneHeaderCapsule(
+                    events.isEmpty ? "None" : "\(min(events.count, 8)) shown",
+                    role: .value
+                )
+            }
                 .runeHelp(overviewRecentEventsHelp, enabled: showHoverTooltips)
 
             if events.isEmpty {

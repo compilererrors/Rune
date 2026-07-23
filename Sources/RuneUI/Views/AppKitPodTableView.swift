@@ -732,6 +732,10 @@ private enum RuneAppKitResourceTableHost {
         (scrollView.documentView as? RuneAppKitResourceTableView)?.resolvedTheme = resolvedTheme
         RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
+
+    static func configureHorizontalOverflowEdgeGlow(in scrollView: NSScrollView, isEnabled: Bool) {
+        (scrollView as? RuneAppKitResourceListScrollView)?.showsHorizontalOverflowEdgeGlow = isEnabled
+    }
 }
 
 @MainActor
@@ -898,6 +902,7 @@ struct AppKitPodTableView: NSViewRepresentable {
     let onOpenYAML: (PodSummary) -> Void
     let onDelete: (PodSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -925,6 +930,10 @@ struct AppKitPodTableView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -934,6 +943,10 @@ struct AppKitPodTableView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -1420,6 +1433,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
     let onOpenYAML: (DeploymentSummary) -> Void
     let onDelete: (DeploymentSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1447,6 +1461,10 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -1456,6 +1474,10 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -1745,6 +1767,7 @@ struct AppKitServiceListView: NSViewRepresentable {
     let onOpenYAML: (ServiceSummary) -> Void
     let onDelete: (ServiceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1772,6 +1795,10 @@ struct AppKitServiceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -1781,6 +1808,10 @@ struct AppKitServiceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -2081,6 +2112,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     let onOpenYAML: (ClusterResourceSummary) -> Void
     let onDelete: (ClusterResourceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     var resolvedResourceKind: KubeResourceKind? {
         kind ?? resources.first?.kind
@@ -2116,6 +2148,10 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -2125,6 +2161,10 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -2475,6 +2515,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
     let onSelectRelease: (HelmReleaseSummary) -> Void
     let onToggleSort: (HelmReleaseListSortColumn) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2498,6 +2539,10 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -2507,6 +2552,10 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -2785,6 +2834,7 @@ struct AppKitEventListView: NSViewRepresentable {
     let onSelectEvent: (EventSummary) -> Void
     let onToggleSort: (EventListSortColumn) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2808,6 +2858,10 @@ struct AppKitEventListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -2817,6 +2871,10 @@ struct AppKitEventListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -3112,6 +3170,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     let onOpenDescribe: (OperatorResourceSummary) -> Void
     let onOpenYAML: (OperatorResourceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -3139,6 +3198,10 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
         return scrollView
     }
 
@@ -3148,6 +3211,10 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         context.coordinator.tableView = tableView
         context.coordinator.apply(parent: self)
         RuneAppKitResourceTableHost.invalidateTheme(in: scrollView, resolvedTheme: resolvedTheme)
+        RuneAppKitResourceTableHost.configureHorizontalOverflowEdgeGlow(
+            in: scrollView,
+            isEnabled: showsHorizontalOverflowEdgeGlow
+        )
     }
 
     @MainActor
@@ -3912,6 +3979,14 @@ struct RuneHorizontalTableOverflowState: Equatable, Sendable {
 }
 
 final class RuneHorizontalTableOverflowIndicatorView: NSView {
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            updateVisibility()
+            needsDisplay = true
+        }
+    }
+
     var state = RuneHorizontalTableOverflowState.resolve(
         visibleOriginX: 0,
         visibleWidth: 0,
@@ -3919,7 +3994,7 @@ final class RuneHorizontalTableOverflowIndicatorView: NSView {
     ) {
         didSet {
             guard state != oldValue else { return }
-            isHidden = !(state.showsLeadingIndicator || state.showsTrailingIndicator)
+            updateVisibility()
             needsDisplay = true
         }
     }
@@ -3943,6 +4018,10 @@ final class RuneHorizontalTableOverflowIndicatorView: NSView {
         false
     }
 
+    private func updateVisibility() {
+        isHidden = !isEnabled || !(state.showsLeadingIndicator || state.showsTrailingIndicator)
+    }
+
     private func drawIndicator(atLeadingEdge: Bool) {
         let indicatorWidth: CGFloat = 18
         let rect = NSRect(
@@ -3962,8 +4041,17 @@ final class RuneHorizontalTableOverflowIndicatorView: NSView {
 @MainActor
 final class RuneAppKitResourceListScrollView: NSScrollView {
     var onVisibleWidthChanged: (() -> Void)?
+    var showsHorizontalOverflowEdgeGlow = true {
+        didSet {
+            guard showsHorizontalOverflowEdgeGlow != oldValue else { return }
+            horizontalOverflowIndicator.isEnabled = showsHorizontalOverflowEdgeGlow
+        }
+    }
     var horizontalOverflowStateForTesting: RuneHorizontalTableOverflowState {
         horizontalOverflowIndicator.state
+    }
+    var isHorizontalOverflowEdgeGlowVisibleForTesting: Bool {
+        !horizontalOverflowIndicator.isHidden
     }
     private var lastVisibleWidth: CGFloat = -1
     private var isSendingVisibleWidthChange = false

@@ -207,10 +207,21 @@ public struct KubernetesNativeCredentialRequest: Codable, Equatable, Sendable {
 public struct KubernetesNativeCredential: Equatable, Sendable {
     public let bearerToken: String
     public let expiresAt: Date?
+    public let revision: UUID
 
-    public init(bearerToken: String, expiresAt: Date?) {
+    public init(
+        bearerToken: String,
+        expiresAt: Date?,
+        revision: UUID = UUID()
+    ) {
         self.bearerToken = bearerToken
         self.expiresAt = expiresAt
+        self.revision = revision
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bearerToken == rhs.bearerToken
+            && lhs.expiresAt == rhs.expiresAt
     }
 }
 
@@ -220,10 +231,17 @@ public protocol KubernetesNativeCredentialProviding: Sendable {
 
     /// Invalidates in-memory access credentials after authentication rejection. Persistent refresh material remains bound.
     func invalidateCredential(for bindingID: String) async
+
+    /// Invalidates only when the rejected request used the provider's current credential revision.
+    func invalidateCredential(for bindingID: String, matchingRevision revision: UUID) async
 }
 
 public extension KubernetesNativeCredentialProviding {
     func invalidateCredential(for _: String) async {}
+
+    func invalidateCredential(for bindingID: String, matchingRevision _: UUID) async {
+        await invalidateCredential(for: bindingID)
+    }
 }
 
 public enum KubernetesNativeAuthProviderClassifier {

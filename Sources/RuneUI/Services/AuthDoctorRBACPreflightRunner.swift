@@ -32,22 +32,26 @@ public enum AuthDoctorRBACPreflightRunner {
         var nextIndex = 0
         var results = Array<AuthDoctorRBACPreflightResult?>(repeating: nil, count: targets.count)
 
-        await withTaskGroup(of: (Int, AuthDoctorRBACPreflightResult).self) { group in
+        await withTaskGroup(of: (Int, AuthDoctorRBACPreflightResult)?.self) { group in
             func enqueueNext() {
-                guard nextIndex < targets.count else { return }
+                guard !Task.isCancelled, nextIndex < targets.count else { return }
                 let index = nextIndex
                 nextIndex += 1
                 let target = targets[index]
                 let namespace = target.namespace(activeNamespace: activeNamespace)
                 group.addTask {
                     do {
+                        try Task.checkCancellation()
                         let allowed = try await check(target, namespace)
+                        try Task.checkCancellation()
                         return (index, AuthDoctorRBACPreflightResult(
                             target: target,
                             namespace: namespace,
                             allowed: allowed,
                             errorMessage: nil
                         ))
+                    } catch is CancellationError {
+                        return nil
                     } catch {
                         return (index, AuthDoctorRBACPreflightResult(
                             target: target,
@@ -63,7 +67,15 @@ public enum AuthDoctorRBACPreflightRunner {
                 enqueueNext()
             }
 
-            while let (index, result) = await group.next() {
+            while let completed = await group.next() {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                guard let (index, result) = completed else {
+                    enqueueNext()
+                    continue
+                }
                 results[index] = result
                 enqueueNext()
             }

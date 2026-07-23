@@ -329,6 +329,54 @@ final class ExecCredentialQualityGateTests: XCTestCase {
         XCTAssertEqual(diagnostic?.state, .hit)
     }
 
+    func testProvideClusterInfoCAFileRotationInvalidatesExecCredentialCache() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let counter = fixture.directory.appendingPathComponent("ca-rotation-invocation-count")
+        let certificateAuthority = fixture.directory.appendingPathComponent("synthetic-ca.crt")
+        try Data("synthetic-ca-alpha".utf8).write(to: certificateAuthority)
+        let plugin = try writePlugin(
+            in: fixture.directory,
+            name: "ca-rotation-auth.sh",
+            payload: validCredentialPayload(expirationTimestamp: "2099-01-02T03:04:05Z"),
+            preflight: sequentialCounterPreflight
+        )
+        try fixture.writeKubeconfig(
+            userYAML: execYAML(
+                apiVersion: "client.authentication.k8s.io/v1",
+                command: plugin.path,
+                interactiveMode: "Never",
+                provideClusterInfo: true,
+                environment: ["COUNTER_FILE": counter.path]
+            ),
+            clusterYAML: "certificate-authority: \(yamlString(certificateAuthority.path))"
+        )
+
+        let client = KubernetesRESTClient()
+        let environment = ["KUBECONFIG": fixture.kubeconfig.path]
+        _ = try await client.contextNamespace(
+            environment: environment,
+            contextName: Fixture.contextName
+        )
+        _ = try await client.contextNamespace(
+            environment: environment,
+            contextName: Fixture.contextName
+        )
+        XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "1")
+
+        try Data("synthetic-ca-bravo".utf8).write(to: certificateAuthority)
+        _ = try await client.contextNamespace(
+            environment: environment,
+            contextName: Fixture.contextName
+        )
+
+        XCTAssertEqual(
+            try String(contentsOf: counter, encoding: .utf8),
+            "2",
+            "Rotated CA bytes supplied through KUBERNETES_EXEC_INFO must produce a new cache key"
+        )
+    }
+
     func testExpiredExecCredentialRunsPluginAgainOnNextResolution() async throws {
         let fixture = try makeFixture()
         defer { fixture.remove() }

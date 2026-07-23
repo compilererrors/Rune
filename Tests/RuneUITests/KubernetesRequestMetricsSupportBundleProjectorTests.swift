@@ -99,6 +99,57 @@ final class KubernetesRequestMetricsSupportBundleProjectorTests: XCTestCase {
         XCTAssertFalse(rendered.contains("synthetic-value"))
     }
 
+    func testAtomicReportUsesLifetimeEndpointGroupsBeyondRetainedWindow() {
+        let retainedMetric = KubernetesRESTRequestMetric(
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic/pods",
+            statusCode: 200,
+            responseBytes: 10,
+            durationSeconds: 0.9,
+            attempt: 1,
+            outcome: .success
+        )
+        let lifetimeFailureGroup = KubernetesRESTRequestMetricGroup(
+            sourcePath: "swift-rest",
+            method: "GET",
+            apiPath: "/api/v1/namespaces/synthetic-private/services",
+            requestCount: 4,
+            successCount: 1,
+            failureCount: 3,
+            cancelledCount: 0,
+            responseBytes: 40,
+            totalDurationSeconds: 0.4,
+            maxDurationSeconds: 0.2,
+            latestStatusCode: 503,
+            latestOutcome: .httpError
+        )
+        let report = KubernetesRESTRequestMetricsReport(
+            metrics: [retainedMetric],
+            summary: KubernetesRESTRequestMetricsSummary(
+                requestCount: 5,
+                successCount: 2,
+                failureCount: 3,
+                cancelledCount: 0,
+                responseBytes: 50,
+                totalDurationSeconds: 1.3,
+                retainedMetricCount: 1
+            ),
+            endpointGroups: [lifetimeFailureGroup]
+        )
+
+        let presentation = KubernetesRequestMetricsDebugPresentation(report: report)
+        let projectedGroups = KubernetesRequestMetricsSupportBundleProjector.groups(
+            from: report.endpointGroups
+        )
+
+        XCTAssertEqual(presentation.endpointHighlights.map(\.apiPath), [
+            "/api/v1/namespaces/<namespace>/services"
+        ])
+        XCTAssertEqual(presentation.endpointHighlights.first?.outcomeText, "4 attempts • 3 failed")
+        XCTAssertEqual(projectedGroups.first?.requestCount, 4)
+        XCTAssertEqual(projectedGroups.first?.latestOutcome, "httpError")
+    }
+
     func testProjectsRequestMetricsForSupportBundle() {
         let metrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: [
             KubernetesRESTRequestMetric(

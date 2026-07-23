@@ -127,6 +127,152 @@ final class NativeCredentialRoutingIntegrationTests: XCTestCase {
         XCTAssertTrue(request.bindingID.hasPrefix("native-k8s-v1:"))
     }
 
+    func testConcurrentReadsDoNotCoalesceAcrossNativeCredentialRotation() async throws {
+        let server = try await NativeAuthTestServer.start(responseMode: .gateFirstSuccess)
+        defer {
+            server.releaseFirstResponse()
+            server.stop()
+        }
+        let fixture = try NativeAuthFixture.make(serverPort: server.port)
+        defer { fixture.remove() }
+        let provider = FakeNativeCredentialProvider(
+            behavior: .sequence(tokens: ["native-token-before", "native-token-after"])
+        )
+        let client = KubernetesRESTClient(nativeCredentialProvider: provider)
+
+        let first = Task {
+            try await client.listNamespaces(
+                environment: fixture.environment,
+                contextName: fixture.contextName,
+                timeout: 3
+            )
+        }
+        for _ in 0..<200 where server.requestCount < 1 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(server.requestCount, 1)
+
+        let second = Task {
+            try await client.listNamespaces(
+                environment: fixture.environment,
+                contextName: fixture.contextName,
+                timeout: 3
+            )
+        }
+        for _ in 0..<200 {
+            let snapshot = await provider.snapshot()
+            if snapshot.requests.count >= 2 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        for _ in 0..<200 where server.requestCount < 2 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(server.requestCount, 2)
+        server.releaseFirstResponse()
+        let responses = try await [first.value, second.value]
+
+        XCTAssertEqual(responses, [["synthetic-namespace"], ["synthetic-namespace"]])
+        XCTAssertEqual(
+            server.authorizationHeaders,
+            ["Bearer native-token-before", "Bearer native-token-after"]
+        )
+    }
+
+    func testLateHTTP401DoesNotInvalidateNewerNativeCredentialRevision() async throws {
+        let server = try await NativeAuthTestServer.start(responseMode: .gateFirstUnauthorizedThenSuccess)
+        defer {
+            server.releaseFirstResponse()
+            server.stop()
+        }
+        let fixture = try NativeAuthFixture.make(serverPort: server.port)
+        defer { fixture.remove() }
+        let provider = FakeNativeCredentialProvider(
+            behavior: .sequence(tokens: ["native-token-before", "native-token-after"])
+        )
+        let client = KubernetesRESTClient(nativeCredentialProvider: provider)
+
+        let staleRequest = Task {
+            try await client.listNamespaces(
+                environment: fixture.environment,
+                contextName: fixture.contextName,
+                timeout: 3
+            )
+        }
+        for _ in 0..<200 where server.requestCount < 1 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(server.requestCount, 1)
+
+        let freshNamespaces = try await client.listNamespaces(
+            environment: fixture.environment,
+            contextName: fixture.contextName,
+            timeout: 3
+        )
+        XCTAssertEqual(freshNamespaces, ["synthetic-namespace"])
+
+        server.releaseFirstResponse()
+        do {
+            _ = try await staleRequest.value
+            XCTFail("Expected the delayed stale request to receive HTTP 401")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("HTTP 401"), String(describing: error))
+        }
+
+        let snapshot = await provider.snapshot()
+        XCTAssertEqual(snapshot.invalidationAttemptCount, 1)
+        XCTAssertEqual(snapshot.invalidatedBindingIDs, [])
+        XCTAssertEqual(
+            server.authorizationHeaders,
+            ["Bearer native-token-before", "Bearer native-token-after"]
+        )
+    }
+
+    func testConcurrentReadsDoNotCoalesceAcrossDifferentTimeouts() async throws {
+        let server = try await NativeAuthTestServer.start(responseMode: .gateFirstSuccess)
+        defer {
+            server.releaseFirstResponse()
+            server.stop()
+        }
+        let fixture = try NativeAuthFixture.make(serverPort: server.port)
+        defer { fixture.remove() }
+        let provider = FakeNativeCredentialProvider(behavior: .fixed(token: "native-timeout-token"))
+        let client = KubernetesRESTClient(nativeCredentialProvider: provider)
+
+        let first = Task {
+            try await client.listNamespaces(
+                environment: fixture.environment,
+                contextName: fixture.contextName,
+                timeout: 3
+            )
+        }
+        for _ in 0..<200 where server.requestCount < 1 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(server.requestCount, 1)
+
+        let second = Task {
+            try await client.listNamespaces(
+                environment: fixture.environment,
+                contextName: fixture.contextName,
+                timeout: 1
+            )
+        }
+        for _ in 0..<200 where server.requestCount < 2 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(server.requestCount, 2)
+        server.releaseFirstResponse()
+        let responses = try await [first.value, second.value]
+
+        XCTAssertEqual(responses, [["synthetic-namespace"], ["synthetic-namespace"]])
+        XCTAssertEqual(
+            server.authorizationHeaders,
+            ["Bearer native-timeout-token", "Bearer native-timeout-token"]
+        )
+    }
+
     func testHTTP401InvalidatesNativeCredentialWithoutBlindReplayAndNextUserRequestRefreshes() async throws {
         let server = try await NativeAuthTestServer.start(responseMode: .unauthorizedThenSuccess)
         defer { server.stop() }
@@ -229,6 +375,7 @@ private actor NativeAuthMemoryProfileStore: KubernetesNativeAuthProfileStoring {
 private actor FakeNativeCredentialProvider: KubernetesNativeCredentialProviding {
     enum Behavior: Sendable {
         case fixed(token: String)
+        case sequence(tokens: [String])
         case freshAfterInvalidation(staleToken: String, freshToken: String)
         case unavailable
     }
@@ -236,11 +383,14 @@ private actor FakeNativeCredentialProvider: KubernetesNativeCredentialProviding 
     struct Snapshot: Sendable {
         let requests: [KubernetesNativeCredentialRequest]
         let invalidatedBindingIDs: [String]
+        let invalidationAttemptCount: Int
     }
 
     private let behavior: Behavior
     private var requests: [KubernetesNativeCredentialRequest] = []
     private var invalidatedBindingIDs: [String] = []
+    private var invalidationAttemptCount = 0
+    private var latestCredentials: [String: KubernetesNativeCredential] = [:]
 
     init(behavior: Behavior) {
         self.behavior = behavior
@@ -248,23 +398,51 @@ private actor FakeNativeCredentialProvider: KubernetesNativeCredentialProviding 
 
     func credential(for request: KubernetesNativeCredentialRequest) async throws -> KubernetesNativeCredential? {
         requests.append(request)
+        let credential: KubernetesNativeCredential?
         switch behavior {
         case .fixed(let token):
-            return KubernetesNativeCredential(bearerToken: token, expiresAt: Date().addingTimeInterval(300))
+            credential = KubernetesNativeCredential(bearerToken: token, expiresAt: Date().addingTimeInterval(300))
+        case .sequence(let tokens):
+            if tokens.isEmpty {
+                credential = nil
+            } else {
+                let index = min(requests.count - 1, tokens.count - 1)
+                credential = KubernetesNativeCredential(
+                    bearerToken: tokens[index],
+                    expiresAt: Date().addingTimeInterval(300)
+                )
+            }
         case .freshAfterInvalidation(let staleToken, let freshToken):
             let token = invalidatedBindingIDs.contains(request.bindingID) ? freshToken : staleToken
-            return KubernetesNativeCredential(bearerToken: token, expiresAt: Date().addingTimeInterval(300))
+            credential = KubernetesNativeCredential(bearerToken: token, expiresAt: Date().addingTimeInterval(300))
         case .unavailable:
-            return nil
+            credential = nil
         }
+        if let credential {
+            latestCredentials[request.bindingID] = credential
+        }
+        return credential
     }
 
     func invalidateCredential(for bindingID: String) async {
+        invalidationAttemptCount += 1
         invalidatedBindingIDs.append(bindingID)
+        latestCredentials.removeValue(forKey: bindingID)
+    }
+
+    func invalidateCredential(for bindingID: String, matchingRevision revision: UUID) async {
+        invalidationAttemptCount += 1
+        guard latestCredentials[bindingID]?.revision == revision else { return }
+        invalidatedBindingIDs.append(bindingID)
+        latestCredentials.removeValue(forKey: bindingID)
     }
 
     func snapshot() -> Snapshot {
-        Snapshot(requests: requests, invalidatedBindingIDs: invalidatedBindingIDs)
+        Snapshot(
+            requests: requests,
+            invalidatedBindingIDs: invalidatedBindingIDs,
+            invalidationAttemptCount: invalidationAttemptCount
+        )
     }
 }
 
@@ -343,6 +521,8 @@ private struct NativeAuthFixture {
 private final class NativeAuthTestServer: @unchecked Sendable {
     enum ResponseMode: Sendable {
         case alwaysSuccess
+        case gateFirstSuccess
+        case gateFirstUnauthorizedThenSuccess
         case unauthorizedThenSuccess
     }
 
@@ -412,8 +592,13 @@ private final class NativeAuthTestServer: @unchecked Sendable {
         listener.cancel()
     }
 
+    func releaseFirstResponse() {
+        state.releaseFirstResponse()
+    }
+
     private final class State: @unchecked Sendable {
         private let lock = NSLock()
+        private let firstResponseGate = DispatchSemaphore(value: 0)
         private let responseMode: ResponseMode
         private var requestHeaders: [String] = []
 
@@ -442,7 +627,12 @@ private final class NativeAuthTestServer: @unchecked Sendable {
                 requestHeaders.append(request)
                 return requestHeaders.count
             }
-            if responseMode == .unauthorizedThenSuccess, index == 1 {
+            if (responseMode == .gateFirstSuccess || responseMode == .gateFirstUnauthorizedThenSuccess),
+               index == 1 {
+                _ = firstResponseGate.wait(timeout: .now() + 5)
+            }
+            if (responseMode == .unauthorizedThenSuccess || responseMode == .gateFirstUnauthorizedThenSuccess),
+               index == 1 {
                 return (
                     401,
                     #"{"kind":"Status","status":"Failure","message":"synthetic unauthorized"}"#
@@ -452,6 +642,10 @@ private final class NativeAuthTestServer: @unchecked Sendable {
                 200,
                 #"{"items":[{"metadata":{"name":"synthetic-namespace"}}]}"#
             )
+        }
+
+        func releaseFirstResponse() {
+            firstResponseGate.signal()
         }
     }
 }

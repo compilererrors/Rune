@@ -4042,6 +4042,100 @@ public struct RuneRootView: View {
         return modules
     }
 
+    private struct OverviewCardPresentation {
+        let title: String
+        let count: Int
+        let symbol: String
+        let tint: Color
+        let help: String?
+    }
+
+    private func overviewCardPresentation(for module: OverviewModule) -> OverviewCardPresentation {
+        switch module {
+        case .pods:
+            return OverviewCardPresentation(
+                title: "Pods",
+                count: viewModel.state.overviewPods.count,
+                symbol: "cube.box.fill",
+                tint: .cyan,
+                help: nil
+            )
+        case .deployments:
+            return OverviewCardPresentation(
+                title: "Deployments",
+                count: viewModel.state.overviewDeploymentsCount,
+                symbol: "shippingbox.fill",
+                tint: .blue,
+                help: nil
+            )
+        case .services:
+            return OverviewCardPresentation(
+                title: "Services",
+                count: viewModel.state.overviewServicesCount,
+                symbol: "point.3.connected.trianglepath.dotted",
+                tint: .purple,
+                help: nil
+            )
+        case .ingresses:
+            return OverviewCardPresentation(
+                title: "Ingresses",
+                count: viewModel.state.overviewIngressesCount,
+                symbol: "network",
+                tint: .indigo,
+                help: nil
+            )
+        case .configMaps:
+            return OverviewCardPresentation(
+                title: "ConfigMaps",
+                count: viewModel.state.overviewConfigMapsCount,
+                symbol: "doc.text.fill",
+                tint: .teal,
+                help: nil
+            )
+        case .cronJobs:
+            return OverviewCardPresentation(
+                title: "CronJobs",
+                count: viewModel.state.overviewCronJobsCount,
+                symbol: "calendar.badge.clock",
+                tint: .mint,
+                help: nil
+            )
+        case .nodes:
+            return OverviewCardPresentation(
+                title: "Nodes",
+                count: viewModel.state.overviewNodesCount,
+                symbol: "server.rack",
+                tint: .gray,
+                help: nil
+            )
+        case .events:
+            return OverviewCardPresentation(
+                title: "Events",
+                count: viewModel.state.overviewEvents.count,
+                symbol: "bolt.badge.clock.fill",
+                tint: .orange,
+                help: overviewEventsCardHelp
+            )
+        }
+    }
+
+    private func overviewStatCard(module: OverviewModule, index: Int) -> some View {
+        let presentation = overviewCardPresentation(for: module)
+        return OverviewStatCard(
+            title: presentation.title,
+            count: presentation.count,
+            symbol: presentation.symbol,
+            tint: presentation.tint,
+            isLoading: viewModel.state.isLoading,
+            isKeyboardFocused: isOverviewCardKeyboardFocused(index),
+            help: presentation.help,
+            showsHoverHelp: showHoverTooltips
+        ) {
+            overviewCardSelectionIndex = index
+            viewModel.openOverviewModule(module)
+        }
+    }
+
     private func isOverviewCardKeyboardFocused(_ index: Int) -> Bool {
         keyboardPaneFocus == .content
             && viewModel.state.selectedSection == .overview
@@ -4069,107 +4163,14 @@ public struct RuneRootView: View {
                         authDoctorPanel
                     }
 
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                    OverviewStatCard(
-                        title: "Pods",
-                        count: viewModel.state.overviewPods.count,
-                        symbol: "cube.box.fill",
-                        tint: .cyan,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(0),
-                        showsHoverHelp: showHoverTooltips
+                    RuneBalancedOverviewGrid(
+                        minimumItemWidth: 160,
+                        spacing: RuneUILayoutMetrics.contentControlSpacing
                     ) {
-                        overviewCardSelectionIndex = 0
-                        viewModel.openOverviewModule(.pods)
-                    }
-                    OverviewStatCard(
-                        title: "Deployments",
-                        count: viewModel.state.overviewDeploymentsCount,
-                        symbol: "shippingbox.fill",
-                        tint: .blue,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(1),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 1
-                        viewModel.openOverviewModule(.deployments)
-                    }
-                    OverviewStatCard(
-                        title: "Services",
-                        count: viewModel.state.overviewServicesCount,
-                        symbol: "point.3.connected.trianglepath.dotted",
-                        tint: .purple,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(2),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 2
-                        viewModel.openOverviewModule(.services)
-                    }
-                    OverviewStatCard(
-                        title: "Ingresses",
-                        count: viewModel.state.overviewIngressesCount,
-                        symbol: "network",
-                        tint: .indigo,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(3),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 3
-                        viewModel.openOverviewModule(.ingresses)
-                    }
-                    OverviewStatCard(
-                        title: "ConfigMaps",
-                        count: viewModel.state.overviewConfigMapsCount,
-                        symbol: "doc.text.fill",
-                        tint: .teal,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(4),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 4
-                        viewModel.openOverviewModule(.configMaps)
-                    }
-                    OverviewStatCard(
-                        title: "CronJobs",
-                        count: viewModel.state.overviewCronJobsCount,
-                        symbol: "calendar.badge.clock",
-                        tint: .mint,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(5),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 5
-                        viewModel.openOverviewModule(.cronJobs)
-                    }
-                    OverviewStatCard(
-                        title: "Nodes",
-                        count: viewModel.state.overviewNodesCount,
-                        symbol: "server.rack",
-                        tint: .gray,
-                        isLoading: viewModel.state.isLoading,
-                        isKeyboardFocused: isOverviewCardKeyboardFocused(6),
-                        showsHoverHelp: showHoverTooltips
-                    ) {
-                        overviewCardSelectionIndex = 6
-                        viewModel.openOverviewModule(.nodes)
-                    }
-                    if !simpleMode {
-                        OverviewStatCard(
-                            title: "Events",
-                            count: viewModel.state.overviewEvents.count,
-                            symbol: "bolt.badge.clock.fill",
-                            tint: .orange,
-                            isLoading: viewModel.state.isLoading,
-                            isKeyboardFocused: isOverviewCardKeyboardFocused(7),
-                            help: overviewEventsCardHelp,
-                            showsHoverHelp: showHoverTooltips
-                        ) {
-                            overviewCardSelectionIndex = 7
-                            viewModel.openOverviewModule(.events)
+                        ForEach(Array(overviewCardModules.enumerated()), id: \.offset) { index, module in
+                            overviewStatCard(module: module, index: index)
                         }
                     }
-                }
 
                     if !simpleMode {
                         OverviewClusterSignalsPanelView(
@@ -4184,11 +4185,22 @@ public struct RuneRootView: View {
                         )
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Pod Health")
-                            .font(.headline)
+                    VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentControlSpacing) {
+                        RuneSectionHeader(
+                            "Pod Health",
+                            systemImage: "heart.text.square",
+                            tint: .green
+                        ) {
+                            RuneHeaderCapsule(
+                                "\(viewModel.state.overviewPods.count) total",
+                                role: .value
+                            )
+                        }
 
-                        HStack(spacing: 8) {
+                        RuneBadgeFlowLayout(
+                            horizontalSpacing: RuneUILayoutMetrics.contentControlSpacing,
+                            verticalSpacing: RuneUILayoutMetrics.contentControlSpacing
+                        ) {
                             healthBadge(label: "Running", value: podStatusCount("running"), color: .green)
                             healthBadge(label: "Pending", value: podStatusCount("pending"), color: .orange)
                             healthBadge(label: "Failed", value: podStatusCount("failed"), color: .red)

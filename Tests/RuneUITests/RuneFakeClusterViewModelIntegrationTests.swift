@@ -1144,6 +1144,65 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertFalse(harness.server.requestLines().contains { $0.localizedCaseInsensitiveContains("helm") })
     }
 
+    func testAuthDoctorScopeChangesCancelOldRunWithoutClearingNewRun() async throws {
+        let fixture = RuneFakeK8sFixture(
+            delayedResponseTargets: ["/api/v1/namespaces": 600_000_000]
+        )
+        let harness = try await makeHarness(fixture: fixture)
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+        harness.viewModel.runAuthDoctor()
+        try await waitUntil {
+            harness.server.requestLines().contains { $0.hasPrefix("GET /api/v1/namespaces ") }
+        }
+
+        harness.state.selectedContext = KubeContext(name: "synthetic-other-context")
+        await Task.yield()
+
+        XCTAssertFalse(harness.state.isRunningAuthDoctor)
+        XCTAssertTrue(harness.state.authDoctorChecks.isEmpty)
+
+        harness.state.selectedContext = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        harness.state.selectedNamespace = "alpha-zone"
+        harness.server.resetRequestLines()
+        harness.viewModel.runAuthDoctor()
+        try await waitUntil {
+            harness.server.requestLines().contains { $0.hasPrefix("GET /api/v1/namespaces ") }
+        }
+
+        harness.state.selectedNamespace = "bravo-zone"
+        await Task.yield()
+        XCTAssertFalse(harness.state.isRunningAuthDoctor)
+        XCTAssertTrue(harness.state.authDoctorChecks.isEmpty)
+
+        harness.viewModel.runAuthDoctor()
+        XCTAssertTrue(harness.state.isRunningAuthDoctor)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(
+            harness.state.isRunningAuthDoctor,
+            "A cancelled older run must not clear the replacement run's progress state."
+        )
+
+        try await waitUntil(timeout: 5) {
+            !harness.state.isRunningAuthDoctor
+                && harness.state.authDoctorChecks.contains {
+                    $0.id == "namespace" && $0.message == "bravo-zone"
+                }
+        }
+        XCTAssertTrue(harness.state.authDoctorChecks.contains {
+            $0.id == "pod-list" && $0.message.contains("bravo-zone")
+        })
+
+        harness.state.selectedContext = KubeContext(name: "synthetic-completed-run-context")
+        await Task.yield()
+        XCTAssertTrue(
+            harness.state.authDoctorChecks.isEmpty,
+            "A completed Auth Doctor run must not remain visible or exportable after its scope changes."
+        )
+    }
+
     func testAuthDoctorLocalInspectionUsesSelectedContextInsteadOfKubeconfigCurrentContext() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }

@@ -131,6 +131,8 @@ public enum RuneLocalizedStringKey: String, CaseIterable, Sendable {
     case settingsShowDemoClusterContextHelp
     case settingsShowHoverTooltips
     case settingsShowHoverTooltipsHelp
+    case settingsShowResourceTableScrollEdgeGlow
+    case settingsShowResourceTableScrollEdgeGlowHelp
     case settingsSimpleMode
     case settingsSimpleModeHelp
     case settingsSimpleModeManagedFieldsNote

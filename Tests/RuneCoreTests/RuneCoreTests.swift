@@ -607,6 +607,18 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertFalse(defaults.runeShowHoverTooltips)
     }
 
+    func testResourceTableScrollEdgeGlowDefaultsOnAndPersists() {
+        let suiteName = "RuneCoreTests.resourceTableScrollEdgeGlow.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(defaults.runeShowResourceTableScrollEdgeGlow)
+
+        defaults.runeShowResourceTableScrollEdgeGlow = false
+
+        XCTAssertFalse(defaults.runeShowResourceTableScrollEdgeGlow)
+    }
+
     func testDemoClusterSettingAcceptsCommandLineStyleBooleanStrings() {
         let suiteName = "RuneCoreTests.demoClusterArgument.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

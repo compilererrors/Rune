@@ -87,7 +87,7 @@ Run **Rune > Load Demo Cluster** to explore Rune with a small in-memory cluster.
 
 ## Kubeconfig Import
 
-Rune supports common kubeconfig YAML references, including anchors, aliases, and merge keys for cluster, context, and user entries. Imported kubeconfigs are reviewed before they are saved, and sensitive tokens, certificates, keys, and local credential paths are redacted in the preview.
+Rune supports common kubeconfig YAML references, including anchors, aliases, and merge keys, through its native Kubernetes client while discovering contexts and loading imported files. Imported kubeconfigs are reviewed before they are saved, and sensitive tokens, certificates, keys, and local credential paths are redacted in the preview.
 
 ## Privacy
 

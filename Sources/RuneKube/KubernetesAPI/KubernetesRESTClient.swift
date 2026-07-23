@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Darwin
 import OSLog
 import RuneCore
@@ -41,6 +42,84 @@ final class KubernetesRESTClient: @unchecked Sendable {
     static func _testResolvedTLSDescription(environment: [String: String], contextName: String) async throws -> String {
         let resolved = try await KubernetesRESTClient().resolvedContext(environment: environment, contextName: contextName)
         return resolved.tlsDescription
+    }
+
+    static func _testRESTCredentialFingerprint(bearerToken: String) -> Data {
+        RESTCredentialFingerprint.make(
+            authentication: .bearer(bearerToken),
+            clientTLSIdentity: nil
+        ) ?? Data()
+    }
+
+    static func _testLateExecCredentialInvalidationPreservesFreshGeneration() async throws -> Bool {
+        let cache = KubernetesExecCredentialCache()
+        let key = "exec:synthetic"
+        let stale = try await cache.resolve(for: key) {
+            KubernetesExecCredential(
+                authentication: .bearer("synthetic-stale"),
+                clientTLSIdentity: nil,
+                expiresAt: Date().addingTimeInterval(60)
+            )
+        }
+        await cache.invalidate(for: key, generation: stale.generation)
+        let fresh = try await cache.resolve(for: key) {
+            KubernetesExecCredential(
+                authentication: .bearer("synthetic-fresh"),
+                clientTLSIdentity: nil,
+                expiresAt: Date().addingTimeInterval(60)
+            )
+        }
+
+        await cache.invalidate(for: key, generation: stale.generation)
+        let reused = try await cache.resolve(for: key) {
+            throw RuneError.invalidInput(
+                message: "Late invalidation incorrectly removed the fresh synthetic credential"
+            )
+        }
+        return stale.generation != fresh.generation
+            && reused.generation == fresh.generation
+    }
+
+    static func _testBoundedCredentialCachesActivelyExpire() async throws -> Bool {
+        let configCache = KubernetesRESTConfigCache(
+            capacity: 2,
+            retentionTTL: 0.05
+        )
+        let config = NormalizedKubeConfig(
+            currentContext: nil,
+            contexts: [],
+            clusters: [],
+            users: []
+        )
+        await configCache.setConfig(config, for: "config-a")
+        await configCache.setConfig(config, for: "config-b")
+        await configCache.setConfig(config, for: "config-c")
+
+        let execCache = KubernetesExecCredentialCache(
+            capacity: 2,
+            retentionTTL: 0.05
+        )
+        for key in ["exec-a", "exec-b", "exec-c"] {
+            _ = try await execCache.resolve(for: key) {
+                KubernetesExecCredential(
+                    authentication: .bearer("synthetic"),
+                    clientTLSIdentity: nil,
+                    expiresAt: Date().addingTimeInterval(60)
+                )
+            }
+        }
+
+        let configBounded = await configCache.retainedCount() == 2
+        let execBounded = await execCache.retainedCount() == 2
+        for _ in 0..<50 {
+            let configExpired = await configCache.retainedCount() == 0
+            let execExpired = await execCache.retainedCount() == 0
+            if configExpired && execExpired {
+                return configBounded && execBounded
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return false
     }
 
     static func _testLocalPortConflictMessage(
@@ -111,8 +190,23 @@ final class KubernetesRESTClient: @unchecked Sendable {
             )
         }
         guard let exec = namedUser?.user.exec else { return nil }
+        let apiVersion = try Self.validatedExecCredentialAPIVersion(exec.apiVersion)
+        try Self.validateExecInteractiveMode(exec.interactiveMode, apiVersion: apiVersion)
+        let certificateAuthorityData: Data?
+        if exec.provideClusterInfo == true {
+            certificateAuthorityData = try namedCluster.cluster.resolvedCertificateAuthorityData()
+        } else {
+            certificateAuthorityData = nil
+        }
+        let execInfo = try execInfo(
+            for: exec,
+            cluster: namedCluster.cluster,
+            apiVersion: apiVersion,
+            certificateAuthorityData: certificateAuthorityData
+        )
+        let processEnvironment = exec.processEnvironment(base: environment, execInfo: execInfo)
         return await execCredentialCache.diagnostic(
-            for: exec.cacheKey(environment: environment, cluster: namedCluster.cluster)
+            for: exec.cacheKey(processEnvironment: processEnvironment, execInfo: execInfo)
         )
     }
 
@@ -1276,10 +1370,16 @@ final class KubernetesRESTClient: @unchecked Sendable {
         body: String?,
         timeout: TimeInterval
     ) async throws -> RESTResponse {
-        let resolved = try await resolvedContext(environment: environment, contextName: contextName)
+        let metricsRequestGeneration = await requestMetricsRecorder?.reserveScopeGeneration()
+        let resolved = try await resolvedContext(
+            environment: environment,
+            contextName: contextName,
+            metricsRequestGeneration: metricsRequestGeneration
+        )
+        let metricsScope = resolved.metricsScope
         VerboseKubeTrace.append(
             "k8s.request",
-            "start method=\(method) context=\(contextName) path=\(apiPath) server=\(resolved.serverURL.host ?? resolved.serverURL.absoluteString) tls=\(resolved.tlsDescription) auth=\(resolved.authentication.traceDescription) kubeconfigs=\(VerboseKubeTrace.kubeconfigSummary(environment))"
+            "start method=\(method) context=<redacted-context> path=\(apiPath) server=\(resolved.serverURL.host ?? resolved.serverURL.absoluteString) tls=\(resolved.tlsDescription) auth=\(resolved.authentication.traceDescription) kubeconfigs=\(VerboseKubeTrace.kubeconfigSummary(environment))"
         )
         let restSession = makeSession(for: resolved)
         defer { restSession.session.invalidateAndCancel() }
@@ -1309,14 +1409,21 @@ final class KubernetesRESTClient: @unchecked Sendable {
             request.httpBody = Data(body.utf8)
         }
 
-        if KubernetesRESTRequestCoalescingKey.isCoalescible(method: method, body: body) {
+        if KubernetesRESTRequestCoalescingKey.isCoalescible(method: method, body: body),
+           let credentialFingerprint = RESTCredentialFingerprint.make(
+               authentication: resolved.authentication,
+               clientTLSIdentity: resolved.clientTLSIdentity
+           ) {
             let finalRequest = request
             let key = KubernetesRESTRequestCoalescingKey(
                 method: method,
                 server: resolved.serverURL.absoluteString,
                 contextName: contextName,
+                scopeIdentity: resolved.metricsScopeIdentity,
+                credentialFingerprint: credentialFingerprint,
                 apiPath: apiPath,
-                headers: headers
+                headers: headers,
+                timeout: timeout
             )
             return try await requestCoalescer.value(for: key) {
                 try await self.performRawRequest(
@@ -1325,7 +1432,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     method: method,
                     contextName: contextName,
                     apiPath: apiPath,
-                    resolved: resolved
+                    resolved: resolved,
+                    metricsScope: metricsScope
                 )
             }
         }
@@ -1336,7 +1444,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
             method: method,
             contextName: contextName,
             apiPath: apiPath,
-            resolved: resolved
+            resolved: resolved,
+            metricsScope: metricsScope
         )
     }
 
@@ -1346,7 +1455,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         method: String,
         contextName: String,
         apiPath: String,
-        resolved: ResolvedRESTContext
+        resolved: ResolvedRESTContext,
+        metricsScope: KubernetesRESTRequestMetricsScopeToken?
     ) async throws -> RESTResponse {
         var attempt = 1
         while true {
@@ -1366,7 +1476,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
                     await recordRequestMetric(
                         method: method,
-                        contextName: contextName,
+                        metricsScope: metricsScope,
                         apiPath: apiPath,
                         statusCode: nil,
                         responseBytes: 0,
@@ -1387,11 +1497,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 }
                 VerboseKubeTrace.append(
                     "k8s.request",
-                    "failed method=\(method) context=\(contextName) path=\(apiPath) \(retryDecision.traceDescription) error=\(errorMessage)"
+                    "failed method=\(method) context=<redacted-context> path=\(apiPath) \(retryDecision.traceDescription) error=\(errorMessage)"
                 )
                 await recordRequestMetric(
                     method: method,
-                    contextName: contextName,
+                    metricsScope: metricsScope,
                     apiPath: apiPath,
                     statusCode: nil,
                     responseBytes: 0,
@@ -1415,15 +1525,21 @@ final class KubernetesRESTClient: @unchecked Sendable {
             let responseBody = String(data: data, encoding: .utf8) ?? ""
             VerboseKubeTrace.append(
                 "k8s.request",
-                "response method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode)"
+                "response method=\(method) context=<redacted-context> path=\(apiPath) status=\(http.statusCode)"
             )
             guard (200..<300).contains(http.statusCode) else {
                 if http.statusCode == 401, let key = resolved.credentialInvalidationKey {
                     switch key {
-                    case .exec(let cacheKey):
-                        await execCredentialCache.invalidate(for: cacheKey)
-                    case .native(let bindingID):
-                        await nativeCredentialProvider.invalidateCredential(for: bindingID)
+                    case .exec(let cacheKey, let generation):
+                        await execCredentialCache.invalidate(
+                            for: cacheKey,
+                            generation: generation
+                        )
+                    case .native(let bindingID, let revision):
+                        await nativeCredentialProvider.invalidateCredential(
+                            for: bindingID,
+                            matchingRevision: revision
+                        )
                     }
                 }
                 let retryDecision = KubernetesRequestRetryPolicy.classifyHTTPStatus(
@@ -1433,7 +1549,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 if KubernetesRequestRetryPolicy.shouldRetry(method: method, decision: retryDecision, attempt: attempt) {
                     await recordRequestMetric(
                         method: method,
-                        contextName: contextName,
+                        metricsScope: metricsScope,
                         apiPath: apiPath,
                         statusCode: http.statusCode,
                         responseBytes: data.count,
@@ -1453,11 +1569,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 }
                 VerboseKubeTrace.append(
                     "k8s.request",
-                    "http_error method=\(method) context=\(contextName) path=\(apiPath) status=\(http.statusCode) \(retryDecision.traceDescription)"
+                    "http_error method=\(method) context=<redacted-context> path=\(apiPath) status=\(http.statusCode) \(retryDecision.traceDescription)"
                 )
                 await recordRequestMetric(
                     method: method,
-                    contextName: contextName,
+                    metricsScope: metricsScope,
                     apiPath: apiPath,
                     statusCode: http.statusCode,
                     responseBytes: data.count,
@@ -1474,7 +1590,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
             await recordRequestMetric(
                 method: method,
-                contextName: contextName,
+                metricsScope: metricsScope,
                 apiPath: apiPath,
                 statusCode: http.statusCode,
                 responseBytes: data.count,
@@ -1491,7 +1607,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
     private func recordRequestMetric(
         method: String,
-        contextName: String,
+        metricsScope: KubernetesRESTRequestMetricsScopeToken?,
         apiPath: String,
         statusCode: Int?,
         responseBytes: Int,
@@ -1500,7 +1616,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         cancellationReason: String? = nil,
         started: ContinuousClock.Instant
     ) async {
-        guard let requestMetricsRecorder else { return }
+        guard let requestMetricsRecorder, let metricsScope else { return }
         let elapsed = started.duration(to: .now)
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         await requestMetricsRecorder.record(
@@ -1514,7 +1630,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 outcome: outcome,
                 cancellationReason: cancellationReason
             ),
-            contextName: contextName
+            scope: metricsScope
         )
     }
 
@@ -1695,48 +1811,155 @@ final class KubernetesRESTClient: @unchecked Sendable {
     }
 
     private func normalizedConfig(environment: [String: String]) async throws -> NormalizedKubeConfig {
-        let cacheKey = NormalizedKubeConfig.cacheKey(environment: environment)
-        if let cached = await configCache.config(for: cacheKey) {
-            return cached
-        }
-
-        let config = try NormalizedKubeConfig.loadDirectly(environment: environment)
-        await configCache.setConfig(config, for: cacheKey)
-        return config
+        try await normalizedConfigSnapshot(environment: environment).config
     }
 
-    private func resolvedContext(environment: [String: String], contextName: String) async throws -> ResolvedRESTContext {
-        let config = try await normalizedConfig(environment: environment)
+    func requestMetricsScopeIdentity(
+        environment: [String: String],
+        contextName: String
+    ) async throws -> String {
+        let configSnapshot = try await normalizedConfigSnapshot(environment: environment)
+        let config = configSnapshot.config
+        guard let namedContext = config.contexts.first(where: { $0.name == contextName }),
+              let namedCluster = config.clusters.first(where: { $0.name == namedContext.context.cluster }),
+              let serverURL = URL(string: namedCluster.cluster.server) else {
+            throw RuneError.invalidInput(message: "The selected Kubernetes metrics scope is unavailable.")
+        }
+        return Self.requestMetricsScopeIdentity(
+            configIdentity: configSnapshot.cacheIdentity,
+            clusterName: namedContext.context.cluster,
+            userName: namedContext.context.user,
+            serverURL: serverURL
+        )
+    }
+
+    private func normalizedConfigSnapshot(
+        environment: [String: String]
+    ) async throws -> NormalizedKubeConfigSnapshot {
+        let input = try NormalizedKubeConfig.readInput(environment: environment)
+        let config = try await configCache.resolve(for: input.cacheIdentity) {
+            try NormalizedKubeConfig.loadDirectly(input: input)
+        }
+        return NormalizedKubeConfigSnapshot(
+            config: config,
+            cacheIdentity: input.cacheIdentity
+        )
+    }
+
+    private func resolvedContext(
+        environment: [String: String],
+        contextName: String,
+        metricsRequestGeneration: UInt64? = nil
+    ) async throws -> ResolvedRESTContext {
+        let initialConfigIdentity = NormalizedKubeConfig.unresolvedCacheIdentity(environment: environment)
+        let configSnapshot: NormalizedKubeConfigSnapshot
+        do {
+            configSnapshot = try await normalizedConfigSnapshot(environment: environment)
+        } catch {
+            await activateUnresolvedMetricsScope(
+                contextName: contextName,
+                configIdentity: initialConfigIdentity,
+                requestGeneration: metricsRequestGeneration
+            )
+            throw error
+        }
+        let config = configSnapshot.config
         guard let namedContext = config.contexts.first(where: { $0.name == contextName }) else {
+            await activateUnresolvedMetricsScope(
+                contextName: contextName,
+                configIdentity: configSnapshot.cacheIdentity,
+                requestGeneration: metricsRequestGeneration
+            )
             throw RuneError.invalidInput(message: "Kubernetes context \(contextName) is missing from kubeconfig")
         }
         guard let namedCluster = config.clusters.first(where: { $0.name == namedContext.context.cluster }) else {
+            await activateUnresolvedMetricsScope(
+                contextName: contextName,
+                configIdentity: configSnapshot.cacheIdentity,
+                requestGeneration: metricsRequestGeneration
+            )
             throw RuneError.invalidInput(message: "Cluster \(namedContext.context.cluster) is missing from kubeconfig")
         }
         let namedUser = config.users.first(where: { $0.name == namedContext.context.user })
 
         guard let serverURL = URL(string: namedCluster.cluster.server) else {
+            await activateUnresolvedMetricsScope(
+                contextName: contextName,
+                configIdentity: configSnapshot.cacheIdentity,
+                requestGeneration: metricsRequestGeneration
+            )
             throw RuneError.invalidInput(message: "Invalid Kubernetes server URL for context \(contextName)")
         }
 
+        let metricsScopeIdentity = Self.requestMetricsScopeIdentity(
+            configIdentity: configSnapshot.cacheIdentity,
+            clusterName: namedContext.context.cluster,
+            userName: namedContext.context.user,
+            serverURL: serverURL
+        )
+        let metricsScope: KubernetesRESTRequestMetricsScopeToken?
+        if let metricsRequestGeneration, let requestMetricsRecorder {
+            metricsScope = await requestMetricsRecorder.activateScope(
+                contextName: contextName,
+                scopeIdentity: metricsScopeIdentity,
+                requestGeneration: metricsRequestGeneration
+            )
+        } else {
+            metricsScope = nil
+        }
+
+        let certificateAuthorityData = try namedCluster.cluster.resolvedCertificateAuthorityData()
         let credentials = try await resolveCredentials(
             user: namedUser?.user,
             cluster: namedCluster.cluster,
             contextName: contextName,
             userName: namedUser?.name,
             clusterName: namedCluster.name,
-            environment: environment
+            environment: environment,
+            certificateAuthorityData: certificateAuthorityData
         )
         return ResolvedRESTContext(
             serverURL: serverURL,
             namespace: namedContext.context.namespace,
+            metricsScopeIdentity: metricsScopeIdentity,
+            metricsScope: metricsScope,
             authentication: credentials.authentication,
             insecureSkipTLSVerify: namedCluster.cluster.insecureSkipTLSVerify ?? false,
-            certificateAuthorityData: try namedCluster.cluster.resolvedCertificateAuthorityData(),
+            certificateAuthorityData: certificateAuthorityData,
             tlsServerName: namedCluster.cluster.tlsServerName,
             clientTLSIdentity: credentials.clientTLSIdentity,
             credentialInvalidationKey: credentials.credentialInvalidationKey
         )
+    }
+
+    private func activateUnresolvedMetricsScope(
+        contextName: String,
+        configIdentity: String,
+        requestGeneration: UInt64?
+    ) async {
+        guard let requestGeneration, let requestMetricsRecorder else { return }
+        _ = await requestMetricsRecorder.activateScope(
+            contextName: contextName,
+            scopeIdentity: [
+                configIdentity,
+                "<unresolved-context>"
+            ].joined(separator: "\u{1d}"),
+            requestGeneration: requestGeneration
+        )
+    }
+
+    private static func requestMetricsScopeIdentity(
+        configIdentity: String,
+        clusterName: String,
+        userName: String,
+        serverURL: URL
+    ) -> String {
+        [
+            configIdentity,
+            clusterName,
+            userName,
+            serverURL.absoluteString
+        ].joined(separator: "\u{1d}")
     }
 
     private func resolveCredentials(
@@ -1745,7 +1968,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         contextName: String,
         userName: String?,
         clusterName: String,
-        environment: [String: String]
+        environment: [String: String],
+        certificateAuthorityData: Data?
     ) async throws -> RESTCredentialResolution {
         guard let user else { return RESTCredentialResolution(authentication: .none, clientTLSIdentity: nil) }
 
@@ -1804,7 +2028,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 return RESTCredentialResolution(
                     authentication: .bearer(token),
                     clientTLSIdentity: nil,
-                    credentialInvalidationKey: .native(nativeRequest.bindingID)
+                    credentialInvalidationKey: .native(
+                        nativeRequest.bindingID,
+                        revision: credential.revision
+                    )
                 )
             }
             if user.exec != nil, !RuneExternalCommandPolicy.allowsExternalCommands {
@@ -1813,7 +2040,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         if let exec = user.exec {
-            return try await resolveExecCredentials(exec: exec, cluster: cluster, environment: environment)
+            return try await resolveExecCredentials(
+                exec: exec,
+                cluster: cluster,
+                environment: environment,
+                certificateAuthorityData: certificateAuthorityData
+            )
         }
 
         return RESTCredentialResolution(
@@ -1900,14 +2132,24 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private func resolveExecCredentials(
         exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
         cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
-        environment: [String: String]
+        environment: [String: String],
+        certificateAuthorityData: Data?
     ) async throws -> RESTCredentialResolution {
-        let key = exec.cacheKey(environment: environment, cluster: cluster)
-        let credential = try await execCredentialCache.resolve(for: key) { [self] in
+        let apiVersion = try Self.validatedExecCredentialAPIVersion(exec.apiVersion)
+        try Self.validateExecInteractiveMode(exec.interactiveMode, apiVersion: apiVersion)
+        let execInfo = try execInfo(
+            for: exec,
+            cluster: cluster,
+            apiVersion: apiVersion,
+            certificateAuthorityData: certificateAuthorityData
+        )
+        let processEnvironment = exec.processEnvironment(base: environment, execInfo: execInfo)
+        let key = exec.cacheKey(processEnvironment: processEnvironment, execInfo: execInfo)
+        let lease = try await execCredentialCache.resolve(for: key) { [self] in
             let response = try await runExecCredential(
                 exec: exec,
-                cluster: cluster,
-                environment: environment,
+                processEnvironment: processEnvironment,
+                apiVersion: apiVersion,
                 timeout: 25
             )
             guard let status = response.status else {
@@ -1952,28 +2194,25 @@ final class KubernetesRESTClient: @unchecked Sendable {
             )
         }
         return RESTCredentialResolution(
-            authentication: credential.authentication,
-            clientTLSIdentity: credential.clientTLSIdentity,
-            credentialInvalidationKey: .exec(key)
+            authentication: lease.credential.authentication,
+            clientTLSIdentity: lease.credential.clientTLSIdentity,
+            credentialInvalidationKey: .exec(key, generation: lease.generation)
         )
     }
 
     private func runExecCredential(
         exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
-        cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
-        environment: [String: String],
+        processEnvironment: [String: String],
+        apiVersion: String,
         timeout: TimeInterval
     ) async throws -> ExecCredentialResponse {
         guard RuneExternalCommandPolicy.allowsExternalCommands else {
             throw RuneError.invalidInput(message: RuneExternalCommandPolicy.disabledMessage)
         }
-        let apiVersion = try Self.validatedExecCredentialAPIVersion(exec.apiVersion)
-        try Self.validateExecInteractiveMode(exec.interactiveMode, apiVersion: apiVersion)
-        let execInfo = try execInfo(for: exec, cluster: cluster, apiVersion: apiVersion)
         let output = try await runProcess(
             command: exec.command,
             arguments: exec.args ?? [],
-            environment: exec.processEnvironment(base: environment, execInfo: execInfo),
+            environment: processEnvironment,
             installHint: exec.installHint,
             timeout: timeout
         )
@@ -2061,12 +2300,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private func execInfo(
         for exec: NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig,
         cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry,
-        apiVersion: String
+        apiVersion: String,
+        certificateAuthorityData: Data?
     ) throws -> String {
         var spec: [String: Any] = ["interactive": false]
         if exec.provideClusterInfo == true {
             var clusterInfo: [String: Any] = ["server": cluster.server]
-            if let data = try cluster.resolvedCertificateAuthorityData() {
+            if let data = certificateAuthorityData {
                 clusterInfo["certificate-authority-data"] = data.base64EncodedString()
             }
             if let insecure = cluster.insecureSkipTLSVerify {
@@ -2254,79 +2494,600 @@ final class KubernetesRESTClient: @unchecked Sendable {
     }
 }
 
-private actor KubernetesRESTConfigCache {
-    private var byKey: [String: NormalizedKubeConfig] = [:]
-    private var blockedUntilByKey: [String: Date] = [:]
+enum BoundedExpiringLRUCacheLookup<Value> {
+    case hit(Value)
+    case expired(value: Value, expirationDate: Date)
+    case miss
+}
 
-    func config(for key: String) -> NormalizedKubeConfig? {
-        byKey[key]
+struct BoundedExpiringLRUCache<Key: Hashable, Value> {
+    private struct Entry {
+        let value: Value
+        let expirationDate: Date
+        var accessOrder: UInt64
     }
 
-    func setConfig(_ config: NormalizedKubeConfig, for key: String) {
-        byKey[key] = config
-        blockedUntilByKey.removeValue(forKey: key)
+    let capacity: Int
+    private(set) var count = 0
+    private var entries: [Key: Entry] = [:]
+    private var accessOrder: UInt64 = 0
+
+    init(capacity: Int) {
+        precondition(capacity > 0, "Cache capacity must be positive")
+        self.capacity = capacity
     }
 
-    func blockedUntil(for key: String) -> Date? {
-        blockedUntilByKey[key]
+    var keys: Set<Key> {
+        Set(entries.keys)
     }
 
-    func block(key: String, until: Date) {
-        blockedUntilByKey[key] = until
+    var earliestExpirationDate: Date? {
+        entries.values.lazy.map(\.expirationDate).min()
+    }
+
+    mutating func lookup(for key: Key, now: Date = Date()) -> BoundedExpiringLRUCacheLookup<Value> {
+        guard var entry = entries[key] else { return .miss }
+        guard entry.expirationDate > now else {
+            entries.removeValue(forKey: key)
+            count = entries.count
+            return .expired(value: entry.value, expirationDate: entry.expirationDate)
+        }
+        entry.accessOrder = nextAccessOrder()
+        entries[key] = entry
+        return .hit(entry.value)
+    }
+
+    mutating func insert(
+        _ value: Value,
+        for key: Key,
+        expirationDate: Date,
+        now: Date = Date()
+    ) {
+        _ = removeExpired(now: now)
+        guard expirationDate > now else {
+            entries.removeValue(forKey: key)
+            count = entries.count
+            return
+        }
+
+        let entryAccessOrder = nextAccessOrder()
+        entries[key] = Entry(
+            value: value,
+            expirationDate: expirationDate,
+            accessOrder: entryAccessOrder
+        )
+        if entries.count > capacity,
+           let leastRecentlyUsedKey = entries.min(by: {
+               $0.value.accessOrder < $1.value.accessOrder
+           })?.key {
+            entries.removeValue(forKey: leastRecentlyUsedKey)
+        }
+        count = entries.count
+    }
+
+    @discardableResult
+    mutating func removeValue(for key: Key) -> Value? {
+        let value = entries.removeValue(forKey: key)?.value
+        count = entries.count
+        return value
+    }
+
+    @discardableResult
+    mutating func removeExpired(
+        now: Date = Date()
+    ) -> [(key: Key, value: Value, expirationDate: Date)] {
+        let expired = entries.compactMap { key, entry in
+            entry.expirationDate <= now
+                ? (key: key, value: entry.value, expirationDate: entry.expirationDate)
+                : nil
+        }
+        for entry in expired {
+            entries.removeValue(forKey: entry.key)
+        }
+        count = entries.count
+        return expired
+    }
+
+    private mutating func nextAccessOrder() -> UInt64 {
+        if accessOrder == .max {
+            let keysByRecency = entries
+                .sorted { $0.value.accessOrder < $1.value.accessOrder }
+                .map(\.key)
+            for (index, key) in keysByRecency.enumerated() {
+                guard var entry = entries[key] else { continue }
+                entry.accessOrder = UInt64(index)
+                entries[key] = entry
+            }
+            accessOrder = UInt64(entries.count)
+        }
+        accessOrder += 1
+        return accessOrder
     }
 }
 
-private actor KubernetesExecCredentialCache {
-    private var byKey: [String: KubernetesExecCredential] = [:]
-    private var inFlightByKey: [String: Task<KubernetesExecCredential, Error>] = [:]
+enum KubernetesSensitiveCacheKeyComponent {
+    case string(String?)
+    case data(Data?)
+    case strings([String])
+    case keyValuePairs([(String, String)])
+}
+
+enum KubernetesSensitiveCacheKey {
+    static func make(
+        namespace: String,
+        components: [KubernetesSensitiveCacheKeyComponent]
+    ) -> String {
+        var material = Data("rune-sensitive-cache-key-v2".utf8)
+        append(tag: 0x01, value: Data(namespace.utf8), to: &material)
+        for component in components {
+            switch component {
+            case .string(let value):
+                appendOptional(tag: 0x02, value: value.map { Data($0.utf8) }, to: &material)
+            case .data(let value):
+                appendOptional(tag: 0x03, value: value, to: &material)
+            case .strings(let values):
+                appendCount(values.count, tag: 0x04, to: &material)
+                for value in values {
+                    append(tag: 0x05, value: Data(value.utf8), to: &material)
+                }
+            case .keyValuePairs(let pairs):
+                appendCount(pairs.count, tag: 0x06, to: &material)
+                for (key, value) in pairs {
+                    append(tag: 0x07, value: Data(key.utf8), to: &material)
+                    append(tag: 0x08, value: Data(value.utf8), to: &material)
+                }
+            }
+        }
+        let digest = SHA256.hash(data: material)
+        return "\(namespace):\(Data(digest).base64EncodedString())"
+    }
+
+    static func effectiveEnvironmentPairs(
+        processEnvironment: [String: String],
+        baseEnvironment: [String: String],
+        execEnvironment: [(String, String)]
+    ) -> [(String, String)] {
+        var effective = processEnvironment
+        for (key, value) in baseEnvironment {
+            effective[key] = value
+        }
+        effective["PATH"] = RuneExecutableSearchPath.pathValue(from: effective)
+        for (key, value) in execEnvironment {
+            effective[key] = value
+        }
+        effective.removeValue(forKey: "KUBERNETES_EXEC_INFO")
+        return effective.sorted { lhs, rhs in
+            lhs.key == rhs.key ? lhs.value < rhs.value : lhs.key < rhs.key
+        }
+    }
+
+    private static func appendOptional(
+        tag: UInt8,
+        value: Data?,
+        to material: inout Data
+    ) {
+        if let value {
+            append(tag: tag, value: value, to: &material)
+        } else {
+            append(tag: tag | 0x80, value: Data(), to: &material)
+        }
+    }
+
+    private static func appendCount(_ count: Int, tag: UInt8, to material: inout Data) {
+        var value = UInt64(count).bigEndian
+        append(
+            tag: tag,
+            value: withUnsafeBytes(of: &value) { Data($0) },
+            to: &material
+        )
+    }
+
+    private static func append(tag: UInt8, value: Data, to material: inout Data) {
+        material.append(tag)
+        var length = UInt64(value.count).bigEndian
+        withUnsafeBytes(of: &length) { material.append(contentsOf: $0) }
+        material.append(value)
+    }
+}
+
+private actor KubernetesRESTConfigCache {
+    private struct InFlight {
+        let id: UUID
+        let task: Task<NormalizedKubeConfig, Error>
+    }
+
+    private static let defaultCapacity = 32
+    private static let defaultRetentionTTL: TimeInterval = 5 * 60
+
+    private let retentionTTL: TimeInterval
+    private let nowProvider: @Sendable () -> Date
+    private var byKey: BoundedExpiringLRUCache<String, NormalizedKubeConfig>
+    private var inFlightByKey: [String: InFlight] = [:]
+    private var expirationTask: Task<Void, Never>?
+
+    init(
+        capacity: Int = defaultCapacity,
+        retentionTTL: TimeInterval = defaultRetentionTTL,
+        nowProvider: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.retentionTTL = retentionTTL
+        self.nowProvider = nowProvider
+        self.byKey = BoundedExpiringLRUCache(capacity: capacity)
+    }
+
+    deinit {
+        expirationTask?.cancel()
+        for inFlight in inFlightByKey.values {
+            inFlight.task.cancel()
+        }
+    }
 
     func resolve(
         for key: String,
-        loader: @escaping @Sendable () async throws -> KubernetesExecCredential
-    ) async throws -> KubernetesExecCredential {
-        if let credential = validCredential(for: key) {
-            return credential
+        loader: @escaping @Sendable () async throws -> NormalizedKubeConfig
+    ) async throws -> NormalizedKubeConfig {
+        if let cached = config(for: key) {
+            return cached
         }
-        if let inFlight = inFlightByKey[key] {
-            return try await inFlight.value
+
+        let inFlight: InFlight
+        if let existing = inFlightByKey[key] {
+            inFlight = existing
+        } else {
+            let priority = Task.currentPriority
+            let created = InFlight(
+                id: UUID(),
+                task: Task.detached(priority: priority) {
+                    try await loader()
+                }
+            )
+            inFlightByKey[key] = created
+            inFlight = created
         }
-        let task = Task.detached(priority: .utility) {
-            try await loader()
-        }
-        inFlightByKey[key] = task
+
         do {
-            let credential = try await task.value
-            byKey[key] = credential
-            inFlightByKey.removeValue(forKey: key)
-            return credential
+            let config = try await inFlight.task.value
+            if inFlightByKey[key]?.id == inFlight.id {
+                inFlightByKey.removeValue(forKey: key)
+                setConfig(config, for: key)
+            }
+            return config
         } catch {
-            inFlightByKey.removeValue(forKey: key)
+            if inFlightByKey[key]?.id == inFlight.id {
+                inFlightByKey.removeValue(forKey: key)
+            }
             throw error
         }
     }
 
-    private func validCredential(for key: String) -> KubernetesExecCredential? {
-        guard let credential = byKey[key] else { return nil }
-        if let expiresAt = credential.expiresAt, expiresAt <= Date() {
-            byKey.removeValue(forKey: key)
+    func config(for key: String) -> NormalizedKubeConfig? {
+        let now = nowProvider()
+        switch byKey.lookup(for: key, now: now) {
+        case .hit(let config):
+            return config
+        case .expired:
+            scheduleExpiration(now: now)
+            return nil
+        case .miss:
             return nil
         }
-        return credential
+    }
+
+    func setConfig(_ config: NormalizedKubeConfig, for key: String) {
+        let now = nowProvider()
+        byKey.insert(
+            config,
+            for: key,
+            expirationDate: now.addingTimeInterval(retentionTTL),
+            now: now
+        )
+        scheduleExpiration(now: now)
+    }
+
+    func retainedCount() -> Int {
+        byKey.count
+    }
+
+    private func purgeExpired() {
+        let now = nowProvider()
+        _ = byKey.removeExpired(now: now)
+        scheduleExpiration(now: now)
+    }
+
+    private func scheduleExpiration(now: Date) {
+        expirationTask?.cancel()
+        guard let expirationDate = byKey.earliestExpirationDate else {
+            expirationTask = nil
+            return
+        }
+        let delay = max(0, expirationDate.timeIntervalSince(now))
+        expirationTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.purgeExpired()
+        }
+    }
+}
+
+private actor KubernetesExecCredentialCache {
+    private struct InFlight {
+        let id: UUID
+        let task: Task<KubernetesExecCredential, Error>
+        var waiterCount: Int
+        var resolvedLease: KubernetesExecCredentialLease?
+    }
+
+    private static let defaultCapacity = 64
+    private static let defaultRetentionTTL: TimeInterval = 15 * 60
+    private static let expiredDiagnosticTTL: TimeInterval = 5 * 60
+
+    private let retentionTTL: TimeInterval
+    private let nowProvider: @Sendable () -> Date
+    private var byKey: BoundedExpiringLRUCache<String, KubernetesExecCredentialLease>
+    private var expiredAtByKey: BoundedExpiringLRUCache<String, Date>
+    private var inFlightByKey: [String: InFlight] = [:]
+    private var expirationTask: Task<Void, Never>?
+
+    init(
+        capacity: Int = defaultCapacity,
+        retentionTTL: TimeInterval = defaultRetentionTTL,
+        nowProvider: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.retentionTTL = retentionTTL
+        self.nowProvider = nowProvider
+        self.byKey = BoundedExpiringLRUCache(capacity: capacity)
+        self.expiredAtByKey = BoundedExpiringLRUCache(capacity: capacity)
+    }
+
+    deinit {
+        expirationTask?.cancel()
+        for inFlight in inFlightByKey.values {
+            inFlight.task.cancel()
+        }
+    }
+
+    func resolve(
+        for key: String,
+        loader: @escaping @Sendable () async throws -> KubernetesExecCredential
+    ) async throws -> KubernetesExecCredentialLease {
+        if let credential = validCredential(for: key) {
+            return credential
+        }
+
+        let inFlight: InFlight
+        if var existing = inFlightByKey[key] {
+            existing.waiterCount += 1
+            inFlightByKey[key] = existing
+            inFlight = existing
+        } else {
+            let created = InFlight(
+                id: UUID(),
+                task: Task.detached(priority: .utility) {
+                    try await loader()
+                },
+                waiterCount: 1,
+                resolvedLease: nil
+            )
+            inFlightByKey[key] = created
+            inFlight = created
+        }
+
+        do {
+            let credential = try await inFlight.task.value
+            return try completeResolution(
+                credential,
+                for: key,
+                inFlightID: inFlight.id
+            )
+        } catch {
+            finishFailedResolution(for: key, inFlightID: inFlight.id)
+            throw error
+        }
+    }
+
+    private func validCredential(for key: String) -> KubernetesExecCredentialLease? {
+        let now = nowProvider()
+        switch byKey.lookup(for: key, now: now) {
+        case .hit(let lease):
+            return lease
+        case .expired(let lease, let expirationDate):
+            recordExpiredCredentialIfNeeded(
+                lease.credential,
+                cacheExpirationDate: expirationDate,
+                for: key,
+                now: now
+            )
+            scheduleExpiration(now: now)
+            return nil
+        case .miss:
+            return nil
+        }
+    }
+
+    private func completeResolution(
+        _ credential: KubernetesExecCredential,
+        for key: String,
+        inFlightID: UUID
+    ) throws -> KubernetesExecCredentialLease {
+        guard var inFlight = inFlightByKey[key], inFlight.id == inFlightID else {
+            if let cached = validCredential(for: key) {
+                return cached
+            }
+            throw CancellationError()
+        }
+
+        let lease: KubernetesExecCredentialLease
+        if let resolvedLease = inFlight.resolvedLease {
+            lease = resolvedLease
+        } else {
+            lease = cache(credential, for: key)
+            inFlight.resolvedLease = lease
+        }
+        inFlight.waiterCount -= 1
+        if inFlight.waiterCount == 0 {
+            inFlightByKey.removeValue(forKey: key)
+        } else {
+            inFlightByKey[key] = inFlight
+        }
+        return lease
+    }
+
+    private func finishFailedResolution(for key: String, inFlightID: UUID) {
+        guard var inFlight = inFlightByKey[key], inFlight.id == inFlightID else { return }
+        inFlight.waiterCount -= 1
+        if inFlight.waiterCount == 0 {
+            inFlightByKey.removeValue(forKey: key)
+        } else {
+            inFlightByKey[key] = inFlight
+        }
+    }
+
+    private func cache(
+        _ credential: KubernetesExecCredential,
+        for key: String
+    ) -> KubernetesExecCredentialLease {
+        let now = nowProvider()
+        let retentionLimit = now.addingTimeInterval(retentionTTL)
+        let expirationDate = min(credential.expiresAt ?? retentionLimit, retentionLimit)
+        let lease = KubernetesExecCredentialLease(
+            credential: credential,
+            generation: UUID()
+        )
+        if expirationDate > now {
+            byKey.insert(
+                lease,
+                for: key,
+                expirationDate: expirationDate,
+                now: now
+            )
+            expiredAtByKey.removeValue(for: key)
+        } else if let expiresAt = credential.expiresAt {
+            recordExpired(expiresAt, for: key, now: now)
+        }
+        scheduleExpiration(now: now)
+        return lease
     }
 
     func diagnostic(for key: String) -> KubernetesExecCredentialCacheDiagnostic {
-        guard let credential = byKey[key] else {
-            return KubernetesExecCredentialCacheDiagnostic(state: .miss, expiresAt: nil)
+        let now = nowProvider()
+        switch byKey.lookup(for: key, now: now) {
+        case .hit(let lease):
+            return KubernetesExecCredentialCacheDiagnostic(
+                state: .hit,
+                expiresAt: lease.credential.expiresAt
+            )
+        case .expired(let lease, let expirationDate):
+            recordExpiredCredentialIfNeeded(
+                lease.credential,
+                cacheExpirationDate: expirationDate,
+                for: key,
+                now: now
+            )
+        case .miss:
+            break
         }
-        if let expiresAt = credential.expiresAt, expiresAt <= Date() {
-            byKey.removeValue(forKey: key)
-            return KubernetesExecCredentialCacheDiagnostic(state: .expired, expiresAt: expiresAt)
+
+        let expiredAt: Date?
+        switch expiredAtByKey.lookup(for: key, now: now) {
+        case .hit(let value):
+            expiredAt = value
+        case .expired, .miss:
+            expiredAt = nil
         }
-        return KubernetesExecCredentialCacheDiagnostic(state: .hit, expiresAt: credential.expiresAt)
+        scheduleExpiration(now: now)
+        return KubernetesExecCredentialCacheDiagnostic(
+            state: expiredAt == nil ? .miss : .expired,
+            expiresAt: expiredAt
+        )
     }
 
-    func invalidate(for key: String) {
-        byKey.removeValue(forKey: key)
+    func retainedCount() -> Int {
+        byKey.count
+    }
+
+    func invalidate(for key: String, generation: UUID) {
+        let now = nowProvider()
+        if inFlightByKey[key]?.resolvedLease?.generation == generation {
+            inFlightByKey.removeValue(forKey: key)
+        }
+        switch byKey.lookup(for: key, now: now) {
+        case .hit(let lease) where lease.generation == generation:
+            byKey.removeValue(for: key)
+            expiredAtByKey.removeValue(for: key)
+            scheduleExpiration(now: now)
+        case .expired(let lease, let expirationDate):
+            recordExpiredCredentialIfNeeded(
+                lease.credential,
+                cacheExpirationDate: expirationDate,
+                for: key,
+                now: now
+            )
+            scheduleExpiration(now: now)
+        case .hit, .miss:
+            break
+        }
+    }
+
+    private func purgeExpired() {
+        let now = nowProvider()
+        for entry in byKey.removeExpired(now: now) {
+            recordExpiredCredentialIfNeeded(
+                entry.value.credential,
+                cacheExpirationDate: entry.expirationDate,
+                for: entry.key,
+                now: now
+            )
+        }
+        _ = expiredAtByKey.removeExpired(now: now)
+        scheduleExpiration(now: now)
+    }
+
+    private func recordExpiredCredentialIfNeeded(
+        _ credential: KubernetesExecCredential,
+        cacheExpirationDate: Date,
+        for key: String,
+        now: Date
+    ) {
+        guard let expiresAt = credential.expiresAt,
+              expiresAt <= cacheExpirationDate else { return }
+        recordExpired(expiresAt, for: key, now: now)
+    }
+
+    private func recordExpired(_ expirationDate: Date, for key: String, now: Date) {
+        expiredAtByKey.insert(
+            expirationDate,
+            for: key,
+            expirationDate: now.addingTimeInterval(Self.expiredDiagnosticTTL),
+            now: now
+        )
+    }
+
+    private func scheduleExpiration(now: Date) {
+        expirationTask?.cancel()
+        let nextExpiration = [
+            byKey.earliestExpirationDate,
+            expiredAtByKey.earliestExpirationDate
+        ]
+        .compactMap { $0 }
+        .min()
+        guard let nextExpiration else {
+            expirationTask = nil
+            return
+        }
+        let delay = max(0, nextExpiration.timeIntervalSince(now))
+        expirationTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.purgeExpired()
+        }
     }
 }
 
@@ -2413,6 +3174,11 @@ private struct KubernetesExecCredential: Sendable {
     let expiresAt: Date?
 }
 
+private struct KubernetesExecCredentialLease: Sendable {
+    let credential: KubernetesExecCredential
+    let generation: UUID
+}
+
 private enum KubeConfigJSONValue: Decodable, Sendable, Equatable {
     case null
     case bool(Bool)
@@ -2468,6 +3234,16 @@ private enum KubeConfigJSONValue: Decodable, Sendable, Equatable {
 }
 
 private struct NormalizedKubeConfig: Decodable, Sendable {
+    struct Input: Sendable {
+        struct Source: Sendable {
+            let url: URL
+            let data: Data
+        }
+
+        let sources: [Source]
+        let cacheIdentity: String
+    }
+
     struct NamedContext: Decodable, Sendable {
         struct ContextEntry: Decodable, Sendable {
             let cluster: String
@@ -2639,51 +3415,39 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
                 }
 
                 func processEnvironment(base: [String: String], execInfo: String?) -> [String: String] {
-                    var output = ProcessInfo.processInfo.environment
-                    for (key, value) in base {
-                        output[key] = value
-                    }
-                    output["PATH"] = RuneExecutableSearchPath.pathValue(from: output)
-                    for entry in env ?? [] {
-                        output[entry.name] = entry.value
-                    }
+                    let pairs = KubernetesSensitiveCacheKey.effectiveEnvironmentPairs(
+                        processEnvironment: ProcessInfo.processInfo.environment,
+                        baseEnvironment: base,
+                        execEnvironment: (env ?? []).map { ($0.name, $0.value) }
+                    )
+                    var output = Dictionary(uniqueKeysWithValues: pairs)
                     if let execInfo {
                         output["KUBERNETES_EXEC_INFO"] = execInfo
                     }
                     return output
                 }
 
-                func cacheKey(
-                    environment: [String: String],
-                    cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry
-                ) -> String {
-                    let envKey = (env ?? [])
-                        .map { "\($0.name)=\($0.value)" }
-                        .sorted()
-                        .joined(separator: "\u{1f}")
-                    var components = [
-                        apiVersion ?? "",
-                        command,
-                        (args ?? []).joined(separator: "\u{1e}"),
-                        envKey,
-                        installHint ?? "",
-                        provideClusterInfo == true ? "cluster" : "",
-                        interactiveMode ?? "",
-                        environment["KUBECONFIG"] ?? ""
-                    ]
-                    if provideClusterInfo == true {
-                        components.append(contentsOf: [
-                            cluster.server,
-                            cluster.tlsServerName ?? "",
-                            cluster.insecureSkipTLSVerify == true ? "insecure" : "secure",
-                            cluster.certificateAuthorityData ?? "",
-                            cluster.certificateAuthority ?? "",
-                            cluster.proxyURL ?? "",
-                            cluster.disableCompression == true ? "no-compression" : "compression",
-                            cluster.execExtensionConfig?.stableDescription ?? ""
-                        ])
+                func cacheKey(processEnvironment: [String: String], execInfo: String) -> String {
+                    let environmentPairs: [(String, String)] = processEnvironment.map { entry in
+                        (entry.key, entry.value)
                     }
-                    return components.joined(separator: "\u{1d}")
+                    let effectiveEnvironment = environmentPairs.sorted { lhs, rhs in
+                        lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
+                    }
+                    let components: [KubernetesSensitiveCacheKeyComponent] = [
+                        .string(apiVersion),
+                        .string(command),
+                        .strings(args ?? []),
+                        .keyValuePairs(effectiveEnvironment),
+                        .string(installHint),
+                        .string(provideClusterInfo == true ? "cluster" : nil),
+                        .string(interactiveMode),
+                        .string(execInfo)
+                    ]
+                    return KubernetesSensitiveCacheKey.make(
+                        namespace: "exec",
+                        components: components
+                    )
                 }
             }
 
@@ -2859,20 +3623,46 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
         )
     }
 
-    static func loadDirectly(environment: [String: String]) throws -> NormalizedKubeConfig {
+    static func readInput(environment: [String: String]) throws -> Input {
         let paths = kubeconfigPaths(environment: environment)
         guard !paths.isEmpty else { throw RuneError.missingKubeConfig }
 
+        var sources: [Input.Source] = []
+        var identityComponents: [KubernetesSensitiveCacheKeyComponent] = []
+        for path in paths {
+            let expanded = NSString(string: path).expandingTildeInPath
+            let url = URL(fileURLWithPath: expanded).standardizedFileURL
+            identityComponents.append(.string(url.path))
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                identityComponents.append(.data(nil))
+                continue
+            }
+            let data = try Data(contentsOf: url)
+            identityComponents.append(.data(data))
+            sources.append(Input.Source(url: url, data: data))
+        }
+        return Input(
+            sources: sources,
+            cacheIdentity: KubernetesSensitiveCacheKey.make(
+                namespace: "config",
+                components: identityComponents
+            )
+        )
+    }
+
+    static func loadDirectly(input: Input) throws -> NormalizedKubeConfig {
         var mergedContexts: [NamedContext] = []
         var mergedClusters: [NamedCluster] = []
         var mergedUsers: [NamedUser] = []
         var currentContext: String?
 
-        for path in paths {
-            let expanded = NSString(string: path).expandingTildeInPath
-            guard FileManager.default.fileExists(atPath: expanded) else { continue }
-            let raw = try String(contentsOfFile: expanded, encoding: .utf8)
-            let baseDirectory = URL(fileURLWithPath: expanded).deletingLastPathComponent()
+        for source in input.sources {
+            guard let raw = String(data: source.data, encoding: .utf8) else {
+                throw RuneError.parseError(
+                    message: "Could not parse kubeconfig \(source.url.lastPathComponent): invalid UTF-8"
+                )
+            }
+            let baseDirectory = source.url.deletingLastPathComponent()
             let config: NormalizedKubeConfig
             do {
                 config = try YAMLDecoder()
@@ -2880,7 +3670,7 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
                     .resolvingRelativePaths(baseDirectory: baseDirectory)
             } catch {
                 throw RuneError.parseError(
-                    message: "Could not parse kubeconfig \(URL(fileURLWithPath: expanded).lastPathComponent): \(String(describing: error))"
+                    message: "Could not parse kubeconfig \(source.url.lastPathComponent): \(String(describing: error))"
                 )
             }
             mergedContexts.append(contentsOf: config.contexts)
@@ -2903,16 +3693,21 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
         )
     }
 
-    static func cacheKey(environment: [String: String]) -> String {
-        kubeconfigPaths(environment: environment)
-            .map { path in
-                let expanded = NSString(string: path).expandingTildeInPath
-                let attributes = try? FileManager.default.attributesOfItem(atPath: expanded)
-                let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-                let size = attributes?[.size] as? NSNumber
-                return "\(expanded):\(modified):\(size?.int64Value ?? -1)"
-            }
-            .joined(separator: "\u{1d}")
+    static func unresolvedCacheIdentity(environment: [String: String]) -> String {
+        KubernetesSensitiveCacheKey.make(
+            namespace: "unresolved-config",
+            components: [
+                .strings(
+                    kubeconfigPaths(environment: environment).map {
+                        URL(
+                            fileURLWithPath: NSString(string: $0).expandingTildeInPath
+                        )
+                        .standardizedFileURL
+                        .path
+                    }
+                )
+            ]
+        )
     }
 
     private static func kubeconfigPaths(environment: [String: String]) -> [String] {
@@ -2929,376 +3724,6 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
             output.append(value)
         }
         return output
-    }
-}
-
-private struct DirectKubeConfigParser {
-    private enum Section {
-        case none
-        case clusters
-        case contexts
-        case users
-    }
-
-    private struct MutableCluster {
-        var name = ""
-        var server = ""
-        var insecureSkipTLSVerify: Bool?
-        var certificateAuthorityData: String?
-        var certificateAuthority: String?
-        var tlsServerName: String?
-
-        func build() -> NormalizedKubeConfig.NamedCluster? {
-            guard !name.isEmpty, !server.isEmpty else { return nil }
-            return NormalizedKubeConfig.NamedCluster(
-                name: name,
-                cluster: NormalizedKubeConfig.NamedCluster.ClusterEntry(
-                    server: server,
-                    insecureSkipTLSVerify: insecureSkipTLSVerify,
-                    certificateAuthorityData: certificateAuthorityData,
-                    tlsServerName: tlsServerName,
-                    certificateAuthority: certificateAuthority
-                )
-            )
-        }
-    }
-
-    private struct MutableContext {
-        var name = ""
-        var cluster = ""
-        var user = ""
-        var namespace: String?
-
-        func build() -> NormalizedKubeConfig.NamedContext? {
-            guard !name.isEmpty, !cluster.isEmpty else { return nil }
-            return NormalizedKubeConfig.NamedContext(
-                name: name,
-                context: NormalizedKubeConfig.NamedContext.ContextEntry(
-                    cluster: cluster,
-                    user: user,
-                    namespace: namespace
-                )
-            )
-        }
-    }
-
-    private struct MutableUser {
-        var name = ""
-        var token: String?
-        var tokenFile: String?
-        var username: String?
-        var password: String?
-        var clientCertificateData: String?
-        var clientKeyData: String?
-        var clientCertificate: String?
-        var clientKey: String?
-        var execCommand: String?
-        var execAPIVersion: String?
-        var execArgs: [String] = []
-        var execEnv: [NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig.EnvironmentEntry] = []
-        var execProvideClusterInfo: Bool?
-        var execInteractiveMode: String?
-
-        func build() -> NormalizedKubeConfig.NamedUser? {
-            guard !name.isEmpty else { return nil }
-            let exec = execCommand.map {
-                NormalizedKubeConfig.NamedUser.UserEntry.ExecConfig(
-                    apiVersion: execAPIVersion,
-                    command: $0,
-                    args: execArgs.isEmpty ? nil : execArgs,
-                    env: execEnv.isEmpty ? nil : execEnv,
-                    provideClusterInfo: execProvideClusterInfo,
-                    interactiveMode: execInteractiveMode
-                )
-            }
-            return NormalizedKubeConfig.NamedUser(
-                name: name,
-                user: NormalizedKubeConfig.NamedUser.UserEntry(
-                    token: token,
-                    tokenFile: tokenFile,
-                    username: username,
-                    password: password,
-                    exec: exec,
-                    clientCertificateData: clientCertificateData,
-                    clientKeyData: clientKeyData,
-                    clientCertificate: clientCertificate,
-                    clientKey: clientKey
-                )
-            )
-        }
-    }
-
-    let raw: String
-    let baseDirectory: String?
-
-    func parse() throws -> NormalizedKubeConfig {
-        let raw = normalized(raw)
-        var currentContext: String?
-        var section: Section = .none
-        var clusters: [NormalizedKubeConfig.NamedCluster] = []
-        var contexts: [NormalizedKubeConfig.NamedContext] = []
-        var users: [NormalizedKubeConfig.NamedUser] = []
-        var cluster: MutableCluster?
-        var context: MutableContext?
-        var user: MutableUser?
-        var userSubsection = ""
-        var pendingEnvName: String?
-
-        func flushCluster() {
-            if let built = cluster?.build() { clusters.append(built) }
-            cluster = nil
-        }
-        func flushContext() {
-            if let built = context?.build() { contexts.append(built) }
-            context = nil
-        }
-        func flushUser() {
-            if let built = user?.build() { users.append(built) }
-            user = nil
-            userSubsection = ""
-            pendingEnvName = nil
-        }
-
-        for originalLine in raw.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init) {
-            let line = stripInlineComment(originalLine)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            let indent = line.prefix { $0 == " " }.count
-
-            if trimmed == "---" {
-                throw RuneError.invalidInput(message: "Kubeconfig must contain exactly one YAML document.")
-            }
-            if let message = unsupportedYAMLFeatureMessage(in: trimmed) {
-                throw RuneError.invalidInput(message: message)
-            }
-
-            if indent == 0, !trimmed.hasPrefix("-") {
-                switch trimmed {
-                case "clusters:", "clusters: []":
-                    flushContext(); flushUser(); section = .clusters
-                case "contexts:", "contexts: []":
-                    flushCluster(); flushUser(); section = .contexts
-                case "users:", "users: []":
-                    flushCluster(); flushContext(); section = .users
-                default:
-                    if let value = scalarValue(trimmed, key: "current-context") {
-                        currentContext = value
-                    }
-                }
-                continue
-            }
-
-            switch section {
-            case .clusters:
-                if trimmed.hasPrefix("- "), indent <= 2 {
-                    flushCluster()
-                    cluster = MutableCluster()
-                    applyClusterLine(trimmed.dropFirst(2).description, to: &cluster)
-                } else {
-                    applyClusterLine(trimmed, to: &cluster)
-                }
-            case .contexts:
-                if trimmed.hasPrefix("- "), indent <= 2 {
-                    flushContext()
-                    context = MutableContext()
-                    applyContextLine(trimmed.dropFirst(2).description, to: &context)
-                } else {
-                    applyContextLine(trimmed, to: &context)
-                }
-            case .users:
-                if trimmed.hasPrefix("- "), indent <= 2 {
-                    flushUser()
-                    user = MutableUser()
-                    applyUserLine(trimmed.dropFirst(2).description, indent: indent, subsection: &userSubsection, pendingEnvName: &pendingEnvName, to: &user)
-                } else {
-                    applyUserLine(trimmed, indent: indent, subsection: &userSubsection, pendingEnvName: &pendingEnvName, to: &user)
-                }
-            case .none:
-                continue
-            }
-        }
-
-        flushCluster()
-        flushContext()
-        flushUser()
-
-        return NormalizedKubeConfig(
-            currentContext: currentContext,
-            contexts: contexts,
-            clusters: clusters,
-            users: users
-        )
-    }
-
-    private func applyClusterLine(_ line: String, to cluster: inout MutableCluster?) {
-        if cluster == nil { cluster = MutableCluster() }
-        if let value = scalarValue(line, key: "name") { cluster?.name = value }
-        if let value = scalarValue(line, key: "server") { cluster?.server = value }
-        if let value = scalarValue(line, key: "insecure-skip-tls-verify") { cluster?.insecureSkipTLSVerify = parseBool(value) }
-        if let value = scalarValue(line, key: "certificate-authority-data") { cluster?.certificateAuthorityData = value }
-        if let value = scalarValue(line, key: "certificate-authority") { cluster?.certificateAuthority = resolvedPath(value) }
-        if let value = scalarValue(line, key: "tls-server-name") { cluster?.tlsServerName = value }
-    }
-
-    private func applyContextLine(_ line: String, to context: inout MutableContext?) {
-        if context == nil { context = MutableContext() }
-        if let value = scalarValue(line, key: "name") { context?.name = value }
-        if let value = scalarValue(line, key: "cluster") { context?.cluster = value }
-        if let value = scalarValue(line, key: "user") { context?.user = value }
-        if let value = scalarValue(line, key: "namespace") { context?.namespace = value }
-    }
-
-    private func applyUserLine(
-        _ line: String,
-        indent: Int,
-        subsection: inout String,
-        pendingEnvName: inout String?,
-        to user: inout MutableUser?
-    ) {
-        if user == nil { user = MutableUser() }
-        if let value = scalarValue(line, key: "name"), indent <= 2 {
-            user?.name = value
-            return
-        }
-        if line == "exec:" {
-            subsection = "exec"
-            return
-        }
-        if line == "args:" {
-            subsection = "exec.args"
-            return
-        }
-        if line == "env:" {
-            subsection = "exec.env"
-            return
-        }
-        if line.hasPrefix("- ") {
-            let value = parseScalar(String(line.dropFirst(2)))
-            if subsection == "exec.args" {
-                user?.execArgs.append(value)
-            } else if subsection == "exec.env", let name = scalarValue(String(line.dropFirst(2)), key: "name") {
-                pendingEnvName = name
-            }
-            return
-        }
-
-        if subsection == "exec.env" {
-            if let name = scalarValue(line, key: "name") {
-                pendingEnvName = name
-                return
-            }
-            if let value = scalarValue(line, key: "value"), let name = pendingEnvName {
-                user?.execEnv.append(.init(name: name, value: value))
-                pendingEnvName = nil
-                return
-            }
-        }
-
-        if let value = scalarValue(line, key: "command"), subsection.hasPrefix("exec") {
-            user?.execCommand = value
-        } else if let value = scalarValue(line, key: "apiVersion"), subsection.hasPrefix("exec") {
-            user?.execAPIVersion = value
-        } else if let value = scalarValue(line, key: "provideClusterInfo"), subsection.hasPrefix("exec") {
-            user?.execProvideClusterInfo = parseBool(value)
-        } else if let value = scalarValue(line, key: "interactiveMode"), subsection.hasPrefix("exec") {
-            user?.execInteractiveMode = value
-        } else if let value = scalarValue(line, key: "token") {
-            user?.token = value
-        } else if let value = scalarValue(line, key: "tokenFile") ?? scalarValue(line, key: "token-file") {
-            user?.tokenFile = resolvedPath(value)
-        } else if let value = scalarValue(line, key: "username") {
-            user?.username = value
-        } else if let value = scalarValue(line, key: "password") {
-            user?.password = value
-        } else if let value = scalarValue(line, key: "client-certificate-data") {
-            user?.clientCertificateData = value
-        } else if let value = scalarValue(line, key: "client-key-data") {
-            user?.clientKeyData = value
-        } else if let value = scalarValue(line, key: "client-certificate") {
-            user?.clientCertificate = resolvedPath(value)
-        } else if let value = scalarValue(line, key: "client-key") {
-            user?.clientKey = resolvedPath(value)
-        }
-    }
-
-    private func resolvedPath(_ path: String) -> String {
-        guard !path.isEmpty,
-              !path.hasPrefix("/"),
-              !path.hasPrefix("~"),
-              let baseDirectory else {
-            return path
-        }
-        return URL(fileURLWithPath: baseDirectory).appendingPathComponent(path).path
-    }
-
-    private func scalarValue(_ line: String, key: String) -> String? {
-        let prefix = "\(key):"
-        guard line.hasPrefix(prefix) else { return nil }
-        return parseScalar(String(line.dropFirst(prefix.count)))
-    }
-
-    private func parseScalar(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        if trimmed.count >= 2,
-           let first = trimmed.first,
-           let last = trimmed.last,
-           (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-            return String(trimmed.dropFirst().dropLast())
-        }
-        return trimmed
-    }
-
-    private func normalized(_ raw: String) -> String {
-        var value = raw
-        if value.hasPrefix("\u{FEFF}") {
-            value.removeFirst()
-        }
-        value = value.replacingOccurrences(of: "\r\n", with: "\n")
-        value = value.replacingOccurrences(of: "\r", with: "\n")
-        return value
-    }
-
-    private func unsupportedYAMLFeatureMessage(in trimmed: String) -> String? {
-        if trimmed.hasPrefix("- *") {
-            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig loader."
-        }
-        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
-        let key = trimmed[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
-        if key == "<<" {
-            return "Kubeconfig uses YAML merge keys, which are not supported by Rune's safe kubeconfig loader."
-        }
-        if value.hasPrefix("*") {
-            return "Kubeconfig uses YAML aliases, which are not supported by Rune's safe kubeconfig loader."
-        }
-        if value.hasPrefix("&") {
-            return "Kubeconfig uses anchored scalar values, which are not supported by Rune's safe kubeconfig loader."
-        }
-        return nil
-    }
-
-    private func parseBool(_ raw: String) -> Bool? {
-        switch raw.lowercased() {
-        case "true", "yes", "1": return true
-        case "false", "no", "0": return false
-        default: return nil
-        }
-    }
-
-    private func stripInlineComment(_ line: String) -> String {
-        var inSingle = false
-        var inDouble = false
-        for index in line.indices {
-            let char = line[index]
-            if char == "'", !inDouble { inSingle.toggle() }
-            if char == "\"", !inSingle { inDouble.toggle() }
-            if char == "#", !inSingle, !inDouble {
-                if index == line.startIndex || line[line.index(before: index)] == " " {
-                    return String(line[..<index])
-                }
-            }
-        }
-        return line
     }
 }
 
@@ -3609,6 +4034,8 @@ private struct ExecCredentialResponse: Decodable, Sendable {
 private struct ResolvedRESTContext {
     let serverURL: URL
     let namespace: String?
+    let metricsScopeIdentity: String
+    let metricsScope: KubernetesRESTRequestMetricsScopeToken?
     let authentication: RESTAuthentication
     let insecureSkipTLSVerify: Bool
     let certificateAuthorityData: Data?
@@ -3625,9 +4052,14 @@ private struct ResolvedRESTContext {
     }
 }
 
+private struct NormalizedKubeConfigSnapshot {
+    let config: NormalizedKubeConfig
+    let cacheIdentity: String
+}
+
 private enum RESTCredentialInvalidationKey: Sendable {
-    case exec(String)
-    case native(String)
+    case exec(String, generation: UUID)
+    case native(String, revision: UUID)
 }
 
 private enum RESTAuthentication: Sendable {
@@ -3644,6 +4076,43 @@ private enum RESTAuthentication: Sendable {
         case .basic:
             return "basic"
         }
+    }
+}
+
+private enum RESTCredentialFingerprint {
+    static func make(
+        authentication: RESTAuthentication,
+        clientTLSIdentity: ClientTLSIdentity?
+    ) -> Data? {
+        var material = Data("rune-rest-credential-v1".utf8)
+
+        switch authentication {
+        case .none:
+            append(tag: 0x01, value: Data(), to: &material)
+        case .bearer(let token):
+            append(tag: 0x02, value: Data(token.utf8), to: &material)
+        case .basic(let username, let password):
+            append(tag: 0x03, value: Data(username.utf8), to: &material)
+            append(tag: 0x04, value: Data(password.utf8), to: &material)
+        }
+
+        if let clientTLSIdentity {
+            guard let certificateData = clientTLSIdentity.certificateData else {
+                return nil
+            }
+            append(tag: 0x05, value: certificateData, to: &material)
+        } else {
+            append(tag: 0x06, value: Data(), to: &material)
+        }
+
+        return Data(SHA256.hash(data: material))
+    }
+
+    private static func append(tag: UInt8, value: Data, to material: inout Data) {
+        material.append(tag)
+        var length = UInt64(value.count).bigEndian
+        withUnsafeBytes(of: &length) { material.append(contentsOf: $0) }
+        material.append(value)
     }
 }
 
@@ -3667,21 +4136,30 @@ struct KubernetesRESTRequestCoalescingKey: Hashable, Sendable {
     let method: String
     let server: String
     let contextName: String
+    let scopeIdentity: String
+    let credentialFingerprint: Data
     let apiPath: String
     let headers: [String: String]
+    let timeout: TimeInterval
 
     init(
         method: String,
         server: String,
         contextName: String,
+        scopeIdentity: String,
+        credentialFingerprint: Data,
         apiPath: String,
-        headers: [String: String]
+        headers: [String: String],
+        timeout: TimeInterval
     ) {
         self.method = method.uppercased()
         self.server = server
         self.contextName = contextName
+        self.scopeIdentity = scopeIdentity
+        self.credentialFingerprint = credentialFingerprint
         self.apiPath = apiPath
         self.headers = headers
+        self.timeout = timeout
     }
 
     static func isCoalescible(method: String, body: String?) -> Bool {
@@ -3833,6 +4311,15 @@ private final class ClientTLSIdentity: @unchecked Sendable {
     deinit {
         guard let keychainPath else { return }
         try? FileManager.default.removeItem(atPath: keychainPath)
+    }
+
+    var certificateData: Data? {
+        var certificate: SecCertificate?
+        guard SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess,
+              let certificate else {
+            return nil
+        }
+        return SecCertificateCopyData(certificate) as Data
     }
 
     static func temporaryIdentity(certificateData: Data, keyData: Data) throws -> ClientTLSIdentity? {
@@ -4124,7 +4611,7 @@ private func sleepBeforeKubernetesRetry(
     let delayNanoseconds = KubernetesRequestRetryPolicy.boundedDelayNanoseconds(for: decision, attempt: attempt)
     VerboseKubeTrace.append(
         "k8s.request",
-        "retry method=\(method) context=\(contextName) path=\(apiPath) attempt=\(attempt + 1) delayMs=\(delayNanoseconds / 1_000_000) \(decision.traceDescription)"
+        "retry method=\(method) context=<redacted-context> path=\(apiPath) attempt=\(attempt + 1) delayMs=\(delayNanoseconds / 1_000_000) \(decision.traceDescription)"
     )
     try await Task.sleep(nanoseconds: delayNanoseconds)
 }

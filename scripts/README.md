@@ -19,3 +19,16 @@ Open it with:
 ```bash
 open dist/Rune.app
 ```
+
+## Selected release KPIs
+
+Run the tracked REST, native-auth, native-import, and resource-table release
+gate with:
+
+```bash
+CONFIGURATION=release RUNS=3 scripts/run-selected-kpis.sh
+```
+
+The runner stores local logs and privacy-safe environment metadata under the
+ignored `test-reports/` directory. Baseline policy is documented in
+`scripts/SELECTED_KPI_BASELINE.md`.

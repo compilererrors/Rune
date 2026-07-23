@@ -48,6 +48,18 @@ private struct KubeConfigSourceFingerprint: Equatable {
     }
 }
 
+private struct KubernetesRequestMetricsSelection: Equatable {
+    let sources: [KubeConfigSource]
+    let context: KubeContext
+    let sourceFingerprint: KubeConfigSourceFingerprint
+
+    init(sources: [KubeConfigSource], context: KubeContext) {
+        self.sources = sources
+        self.context = context
+        sourceFingerprint = KubeConfigSourceFingerprint(sources: sources)
+    }
+}
+
 private struct KubeConfigImportRegistrySnapshot: Equatable {
     struct SourceEntry: Equatable {
         let path: String
@@ -880,6 +892,12 @@ public final class RuneAppViewModel: ObservableObject {
         let isProduction: Bool
     }
 
+    private struct AuthDoctorScope: Equatable {
+        let kubeConfigSources: [KubeConfigSource]
+        let selectedContext: KubeContext?
+        let selectedNamespace: String
+    }
+
     private static let productionContextNameMarkers = ["prod", "production", "live", "critical"]
 
     @Published public private(set) var state: RuneAppState
@@ -1029,6 +1047,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let bookmarkManager: BookmarkManager
     private let pendingKubeConfigSourceAccess = SecurityScopedAccess()
     private let picker: KubeConfigPicking
+    private let gkeCredentialFilePicker: any GKECredentialFilePicking
     private let kubeConfigDiscoverer: KubeConfigDiscovering
     private let store: ResourceStore
     private let exporter: FileExporting
@@ -1063,7 +1082,10 @@ public final class RuneAppViewModel: ObservableObject {
     private var pendingCloudKubeConfigProvider: CloudKubeConfigProvider?
     private var pendingNativeCloudCredential: PendingNativeCloudCredential?
     private var nativeCloudClusterImportTask: Task<Void, Never>?
-    private var nativeGKEImportPanel: NSOpenPanel?
+    private var nativeGKEImportPickerReservation: UUID?
+    private var nativeGKECredentialConnectPickerReservation: UUID?
+    private var authDoctorTask: Task<Void, Never>?
+    private var activeAuthDoctorRunID: UUID?
     private var shouldRefreshKubernetesRequestMetricsSummaryAgain = false
     private var clusterLoadGeneration = UUID()
     private var launchExperienceStartedAt = ContinuousClock.now
@@ -1157,6 +1179,7 @@ public final class RuneAppViewModel: ObservableObject {
         kubeClient: KubernetesClient = KubernetesClient(),
         bookmarkManager: BookmarkManager = BookmarkManager(store: UserDefaultsBookmarkStore()),
         picker: KubeConfigPicking = OpenPanelKubeConfigPicker(),
+        gkeCredentialFilePicker: any GKECredentialFilePicking = OpenPanelGKECredentialFilePicker(),
         kubeConfigDiscoverer: KubeConfigDiscovering = KubeConfigDiscoverer(),
         store: ResourceStore = ResourceStore(),
         exporter: FileExporting = SavePanelExporter(),
@@ -1180,6 +1203,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeClient = kubeClient
         self.bookmarkManager = bookmarkManager
         self.picker = picker
+        self.gkeCredentialFilePicker = gkeCredentialFilePicker
         self.kubeConfigDiscoverer = kubeConfigDiscoverer
         self.store = store
         self.exporter = exporter
@@ -1249,6 +1273,25 @@ public final class RuneAppViewModel: ObservableObject {
                 self?.scheduleResourceYAMLValidation()
             }
             .store(in: &cancellables)
+
+        Publishers.CombineLatest3(
+            state.$kubeConfigSources,
+            state.$selectedContext,
+            state.$selectedNamespace
+        )
+        .map { sources, context, namespace in
+            AuthDoctorScope(
+                kubeConfigSources: sources,
+                selectedContext: context,
+                selectedNamespace: namespace
+            )
+        }
+        .removeDuplicates()
+        .dropFirst()
+        .sink { [weak self] _ in
+            self?.invalidateAuthDoctorRunForScopeChange()
+        }
+        .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: .runeCachesDidClear)
             .receive(on: DispatchQueue.main)
@@ -2543,36 +2586,17 @@ public final class RuneAppViewModel: ObservableObject {
         if state.lastError != nil { state.clearError() }
         cloudKubeConfigImportStatus = "Choose a Google service-account JSON file…"
         nativeKubernetesAuthStatus = "Choose a Google service-account JSON file…"
-        let panel = NSOpenPanel()
-        panel.title = "Choose Google service-account JSON"
-        panel.prompt = "Import"
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        nativeGKEImportPanel = panel
-        panel.begin { [weak self] response in
+        let reservation = UUID()
+        nativeGKEImportPickerReservation = reservation
+        gkeCredentialFilePicker.beginSelection { [weak self] selection in
             guard let self else { return }
-            guard self.releaseNativeGKEImportPanelReservation(for: panel) else { return }
-            guard response == .OK, let url = panel.url else {
+            guard self.releaseNativeGKEImportPickerReservation(reservation) else { return }
+            switch selection {
+            case .cancelled:
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: .gke)
                 self.cloudKubeConfigImportDiagnostic = nil
                 self.nativeKubernetesAuthStatus = nil
-                return
-            }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer {
-                if accessed { url.stopAccessingSecurityScopedResource() }
-            }
-            do {
-                let handle = try FileHandle(forReadingFrom: url)
-                defer { try? handle.close() }
-                let data = try handle.read(upToCount: 1_048_577) ?? Data()
-                guard !data.isEmpty, data.count <= 1_048_576 else {
-                    throw RuneError.invalidInput(
-                        message: "The Google service-account JSON must be between 1 byte and 1 MiB."
-                    )
-                }
+            case .selected(let data):
                 let importer = self.nativeCloudClusterImporter
                 self.beginNativeCloudClusterImport(
                     provider: .gke,
@@ -2580,16 +2604,16 @@ public final class RuneAppViewModel: ObservableObject {
                 ) {
                     try await importer.importGKE(request, serviceAccountJSON: data)
                 }
-            } catch {
+            case .failed(let error):
                 self.failNativeCloudClusterImport(error, provider: .gke)
             }
         }
     }
 
     public func cancelNativeCloudClusterImport() {
-        if let panel = nativeGKEImportPanel {
-            guard releaseNativeGKEImportPanelReservation(for: panel) else { return }
-            panel.cancel(nil)
+        if let reservation = nativeGKEImportPickerReservation {
+            guard releaseNativeGKEImportPickerReservation(reservation) else { return }
+            gkeCredentialFilePicker.cancelSelection()
             cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: .gke)
             cloudKubeConfigImportDiagnostic = nil
             nativeKubernetesAuthStatus = nil
@@ -2605,7 +2629,7 @@ public final class RuneAppViewModel: ObservableObject {
         guard !isRunningCloudKubeConfigImport,
               !isRunningNativeCloudClusterImport,
               !isConnectingNativeKubernetesAuth,
-              nativeGKEImportPanel == nil else {
+              nativeGKEImportPickerReservation == nil else {
             return false
         }
         guard !isPreparingKubeConfigImport,
@@ -2619,9 +2643,9 @@ public final class RuneAppViewModel: ObservableObject {
         return true
     }
 
-    private func releaseNativeGKEImportPanelReservation(for panel: NSOpenPanel) -> Bool {
-        guard let activePanel = nativeGKEImportPanel, activePanel === panel else { return false }
-        nativeGKEImportPanel = nil
+    private func releaseNativeGKEImportPickerReservation(_ reservation: UUID) -> Bool {
+        guard nativeGKEImportPickerReservation == reservation else { return false }
+        nativeGKEImportPickerReservation = nil
         isConnectingNativeKubernetesAuth = false
         isRunningNativeCloudClusterImport = false
         isRunningCloudKubeConfigImport = false
@@ -2688,7 +2712,12 @@ public final class RuneAppViewModel: ObservableObject {
         cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
         cloudKubeConfigImportDiagnostic = diagnostic
         nativeKubernetesAuthStatus = "Native cluster import could not be completed."
-        state.setAuthDoctorChecks(AddClusterCloudImportWorkflow.nativeImportFailureChecks(for: provider))
+        state.setAuthDoctorChecks(
+            AddClusterCloudImportWorkflow.nativeImportFailureChecks(
+                for: provider,
+                diagnostic: diagnostic
+            )
+        )
         diagnostics.log("native cloud import failed provider=\(provider.rawValue) classification=\(diagnostic.classification)")
         state.setError(NativeCloudImportPresentationError(
             message: "\(diagnostic.title). \(diagnostic.message)"
@@ -2730,6 +2759,14 @@ public final class RuneAppViewModel: ObservableObject {
         cloudKubeConfigImportOutput = ""
     }
 
+    private var canStartNativeCredentialOperation: Bool {
+        !isConnectingNativeKubernetesAuth
+            && !isRunningNativeCloudClusterImport
+            && nativeCloudClusterImportTask == nil
+            && nativeGKEImportPickerReservation == nil
+            && nativeGKECredentialConnectPickerReservation == nil
+    }
+
     /// Binds explicit AWS IAM/session credentials to the selected imported EKS context.
     /// Secret material is written to Keychain by the native auth provider and is never
     /// written back to kubeconfig or diagnostics.
@@ -2739,7 +2776,7 @@ public final class RuneAppViewModel: ObservableObject {
         sessionToken: String = "",
         expiration: Date? = nil
     ) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             let request = try selectedNativeCredentialRequest(expectedProvider: .awsEKS)
             connectEKSNativeAuth(
@@ -2765,7 +2802,7 @@ public final class RuneAppViewModel: ObservableObject {
         sessionToken: String = "",
         expiration: Date? = nil
     ) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             try validateNativeCredentialRequest(request, expectedProvider: .awsEKS)
         } catch {
@@ -2817,7 +2854,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Binds an Azure service-principal secret to a selected kubelogin context whose
     /// non-secret tenant, audience, and client identifiers remain in kubeconfig.
     public func connectSelectedAKSNativeAuth(clientSecret: String) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             let request = try selectedNativeCredentialRequest(expectedProvider: .azureKubelogin)
             connectAKSNativeAuth(request: request, clientSecret: clientSecret)
@@ -2833,7 +2870,7 @@ public final class RuneAppViewModel: ObservableObject {
         request: KubernetesNativeCredentialRequest,
         clientSecret: String
     ) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             try validateNativeCredentialRequest(request, expectedProvider: .azureKubelogin)
         } catch {
@@ -2876,7 +2913,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Opens a user-mediated App Sandbox file panel, reads one bounded service-account
     /// document, and immediately moves it into Keychain through the native provider.
     public func chooseAndConnectSelectedGKENativeAuth() {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             let request = try selectedNativeCredentialRequest(expectedProvider: .googleGKE)
             chooseAndConnectGKENativeAuth(request: request)
@@ -2889,7 +2926,7 @@ public final class RuneAppViewModel: ObservableObject {
     /// Opens the service-account picker for one explicit GKE request. Provider
     /// validation precedes panel construction so mismatched sheets cannot prompt.
     public func chooseAndConnectGKENativeAuth(request: KubernetesNativeCredentialRequest) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             try validateNativeCredentialRequest(request, expectedProvider: .googleGKE)
         } catch {
@@ -2900,45 +2937,38 @@ public final class RuneAppViewModel: ObservableObject {
         }
         isConnectingNativeKubernetesAuth = true
         nativeKubernetesAuthStatus = "Choose a Google service-account JSON file…"
-        let panel = NSOpenPanel()
-        panel.title = "Choose Google service-account JSON"
-        panel.prompt = "Connect"
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.begin { [weak self] response in
+        let reservation = UUID()
+        nativeGKECredentialConnectPickerReservation = reservation
+        gkeCredentialFilePicker.beginSelection { [weak self] selection in
             guard let self else { return }
-            guard response == .OK, let url = panel.url else {
-                self.isConnectingNativeKubernetesAuth = false
-                self.nativeKubernetesAuthStatus = nil
+            guard self.releaseNativeGKECredentialConnectPickerReservation(reservation) else {
                 return
             }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer {
-                if accessed { url.stopAccessingSecurityScopedResource() }
-            }
-            do {
-                let handle = try FileHandle(forReadingFrom: url)
-                defer { try? handle.close() }
-                let data = try handle.read(upToCount: 1_048_577) ?? Data()
-                guard !data.isEmpty, data.count <= 1_048_576 else {
-                    throw RuneError.invalidInput(message: "The Google service-account JSON must be between 1 byte and 1 MiB.")
-                }
-                self.isConnectingNativeKubernetesAuth = false
+            switch selection {
+            case .cancelled:
+                self.nativeKubernetesAuthStatus = nil
+            case .selected(let data):
                 self.connectGKENativeAuth(request: request, serviceAccountJSON: data)
-            } catch {
-                self.isConnectingNativeKubernetesAuth = false
+            case .failed(let error):
                 self.nativeKubernetesAuthStatus = "Google native authentication could not be connected."
                 self.state.setError(error)
             }
         }
     }
 
+    private func releaseNativeGKECredentialConnectPickerReservation(
+        _ reservation: UUID
+    ) -> Bool {
+        guard nativeGKECredentialConnectPickerReservation == reservation else { return false }
+        nativeGKECredentialConnectPickerReservation = nil
+        isConnectingNativeKubernetesAuth = false
+        return true
+    }
+
     /// Validates and binds a Google service-account document to the selected imported
     /// GKE context. The document is persisted only as a Keychain secret.
     public func connectSelectedGKENativeAuth(serviceAccountJSON: Data) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             let request = try selectedNativeCredentialRequest(expectedProvider: .googleGKE)
             connectGKENativeAuth(request: request, serviceAccountJSON: serviceAccountJSON)
@@ -2954,7 +2984,7 @@ public final class RuneAppViewModel: ObservableObject {
         request: KubernetesNativeCredentialRequest,
         serviceAccountJSON: Data
     ) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             try validateNativeCredentialRequest(request, expectedProvider: .googleGKE)
         } catch {
@@ -3001,7 +3031,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func disconnectSelectedNativeAuth() {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             let request = try selectedNativeCredentialRequest(expectedProvider: nil)
             disconnectNativeAuth(request: request, expectedProvider: request.provider)
@@ -3017,7 +3047,7 @@ public final class RuneAppViewModel: ObservableObject {
         request: KubernetesNativeCredentialRequest,
         expectedProvider: KubernetesNativeAuthProviderKind
     ) {
-        guard !isConnectingNativeKubernetesAuth else { return }
+        guard canStartNativeCredentialOperation else { return }
         do {
             try validateNativeCredentialRequest(request, expectedProvider: expectedProvider)
         } catch {
@@ -3804,6 +3834,9 @@ public final class RuneAppViewModel: ObservableObject {
         if sourceSetChanged {
             state.setSources(sources)
             persistDiscoveredKubeConfigsInBackground(discoveredURLs)
+        } else if contentChanged {
+            kubernetesRequestMetricsSummary = .empty
+            invalidateAuthDoctorRunForScopeChange()
         }
 
         guard !state.resourceYAMLHasUnsavedEdits else {
@@ -3999,7 +4032,7 @@ public final class RuneAppViewModel: ObservableObject {
         do {
             diagnostics.trace(
                 "refresh",
-                "performRefreshCurrentView begin context=\(context.name) namespace=\(namespace) forceNamespaceMeta=\(forceNamespaceMetadataRefresh)"
+                "performRefreshCurrentView begin context=<redacted-context> namespace=<redacted-namespace> forceNamespaceMeta=\(forceNamespaceMetadataRefresh)"
             )
             diagnostics.log("refreshCurrentView context=\(context.name) namespace=\(namespace)")
             let requestID = beginSnapshotRequest(
@@ -4029,7 +4062,7 @@ public final class RuneAppViewModel: ObservableObject {
                     message: currentFreshness.status == .stale ? currentFreshness.message : "Live for \(context.name) / \(state.selectedNamespace)"
                 )
             )
-            diagnostics.trace("refresh", "performRefreshCurrentView done context=\(context.name)")
+            diagnostics.trace("refresh", "performRefreshCurrentView done context=<redacted-context>")
         } catch {
             if Self.isBenignCancellationError(error) {
                 markOverviewCooldownBypass(contextName: context.name, namespace: namespace)
@@ -4047,7 +4080,7 @@ public final class RuneAppViewModel: ObservableObject {
                 diagnostics.trace("refresh", "performRefreshCurrentView cancelled")
                 return
             }
-            diagnostics.trace("refresh", "performRefreshCurrentView failed: \(error.localizedDescription)")
+            diagnostics.trace("refresh", "performRefreshCurrentView error=\(error.localizedDescription)")
             diagnostics.log("refreshCurrentView failed: \(error.localizedDescription)")
             state.setSnapshotFreshness(
                 RuneSnapshotFreshness(
@@ -4408,7 +4441,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
         prepareNavigationMutation(trackHistory: trackHistory)
         diagnostics.log("setContext -> \(context.name)")
-        diagnostics.trace("context", "setContext name=\(context.name) triggerReload=\(triggerReload)")
+        diagnostics.trace("context", "setContext context=<redacted-context> triggerReload=\(triggerReload)")
         let previousContextName = state.selectedContext?.name
         let previousNamespace = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
         let isChangingContext = context.name != previousContextName
@@ -4471,7 +4504,7 @@ public final class RuneAppViewModel: ObservableObject {
         } else if !requestedPreferredNamespace.isEmpty {
             diagnostics.trace(
                 "context",
-                "checkpoint namespace=\(requestedPreferredNamespace) for context=\(context.name) until namespace list is loaded"
+                "checkpoint namespace=<redacted-namespace> context=<redacted-context> until namespace list is loaded"
             )
             // Navigation checkpoint supplies a namespace string before `listNamespaces` has run for this context.
             state.selectedNamespace = requestedPreferredNamespace
@@ -7152,7 +7185,9 @@ public final class RuneAppViewModel: ObservableObject {
         let metricsReport = await stableSelectedContextRequestMetricsReport()
         let restRequestMetrics = metricsReport.metrics
         let requestMetrics = KubernetesRequestMetricsSupportBundleProjector.metrics(from: restRequestMetrics)
-        let requestMetricGroups = KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
+        let requestMetricGroups = metricsReport.endpointGroups.isEmpty
+            ? KubernetesRequestMetricsSupportBundleProjector.groups(from: restRequestMetrics)
+            : KubernetesRequestMetricsSupportBundleProjector.groups(from: metricsReport.endpointGroups)
         let formatter = ISO8601DateFormatter()
         let generatedAt = formatter.string(from: Date())
         let exportStamp = generatedAt.replacingOccurrences(of: ":", with: "")
@@ -7165,7 +7200,16 @@ public final class RuneAppViewModel: ObservableObject {
                 selectedResourceName: selectedResourceName(),
                 requestMetrics: requestMetrics,
                 requestMetricsSummary: KubernetesRequestMetricsSupportBundleProjector.summary(from: metricsReport.summary),
-                requestMetricGroups: requestMetricGroups
+                requestMetricGroups: requestMetricGroups,
+                cloudImportDiagnostic: cloudKubeConfigImportDiagnostic.map {
+                    SupportBundleCloudImportDiagnostic(
+                        title: $0.title,
+                        classification: $0.classification,
+                        message: $0.message,
+                        operationShape: $0.operationShape,
+                        nextAction: $0.nextAction
+                    )
+                }
             )
         )
         return LogExportPayload(
@@ -7177,30 +7221,57 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func stableSelectedContextRequestMetricsReport() async -> KubernetesRESTRequestMetricsReport {
         while true {
-            let contextName = state.selectedContext?.name
-            guard let contextName else { return .empty }
-            let report = await kubeClient.restRequestMetricsReport(contextName: contextName)
-            guard state.selectedContext?.name == contextName else { continue }
+            guard let selection = selectedKubernetesRequestMetricsSelection() else {
+                return .empty
+            }
+            guard !selection.sources.isEmpty else { return .empty }
+            let report = await kubeClient.restRequestMetricsReport(
+                from: selection.sources,
+                context: selection.context
+            )
+            guard selectedKubernetesRequestMetricsSelection() == selection else { continue }
             return report
         }
     }
 
+    private func selectedKubernetesRequestMetricsSelection() -> KubernetesRequestMetricsSelection? {
+        guard let context = state.selectedContext else { return nil }
+        return KubernetesRequestMetricsSelection(
+            sources: state.kubeConfigSources,
+            context: context
+        )
+    }
+
     public func runAuthDoctor() {
         guard !state.isRunningAuthDoctor else { return }
+        let runID = UUID()
+        let scope = AuthDoctorScope(
+            kubeConfigSources: state.kubeConfigSources,
+            selectedContext: state.selectedContext,
+            selectedNamespace: state.selectedNamespace
+        )
+        activeAuthDoctorRunID = runID
         state.clearError()
         state.setAuthDoctorRunning(true)
         state.setAuthDoctorChecks([
             RuneHealthCheck(id: "start", title: "Auth Doctor", status: .running, message: "Checking kubeconfig, context, auth transport, namespace access, logs, exec, and port-forward permissions.")
         ])
 
-        Task { @MainActor in
+        authDoctorTask = Task { @MainActor [weak self] in
+            guard let self else { return }
             var checks: [RuneHealthCheck] = []
 
             @MainActor
+            func isActiveRun() -> Bool {
+                self.activeAuthDoctorRunID == runID && !Task.isCancelled
+            }
+
+            @MainActor
             func record(_ id: String, _ title: String, _ status: RuneHealthCheckStatus, _ message: String) {
+                guard isActiveRun() else { return }
                 checks.removeAll { $0.id == id }
                 checks.append(RuneHealthCheck(id: id, title: title, status: status, message: message))
-                state.setAuthDoctorChecks(checks)
+                self.state.setAuthDoctorChecks(checks)
             }
 
             @MainActor
@@ -7217,57 +7288,68 @@ public final class RuneAppViewModel: ObservableObject {
 
             @MainActor
             func recordExecAuthCacheDiagnostic(context: KubeContext) async {
+                guard isActiveRun() else { return }
                 do {
-                    guard let diagnostic = try await kubeClient.execCredentialCacheDiagnostic(
-                        from: state.kubeConfigSources,
+                    guard let diagnostic = try await self.kubeClient.execCredentialCacheDiagnostic(
+                        from: scope.kubeConfigSources,
                         context: context
                     ) else { return }
+                    guard isActiveRun() else { return }
                     let check = AuthDoctorExecAuthCacheProjector.check(for: diagnostic)
                     record(check.id, check.title, check.status, check.message)
                 } catch {
+                    guard isActiveRun() else { return }
                     recordProjectedFailure(error)
                 }
             }
 
             defer {
-                state.setAuthDoctorRunning(false)
-                refreshKubernetesRequestMetricsSummary()
+                if self.activeAuthDoctorRunID == runID {
+                    self.activeAuthDoctorRunID = nil
+                    self.authDoctorTask = nil
+                    self.state.setAuthDoctorRunning(false)
+                    self.refreshKubernetesRequestMetricsSummary()
+                }
             }
 
-            if state.selectedContext?.name == demoContextName {
+            guard isActiveRun() else { return }
+            if scope.selectedContext?.name == self.demoContextName {
                 record("demo", "Demo cluster", .passed, "The in-memory demo cluster is active. Auth Doctor skips real Kubernetes API calls in demo mode.")
                 return
             }
 
-            guard !state.kubeConfigSources.isEmpty else {
+            guard !scope.kubeConfigSources.isEmpty else {
                 record("kubeconfig", "Kubeconfig", .failed, "No kubeconfig source is loaded. Import a kubeconfig or load the demo cluster.")
                 return
             }
-            record("kubeconfig", "Kubeconfig", .passed, "\(state.kubeConfigSources.count) source(s) loaded.")
+            record("kubeconfig", "Kubeconfig", .passed, "\(scope.kubeConfigSources.count) source(s) loaded.")
             for check in AuthDoctorKubeconfigInspector().inspect(
-                sources: state.kubeConfigSources,
-                activeContextName: state.selectedContext?.name
+                sources: scope.kubeConfigSources,
+                activeContextName: scope.selectedContext?.name
             ) {
                 record(check.id, check.title, check.status, check.message)
             }
             let contexts: [KubeContext]
             do {
-                contexts = try await kubeClient.listContexts(from: state.kubeConfigSources)
+                contexts = try await self.kubeClient.listContexts(from: scope.kubeConfigSources)
+                guard isActiveRun() else { return }
                 record("contexts", "Contexts", contexts.isEmpty ? .failed : .passed, contexts.isEmpty ? "No contexts were found." : "\(contexts.count) context(s) are readable.")
             } catch {
+                guard isActiveRun() else { return }
                 recordProjectedFailure(error)
                 record("contexts", "Contexts", .failed, error.localizedDescription)
                 return
             }
 
-            guard let context = state.selectedContext ?? contexts.first else {
+            guard let context = scope.selectedContext ?? contexts.first else {
                 record("selected-context", "Selected context", .failed, "No selected context.")
                 return
             }
             record("selected-context", "Selected context", .passed, context.name)
-            if let request = try? selectedNativeCredentialRequest(expectedProvider: nil) {
+            if let request = try? self.selectedNativeCredentialRequest(expectedProvider: nil) {
                 do {
-                    let status = try await nativeAuthConfigurator.status(for: request)
+                    let status = try await self.nativeAuthConfigurator.status(for: request)
+                    guard isActiveRun() else { return }
                     record(
                         "native-auth-profile",
                         "Native \(request.provider.displayName) authentication",
@@ -7277,11 +7359,12 @@ public final class RuneAppViewModel: ObservableObject {
                             : "The selected context needs a native \(request.provider.displayName) login in this App Store build."
                     )
                 } catch {
+                    guard isActiveRun() else { return }
                     record("native-auth-profile", "Native authentication", .warning, error.localizedDescription)
                 }
             }
-            let kubeConfigSources = state.kubeConfigSources
-            let authDoctorKubeClient = kubeClient
+            let kubeConfigSources = scope.kubeConfigSources
+            let authDoctorKubeClient = self.kubeClient
 
             @MainActor
             func recordCanI(
@@ -7293,8 +7376,9 @@ public final class RuneAppViewModel: ObservableObject {
                 apiGroup: String? = nil,
                 subresource: String? = nil
             ) async -> AuthDoctorRBACCapability? {
+                guard isActiveRun() else { return nil }
                 do {
-                    let allowed = try await kubeClient.canI(
+                    let allowed = try await self.kubeClient.canI(
                         from: kubeConfigSources,
                         context: context,
                         namespace: namespace,
@@ -7303,6 +7387,7 @@ public final class RuneAppViewModel: ObservableObject {
                         apiGroup: apiGroup,
                         subresource: subresource
                     )
+                    guard isActiveRun() else { return nil }
                     let capability = AuthDoctorRBACCapability(
                         id: id,
                         title: title,
@@ -7316,6 +7401,7 @@ public final class RuneAppViewModel: ObservableObject {
                     record(check.id, check.title, check.status, check.message)
                     return capability
                 } catch {
+                    guard isActiveRun() else { return nil }
                     recordProjectedFailure(error)
                     record(id, title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(error.localizedDescription)")
                     return nil
@@ -7323,25 +7409,36 @@ public final class RuneAppViewModel: ObservableObject {
             }
 
             do {
-                let defaultNamespace = try await kubeClient.contextNamespace(from: state.kubeConfigSources, context: context)
+                let defaultNamespace = try await self.kubeClient.contextNamespace(
+                    from: scope.kubeConfigSources,
+                    context: context
+                )
+                guard isActiveRun() else { return }
                 record("context-namespace", "Context namespace", .passed, defaultNamespace?.isEmpty == false ? defaultNamespace! : "No default namespace in kubeconfig; Rune will resolve one.")
             } catch {
+                guard isActiveRun() else { return }
                 recordProjectedFailure(error)
                 record("context-namespace", "Context namespace", .warning, error.localizedDescription)
             }
 
             do {
-                let namespaces = try await kubeClient.listNamespaces(from: state.kubeConfigSources, context: context)
+                let namespaces = try await self.kubeClient.listNamespaces(
+                    from: scope.kubeConfigSources,
+                    context: context
+                )
+                guard isActiveRun() else { return }
                 record("namespace-list", "Namespace list", .passed, "\(namespaces.count) namespace(s) listed.")
                 record("transport", "API transport", .passed, "API server, TLS/CA, proxy settings, and auth credentials worked for a live request.")
                 record("exec-auth", "Kubernetes authentication", .passed, "The selected context authenticated successfully through static, native, or exec credentials.")
                 await recordExecAuthCacheDiagnostic(context: context)
+                guard isActiveRun() else { return }
             } catch {
+                guard isActiveRun() else { return }
                 recordProjectedFailure(error)
                 record("namespace-list", "Namespace list", .warning, "Cannot list namespaces. Manual namespace mode can still work if RBAC allows access to a specific namespace. \(error.localizedDescription)")
             }
 
-            let namespace = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+            let namespace = scope.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !namespace.isEmpty else {
                 record("namespace", "Active namespace", .failed, "No namespace selected. Enter a namespace manually or select one from the menu.")
                 return
@@ -7372,6 +7469,7 @@ public final class RuneAppViewModel: ObservableObject {
                     subresource: target.subresource
                 )
             }
+            guard isActiveRun() else { return }
             for result in preflightResults {
                 if let allowed = result.allowed {
                     let capability = AuthDoctorRBACCapability(
@@ -7392,15 +7490,21 @@ public final class RuneAppViewModel: ObservableObject {
             }
 
             do {
-                let pods = try await kubeClient.listPods(from: state.kubeConfigSources, context: context, namespace: namespace)
+                let pods = try await self.kubeClient.listPods(
+                    from: scope.kubeConfigSources,
+                    context: context,
+                    namespace: namespace
+                )
+                guard isActiveRun() else { return }
                 record("pod-list", "Pod list", .passed, "\(pods.count) pod(s) readable in namespace \(namespace).")
                 record("transport", "API transport", .passed, "API server, TLS/CA, proxy settings, and auth credentials worked for a live request.")
                 record("exec-auth", "Exec auth", .passed, "Any kubeconfig exec/auth plugin needed for this request completed successfully.")
                 await recordExecAuthCacheDiagnostic(context: context)
+                guard isActiveRun() else { return }
                 if let pod = Self.authDoctorLogProbePod(from: pods) {
                     do {
-                        _ = try await kubeClient.podLogs(
-                            from: state.kubeConfigSources,
+                        _ = try await self.kubeClient.podLogs(
+                            from: scope.kubeConfigSources,
                             context: context,
                             namespace: namespace,
                             podName: pod.name,
@@ -7408,8 +7512,10 @@ public final class RuneAppViewModel: ObservableObject {
                             filter: .tailLines(20),
                             previous: false
                         )
+                        guard isActiveRun() else { return }
                         record("pod-logs", "Pod logs", .passed, "Logs endpoint is reachable for a pod in \(namespace).")
                     } catch {
+                        guard isActiveRun() else { return }
                         recordProjectedFailure(error)
                         record("pod-logs", "Pod logs", .warning, error.localizedDescription)
                     }
@@ -7417,10 +7523,23 @@ public final class RuneAppViewModel: ObservableObject {
                     record("pod-logs", "Pod logs", .warning, "No pods found, so log access could not be verified.")
                 }
             } catch {
+                guard isActiveRun() else { return }
                 recordProjectedFailure(error)
                 record("pod-list", "Pod list", .failed, error.localizedDescription)
             }
         }
+    }
+
+    private func invalidateAuthDoctorRunForScopeChange() {
+        let hadActiveRun = activeAuthDoctorRunID != nil
+        activeAuthDoctorRunID = nil
+        authDoctorTask?.cancel()
+        authDoctorTask = nil
+        if hadActiveRun {
+            state.setAuthDoctorRunning(false)
+        }
+        state.clearAuthDoctorChecks()
+        refreshKubernetesRequestMetricsSummary()
     }
 
     nonisolated static func authDoctorLogProbePod(from pods: [PodSummary]) -> PodSummary? {
@@ -7461,18 +7580,8 @@ public final class RuneAppViewModel: ObservableObject {
             guard let self else { return }
             repeat {
                 self.shouldRefreshKubernetesRequestMetricsSummaryAgain = false
-                let contextName = self.state.selectedContext?.name
-                let report: KubernetesRESTRequestMetricsReport
-                if let contextName {
-                    report = await self.kubeClient.restRequestMetricsReport(contextName: contextName)
-                } else {
-                    report = .empty
-                }
-                if self.state.selectedContext?.name == contextName {
-                    self.kubernetesRequestMetricsSummary = KubernetesRequestMetricsDebugPresentation(report: report)
-                } else {
-                    self.shouldRefreshKubernetesRequestMetricsSummaryAgain = true
-                }
+                let report = await self.stableSelectedContextRequestMetricsReport()
+                self.kubernetesRequestMetricsSummary = KubernetesRequestMetricsDebugPresentation(report: report)
             } while self.shouldRefreshKubernetesRequestMetricsSummaryAgain
             self.isRefreshingKubernetesRequestMetricsSummary = false
         }
@@ -8313,9 +8422,6 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
-                if replacingSessionID != nil {
-                    await kubeClient.stopPodTerminalSession(id: sessionID)
-                }
                 try await kubeClient.startPodTerminalSession(
                     id: sessionID,
                     from: kubeConfigSources,
@@ -8907,7 +9013,7 @@ public final class RuneAppViewModel: ObservableObject {
                                 loadDetails: false
                             )
                         } catch {
-                            diagnostics.trace("helm", "post-rollback release refresh failed: \(error.localizedDescription)")
+                            diagnostics.trace("helm", "post-rollback release refresh error=\(error.localizedDescription)")
                         }
                     }
                     appendWriteAudit(
@@ -9594,7 +9700,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot ignored stale start context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
-                "ignored start context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+                "ignored start context=<redacted-context> namespace=<redacted-namespace> request=\(requestID.uuidString)"
             )
             return
         }
@@ -9606,7 +9712,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         diagnostics.trace(
             "snapshot",
-            "loadResourceSnapshot start context=\(context.name) namespace=\(namespace) forceMeta=\(forceNamespaceMetadataRefresh) request=\(requestID.uuidString)"
+            "loadResourceSnapshot start context=<redacted-context> namespace=<redacted-namespace> forceMeta=\(forceNamespaceMetadataRefresh) request=\(requestID.uuidString)"
         )
         diagnostics.log("loadResourceSnapshot start context=\(context.name) namespace=\(namespace)")
 
@@ -9700,7 +9806,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot discarded stale result context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
-                "discarded after namespace metadata context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+                "discarded after namespace metadata context=<redacted-context> namespace=<redacted-namespace> request=\(requestID.uuidString)"
             )
             return
         }
@@ -9745,7 +9851,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot discarded stale result before namespace apply context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
-                "discarded before namespace apply context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+                "discarded before namespace apply context=<redacted-context> namespace=<redacted-namespace> request=\(requestID.uuidString)"
             )
             return
         }
@@ -10240,7 +10346,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot discarded stale resource result context=\(context.name) namespace=\(effectiveNamespace)")
             diagnostics.trace(
                 "snapshot.stale",
-                "discarded after core resource fetch context=\(context.name) effectiveNamespace=\(effectiveNamespace) request=\(requestID.uuidString) selectedNamespace=\(state.selectedNamespace)"
+                "discarded after core resource fetch context=<redacted-context> effectiveNamespace=<redacted-namespace> request=\(requestID.uuidString) selectedNamespace=<redacted-namespace>"
             )
             return
         }
@@ -10337,7 +10443,10 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             )
             diagnostics.log("loadResourceSnapshot partial warnings: \(warningText)")
-            diagnostics.trace("snapshot", "partial load warnings: \(warningText)")
+            diagnostics.trace(
+                "snapshot",
+                "partial load warningCount=\(warnings.count) failedFamilyCount=\(failedFamilies.count)"
+            )
         }
 
         if plan.podStatuses {
@@ -10386,7 +10495,7 @@ public final class RuneAppViewModel: ObservableObject {
             )
             diagnostics.trace(
                 "snapshot.overview",
-                "skipped overview write section=\(state.selectedSection.rawValue) context=\(context.name) namespace=\(effectiveNamespace)"
+                "skipped overview write section=\(state.selectedSection.rawValue) context=<redacted-context> namespace=<redacted-namespace>"
             )
         }
 
@@ -10400,7 +10509,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadResourceSnapshot skipped details for stale context=\(context.name) namespace=\(namespace)")
             diagnostics.trace(
                 "snapshot.stale",
-                "skipped resource details context=\(context.name) namespace=\(effectiveNamespace) request=\(requestID.uuidString)"
+                "skipped resource details context=<redacted-context> namespace=<redacted-namespace> request=\(requestID.uuidString)"
             )
             return
         }
@@ -10420,7 +10529,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
-        diagnostics.trace("snapshot", "loadResourceSnapshot done context=\(context.name) namespace=\(effectiveNamespace)")
+        diagnostics.trace("snapshot", "loadResourceSnapshot done context=<redacted-context> namespace=<redacted-namespace>")
     }
 
     nonisolated static func podListNeedsJSONEnrichment(_ pods: [PodSummary]) -> Bool {
@@ -10532,7 +10641,7 @@ public final class RuneAppViewModel: ObservableObject {
             diagnostics.log("loadOverviewSnapshot discarded stale result context=\(context.name)")
             diagnostics.trace(
                 "snapshot.stale",
-                "loadOverviewSnapshot discarded context=\(context.name) namespace=\(namespace) request=\(requestID.uuidString)"
+                "loadOverviewSnapshot discarded context=<redacted-context> namespace=<redacted-namespace> request=\(requestID.uuidString)"
             )
             return
         }
@@ -10554,7 +10663,7 @@ public final class RuneAppViewModel: ObservableObject {
         )
         diagnostics.trace(
             "snapshot.overview",
-            "applied overview tiles namespace=\(namespace) context=\(context.name) pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount) ingresses=\(ingressesCount) configmaps=\(configMapsCount) cronjobs=\(cronJobsCount) nodes=\(nodesCount)"
+            "applied overview tiles namespace=<redacted-namespace> context=<redacted-context> pods=\(pods.count) deployments=\(deploymentsCount) services=\(servicesCount) ingresses=\(ingressesCount) configmaps=\(configMapsCount) cronjobs=\(cronJobsCount) nodes=\(nodesCount)"
         )
     }
 
@@ -10905,7 +11014,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         diagnostics.trace(
             "resourceDetails",
-            "async begin request=\(requestID.uuidString) kind=\(state.selectedWorkloadKind.rawValue) section=\(state.selectedSection.rawValue) namespace=\(state.selectedNamespace)"
+            "async begin request=\(requestID.uuidString) kind=\(state.selectedWorkloadKind.rawValue) section=\(state.selectedSection.rawValue) namespace=<redacted-namespace>"
         )
 
         guard let context = state.selectedContext else {
@@ -12546,7 +12655,7 @@ public final class RuneAppViewModel: ObservableObject {
         case let .failure(error):
             diagnostics.trace(
                 "prefetch.context",
-                "context-namespace failed context=\(context.name): \(error.localizedDescription)"
+                "context-namespace context=<redacted-context> error=\(error.localizedDescription)"
             )
             contextDefaultNamespace = nil
         }
@@ -12562,7 +12671,7 @@ public final class RuneAppViewModel: ObservableObject {
         case let .failure(error):
             diagnostics.trace(
                 "prefetch.context",
-                "namespaces failed context=\(context.name): \(error.localizedDescription)"
+                "namespaces context=<redacted-context> error=\(error.localizedDescription)"
             )
             mergedNamespaces = []
         }
@@ -12699,12 +12808,12 @@ public final class RuneAppViewModel: ObservableObject {
                     )
                     self.diagnostics.trace(
                         "prefetch.context",
-                        "warmed context=\(targetContext.name) namespace=\(normalizedNamespace)"
+                        "warmed context=<redacted-context> namespace=<redacted-namespace>"
                     )
                 } catch {
                     self.diagnostics.trace(
                         "prefetch.context",
-                        "failed context=\(targetContext.name) namespace=\(normalizedNamespace): \(error.localizedDescription)"
+                        "context=<redacted-context> namespace=<redacted-namespace> error=\(error.localizedDescription)"
                     )
                 }
             }
@@ -12925,7 +13034,7 @@ public final class RuneAppViewModel: ObservableObject {
                         )
                         self?.diagnostics.trace(
                             "prefetch.overview",
-                            "failed context=\(contextName) namespace=\(namespace): \(error.localizedDescription)"
+                            "context=<redacted-context> namespace=<redacted-namespace> error=\(error.localizedDescription)"
                         )
                     }
                 }

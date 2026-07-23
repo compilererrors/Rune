@@ -11,8 +11,11 @@ final class KubernetesClientTests: XCTestCase {
             method: "GET",
             server: "https://cluster.example.test",
             contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
             apiPath: "/api/v1/pods",
-            headers: ["Accept": "application/json"]
+            headers: ["Accept": "application/json"],
+            timeout: 5
         )
 
         async let first = coalescer.value(for: key) {
@@ -33,6 +36,145 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(operationCount, 1)
     }
 
+    func testRESTRequestCoalescerSeparatesReusedContextsByScopeIdentity() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = RESTRequestCoalescerCounter()
+        let firstKey = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config-a",
+            credentialFingerprint: Data([0x01]),
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"],
+            timeout: 5
+        )
+        let secondKey = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config-b",
+            credentialFingerprint: Data([0x01]),
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"],
+            timeout: 5
+        )
+
+        async let first = coalescer.value(for: firstKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "config-a", contentType: "application/json")
+        }
+        async let second = coalescer.value(for: secondKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "config-b", contentType: "application/json")
+        }
+
+        let responses = try await [first, second]
+        let operationCount = await counter.currentValue()
+
+        XCTAssertEqual(Set(responses.map(\.body)), Set(["config-a", "config-b"]))
+        XCTAssertEqual(operationCount, 2)
+    }
+
+    func testRESTRequestCoalescerSeparatesRotatedCredentialFingerprints() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = RESTRequestCoalescerCounter()
+        let firstKey = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"],
+            timeout: 5
+        )
+        let secondKey = KubernetesRESTRequestCoalescingKey(
+            method: "GET",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x02]),
+            apiPath: "/api/v1/pods",
+            headers: ["Accept": "application/json"],
+            timeout: 5
+        )
+
+        async let first = coalescer.value(for: firstKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "credential-a", contentType: "application/json")
+        }
+        async let second = coalescer.value(for: secondKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "credential-b", contentType: "application/json")
+        }
+
+        let responses = try await [first, second]
+        let operationCount = await counter.currentValue()
+        XCTAssertEqual(Set(responses.map(\.body)), Set(["credential-a", "credential-b"]))
+        XCTAssertEqual(operationCount, 2)
+    }
+
+    func testRESTRequestCoalescerSeparatesDifferentTimeouts() async throws {
+        let coalescer = KubernetesRESTRequestCoalescer()
+        let counter = RESTRequestCoalescerCounter()
+        let firstKey = KubernetesRESTRequestCoalescingKey(
+            method: "HEAD",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
+            apiPath: "/readyz",
+            headers: [:],
+            timeout: 1
+        )
+        let secondKey = KubernetesRESTRequestCoalescingKey(
+            method: "HEAD",
+            server: "https://cluster.example.test",
+            contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
+            apiPath: "/readyz",
+            headers: [:],
+            timeout: 5
+        )
+
+        async let first = coalescer.value(for: firstKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "timeout-1", contentType: "")
+        }
+        async let second = coalescer.value(for: secondKey) {
+            _ = await counter.increment()
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return RESTResponse(body: "timeout-5", contentType: "")
+        }
+
+        let responses = try await [first, second]
+        let operationCount = await counter.currentValue()
+        XCTAssertEqual(Set(responses.map(\.body)), Set(["timeout-1", "timeout-5"]))
+        XCTAssertEqual(operationCount, 2)
+    }
+
+    func testRESTCredentialFingerprintIsOpaqueStableAndRotationSensitive() {
+        let token = "synthetic-token-alpha"
+        let first = KubernetesRESTClient._testRESTCredentialFingerprint(bearerToken: token)
+        let repeated = KubernetesRESTClient._testRESTCredentialFingerprint(bearerToken: token)
+        let rotated = KubernetesRESTClient._testRESTCredentialFingerprint(
+            bearerToken: "synthetic-token-beta"
+        )
+
+        XCTAssertEqual(first.count, 32)
+        XCTAssertEqual(first, repeated)
+        XCTAssertNotEqual(first, rotated)
+        XCTAssertNotEqual(first, Data(token.utf8))
+        XCTAssertFalse(String(decoding: first, as: UTF8.self).contains(token))
+    }
+
     func testRESTRequestCoalescerCancelsUnderlyingReadWhenLastWaiterCancels() async throws {
         let coalescer = KubernetesRESTRequestCoalescer()
         let probe = RESTRequestCoalescerCancellationProbe()
@@ -40,8 +182,11 @@ final class KubernetesClientTests: XCTestCase {
             method: "GET",
             server: "https://cluster.example.test",
             contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
             apiPath: "/api/v1/pods",
-            headers: ["Accept": "application/json"]
+            headers: ["Accept": "application/json"],
+            timeout: 5
         )
 
         let task = Task {
@@ -86,8 +231,11 @@ final class KubernetesClientTests: XCTestCase {
             method: "GET",
             server: "https://cluster.example.test",
             contextName: "synthetic",
+            scopeIdentity: "synthetic-config",
+            credentialFingerprint: Data([0x01]),
             apiPath: "/api/v1/pods",
-            headers: ["Accept": "application/json"]
+            headers: ["Accept": "application/json"],
+            timeout: 5
         )
 
         let first = Task {
@@ -268,8 +416,9 @@ final class KubernetesClientTests: XCTestCase {
             ))
         }
 
-        let snapshot = await recorder.snapshot()
-        let summary = await recorder.summary()
+        let report = await recorder.report()
+        let snapshot = report.metrics
+        let summary = report.summary
 
         XCTAssertEqual(snapshot.map(\.apiPath), [
             "/api/v1/namespaces/<namespace>/pods/<name>",
@@ -281,6 +430,280 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(summary.responseBytes, 10)
         XCTAssertEqual(summary.retainedMetricCount, 3)
         XCTAssertEqual(summary.omittedMetricCount, 2)
+        XCTAssertEqual(report.endpointGroups.reduce(0) { $0 + $1.requestCount }, 5)
+    }
+
+    func testRESTRequestMetricsRecorderSeparatesReusedContextNamesByInternalScopeIdentity() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods",
+                statusCode: 200,
+                responseBytes: 10,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .success
+            ),
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-a|https://api-a.invalid"
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/services",
+                statusCode: 503,
+                responseBytes: 20,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-b|https://api-b.invalid"
+        )
+
+        let secondScopeReport = await recorder.report(contextName: "synthetic-context")
+        let firstExplicitScopeReport = await recorder.report(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-a|https://api-a.invalid"
+        )
+        let secondExplicitScopeReport = await recorder.report(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-b|https://api-b.invalid"
+        )
+        XCTAssertEqual(secondScopeReport.summary.requestCount, 1)
+        XCTAssertEqual(secondScopeReport.summary.failureCount, 1)
+        XCTAssertEqual(secondScopeReport.metrics.map(\.responseBytes), [20])
+        XCTAssertEqual(firstExplicitScopeReport.metrics.map(\.responseBytes), [10])
+        XCTAssertEqual(secondExplicitScopeReport.metrics.map(\.responseBytes), [20])
+
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/configmaps",
+                statusCode: 200,
+                responseBytes: 30,
+                durationSeconds: 0.03,
+                attempt: 1,
+                outcome: .success
+            ),
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-a|https://api-a.invalid"
+        )
+
+        let firstScopeReport = await recorder.report(contextName: "synthetic-context")
+        XCTAssertEqual(firstScopeReport.summary.requestCount, 1)
+        XCTAssertEqual(firstScopeReport.summary.successCount, 1)
+        XCTAssertEqual(firstScopeReport.metrics.map(\.responseBytes), [30])
+        XCTAssertEqual(firstScopeReport.endpointGroups.reduce(0) { $0 + $1.requestCount }, 1)
+    }
+
+    func testOlderRequestCompletionCannotRestorePreviousMetricsScope() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let olderScope = await recorder.activateScope(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-a|https://api-a.invalid"
+        )
+        let currentScope = await recorder.activateScope(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-b|https://api-b.invalid"
+        )
+
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/services",
+                statusCode: 200,
+                responseBytes: 20,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .success
+            ),
+            scope: currentScope
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods",
+                statusCode: 503,
+                responseBytes: 10,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            scope: olderScope
+        )
+
+        let scopedReport = await recorder.report(contextName: "synthetic-context")
+        let globalSummary = await recorder.summary()
+        XCTAssertEqual(scopedReport.summary.requestCount, 1)
+        XCTAssertEqual(scopedReport.summary.successCount, 1)
+        XCTAssertEqual(scopedReport.summary.failureCount, 0)
+        XCTAssertEqual(scopedReport.metrics.map(\.responseBytes), [20])
+        XCTAssertEqual(globalSummary.requestCount, 2)
+        XCTAssertEqual(globalSummary.failureCount, 1)
+    }
+
+    func testOlderCredentialResolutionCannotActivateOverNewerReservedScope() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder()
+        let olderGeneration = await recorder.reserveScopeGeneration()
+        let newerGeneration = await recorder.reserveScopeGeneration()
+        let currentScope = await recorder.activateScope(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-b|https://api-b.invalid",
+            requestGeneration: newerGeneration
+        )
+        let olderScope = await recorder.activateScope(
+            contextName: "synthetic-context",
+            scopeIdentity: "synthetic-config-a|https://api-a.invalid",
+            requestGeneration: olderGeneration
+        )
+
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/services",
+                statusCode: 200,
+                responseBytes: 20,
+                durationSeconds: 0.02,
+                attempt: 1,
+                outcome: .success
+            ),
+            scope: currentScope
+        )
+        await recorder.record(
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods",
+                statusCode: 503,
+                responseBytes: 10,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .httpError
+            ),
+            scope: olderScope
+        )
+
+        let scopedReport = await recorder.report(contextName: "synthetic-context")
+        let globalSummary = await recorder.summary()
+        let accumulatorCount = await recorder._testContextAccumulatorCount()
+        XCTAssertEqual(scopedReport.summary.requestCount, 1)
+        XCTAssertEqual(scopedReport.summary.successCount, 1)
+        XCTAssertEqual(scopedReport.metrics.map(\.responseBytes), [20])
+        XCTAssertEqual(globalSummary.requestCount, 2)
+        XCTAssertEqual(globalSummary.failureCount, 1)
+        XCTAssertEqual(accumulatorCount, 1)
+    }
+
+    func testRESTRequestMetricsRecorderEvictsLeastRecentlyUsedContextAccumulators() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(
+            maxRetainedMetrics: 20,
+            maxContextAccumulators: 2
+        )
+
+        func metric(responseBytes: Int) -> KubernetesRESTRequestMetric {
+            KubernetesRESTRequestMetric(
+                method: "GET",
+                apiPath: "/api/v1/namespaces/synthetic/pods",
+                statusCode: 200,
+                responseBytes: responseBytes,
+                durationSeconds: 0.01,
+                attempt: 1,
+                outcome: .success
+            )
+        }
+
+        await recorder.record(
+            metric(responseBytes: 1),
+            contextName: "synthetic-a",
+            scopeIdentity: "scope-a"
+        )
+        await recorder.record(
+            metric(responseBytes: 2),
+            contextName: "synthetic-b",
+            scopeIdentity: "scope-b"
+        )
+        await recorder.record(
+            metric(responseBytes: 3),
+            contextName: "synthetic-a",
+            scopeIdentity: "scope-a"
+        )
+        await recorder.record(
+            metric(responseBytes: 4),
+            contextName: "synthetic-c",
+            scopeIdentity: "scope-c"
+        )
+
+        let accumulatorCountBeforeRecreation = await recorder._testContextAccumulatorCount()
+        let contextAReport = await recorder.report(contextName: "synthetic-a")
+        let contextBReport = await recorder.report(contextName: "synthetic-b")
+        let contextCReport = await recorder.report(contextName: "synthetic-c")
+        XCTAssertEqual(accumulatorCountBeforeRecreation, 2)
+        XCTAssertEqual(contextAReport.summary.requestCount, 2)
+        XCTAssertEqual(contextBReport, .empty)
+        XCTAssertEqual(contextCReport.summary.requestCount, 1)
+
+        await recorder.record(
+            metric(responseBytes: 5),
+            contextName: "synthetic-b",
+            scopeIdentity: "scope-b"
+        )
+        let recreatedReport = await recorder.report(contextName: "synthetic-b")
+        let accumulatorCountAfterRecreation = await recorder._testContextAccumulatorCount()
+        XCTAssertEqual(recreatedReport.summary.requestCount, 1)
+        XCTAssertEqual(recreatedReport.metrics.map(\.responseBytes), [5])
+        XCTAssertEqual(accumulatorCountAfterRecreation, 2)
+    }
+
+    func testRESTRequestMetricsRecorderBoundsLifetimeEndpointGroupsWithSafeOverflow() async {
+        let recorder = KubernetesRESTRequestMetricsRecorder(
+            maxRetainedMetrics: 2,
+            maxEndpointGroupsPerAccumulator: 3
+        )
+        let paths = [
+            "/api/v1/namespaces/synthetic/pods",
+            "/api/v1/namespaces/synthetic/services",
+            "/api/v1/namespaces/synthetic/configmaps",
+            "/api/v1/namespaces/synthetic/secrets",
+            "/apis/apps/v1/namespaces/synthetic/deployments",
+            "/apis/batch/v1/namespaces/synthetic/jobs"
+        ]
+
+        for (index, path) in paths.enumerated() {
+            let outcome: KubernetesRESTRequestMetricOutcome = index == 4
+                ? .httpError
+                : (index == 5 ? .cancelled : .success)
+            await recorder.record(
+                KubernetesRESTRequestMetric(
+                    method: "GET",
+                    apiPath: path,
+                    statusCode: outcome == .success ? 200 : nil,
+                    responseBytes: index + 1,
+                    durationSeconds: Double(index + 1) / 100,
+                    attempt: 1,
+                    outcome: outcome
+                ),
+                contextName: "synthetic-context",
+                scopeIdentity: "synthetic-scope"
+            )
+        }
+
+        let report = await recorder.report(contextName: "synthetic-context")
+        XCTAssertEqual(report.summary.requestCount, paths.count)
+        XCTAssertEqual(report.summary.retainedMetricCount, 2)
+        XCTAssertEqual(report.summary.omittedMetricCount, 4)
+        XCTAssertEqual(report.endpointGroups.count, 3)
+        XCTAssertEqual(report.endpointGroups.reduce(0) { $0 + $1.requestCount }, paths.count)
+        XCTAssertEqual(report.endpointGroups.reduce(0) { $0 + $1.responseBytes }, 21)
+        XCTAssertEqual(report.endpointGroups.reduce(0) { $0 + $1.failureCount }, 1)
+        XCTAssertEqual(report.endpointGroups.reduce(0) { $0 + $1.cancelledCount }, 1)
+        let overflow = report.endpointGroups.first { $0.apiPath == "/<other-endpoints>" }
+        XCTAssertNotNil(overflow)
+        XCTAssertEqual(overflow?.sourcePath, "aggregated")
+        XCTAssertEqual(overflow?.method, "*")
+        XCTAssertEqual(overflow?.requestCount, 4)
+        XCTAssertFalse(report.endpointGroups.map(\.apiPath).joined().contains("synthetic"))
     }
 
     func testRESTRequestMetricsReportsPartitionContextsWithinOneBoundedRetentionWindow() async {
@@ -823,6 +1246,8 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertTrue(lateHandle.isTerminated)
         let missingLateHandle = await registry.handle(id: "terminal-synthetic")
         XCTAssertNil(missingLateHandle)
+        let metadataAfterLateHandle = await registry._testMetadataSnapshot()
+        XCTAssertEqual(metadataAfterLateHandle, emptyRegistryMetadata)
 
         let replacementHandle = RecordingTerminalSessionHandle()
         let replacementGeneration = await registry.beginStart(id: "terminal-synthetic")
@@ -836,6 +1261,416 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertTrue(insertedReplacement)
         XCTAssertEqual(registeredReplacement?.id, replacementHandle.id)
         XCTAssertFalse(replacementHandle.isTerminated)
+        let activeMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(
+            activeMetadata,
+            RunningCommandRegistryMetadataSnapshot(
+                activeHandleCount: 1,
+                pendingStartCount: 0,
+                stopRequestedStartCount: 0
+            )
+        )
+
+        let removedReplacement = await registry.remove(id: "terminal-synthetic")
+        removedReplacement?.terminate()
+        let finalMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(finalMetadata, emptyRegistryMetadata)
+    }
+
+    func testPortForwardRegistryRejectsLateHandleAndCleansStoppedStartMetadata() async {
+        let registry = PortForwardRegistry()
+        let generation = await registry.beginStart(id: "forward-synthetic")
+        let handleBeforeRegistration = await registry.remove(id: "forward-synthetic")
+        let pendingMetadata = await registry._testMetadataSnapshot()
+
+        XCTAssertNil(handleBeforeRegistration)
+        XCTAssertEqual(
+            pendingMetadata,
+            RunningCommandRegistryMetadataSnapshot(
+                activeHandleCount: 0,
+                pendingStartCount: 1,
+                stopRequestedStartCount: 1
+            )
+        )
+
+        let lateHandle = RecordingTerminalSessionHandle()
+        let insertedLateHandle = await registry.insert(
+            handle: lateHandle,
+            id: "forward-synthetic",
+            generation: generation
+        )
+        let metadataAfterLateHandle = await registry._testMetadataSnapshot()
+
+        XCTAssertFalse(insertedLateHandle)
+        XCTAssertTrue(lateHandle.isTerminated)
+        XCTAssertEqual(metadataAfterLateHandle, emptyRegistryMetadata)
+
+        let replacementGeneration = await registry.beginStart(id: "forward-synthetic")
+        let replacementHandle = RecordingTerminalSessionHandle()
+        let insertedReplacement = await registry.insert(
+            handle: replacementHandle,
+            id: "forward-synthetic",
+            generation: replacementGeneration
+        )
+        XCTAssertTrue(insertedReplacement)
+        XCTAssertFalse(replacementHandle.isTerminated)
+
+        let removedReplacement = await registry.remove(id: "forward-synthetic")
+        XCTAssertEqual(removedReplacement?.id, replacementHandle.id)
+        removedReplacement?.terminate()
+        let finalMetadata = await registry._testMetadataSnapshot()
+
+        XCTAssertTrue(replacementHandle.isTerminated)
+        XCTAssertEqual(finalMetadata, emptyRegistryMetadata)
+    }
+
+    func testRegistriesCleanMetadataWhenStartFailsWithoutStop() async {
+        let terminalRegistry = TerminalSessionRegistry()
+        let portForwardRegistry = PortForwardRegistry()
+        let terminalGeneration = await terminalRegistry.beginStart(id: "failed-terminal")
+        let forwardGeneration = await portForwardRegistry.beginStart(id: "failed-forward")
+
+        let terminalWasStopped = await terminalRegistry.finishStart(
+            id: "failed-terminal",
+            generation: terminalGeneration
+        )
+        let forwardWasStopped = await portForwardRegistry.finishStart(
+            id: "failed-forward",
+            generation: forwardGeneration
+        )
+
+        XCTAssertFalse(terminalWasStopped)
+        XCTAssertFalse(forwardWasStopped)
+        let terminalMetadata = await terminalRegistry._testMetadataSnapshot()
+        let forwardMetadata = await portForwardRegistry._testMetadataSnapshot()
+        XCTAssertEqual(terminalMetadata, emptyRegistryMetadata)
+        XCTAssertEqual(forwardMetadata, emptyRegistryMetadata)
+    }
+
+    func testRegistryCompletionForOlderGenerationCannotEraseNewerSameIDStart() async {
+        let terminalRegistry = TerminalSessionRegistry()
+        let firstTerminalGeneration = await terminalRegistry.beginStart(id: "reused-terminal")
+        let secondTerminalGeneration = await terminalRegistry.beginStart(id: "reused-terminal")
+
+        let firstTerminalWasStopped = await terminalRegistry.finishStart(
+            id: "reused-terminal",
+            generation: firstTerminalGeneration
+        )
+        let terminalMetadataWithNewerStart = await terminalRegistry._testMetadataSnapshot()
+        XCTAssertFalse(firstTerminalWasStopped)
+        XCTAssertEqual(terminalMetadataWithNewerStart.pendingStartCount, 1)
+
+        let terminalHandle = RecordingTerminalSessionHandle()
+        let insertedTerminal = await terminalRegistry.insert(
+            handle: terminalHandle,
+            id: "reused-terminal",
+            generation: secondTerminalGeneration
+        )
+        let removedTerminal = await terminalRegistry.remove(id: "reused-terminal")
+        removedTerminal?.terminate()
+        XCTAssertTrue(insertedTerminal)
+
+        let portForwardRegistry = PortForwardRegistry()
+        let firstForwardGeneration = await portForwardRegistry.beginStart(id: "reused-forward")
+        let secondForwardGeneration = await portForwardRegistry.beginStart(id: "reused-forward")
+
+        let firstForwardWasStopped = await portForwardRegistry.finishStart(
+            id: "reused-forward",
+            generation: firstForwardGeneration
+        )
+        let forwardMetadataWithNewerStart = await portForwardRegistry._testMetadataSnapshot()
+        XCTAssertFalse(firstForwardWasStopped)
+        XCTAssertEqual(forwardMetadataWithNewerStart.pendingStartCount, 1)
+
+        let forwardHandle = RecordingTerminalSessionHandle()
+        let insertedForward = await portForwardRegistry.insert(
+            handle: forwardHandle,
+            id: "reused-forward",
+            generation: secondForwardGeneration
+        )
+        let removedForward = await portForwardRegistry.remove(id: "reused-forward")
+        removedForward?.terminate()
+        XCTAssertTrue(insertedForward)
+
+        let finalTerminalMetadata = await terminalRegistry._testMetadataSnapshot()
+        let finalForwardMetadata = await portForwardRegistry._testMetadataSnapshot()
+        XCTAssertEqual(finalTerminalMetadata, emptyRegistryMetadata)
+        XCTAssertEqual(finalForwardMetadata, emptyRegistryMetadata)
+    }
+
+    func testTerminalNaturalTerminationReleasesExactGenerationWithoutTouchingReplacement() async {
+        let registry = TerminalSessionRegistry()
+        let firstGeneration = await registry.beginStart(id: "reused-terminal")
+        let firstHandle = RecordingTerminalSessionHandle()
+        let insertedFirst = await registry.insert(
+            handle: firstHandle,
+            id: "reused-terminal",
+            generation: firstGeneration
+        )
+        XCTAssertTrue(insertedFirst)
+
+        let replacementGeneration = await registry.beginStart(id: "reused-terminal")
+        XCTAssertTrue(firstHandle.isTerminated)
+        let shouldNotifyOldTermination = await registry.complete(
+            id: "reused-terminal",
+            generation: firstGeneration
+        )
+        XCTAssertFalse(shouldNotifyOldTermination)
+
+        let replacementHandle = RecordingTerminalSessionHandle()
+        let insertedReplacement = await registry.insert(
+            handle: replacementHandle,
+            id: "reused-terminal",
+            generation: replacementGeneration
+        )
+        XCTAssertTrue(insertedReplacement)
+
+        let delayedOldCompletion = await registry.complete(
+            id: "reused-terminal",
+            generation: firstGeneration
+        )
+        let stillRegistered = await registry.handle(id: "reused-terminal")
+        XCTAssertFalse(delayedOldCompletion)
+        XCTAssertEqual(stillRegistered?.id, replacementHandle.id)
+
+        let shouldNotifyReplacementTermination = await registry.complete(
+            id: "reused-terminal",
+            generation: replacementGeneration
+        )
+        XCTAssertTrue(shouldNotifyReplacementTermination)
+        let finalMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(finalMetadata, emptyRegistryMetadata)
+    }
+
+    func testTerminalPendingStopSuppressesTerminationCallbackRegardlessOfRaceOrder() async {
+        let registry = TerminalSessionRegistry()
+        let generation = await registry.beginStart(id: "stopped-terminal")
+        _ = await registry.remove(id: "stopped-terminal")
+
+        let shouldNotify = await registry.complete(
+            id: "stopped-terminal",
+            generation: generation
+        )
+        XCTAssertFalse(shouldNotify)
+
+        let lateHandle = RecordingTerminalSessionHandle()
+        let insertedLateHandle = await registry.insert(
+            handle: lateHandle,
+            id: "stopped-terminal",
+            generation: generation
+        )
+        XCTAssertFalse(insertedLateHandle)
+        XCTAssertTrue(lateHandle.isTerminated)
+        let metadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(metadata, emptyRegistryMetadata)
+    }
+
+    func testPortForwardFailureBeforeRegistrationIsDeliveredOnceWithoutStoppedOutcome() async {
+        let registry = PortForwardRegistry()
+        let generation = await registry.beginStart(id: "failing-forward")
+
+        let failureDisposition = await registry.recordFailure(
+            message: "synthetic connection failure",
+            id: "failing-forward",
+            generation: generation
+        )
+        guard case .deferred = failureDisposition else {
+            return XCTFail("A failure during startup should be deferred to registration")
+        }
+
+        let handle = RecordingTerminalSessionHandle()
+        let result = await registry.register(
+            handle: handle,
+            id: "failing-forward",
+            generation: generation
+        )
+
+        XCTAssertEqual(result, .failed("synthetic connection failure"))
+        XCTAssertTrue(handle.isTerminated)
+        let finishedAfterFailure = await registry.finishStart(
+            id: "failing-forward",
+            generation: generation
+        )
+        XCTAssertFalse(finishedAfterFailure)
+        let metadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(metadata, emptyRegistryMetadata)
+    }
+
+    func testDelayedPortForwardCallbacksCannotAffectNewerGeneration() async {
+        let registry = PortForwardRegistry()
+        let firstGeneration = await registry.beginStart(id: "reused-forward")
+        let firstHandle = RecordingTerminalSessionHandle()
+        let insertedFirst = await registry.insert(
+            handle: firstHandle,
+            id: "reused-forward",
+            generation: firstGeneration
+        )
+        XCTAssertTrue(insertedFirst)
+
+        let replacementGeneration = await registry.beginStart(id: "reused-forward")
+        XCTAssertTrue(firstHandle.isTerminated)
+        let delayedFailureWhileReplacementPending = await registry.recordFailure(
+            message: "late failure during replacement startup",
+            id: "reused-forward",
+            generation: firstGeneration
+        )
+        guard case .ignored = delayedFailureWhileReplacementPending else {
+            return XCTFail("An older callback should be ignored while its replacement is pending")
+        }
+        let oldReadyWhileReplacementPending = await registry.shouldDeliverReady(
+            id: "reused-forward",
+            generation: firstGeneration
+        )
+        XCTAssertFalse(oldReadyWhileReplacementPending)
+
+        let replacementHandle = RecordingTerminalSessionHandle()
+        let insertedReplacement = await registry.insert(
+            handle: replacementHandle,
+            id: "reused-forward",
+            generation: replacementGeneration
+        )
+        XCTAssertTrue(insertedReplacement)
+
+        let delayedFailure = await registry.recordFailure(
+            message: "late failure from replaced handle",
+            id: "reused-forward",
+            generation: firstGeneration
+        )
+        guard case .ignored = delayedFailure else {
+            return XCTFail("A callback from an older generation should be ignored")
+        }
+        let shouldDeliverOldReady = await registry.shouldDeliverReady(
+            id: "reused-forward",
+            generation: firstGeneration
+        )
+        let shouldDeliverReplacementReady = await registry.shouldDeliverReady(
+            id: "reused-forward",
+            generation: replacementGeneration
+        )
+        XCTAssertFalse(shouldDeliverOldReady)
+        XCTAssertTrue(shouldDeliverReplacementReady)
+        XCTAssertFalse(replacementHandle.isTerminated)
+
+        let removed = await registry.remove(id: "reused-forward")
+        removed?.terminate()
+        XCTAssertEqual(removed?.id, replacementHandle.id)
+        let finalMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(finalMetadata, emptyRegistryMetadata)
+    }
+
+    func testTerminalStopBeforeBeginUsesBoundedExpiringIntent() async throws {
+        let registry = TerminalSessionRegistry(
+            preStartStopIntentCapacity: 3,
+            preStartStopIntentTTL: 0.05
+        )
+        for index in 0..<4 {
+            _ = await registry.remove(
+                id: "future-terminal-\(index)",
+                rememberIfNotStarted: true
+            )
+        }
+
+        let boundedMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(boundedMetadata.preStartStopIntentCount, 3)
+
+        let stoppedGeneration = await registry.beginStart(id: "future-terminal-3")
+        let isStopRequested = await registry.isStopRequested(
+            id: "future-terminal-3",
+            generation: stoppedGeneration
+        )
+        let finishedStoppedStart = await registry.finishStart(
+            id: "future-terminal-3",
+            generation: stoppedGeneration
+        )
+        XCTAssertTrue(isStopRequested)
+        XCTAssertTrue(finishedStoppedStart)
+
+        try await Task.sleep(for: .milliseconds(80))
+        let expiredMetadata = await registry._testMetadataSnapshot()
+        XCTAssertEqual(expiredMetadata, emptyRegistryMetadata)
+    }
+
+    func testRegistriesReleaseMetadataAcrossTenThousandSyntheticStartStopLifecycles() async {
+        let terminalRegistry = TerminalSessionRegistry()
+        let portForwardRegistry = PortForwardRegistry()
+        var rejectedTerminalHandles = 0
+        var rejectedForwardHandles = 0
+        var terminatedTerminalHandles = 0
+        var terminatedForwardHandles = 0
+        var completedTerminalStops = 0
+        var completedForwardStops = 0
+
+        for index in 0..<10_000 {
+            let id = "synthetic-session-\(index)"
+            let terminalGeneration = await terminalRegistry.beginStart(id: id)
+            let forwardGeneration = await portForwardRegistry.beginStart(id: id)
+            _ = await terminalRegistry.remove(id: id)
+            _ = await portForwardRegistry.remove(id: id)
+
+            if index.isMultiple(of: 2) {
+                let terminalHandle = RecordingTerminalSessionHandle()
+                let forwardHandle = RecordingTerminalSessionHandle()
+                if !(await terminalRegistry.insert(
+                    handle: terminalHandle,
+                    id: id,
+                    generation: terminalGeneration
+                )) {
+                    rejectedTerminalHandles += 1
+                }
+                if !(await portForwardRegistry.insert(
+                    handle: forwardHandle,
+                    id: id,
+                    generation: forwardGeneration
+                )) {
+                    rejectedForwardHandles += 1
+                }
+                if terminalHandle.isTerminated {
+                    terminatedTerminalHandles += 1
+                }
+                if forwardHandle.isTerminated {
+                    terminatedForwardHandles += 1
+                }
+            } else {
+                let terminalWasStopped = await terminalRegistry.finishStart(
+                    id: id,
+                    generation: terminalGeneration
+                )
+                let forwardWasStopped = await portForwardRegistry.finishStart(
+                    id: id,
+                    generation: forwardGeneration
+                )
+                if terminalWasStopped {
+                    completedTerminalStops += 1
+                }
+                if forwardWasStopped {
+                    completedForwardStops += 1
+                }
+            }
+
+            if index.isMultiple(of: 1_000) {
+                let terminalMetadata = await terminalRegistry._testMetadataSnapshot()
+                let forwardMetadata = await portForwardRegistry._testMetadataSnapshot()
+                XCTAssertEqual(terminalMetadata, emptyRegistryMetadata)
+                XCTAssertEqual(forwardMetadata, emptyRegistryMetadata)
+            }
+        }
+
+        for index in 0..<10_000 {
+            let id = "unknown-session-\(index)"
+            _ = await terminalRegistry.remove(id: id)
+            _ = await portForwardRegistry.remove(id: id)
+        }
+
+        let terminalMetadata = await terminalRegistry._testMetadataSnapshot()
+        let forwardMetadata = await portForwardRegistry._testMetadataSnapshot()
+        XCTAssertEqual(rejectedTerminalHandles, 5_000)
+        XCTAssertEqual(rejectedForwardHandles, 5_000)
+        XCTAssertEqual(terminatedTerminalHandles, 5_000)
+        XCTAssertEqual(terminatedForwardHandles, 5_000)
+        XCTAssertEqual(completedTerminalStops, 5_000)
+        XCTAssertEqual(completedForwardStops, 5_000)
+        XCTAssertEqual(terminalMetadata, emptyRegistryMetadata)
+        XCTAssertEqual(forwardMetadata, emptyRegistryMetadata)
     }
 
     func testServerSideApplyYAMLOmitsManagedFieldsFromFetchedManifest() {
@@ -892,6 +1727,14 @@ final class KubernetesClientTests: XCTestCase {
             .appendingPathComponent("rune-native-kubeconfig-\(UUID().uuidString).yaml")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private var emptyRegistryMetadata: RunningCommandRegistryMetadataSnapshot {
+        RunningCommandRegistryMetadataSnapshot(
+            activeHandleCount: 0,
+            pendingStartCount: 0,
+            stopRequestedStartCount: 0
+        )
     }
 }
 

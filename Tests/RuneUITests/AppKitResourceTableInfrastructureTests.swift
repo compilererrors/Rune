@@ -364,6 +364,40 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
     }
 
     @MainActor
+    func testHorizontalOverflowEdgeGlowCanBeDisabledWithoutDisablingScrolling() throws {
+        let resource = ClusterResourceSummary(
+            kind: .configMap,
+            name: "synthetic-config",
+            namespace: "synthetic-namespace",
+            primaryText: "3 keys",
+            secondaryText: "1 KiB"
+        )
+        let host = NSHostingView(rootView: genericResourceView(kind: .configMap, resource: resource)
+            .frame(width: 360, height: 220))
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: 220)
+        settle(host)
+
+        let scrollView = try XCTUnwrap(findResourceTableScrollView(in: host))
+        scrollView.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(scrollView.hasHorizontalScroller)
+        XCTAssertTrue(scrollView.horizontalOverflowStateForTesting.hasOverflow)
+        XCTAssertTrue(scrollView.horizontalOverflowStateForTesting.showsTrailingIndicator)
+        XCTAssertTrue(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting)
+
+        scrollView.showsHorizontalOverflowEdgeGlow = false
+
+        XCTAssertFalse(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting)
+        XCTAssertTrue(scrollView.hasHorizontalScroller)
+        XCTAssertTrue(scrollView.horizontalOverflowStateForTesting.hasOverflow)
+        XCTAssertNotNil(scrollView.accessibilityHelp())
+
+        scrollView.showsHorizontalOverflowEdgeGlow = true
+
+        XCTAssertTrue(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting)
+    }
+
+    @MainActor
     func testGenericKindUpdateRefreshesColumnMetadataAndSortState() throws {
         let configMap = ClusterResourceSummary(
             kind: .configMap,

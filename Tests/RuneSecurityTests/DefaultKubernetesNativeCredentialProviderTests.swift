@@ -46,6 +46,50 @@ final class DefaultKubernetesNativeCredentialProviderTests: XCTestCase {
         XCTAssertNil(removedCredential)
     }
 
+    func testLateInvalidationCannotEvictNewerCredentialRevision() async throws {
+        let provider = DefaultKubernetesNativeCredentialProvider(
+            profileStore: KeychainKubernetesNativeAuthProfileStore(
+                secretStore: LockedMemorySecretStore(),
+                keyPrefix: "synthetic.revision"
+            ),
+            now: { Date(timeIntervalSince1970: 1_893_456_000) }
+        )
+        let request = awsRequest()
+        try await provider.bindAWSCredentials(
+            to: request,
+            credentials: try AWSEKSCredentials(
+                accessKeyID: "AKIDSYNTHETIC00000000",
+                secretAccessKey: "synthetic-secret-material",
+                sessionToken: "synthetic-session-material"
+            ),
+            displayName: "Synthetic AWS"
+        )
+
+        let staleResult = try await provider.credential(for: request)
+        let stale = try XCTUnwrap(staleResult)
+        await provider.invalidateCredential(for: request.bindingID)
+        let freshResult = try await provider.credential(for: request)
+        let fresh = try XCTUnwrap(freshResult)
+        XCTAssertNotEqual(stale.revision, fresh.revision)
+
+        await provider.invalidateCredential(
+            for: request.bindingID,
+            matchingRevision: stale.revision
+        )
+        let retainedResult = try await provider.credential(for: request)
+        let retained = try XCTUnwrap(retainedResult)
+
+        XCTAssertEqual(retained.revision, fresh.revision)
+
+        await provider.invalidateCredential(
+            for: request.bindingID,
+            matchingRevision: fresh.revision
+        )
+        let refreshedResult = try await provider.credential(for: request)
+        let refreshed = try XCTUnwrap(refreshedResult)
+        XCTAssertNotEqual(refreshed.revision, fresh.revision)
+    }
+
     func testEmbeddedOIDCAuthProviderUsesValidIDTokenWithoutNetworkOrKeychainProfile() async throws {
         let now = Date(timeIntervalSince1970: 1_893_456_000)
         let token = try makeJWT(

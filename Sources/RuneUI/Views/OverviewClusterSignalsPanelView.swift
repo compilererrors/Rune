@@ -26,17 +26,13 @@ struct OverviewClusterSignalsPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle")
-                    .foregroundStyle(
-                        activeCount == 0
-                            ? Color.secondary
-                            : RuneSemanticColorRole.warning.color(in: runeThemePalette)
-                    )
-                    .frame(width: 18)
-                Text("Cluster Signals")
-                    .font(.headline.weight(.semibold))
-                Spacer(minLength: 8)
+            RuneSectionHeader(
+                "Cluster Signals",
+                systemImage: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle",
+                tint: activeCount == 0
+                    ? Color.secondary
+                    : RuneSemanticColorRole.warning.color(in: runeThemePalette)
+            ) {
                 RuneHeaderCapsule(
                     activeCount == 0 ? "Clear" : "\(activeCount) item\(activeCount == 1 ? "" : "s")",
                     role: .value

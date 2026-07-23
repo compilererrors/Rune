@@ -193,6 +193,12 @@ public actor DefaultKubernetesNativeCredentialProvider: KubernetesNativeCredenti
         forceRefreshBindings.insert(bindingID)
     }
 
+    public func invalidateCredential(for bindingID: String, matchingRevision revision: UUID) async {
+        guard cache[bindingID]?.value.revision == revision else { return }
+        resetTransientState(for: bindingID)
+        forceRefreshBindings.insert(bindingID)
+    }
+
     public func status(for request: KubernetesNativeCredentialRequest) async throws -> KubernetesNativeAuthProfileStatus {
         let stored = try await profileStore.storedProfile(for: request.bindingID)
         let currentDate = now()
