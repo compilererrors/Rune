@@ -278,9 +278,11 @@ enum PodInspectorTab: String, CaseIterable, Identifiable {
 }
 
 enum TerminalInspectorTab: String, CaseIterable, Identifiable {
-    case commands
     case logs
+    case commands
     case yaml
+
+    static let defaultTab: TerminalInspectorTab = .logs
 
     var id: String { rawValue }
 
@@ -354,6 +356,7 @@ enum RuneAddClusterProviderActionLayout {
     static let horizontalPadding: CGFloat = RuneUILayoutMetrics.dialogContentPadding * 2
     static let columnSpacing: CGFloat = 8
     static let minimumButtonWidth: CGFloat = 150
+    static let minimumCredentialFieldWidth: CGFloat = 220
 
     static func contentWidth(dialogWidth: CGFloat = Self.dialogWidth) -> CGFloat {
         max(0, dialogWidth - horizontalPadding)
@@ -1033,6 +1036,8 @@ public struct RuneRootView: View {
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
+    @AppStorage(RuneSettingsKeys.terminalFontSize) private var configuredAppFontSize =
+        RuneSettingsKeys.terminalFontSizeDefault
     @State private var layoutGeneration = 0
     @State private var layoutProbeFrames: [RuneRootLayoutProbeKind: CGRect] = [:]
     @State private var lastLayoutSnapshot: RuneRootLayoutSnapshot?
@@ -1048,7 +1053,7 @@ public struct RuneRootView: View {
     @State private var terminalShellPodID = ""
     @State private var terminalPortForwardPodID = ""
     @State private var terminalLogTabState = TerminalPodLogTabState()
-    @State private var terminalInspectorTab: TerminalInspectorTab = .commands
+    @State private var terminalInspectorTab: TerminalInspectorTab = .defaultTab
     @State private var hasRestoredTerminalWorkspaceState = false
     @State private var liveDebugScenarioStarted = false
     @State private var keyboardPaneFocus: RuneRootKeyboardPane = .sidebarSections
@@ -1264,6 +1269,10 @@ public struct RuneRootView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isProductionContext)
         .animation(.easeOut(duration: 0.16), value: shouldShowLaunchExperience)
+        .runeInterfaceTypography(
+            configuredFontSize: configuredAppFontSize,
+            systemDynamicTypeSize: dynamicTypeSize
+        )
         .runeAppearanceTheme(activeAppearanceTheme)
     }
 
@@ -1619,7 +1628,7 @@ public struct RuneRootView: View {
                     }
                     .help(viewModel.isDetailPaneVisible ? "Hide Inspector" : "Show Inspector")
 
-                    Menu(viewModel.state.selectedContext?.name ?? "No Context") {
+                    Menu {
                         ForEach(viewModel.contextMenuOptions) { context in
                             Button(context.name) {
                                 viewModel.setContext(context)
@@ -1636,9 +1645,13 @@ public struct RuneRootView: View {
                                 )
                             }
                         }
+                    } label: {
+                        Text(viewModel.state.selectedContext?.name ?? "No Context")
+                            .runeInterfaceFont(weight: .medium)
+                            .lineLimit(1)
                     }
 
-                    Menu(namespaceMenuTitle) {
+                    Menu {
                         ForEach(namespaceSuggestions, id: \.self) { namespace in
                             Button(namespace) {
                                 viewModel.setNamespace(namespace)
@@ -1670,6 +1683,10 @@ public struct RuneRootView: View {
                             manualNamespaceInput = viewModel.state.selectedNamespace
                             isManualNamespaceSheetPresented = true
                         }
+                    } label: {
+                        Text(namespaceMenuTitle)
+                            .runeInterfaceFont(weight: .medium)
+                            .lineLimit(1)
                     }
                 }
 
@@ -2411,7 +2428,7 @@ public struct RuneRootView: View {
             .focused($textInputFocus, equals: .contextSearch)
 
             Text("Sections")
-                .font(.headline)
+                .runeInterfaceFont(relativeSize: 1, weight: .semibold)
                 .foregroundStyle(keyboardPaneFocus == .sidebarSections ? Color.accentColor : .secondary)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -2425,7 +2442,7 @@ public struct RuneRootView: View {
 
             HStack(spacing: 8) {
                 Text("Contexts")
-                    .font(.headline)
+                    .runeInterfaceFont(relativeSize: 1, weight: .semibold)
                     .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
                 Spacer(minLength: 0)
                 addClusterButton
@@ -2470,7 +2487,7 @@ public struct RuneRootView: View {
                 viewModel.setReadOnlyMode(value)
             })) {
                 Text("Read-only mode")
-                    .font(.headline)
+                    .runeInterfaceFont(relativeSize: 1, weight: .semibold)
             }
 
             Spacer(minLength: 0)
@@ -2496,11 +2513,11 @@ public struct RuneRootView: View {
                 Image(systemName: section.symbolName)
                     .frame(width: 16)
                 Text(section.localizedTitle(appString))
-                    .font(.body.weight(.medium))
+                    .runeInterfaceFont(weight: .medium)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Text("⌘" + String(section.commandShortcut))
-                    .font(.caption.monospacedDigit())
+                    .runeInterfaceFont(relativeSize: -2, design: .monospaced)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Command " + String(section.commandShortcut))
             }
@@ -2516,7 +2533,7 @@ public struct RuneRootView: View {
             addClusterPopoverPresented.toggle()
         } label: {
             Label("Add Cluster", systemImage: "plus.circle.fill")
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .labelStyle(.titleAndIcon)
                 .lineLimit(1)
                 .padding(.horizontal, 9)
@@ -2620,6 +2637,9 @@ public struct RuneRootView: View {
         let utilityActions = presentation.utilityActions(
             hasCompatibleImportedContext: hasCompatibleImportedContext
         )
+        let visibleUtilityActions = utilityActions.filter { action in
+            action.id != .runAuthDoctor || !simpleMode
+        }
         let canRunCredentialImport = canRunProviderCredentialImport(provider)
         let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
         let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
@@ -2680,26 +2700,31 @@ public struct RuneRootView: View {
                         )
                     }
 
-                    if provider != .local
+                    if !presentation.fields.isEmpty
+                        && provider != .local
                         && (!presentation.requiresCompatibleImportedContext || selectedNativeContext != nil) {
-                        providerCredentialFields(presentation.fields)
-                            .disabled(viewModel.isRunningCloudKubeConfigImport)
+                        addClusterProviderFormSection("Credentials") {
+                            providerCredentialFields(presentation.fields)
+                        }
+                        .disabled(viewModel.isRunningCloudKubeConfigImport)
                     }
 
-                    LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
-                        ForEach(utilityActions) { action in
-                            if action.id != .runAuthDoctor || !simpleMode {
-                                addClusterProviderUtilityAction(
-                                    action,
-                                    provider: provider,
-                                    credentialCommand: credentialCommand,
-                                    selectedNativeContext: selectedNativeContext
-                                )
+                    if !visibleUtilityActions.isEmpty {
+                        addClusterProviderFormSection("Tools") {
+                            LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                                ForEach(visibleUtilityActions) { action in
+                                    addClusterProviderUtilityAction(
+                                        action,
+                                        provider: provider,
+                                        credentialCommand: credentialCommand,
+                                        selectedNativeContext: selectedNativeContext
+                                    )
+                                }
                             }
+                            .controlSize(.regular)
                         }
+                        .disabled(viewModel.isRunningCloudKubeConfigImport)
                     }
-                    .controlSize(.regular)
-                    .disabled(viewModel.isRunningCloudKubeConfigImport)
 
                     if provider.cloudProvider != nil,
                        let status = viewModel.cloudKubeConfigImportStatus {
@@ -2887,9 +2912,23 @@ public struct RuneRootView: View {
     }
 
     private var addClusterProviderActionColumns: [GridItem] {
-        [GridItem(
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: RuneAddClusterProviderActionLayout.columnSpacing)]
+        }
+        return [GridItem(
             .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumButtonWidth),
             spacing: RuneAddClusterProviderActionLayout.columnSpacing
+        )]
+    }
+
+    private var addClusterProviderCredentialColumns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: RuneUILayoutMetrics.dialogControlSpacing, alignment: .top)]
+        }
+        return [GridItem(
+            .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth),
+            spacing: RuneUILayoutMetrics.dialogControlSpacing,
+            alignment: .top
         )]
     }
 
@@ -3092,10 +3131,29 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private func providerCredentialFields(_ fields: [AddClusterProviderField]) -> some View {
-        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+        LazyVGrid(
+            columns: addClusterProviderCredentialColumns,
+            alignment: .leading,
+            spacing: RuneUILayoutMetrics.dialogControlSpacing
+        ) {
             ForEach(fields) { field in
                 providerCredentialInput(field)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func addClusterProviderFormSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            content()
+                .runeInsetCard(padding: 12)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -3622,11 +3680,10 @@ public struct RuneRootView: View {
             viewModel.setWorkloadKind(kind)
         })
 
-        return RuneAdaptiveSegmentedPicker(
+        return RuneSegmentedPickerInScroll(
             "Resource type",
             selection: selection,
-            labelsHidden: true,
-            compactMaximumWidth: RuneUILayoutMetrics.resourceFamilyCompactPickerMaximumWidth
+            labelsHidden: true
         ) {
             ForEach(kinds) { kind in
                 Text(kind.localizedTitle(appString)).tag(kind)
@@ -3647,11 +3704,10 @@ public struct RuneRootView: View {
             }
         )
 
-        return RuneAdaptiveSegmentedPicker(
+        return RuneSegmentedPickerInScroll(
             "Helm browser",
             selection: selection,
-            labelsHidden: true,
-            compactMaximumWidth: RuneUILayoutMetrics.resourceFamilyCompactPickerMaximumWidth
+            labelsHidden: true
         ) {
             ForEach(HelmBrowserTab.allCases) { tab in
                 Text(tab.localizedTitle(appString)).tag(tab)
@@ -3663,13 +3719,24 @@ public struct RuneRootView: View {
     }
 
     private var resourceListControlSize: ControlSize {
-        dynamicTypeSize.isAccessibilitySize ? .regular : .small
+        if dynamicTypeSize.isAccessibilitySize
+            || effectiveInterfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1 {
+            return .regular
+        }
+        return .small
     }
 
     private var resourceListControlRowMinimumHeight: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
+        resourceListControlSize == .regular
             ? RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight
             : RuneUILayoutMetrics.resourceListToolbarMinimumHeight
+    }
+
+    private var effectiveInterfaceFontSize: CGFloat {
+        RuneInterfaceTypography.effectiveMenuFontSize(
+            configuredFontSize: configuredAppFontSize,
+            systemDynamicTypeSize: dynamicTypeSize
+        )
     }
 
     private var resourceListToolbar: some View {
@@ -4234,9 +4301,10 @@ public struct RuneRootView: View {
     private var workloadsContent: some View {
         switch viewModel.state.selectedWorkloadKind {
         case .pod:
-            resourceListGate(kindTitle: "Pods", visibleCount: viewModel.visiblePods.count) {
+            let pods = viewModel.visiblePods
+            resourceListGate(kindTitle: "Pods", visibleCount: pods.count) {
                 AppKitPodTableView(
-                    pods: viewModel.visiblePods,
+                    pods: pods,
                     selectedPodID: viewModel.state.selectedPod?.id,
                     selectedPodIDs: viewModel.state.selectedPodIDs,
                     sortColumn: viewModel.podSortColumn,
@@ -4280,12 +4348,13 @@ public struct RuneRootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .id("workloads:pods:\(podListIdentity(viewModel.visiblePods))")
+            .id("workloads:pods")
 
         case .deployment:
-            resourceListGate(kindTitle: "Deployments", visibleCount: viewModel.visibleDeployments.count) {
+            let deployments = viewModel.visibleDeployments
+            resourceListGate(kindTitle: "Deployments", visibleCount: deployments.count) {
                 AppKitDeploymentListView(
-                    deployments: viewModel.visibleDeployments,
+                    deployments: deployments,
                     selectedDeploymentID: viewModel.state.selectedDeployment?.id,
                     sortColumn: viewModel.deploymentSortColumn,
                     sortAscending: viewModel.deploymentSortAscending,
@@ -4356,9 +4425,10 @@ public struct RuneRootView: View {
         Group {
             switch viewModel.state.selectedWorkloadKind {
             case .service:
-                resourceListGate(kindTitle: "Services", visibleCount: viewModel.visibleServices.count) {
+                let services = viewModel.visibleServices
+                resourceListGate(kindTitle: "Services", visibleCount: services.count) {
                     AppKitServiceListView(
-                        services: viewModel.visibleServices,
+                        services: services,
                         selectedServiceID: viewModel.state.selectedService?.id,
                         sortColumn: viewModel.serviceSortColumn,
                         sortAscending: viewModel.serviceSortAscending,
@@ -4499,13 +4569,14 @@ public struct RuneRootView: View {
     }
 
     private var helmReleaseBrowser: some View {
-        resourceListGate(
+        let releases = viewModel.visibleHelmReleases
+        return resourceListGate(
             kindTitle: "Helm releases",
-            visibleCount: viewModel.visibleHelmReleases.count,
+            visibleCount: releases.count,
             scopeDescription: viewModel.state.isHelmAllNamespaces ? "all namespaces" : resourceListScopeDescription
         ) {
             AppKitHelmReleaseListView(
-                releases: viewModel.visibleHelmReleases,
+                releases: releases,
                 selectedReleaseID: viewModel.state.selectedHelmRelease?.id,
                 sortColumn: viewModel.helmReleaseSortColumn,
                 sortAscending: viewModel.helmReleaseSortAscending,
@@ -4521,11 +4592,12 @@ public struct RuneRootView: View {
     }
 
     private var operatorResourceViews: some View {
-        resourceListGate(
+        let resources = viewModel.visibleOperatorResources
+        return resourceListGate(
             kindTitle: viewModel.operatorResourceFocus == .all
                 ? "Operator resources"
                 : "\(viewModel.operatorResourceFocus.title) operator resources",
-            visibleCount: viewModel.visibleOperatorResources.count,
+            visibleCount: resources.count,
             scopeDescription: operatorResourceScopeDescription
         ) {
             AppKitOperatorResourceListView(
@@ -4562,9 +4634,10 @@ public struct RuneRootView: View {
     }
 
     private var eventsPane: some View {
-        resourceListGate(kindTitle: "Events", visibleCount: viewModel.visibleEvents.count) {
+        let events = viewModel.visibleEvents
+        return resourceListGate(kindTitle: "Events", visibleCount: events.count) {
             AppKitEventListView(
-                events: viewModel.visibleEvents,
+                events: events,
                 selectedEventID: viewModel.state.selectedEvent?.id,
                 sortColumn: viewModel.eventSortColumn,
                 sortAscending: viewModel.eventSortAscending,
@@ -6659,7 +6732,7 @@ public struct RuneRootView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName):\(genericResourceListIdentity(resources))")
+        .id("\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)")
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -7922,14 +7995,6 @@ public struct RuneRootView: View {
             inlineEditorImplementation: resolvedManifestInlineEditorImplementation
         )
         onLayoutSnapshotChange?(snapshot)
-    }
-
-    private func genericResourceListIdentity(_ resources: [ClusterResourceSummary]) -> String {
-        "\(resources.count):\(resources.first?.id ?? ""):\(resources.last?.id ?? "")"
-    }
-
-    private func podListIdentity(_ pods: [PodSummary]) -> String {
-        "\(pods.count):\(pods.first?.id ?? ""):\(pods.last?.id ?? "")"
     }
 
     private func advanceLayoutGeneration() {

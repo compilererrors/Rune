@@ -230,6 +230,7 @@ struct RuneUIComponentGallery: View {
     @State private var selectedInspectorTab = 0
     @State private var terminalPodSelection: String
     @State private var isSyntheticSettingEnabled = true
+    @State private var syntheticSettingLimit = 128
     @State private var favoriteImportedContexts = true
     @State private var isManualTokenExpanded = false
     @State private var manualContextName = "synthetic-context"
@@ -831,9 +832,9 @@ struct RuneUIComponentGallery: View {
             RuneSettingsAdaptiveRow {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(RuneUIComponentGalleryFixtures.longSettingTitle)
-                        .font(.subheadline.weight(.semibold))
+                        .runeInterfaceFont(weight: .semibold)
                     Text("The explanatory detail remains visible when the control moves below the label.")
-                        .font(.footnote)
+                        .runeInterfaceFont(relativeSize: -1)
                         .foregroundStyle(.secondary)
                 }
             } control: {
@@ -841,11 +842,61 @@ struct RuneUIComponentGallery: View {
                     .toggleStyle(.switch)
             }
 
-            RuneSettingsAdaptiveActionGroup {
-                Button("Create Theme") {}
-                Button("Open Folder") {}
-                RuneIconButton("Synthetic settings help", systemImage: "questionmark.circle", action: {})
+            Divider()
+
+            RuneSettingsAdaptiveRow {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Synthetic managed files")
+                        .runeInterfaceFont(weight: .semibold)
+                    Text("Primary and follow-up actions keep a visible, compact hierarchy.")
+                        .runeInterfaceFont(relativeSize: -1)
+                        .foregroundStyle(.secondary)
+                }
+            } control: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Button {
+                        } label: {
+                            Label("New File", systemImage: "doc.badge.plus")
+                        }
+                        .accessibilityLabel("Create template file")
+                        .frame(maxWidth: .infinity)
+
+                        Button {
+                        } label: {
+                            Label("Open Folder", systemImage: "folder")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                        } label: {
+                            Label("Reload", systemImage: "arrow.clockwise")
+                        }
+                        Spacer(minLength: 8)
+                        RuneIconButton(
+                            "Synthetic settings help",
+                            systemImage: "questionmark.circle",
+                            action: {}
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
             }
+
+            Divider()
+
+            RuneSettingsIntegerLimitEditor(
+                title: "Synthetic cache",
+                value: $syntheticSettingLimit,
+                valueSuffix: "items",
+                step: 16,
+                placeholder: "128",
+                defaultValue: 128,
+                detail: "Value, unit, stepper, and reset stay together in the control rail.",
+                normalize: { max(16, $0) }
+            )
         }
         .runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)
         .accessibilityElement(children: .contain)

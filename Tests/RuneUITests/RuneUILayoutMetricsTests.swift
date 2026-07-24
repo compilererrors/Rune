@@ -131,6 +131,23 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         }
     }
 
+    func testAddClusterProviderCredentialGridUsesTwoReadableDefaultColumns() {
+        let contentWidth = RuneAddClusterProviderActionLayout.contentWidth()
+        let spacing = RuneUILayoutMetrics.dialogControlSpacing
+        let twoColumnWidth = (contentWidth - spacing) / 2
+        let threeColumnWidth = (contentWidth - spacing * 2) / 3
+
+        XCTAssertEqual(RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth, 220)
+        XCTAssertGreaterThanOrEqual(
+            twoColumnWidth,
+            RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth
+        )
+        XCTAssertLessThan(
+            threeColumnWidth,
+            RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth
+        )
+    }
+
     func testAddClusterPopoverKeepsBoundedProfessionalDensity() {
         XCTAssertEqual(RuneUILayoutMetrics.addClusterPopoverWidth, 400)
         XCTAssertEqual(RuneUILayoutMetrics.addClusterPopoverPadding, 14)

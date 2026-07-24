@@ -537,6 +537,57 @@ func applyResourceTableSelection<Row>(
     tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
 }
 
+struct RuneAppKitResourceTableRowSnapshot<Value: Hashable>: Hashable {
+    let id: String
+    let value: Value
+    let cellState: UInt8
+
+    init(id: String, value: Value, cellState: UInt8 = 0) {
+        self.id = id
+        self.value = value
+        self.cellState = cellState
+    }
+}
+
+enum RuneAppKitResourceTableRefreshPlan: Equatable {
+    case none
+    case rows(IndexSet)
+    case reloadAll
+
+    static func resolve<Value: Hashable>(
+        previous: [RuneAppKitResourceTableRowSnapshot<Value>]?,
+        current: [RuneAppKitResourceTableRowSnapshot<Value>]
+    ) -> RuneAppKitResourceTableRefreshPlan {
+        guard let previous else { return .reloadAll }
+        guard previous.count == current.count else { return .reloadAll }
+
+        var changedRows = IndexSet()
+        for index in current.indices {
+            guard previous[index].id == current[index].id else { return .reloadAll }
+            if previous[index] != current[index] {
+                changedRows.insert(index)
+            }
+        }
+        return changedRows.isEmpty ? .none : .rows(changedRows)
+    }
+
+    @MainActor
+    func apply(to tableView: NSTableView) {
+        switch self {
+        case .none:
+            return
+        case let .rows(rows):
+            guard !rows.isEmpty, tableView.numberOfColumns > 0 else { return }
+            tableView.reloadData(
+                forRowIndexes: rows,
+                columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+            )
+        case .reloadAll:
+            tableView.reloadData()
+        }
+    }
+}
+
 @MainActor
 enum RuneAppKitResourceTableStyle {
     static let headerHeight: CGFloat = 24
@@ -586,16 +637,20 @@ enum RuneAppKitResourceTableStyle {
     static func updateRenderedTableWidth(on tableView: NSTableView?, updatesVisibleCellsImmediately: Bool = true) {
         guard let tableView else { return }
         let tableWidth = renderedTableWidth(in: tableView)
+        var geometryChanged = false
         if abs(tableView.frame.width - tableWidth) >= 1 {
             tableView.setFrameSize(NSSize(width: tableWidth, height: tableView.frame.height))
+            geometryChanged = true
         }
         if let headerView = tableView.headerView {
             let headerSize = NSSize(width: tableWidth, height: headerHeight)
             if abs(headerView.frame.width - headerSize.width) >= 1
                 || abs(headerView.frame.height - headerSize.height) >= 1 {
                 headerView.setFrameSize(headerSize)
+                geometryChanged = true
             }
         }
+        guard geometryChanged else { return }
         tableView.headerView?.needsDisplay = true
         tableView.needsLayout = true
         tableView.needsDisplay = updatesVisibleCellsImmediately
@@ -670,7 +725,11 @@ enum RuneAppKitResourceTableStyle {
         guard let tableView = scrollView.documentView as? NSTableView else { return }
         tableView.headerView?.needsDisplay = true
         tableView.needsDisplay = true
-        for row in 0..<tableView.numberOfRows {
+        let visibleRows = tableView.rows(in: tableView.visibleRect)
+        guard visibleRows.location != NSNotFound else { return }
+        let upperBound = min(tableView.numberOfRows, visibleRows.location + visibleRows.length)
+        guard visibleRows.location < upperBound else { return }
+        for row in visibleRows.location..<upperBound {
             tableView.rowView(atRow: row, makeIfNecessary: false)?.needsDisplay = true
         }
     }
@@ -720,6 +779,8 @@ private enum RuneAppKitResourceTableHost {
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.horizontalScrollElasticity = .automatic
+        scrollView.verticalScrollElasticity = .automatic
+        scrollView.usesPredominantAxisScrolling = true
         scrollView.documentView = tableView
         return scrollView
     }
@@ -729,7 +790,10 @@ private enum RuneAppKitResourceTableHost {
     }
 
     static func invalidateTheme(in scrollView: NSScrollView, resolvedTheme: RuneResolvedTheme) {
-        (scrollView.documentView as? RuneAppKitResourceTableView)?.resolvedTheme = resolvedTheme
+        guard let tableView = scrollView.documentView as? RuneAppKitResourceTableView,
+              tableView.resolvedTheme.resourceTableRenderSignature
+                != resolvedTheme.resourceTableRenderSignature else { return }
+        tableView.resolvedTheme = resolvedTheme
         RuneAppKitResourceTableStyle.invalidateTheme(in: scrollView)
     }
 
@@ -768,6 +832,137 @@ func isSuppressedSynchronizedResourceColumnResize(_ notification: Notification) 
 }
 
 @MainActor
+private func setResourceTableColumnWidthIfNeeded(
+    _ width: CGFloat,
+    on tableColumn: NSTableColumn
+) {
+    let clampedWidth = min(max(width, tableColumn.minWidth), tableColumn.maxWidth)
+    guard abs(tableColumn.width - clampedWidth) >= 1 else { return }
+    tableColumn.width = clampedWidth
+}
+
+@MainActor
+private func resourceTableCellIdentifier(for tableColumn: NSTableColumn) -> NSUserInterfaceItemIdentifier {
+    NSUserInterfaceItemIdentifier("rune.resource-cell.\(tableColumn.identifier.rawValue)")
+}
+
+@MainActor
+private func dequeueResourceTableCell<Cell: NSView>(
+    _ identifier: NSUserInterfaceItemIdentifier,
+    from tableView: NSTableView,
+    make: () -> Cell,
+    configure: (Cell) -> Void
+) -> Cell {
+    let cell = tableView.makeView(withIdentifier: identifier, owner: tableView.delegate) as? Cell
+        ?? make()
+    cell.identifier = identifier
+    configure(cell)
+    return cell
+}
+
+@MainActor
+private func dequeueResourceTableRow(from tableView: NSTableView) -> RuneAppKitResourceTableRowView {
+    let identifier = NSUserInterfaceItemIdentifier("rune.resource-row")
+    let rowView = tableView.makeView(withIdentifier: identifier, owner: tableView.delegate)
+        as? RuneAppKitResourceTableRowView
+        ?? RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+    rowView.identifier = identifier
+    return rowView
+}
+
+@MainActor
+private func resourceTableLabelCell(
+    in tableView: NSTableView,
+    column: NSTableColumn,
+    text: String,
+    font: NSFont,
+    alignment: NSTextAlignment,
+    textColor: NSColor = .labelColor,
+    tooltip: String? = nil,
+    lineBreakMode: NSLineBreakMode = .byTruncatingTail
+) -> RuneAppKitCenteredLabelCell {
+    dequeueResourceTableCell(
+        resourceTableCellIdentifier(for: column),
+        from: tableView,
+        make: { RuneAppKitCenteredLabelCell(frame: .zero) }
+    ) { cell in
+        cell.configure(
+            text: text,
+            font: font,
+            alignment: alignment,
+            textColor: textColor,
+            tooltip: tooltip,
+            lineBreakMode: lineBreakMode
+        )
+    }
+}
+
+@MainActor
+private func resourceTablePillCell(
+    in tableView: NSTableView,
+    column: NSTableColumn,
+    text: String,
+    color: NSColor,
+    tooltip: String? = nil
+) -> RuneAppKitPillCell {
+    dequeueResourceTableCell(
+        resourceTableCellIdentifier(for: column),
+        from: tableView,
+        make: { RuneAppKitPillCell(frame: .zero) }
+    ) { cell in
+        cell.configure(text: text, color: color, tooltip: tooltip)
+    }
+}
+
+@MainActor
+private func resourceTableFavoriteCell(
+    in tableView: NSTableView,
+    column: NSTableColumn,
+    isFavorite: Bool,
+    row: Int,
+    target: AnyObject,
+    action: Selector
+) -> RuneAppKitFavoriteButtonCell {
+    dequeueResourceTableCell(
+        resourceTableCellIdentifier(for: column),
+        from: tableView,
+        make: { RuneAppKitFavoriteButtonCell(frame: .zero) }
+    ) { cell in
+        cell.configure(
+            isFavorite: isFavorite,
+            row: row,
+            target: target,
+            action: action
+        )
+    }
+}
+
+@MainActor
+private func resourceTableCheckboxCell(
+    in tableView: NSTableView,
+    column: NSTableColumn,
+    isSelected: Bool,
+    row: Int,
+    resourceName: String,
+    target: AnyObject,
+    action: Selector
+) -> RuneAppKitCheckboxCell {
+    dequeueResourceTableCell(
+        resourceTableCellIdentifier(for: column),
+        from: tableView,
+        make: { RuneAppKitCheckboxCell(frame: .zero) }
+    ) { cell in
+        cell.configure(
+            isSelected: isSelected,
+            row: row,
+            resourceName: resourceName,
+            target: target,
+            action: action
+        )
+    }
+}
+
+@MainActor
 private func synchronizeResourceTableSortDescriptors(
     on tableView: NSTableView,
     key: String,
@@ -801,7 +996,7 @@ func applySynchronizedResourceColumnResize(
     return width
 }
 
-private struct RuneAppKitResourceTableTheme {
+fileprivate struct RuneAppKitResourceTableTheme {
     let headerFill: NSColor
     let headerText: NSColor
     let headerDivider: NSColor
@@ -838,7 +1033,18 @@ private struct RuneAppKitResourceTableTheme {
 
     @MainActor
     static func resolved(for view: NSView) -> RuneAppKitResourceTableTheme {
-        resolved(resolvedRuneResourceTableTheme(for: view))
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let tableView = current as? RuneAppKitResourceTableView {
+                return tableView.resourceTableTheme
+            }
+            if let headerView = current as? NSTableHeaderView,
+               let tableView = headerView.tableView as? RuneAppKitResourceTableView {
+                return tableView.resourceTableTheme
+            }
+            candidate = current.superview
+        }
+        return resolved(RuneAppearanceTheme.native.resolvedTheme)
     }
 
     private static func themed(
@@ -859,6 +1065,20 @@ private struct RuneAppKitResourceTableTheme {
             selectedRowFill: NSColor.runeHex(selected).withAlphaComponent(selectedAlpha),
             rowStroke: strokeColor.withAlphaComponent(0.30)
         )
+    }
+}
+
+fileprivate extension RuneResolvedTheme {
+    var resourceTableRenderSignature: String {
+        guard let appKitPalette else { return "\(id)|native:\(isNative)" }
+        return [
+            id,
+            appKitPalette.foreground,
+            appKitPalette.accent,
+            appKitPalette.stroke,
+            appKitPalette.row,
+            String(Double(appKitPalette.selectedAlpha))
+        ].joined(separator: "|")
     }
 }
 
@@ -956,6 +1176,7 @@ struct AppKitPodTableView: NSViewRepresentable {
         private var isApplyingSelection = false
         private var nameColumnPersistWorkItem: DispatchWorkItem?
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<PodSummary>]?
         private let tableID = "pods"
 
         init(_ parent: AppKitPodTableView) {
@@ -970,8 +1191,23 @@ struct AppKitPodTableView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.pods.map { pod in
+                    var cellState: UInt8 = 0
+                    if self.parent.selectedPodIDs.contains(pod.id) { cellState |= 1 }
+                    if self.parent.isFavorite(pod) { cellState |= 2 }
+                    return RuneAppKitResourceTableRowSnapshot(
+                        id: pod.id,
+                        value: pod,
+                        cellState: cellState
+                    )
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateSortIndicator(on: tableView)
             }
@@ -988,24 +1224,21 @@ struct AppKitPodTableView: NSViewRepresentable {
 
             switch column {
             case .selection:
-                let container = NSView()
-                let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleBulkSelection(_:)))
-                checkbox.tag = row
-                checkbox.state = parent.selectedPodIDs.contains(pod.id) ? .on : .off
-                checkbox.toolTip = parent.selectedPodIDs.contains(pod.id) ? "Remove from bulk selection" : "Add to bulk selection"
-                checkbox.controlSize = .small
-                checkbox.setAccessibilityLabel("Select \(pod.name)")
-                checkbox.translatesAutoresizingMaskIntoConstraints = false
-                container.addSubview(checkbox)
-                NSLayoutConstraint.activate([
-                    checkbox.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                    checkbox.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-                ])
-                return container
+                return resourceTableCheckboxCell(
+                    in: tableView,
+                    column: tableColumn,
+                    isSelected: parent.selectedPodIDs.contains(pod.id),
+                    row: row,
+                    resourceName: pod.name,
+                    target: self,
+                    action: #selector(toggleBulkSelection(_:))
+                )
 
             case .name:
-                return label(
-                    pod.name,
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: pod.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
                     tooltip: pod.name,
@@ -1013,27 +1246,64 @@ struct AppKitPodTableView: NSViewRepresentable {
                 )
 
             case .cpu:
-                return label(pod.cpuDisplay, font: metricsFont, alignment: .right)
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: pod.cpuDisplay,
+                    font: metricsFont,
+                    alignment: .right
+                )
 
             case .memory:
-                return label(pod.memoryDisplay, font: metricsFont, alignment: .right)
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: pod.memoryDisplay,
+                    font: metricsFont,
+                    alignment: .right
+                )
 
             case .restarts:
-                return label("\(pod.totalRestarts)", font: metricsFont, alignment: .right)
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: "\(pod.totalRestarts)",
+                    font: metricsFont,
+                    alignment: .right
+                )
 
             case .age:
-                return label(pod.ageDescription, font: metricsFont, alignment: .right)
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: pod.ageDescription,
+                    font: metricsFont,
+                    alignment: .right
+                )
 
             case .status:
-                return statusCell(for: pod)
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: pod.status,
+                    color: statusColor(for: pod.status),
+                    tooltip: "\(pod.status) - pod status from the cluster"
+                )
 
             case .favorite:
-                return favoriteCell(isFavorite: parent.isFavorite(pod), row: row)
+                return resourceTableFavoriteCell(
+                    in: tableView,
+                    column: tableColumn,
+                    isFavorite: parent.isFavorite(pod),
+                    row: row,
+                    target: self,
+                    action: #selector(toggleFavoriteButton(_:))
+                )
             }
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1321,63 +1591,6 @@ struct AppKitPodTableView: NSViewRepresentable {
             .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         }
 
-        private func label(
-            _ text: String,
-            font: NSFont,
-            alignment: NSTextAlignment,
-            textColor: NSColor = .labelColor,
-            tooltip: String? = nil,
-            lineBreakMode: NSLineBreakMode = .byTruncatingTail
-        ) -> NSView {
-            let container = NSView()
-            let label = NSTextField(labelWithString: text)
-            label.font = font
-            label.alignment = alignment
-            label.textColor = textColor
-            label.lineBreakMode = lineBreakMode
-            label.maximumNumberOfLines = 1
-            label.toolTip = tooltip
-            label.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: alignment == .left ? RuneAppKitResourceTableStyle.contentLeadingInset : 0),
-                label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: alignment == .right ? -RuneAppKitResourceTableStyle.contentTrailingInset : 0),
-                label.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-            ])
-            return container
-        }
-
-        private func statusCell(for pod: PodSummary) -> NSView {
-            let container = NSView()
-            container.wantsLayer = true
-            container.layer?.masksToBounds = true
-
-            let pill = RuneAppKitResourceStatusPillView(text: pod.status, color: statusColor(for: pod.status))
-            pill.toolTip = "\(pod.status) - pod status from the cluster"
-            pill.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(pill)
-            let maxPillWidth = pill.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -8)
-            maxPillWidth.priority = .defaultHigh
-
-            NSLayoutConstraint.activate([
-                pill.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 4),
-                pill.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -4),
-                maxPillWidth,
-                pill.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                pill.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-            ])
-            return container
-        }
-
-        private func favoriteCell(isFavorite: Bool, row: Int) -> NSView {
-            RuneAppKitFavoriteButtonCell(
-                isFavorite: isFavorite,
-                row: row,
-                target: self,
-                action: #selector(toggleFavoriteButton(_:))
-            )
-        }
-
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
             guard sender.tag >= 0, sender.tag < parent.pods.count else { return }
             parent.onToggleFavorite(parent.pods[sender.tag])
@@ -1486,6 +1699,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<DeploymentSummary>]?
         private let tableID = "deployments"
 
         init(_ parent: AppKitDeploymentListView) {
@@ -1500,8 +1714,20 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.deployments.map { deployment in
+                    RuneAppKitResourceTableRowSnapshot(
+                        id: deployment.id,
+                        value: deployment,
+                        cellState: self.parent.isFavorite(deployment) ? 1 : 0
+                    )
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateDeploymentSortIndicator(on: tableView)
             }
@@ -1512,7 +1738,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1522,7 +1748,9 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             let deployment = parent.deployments[row]
             switch column {
             case .name:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: deployment.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -1530,9 +1758,16 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .replicas:
-                return RuneAppKitPillCell(text: deployment.replicaText, color: .systemBlue)
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: deployment.replicaText,
+                    color: .systemBlue
+                )
             case .favorite:
-                return RuneAppKitFavoriteButtonCell(
+                return resourceTableFavoriteCell(
+                    in: tableView,
+                    column: tableColumn,
                     isFavorite: parent.isFavorite(deployment),
                     row: row,
                     target: self,
@@ -1686,9 +1921,9 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .name: tableColumn.width = nameWidth
-                    case .replicas: tableColumn.width = replicasWidth
-                    case .favorite: tableColumn.width = widths.favorite
+                    case .name: setResourceTableColumnWidthIfNeeded(nameWidth, on: tableColumn)
+                    case .replicas: setResourceTableColumnWidthIfNeeded(replicasWidth, on: tableColumn)
+                    case .favorite: setResourceTableColumnWidthIfNeeded(widths.favorite, on: tableColumn)
                     }
                 }
             }
@@ -1820,6 +2055,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ServiceSummary>]?
         private let tableID = "services"
 
         init(_ parent: AppKitServiceListView) {
@@ -1834,8 +2070,20 @@ struct AppKitServiceListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.services.map { service in
+                    RuneAppKitResourceTableRowSnapshot(
+                        id: service.id,
+                        value: service,
+                        cellState: self.parent.isFavorite(service) ? 1 : 0
+                    )
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateServiceSortIndicator(on: tableView)
             }
@@ -1846,7 +2094,7 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1856,7 +2104,9 @@ struct AppKitServiceListView: NSViewRepresentable {
             let service = parent.services[row]
             switch column {
             case .name:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: service.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -1864,11 +2114,28 @@ struct AppKitServiceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .type:
-                return RuneAppKitPillCell(text: service.type, color: .systemPurple)
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: service.type,
+                    color: .systemPurple
+                )
             case .clusterIP:
-                return RuneAppKitCenteredLabelCell(text: service.clusterIP, font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular), alignment: .right, tooltip: service.clusterIP)
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: service.clusterIP,
+                    font: .monospacedSystemFont(
+                        ofSize: NSFont.smallSystemFontSize,
+                        weight: .regular
+                    ),
+                    alignment: .right,
+                    tooltip: service.clusterIP
+                )
             case .favorite:
-                return RuneAppKitFavoriteButtonCell(
+                return resourceTableFavoriteCell(
+                    in: tableView,
+                    column: tableColumn,
                     isFavorite: parent.isFavorite(service),
                     row: row,
                     target: self,
@@ -2029,10 +2296,10 @@ struct AppKitServiceListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .name: tableColumn.width = nameWidth
-                    case .type: tableColumn.width = typeWidth
-                    case .clusterIP: tableColumn.width = clusterIPWidth
-                    case .favorite: tableColumn.width = widths.favorite
+                    case .name: setResourceTableColumnWidthIfNeeded(nameWidth, on: tableColumn)
+                    case .type: setResourceTableColumnWidthIfNeeded(typeWidth, on: tableColumn)
+                    case .clusterIP: setResourceTableColumnWidthIfNeeded(clusterIPWidth, on: tableColumn)
+                    case .favorite: setResourceTableColumnWidthIfNeeded(widths.favorite, on: tableColumn)
                     }
                 }
             }
@@ -2173,6 +2440,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ClusterResourceSummary>]?
         private var tableID: String {
             RuneGenericResourceColumnPresentation.tableID(for: parent.resolvedResourceKind)
         }
@@ -2189,9 +2457,24 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.resources.map { resource in
+                    var cellState: UInt8 = 0
+                    if self.parent.selectedResourceIDs.contains(resource.id) { cellState |= 1 }
+                    if self.parent.isFavorite(resource) { cellState |= 2 }
+                    return RuneAppKitResourceTableRowSnapshot(
+                        id: resource.id,
+                        value: resource,
+                        cellState: cellState
+                    )
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateGenericSortIndicator(on: tableView)
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
             }
         }
@@ -2201,7 +2484,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -2211,22 +2494,19 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             let resource = parent.resources[row]
             switch column {
             case .selection:
-                let container = NSView()
-                let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleBulkSelection(_:)))
-                checkbox.tag = row
-                checkbox.state = parent.selectedResourceIDs.contains(resource.id) ? .on : .off
-                checkbox.toolTip = parent.selectedResourceIDs.contains(resource.id) ? "Remove from bulk selection" : "Add to bulk selection"
-                checkbox.controlSize = .small
-                checkbox.setAccessibilityLabel("Select \(resource.name)")
-                checkbox.translatesAutoresizingMaskIntoConstraints = false
-                container.addSubview(checkbox)
-                NSLayoutConstraint.activate([
-                    checkbox.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                    checkbox.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-                ])
-                return container
+                return resourceTableCheckboxCell(
+                    in: tableView,
+                    column: tableColumn,
+                    isSelected: parent.selectedResourceIDs.contains(resource.id),
+                    row: row,
+                    resourceName: resource.name,
+                    target: self,
+                    action: #selector(toggleBulkSelection(_:))
+                )
             case .name:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -2234,23 +2514,36 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .primary:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.primaryText,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
                     alignment: parent.columnPresentation.primaryAlignment,
                     tooltip: resource.primaryText
                 )
             case .secondary:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.secondaryText,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: parent.columnPresentation.secondaryAlignment,
                     tooltip: resource.secondaryText
                 )
             case .namespace:
-                return RuneAppKitCenteredLabelCell(text: resource.namespace ?? "Cluster", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular), alignment: .left, tooltip: resource.namespace ?? "Cluster scoped")
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: resource.namespace ?? "Cluster",
+                    font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                    alignment: .left,
+                    tooltip: resource.namespace ?? "Cluster scoped"
+                )
             case .favorite:
-                return RuneAppKitFavoriteButtonCell(
+                return resourceTableFavoriteCell(
+                    in: tableView,
+                    column: tableColumn,
                     isFavorite: parent.isFavorite(resource),
                     row: row,
                     target: self,
@@ -2433,12 +2726,12 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .selection: tableColumn.width = widths.selection
-                    case .name: tableColumn.width = nameWidth
-                    case .primary: tableColumn.width = primaryWidth
-                    case .secondary: tableColumn.width = secondaryWidth
-                    case .namespace: tableColumn.width = namespaceWidth
-                    case .favorite: tableColumn.width = widths.favorite
+                    case .selection: setResourceTableColumnWidthIfNeeded(widths.selection, on: tableColumn)
+                    case .name: setResourceTableColumnWidthIfNeeded(nameWidth, on: tableColumn)
+                    case .primary: setResourceTableColumnWidthIfNeeded(primaryWidth, on: tableColumn)
+                    case .secondary: setResourceTableColumnWidthIfNeeded(secondaryWidth, on: tableColumn)
+                    case .namespace: setResourceTableColumnWidthIfNeeded(namespaceWidth, on: tableColumn)
+                    case .favorite: setResourceTableColumnWidthIfNeeded(widths.favorite, on: tableColumn)
                     }
                 }
             }
@@ -2564,6 +2857,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<HelmReleaseSummary>]?
         private let tableID = "helmReleases"
 
         init(_ parent: AppKitHelmReleaseListView) {
@@ -2578,8 +2872,16 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.releases.map {
+                    RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateHelmSortIndicator(on: tableView)
             }
@@ -2590,7 +2892,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -2600,7 +2902,9 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             let release = parent.releases[row]
             switch column {
             case .name:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: release.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -2608,29 +2912,42 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .status:
-                return RuneAppKitPillCell(text: release.status.capitalized, color: statusColor(for: release.status))
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: release.status.capitalized,
+                    color: statusColor(for: release.status)
+                )
             case .namespace:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: release.namespace,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
                     tooltip: release.namespace
                 )
             case .revision:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: "\(release.revision)",
                     font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .right
                 )
             case .chart:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: release.chart,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
                     tooltip: release.chart
                 )
             case .appVersion:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: release.appVersion,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -2746,12 +3063,12 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .name: tableColumn.width = nameWidth
-                    case .status: tableColumn.width = statusWidth
-                    case .namespace: tableColumn.width = namespaceWidth
-                    case .revision: tableColumn.width = revisionWidth
-                    case .chart: tableColumn.width = chartWidth
-                    case .appVersion: tableColumn.width = appVersionWidth
+                    case .name: setResourceTableColumnWidthIfNeeded(nameWidth, on: tableColumn)
+                    case .status: setResourceTableColumnWidthIfNeeded(statusWidth, on: tableColumn)
+                    case .namespace: setResourceTableColumnWidthIfNeeded(namespaceWidth, on: tableColumn)
+                    case .revision: setResourceTableColumnWidthIfNeeded(revisionWidth, on: tableColumn)
+                    case .chart: setResourceTableColumnWidthIfNeeded(chartWidth, on: tableColumn)
+                    case .appVersion: setResourceTableColumnWidthIfNeeded(appVersionWidth, on: tableColumn)
                     }
                 }
             }
@@ -2883,6 +3200,7 @@ struct AppKitEventListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<EventSummary>]?
         private let tableID = "events"
 
         init(_ parent: AppKitEventListView) {
@@ -2897,8 +3215,16 @@ struct AppKitEventListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.events.map {
+                    RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateEventSortIndicator(on: tableView)
             }
@@ -2909,7 +3235,7 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -2919,7 +3245,9 @@ struct AppKitEventListView: NSViewRepresentable {
             let event = parent.events[row]
             switch column {
             case .reason:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: event.reason,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -2927,9 +3255,16 @@ struct AppKitEventListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .type:
-                return RuneAppKitPillCell(text: event.type, color: eventColor(for: event.type))
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: event.type,
+                    color: eventColor(for: event.type)
+                )
             case .object:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: event.objectName,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -2938,21 +3273,27 @@ struct AppKitEventListView: NSViewRepresentable {
                 )
             case .namespace:
                 let namespace = event.involvedNamespace ?? "Cluster"
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: namespace,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
                     tooltip: namespace
                 )
             case .lastSeen:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: event.lastTimestamp ?? "-",
                     font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .right,
                     tooltip: event.lastTimestamp
                 )
             case .message:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: event.message,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -3086,12 +3427,12 @@ struct AppKitEventListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = EventColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .reason: tableColumn.width = reasonWidth
-                    case .type: tableColumn.width = typeWidth
-                    case .object: tableColumn.width = objectWidth
-                    case .namespace: tableColumn.width = namespaceWidth
-                    case .lastSeen: tableColumn.width = lastSeenWidth
-                    case .message: tableColumn.width = messageWidth
+                    case .reason: setResourceTableColumnWidthIfNeeded(reasonWidth, on: tableColumn)
+                    case .type: setResourceTableColumnWidthIfNeeded(typeWidth, on: tableColumn)
+                    case .object: setResourceTableColumnWidthIfNeeded(objectWidth, on: tableColumn)
+                    case .namespace: setResourceTableColumnWidthIfNeeded(namespaceWidth, on: tableColumn)
+                    case .lastSeen: setResourceTableColumnWidthIfNeeded(lastSeenWidth, on: tableColumn)
+                    case .message: setResourceTableColumnWidthIfNeeded(messageWidth, on: tableColumn)
                     }
                 }
             }
@@ -3223,6 +3564,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var applyGeneration = 0
+        private var displayedRows: [RuneAppKitResourceTableRowSnapshot<OperatorResourceSummary>]?
         private let tableID = "operatorResources"
 
         init(_ parent: AppKitOperatorResourceListView) {
@@ -3237,8 +3579,20 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
+                let rows = self.parent.resources.map { resource in
+                    RuneAppKitResourceTableRowSnapshot(
+                        id: resource.id,
+                        value: resource,
+                        cellState: self.parent.isFavorite(resource) ? 1 : 0
+                    )
+                }
+                let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
+                    previous: self.displayedRows,
+                    current: rows
+                )
+                self.displayedRows = rows
                 self.updateColumnWidths(on: tableView)
-                tableView.reloadData()
+                refreshPlan.apply(to: tableView)
                 self.applySelection(on: tableView)
                 self.updateOperatorResourceSortIndicator(on: tableView)
             }
@@ -3249,7 +3603,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            RuneAppKitResourceTableRowView(horizontalInset: RuneAppKitResourceTableStyle.rowHorizontalInset)
+            dequeueResourceTableRow(from: tableView)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -3259,7 +3613,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             let resource = parent.resources[row]
             switch column {
             case .name:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.name,
                     font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
                     alignment: .left,
@@ -3267,14 +3623,18 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .family:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.family,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
                     tooltip: resource.family
                 )
             case .kind:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.kind,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -3282,19 +3642,28 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 )
             case .namespace:
                 let namespace = resource.namespace ?? "Cluster"
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: namespace,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
                     tooltip: namespace
                 )
             case .status:
-                return RuneAppKitPillCell(text: resource.status, color: statusColor(for: resource.status))
+                return resourceTablePillCell(
+                    in: tableView,
+                    column: tableColumn,
+                    text: resource.status,
+                    color: statusColor(for: resource.status)
+                )
             case .printerColumns:
                 let text = resource.printerColumns
                     .map { "\($0.title): \($0.value)" }
                     .joined(separator: "  ")
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: text.isEmpty ? "—" : text,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -3302,7 +3671,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingTail
                 )
             case .apiPath:
-                return RuneAppKitCenteredLabelCell(
+                return resourceTableLabelCell(
+                    in: tableView,
+                    column: tableColumn,
                     text: resource.apiPath,
                     font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     alignment: .left,
@@ -3310,7 +3681,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                     lineBreakMode: .byTruncatingMiddle
                 )
             case .favorite:
-                return RuneAppKitFavoriteButtonCell(
+                return resourceTableFavoriteCell(
+                    in: tableView,
+                    column: tableColumn,
                     isFavorite: parent.isFavorite(resource),
                     row: row,
                     target: self,
@@ -3475,16 +3848,16 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 for tableColumn in tableView.tableColumns {
                     guard let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue) else { continue }
                     switch column {
-                    case .name: tableColumn.width = nameWidth
-                    case .family: tableColumn.width = familyWidth
-                    case .kind: tableColumn.width = kindWidth
-                    case .namespace: tableColumn.width = namespaceWidth
-                    case .status: tableColumn.width = statusWidth
+                    case .name: setResourceTableColumnWidthIfNeeded(nameWidth, on: tableColumn)
+                    case .family: setResourceTableColumnWidthIfNeeded(familyWidth, on: tableColumn)
+                    case .kind: setResourceTableColumnWidthIfNeeded(kindWidth, on: tableColumn)
+                    case .namespace: setResourceTableColumnWidthIfNeeded(namespaceWidth, on: tableColumn)
+                    case .status: setResourceTableColumnWidthIfNeeded(statusWidth, on: tableColumn)
                     case .printerColumns:
                         tableColumn.isHidden = !parent.showsPrinterColumns
-                        tableColumn.width = printerColumnsWidth
-                    case .apiPath: tableColumn.width = apiPathWidth
-                    case .favorite: tableColumn.width = widths.favorite
+                        setResourceTableColumnWidthIfNeeded(printerColumnsWidth, on: tableColumn)
+                    case .apiPath: setResourceTableColumnWidthIfNeeded(apiPathWidth, on: tableColumn)
+                    case .favorite: setResourceTableColumnWidthIfNeeded(widths.favorite, on: tableColumn)
                     }
                 }
             }
@@ -3561,7 +3934,16 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
 
 @MainActor
 final class RuneAppKitResourceTableView: NSTableView {
-    var resolvedTheme = RuneAppearanceTheme.native.resolvedTheme
+    var resolvedTheme = RuneAppearanceTheme.native.resolvedTheme {
+        didSet {
+            guard resolvedTheme.resourceTableRenderSignature
+                    != oldValue.resourceTableRenderSignature else { return }
+            resourceTableTheme = RuneAppKitResourceTableTheme.resolved(resolvedTheme)
+        }
+    }
+    fileprivate var resourceTableTheme = RuneAppKitResourceTableTheme.resolved(
+        RuneAppearanceTheme.native.resolvedTheme
+    )
     var onContextMenu: ((Int, NSTableView) -> NSMenu?)?
     var onFavoriteToggle: (() -> Void)?
 
@@ -4053,9 +4435,19 @@ final class RuneAppKitResourceListScrollView: NSScrollView {
     var isHorizontalOverflowEdgeGlowVisibleForTesting: Bool {
         !horizontalOverflowIndicator.isHidden
     }
+    private(set) var horizontalOverflowResolutionCountForTesting = 0
+    private(set) var accessibilityOverflowUpdateCountForTesting = 0
     private var lastVisibleWidth: CGFloat = -1
+    private var lastHorizontalOverflowInput: HorizontalOverflowInput?
+    private var lastAccessibilityOverflowState: Bool?
     private var isSendingVisibleWidthChange = false
     private let horizontalOverflowIndicator = RuneHorizontalTableOverflowIndicatorView()
+
+    private struct HorizontalOverflowInput: Equatable {
+        let visibleOriginX: CGFloat
+        let visibleWidth: CGFloat
+        let documentWidth: CGFloat
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -4111,17 +4503,30 @@ final class RuneAppKitResourceListScrollView: NSScrollView {
 
     private func updateHorizontalOverflowIndicator() {
         let visibleRect = contentView.documentVisibleRect
+        let input = HorizontalOverflowInput(
+            visibleOriginX: visibleRect.minX.rounded(.toNearestOrAwayFromZero),
+            visibleWidth: visibleRect.width.rounded(.toNearestOrAwayFromZero),
+            documentWidth: (documentView?.frame.width ?? visibleRect.width)
+                .rounded(.toNearestOrAwayFromZero)
+        )
+        guard input != lastHorizontalOverflowInput else { return }
+        lastHorizontalOverflowInput = input
+        horizontalOverflowResolutionCountForTesting += 1
         let state = RuneHorizontalTableOverflowState.resolve(
-            visibleOriginX: visibleRect.minX,
-            visibleWidth: visibleRect.width,
-            documentWidth: documentView?.frame.width ?? visibleRect.width
+            visibleOriginX: input.visibleOriginX,
+            visibleWidth: input.visibleWidth,
+            documentWidth: input.documentWidth
         )
         horizontalOverflowIndicator.state = state
-        setAccessibilityHelp(
-            state.hasOverflow
-                ? "More columns are available. Scroll horizontally to reveal them."
-                : nil
-        )
+        if state.hasOverflow != lastAccessibilityOverflowState {
+            lastAccessibilityOverflowState = state.hasOverflow
+            accessibilityOverflowUpdateCountForTesting += 1
+            setAccessibilityHelp(
+                state.hasOverflow
+                    ? "More columns are available. Scroll horizontally to reveal them."
+                    : nil
+            )
+        }
     }
 
     private func notifyVisibleWidthChangedIfNeeded(force: Bool = false) {
@@ -4136,38 +4541,74 @@ final class RuneAppKitResourceListScrollView: NSScrollView {
 }
 
 private final class RuneAppKitCenteredLabelCell: NSView {
-    init(
-        text: String,
-        font: NSFont,
-        alignment: NSTextAlignment,
-        tooltip: String? = nil,
-        lineBreakMode: NSLineBreakMode = .byTruncatingTail
-    ) {
-        super.init(frame: .zero)
-        let label = NSTextField(labelWithString: text)
-        label.font = font
-        label.alignment = alignment
-        label.lineBreakMode = lineBreakMode
+    private let label = NSTextField(labelWithString: "")
+    private var leadingConstraint: NSLayoutConstraint!
+    private var trailingConstraint: NSLayoutConstraint!
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureLabelLayout()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureLabelLayout()
+    }
+
+    private func configureLabelLayout() {
         label.maximumNumberOfLines = 1
-        label.toolTip = tooltip
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        leadingConstraint = label.leadingAnchor.constraint(equalTo: leadingAnchor)
+        trailingConstraint = label.trailingAnchor.constraint(equalTo: trailingAnchor)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: alignment == .left ? RuneAppKitResourceTableStyle.contentLeadingInset : 0),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: alignment == .right ? -RuneAppKitResourceTableStyle.contentTrailingInset : 0),
+            leadingConstraint,
+            trailingConstraint,
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 
-    required init?(coder: NSCoder) {
-        nil
+    func configure(
+        text: String,
+        font: NSFont,
+        alignment: NSTextAlignment,
+        textColor: NSColor = .labelColor,
+        tooltip: String? = nil,
+        lineBreakMode: NSLineBreakMode = .byTruncatingTail
+    ) {
+        label.stringValue = text
+        label.font = font
+        label.alignment = alignment
+        label.textColor = textColor
+        label.lineBreakMode = lineBreakMode
+        label.toolTip = tooltip
+        leadingConstraint.constant = alignment == .left
+            ? RuneAppKitResourceTableStyle.contentLeadingInset
+            : 0
+        trailingConstraint.constant = alignment == .right
+            ? -RuneAppKitResourceTableStyle.contentTrailingInset
+            : 0
     }
 }
 
 private final class RuneAppKitPillCell: NSView {
-    init(text: String, color: NSColor) {
-        super.init(frame: .zero)
-        let pill = RuneAppKitResourceStatusPillView(text: text, color: color, minimumWidth: 34)
+    private let pill = RuneAppKitResourceStatusPillView(
+        text: "",
+        color: .secondaryLabelColor,
+        minimumWidth: 34
+    )
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configurePillLayout()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configurePillLayout()
+    }
+
+    private func configurePillLayout() {
         pill.translatesAutoresizingMaskIntoConstraints = false
         addSubview(pill)
         NSLayoutConstraint.activate([
@@ -4176,28 +4617,44 @@ private final class RuneAppKitPillCell: NSView {
         ])
     }
 
-    required init?(coder: NSCoder) {
-        nil
+    func configure(text: String, color: NSColor, tooltip: String? = nil) {
+        pill.configure(text: text, color: color)
+        pill.toolTip = tooltip
     }
 }
 
 private final class RuneAppKitFavoriteButtonCell: NSView {
-    init(isFavorite: Bool, row: Int, target: AnyObject, action: Selector) {
-        super.init(frame: .zero)
-        let button = NSButton(
-            image: NSImage(systemSymbolName: isFavorite ? "star.fill" : "star", accessibilityDescription: "Favorite Resource") ?? NSImage(),
-            target: target,
-            action: action
-        )
+    private let button = NSButton()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureButtonLayout()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureButtonLayout()
+    }
+
+    func configure(isFavorite: Bool, row: Int, target: AnyObject, action: Selector) {
+        button.image = NSImage(
+            systemSymbolName: isFavorite ? "star.fill" : "star",
+            accessibilityDescription: "Favorite Resource"
+        ) ?? NSImage()
+        button.target = target
+        button.action = action
         button.tag = row
-        button.isBordered = false
-        button.imagePosition = .imageOnly
         button.contentTintColor = isFavorite ? .systemYellow : .secondaryLabelColor
-        button.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .semibold)
         button.toolTip = isFavorite ? "Remove favorite" : "Favorite resource"
         button.setAccessibilityLabel(isFavorite ? "Remove Favorite" : "Favorite Resource")
         button.setAccessibilityValue(isFavorite ? "Selected" : "Not selected")
         button.setAccessibilityHelp(button.toolTip)
+    }
+
+    private func configureButtonLayout() {
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .semibold)
         button.translatesAutoresizingMaskIntoConstraints = false
         addSubview(button)
         NSLayoutConstraint.activate([
@@ -4207,9 +4664,48 @@ private final class RuneAppKitFavoriteButtonCell: NSView {
             button.heightAnchor.constraint(equalToConstant: RuneUILayoutMetrics.iconButtonSize)
         ])
     }
+}
+
+private final class RuneAppKitCheckboxCell: NSView {
+    private let checkbox = NSButton()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureCheckboxLayout()
+    }
 
     required init?(coder: NSCoder) {
-        nil
+        super.init(coder: coder)
+        configureCheckboxLayout()
+    }
+
+    func configure(
+        isSelected: Bool,
+        row: Int,
+        resourceName: String,
+        target: AnyObject,
+        action: Selector
+    ) {
+        checkbox.target = target
+        checkbox.action = action
+        checkbox.tag = row
+        checkbox.state = isSelected ? .on : .off
+        checkbox.toolTip = isSelected ? "Remove from bulk selection" : "Add to bulk selection"
+        checkbox.setAccessibilityLabel("Select \(resourceName)")
+        checkbox.setAccessibilityValue(isSelected ? "Selected" : "Not selected")
+        checkbox.setAccessibilityHelp(checkbox.toolTip)
+    }
+
+    private func configureCheckboxLayout() {
+        checkbox.setButtonType(.switch)
+        checkbox.title = ""
+        checkbox.controlSize = .small
+        checkbox.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(checkbox)
+        NSLayoutConstraint.activate([
+            checkbox.centerXAnchor.constraint(equalTo: centerXAnchor),
+            checkbox.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
     }
 }
 
@@ -4257,7 +4753,7 @@ private final class RuneAppKitSingleLineResourceCell: NSView {
 
 private final class RuneAppKitResourceStatusPillView: NSView {
     private let label: NSTextField
-    private let color: NSColor
+    private var color: NSColor
     private let minimumWidth: CGFloat
 
     init(text: String, color: NSColor, minimumWidth: CGFloat = 86) {
@@ -4283,6 +4779,13 @@ private final class RuneAppKitResourceStatusPillView: NSView {
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
             widthAnchor.constraint(greaterThanOrEqualToConstant: minimumWidth)
         ])
+    }
+
+    func configure(text: String, color: NSColor) {
+        label.stringValue = text
+        label.textColor = color
+        self.color = color
+        layer?.backgroundColor = color.withAlphaComponent(0.22).cgColor
     }
 
     required init?(coder: NSCoder) {

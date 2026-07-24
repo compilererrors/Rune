@@ -57,7 +57,108 @@ enum RuneSettingsMetrics {
     static let rowLabelMinWidth: CGFloat = 240
     static let stackedRowSpacing: CGFloat = 8
     static let compactControlHeight: CGFloat = 32
-    static let textFieldWidth: CGFloat = 92
+    static let compactMenuControlWidth: CGFloat = 190
+}
+
+private struct RuneSettingsRowLayout: Layout {
+    let forceStacked: Bool
+
+    private var minimumHorizontalWidth: CGFloat {
+        RuneSettingsMetrics.rowLabelMinWidth
+            + RuneSettingsMetrics.rowControlSpacing
+            + RuneSettingsMetrics.rowControlColumnWidth
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache _: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let width = max(0, proposal.width ?? minimumHorizontalWidth)
+
+        if usesStackedLayout(availableWidth: width) {
+            let labelSize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: width, height: nil)
+            )
+            let controlWidth = min(width, RuneSettingsMetrics.rowControlColumnWidth)
+            let controlSize = subviews[1].sizeThatFits(
+                ProposedViewSize(width: controlWidth, height: nil)
+            )
+            return CGSize(
+                width: width,
+                height: max(
+                    RuneSettingsMetrics.rowMinHeight,
+                    labelSize.height + RuneSettingsMetrics.stackedRowSpacing + controlSize.height
+                )
+            )
+        }
+
+        let labelWidth = max(
+            RuneSettingsMetrics.rowLabelMinWidth,
+            width - RuneSettingsMetrics.rowControlSpacing - RuneSettingsMetrics.rowControlColumnWidth
+        )
+        let labelSize = subviews[0].sizeThatFits(
+            ProposedViewSize(width: labelWidth, height: nil)
+        )
+        let controlSize = subviews[1].sizeThatFits(
+            ProposedViewSize(width: RuneSettingsMetrics.rowControlColumnWidth, height: nil)
+        )
+        return CGSize(
+            width: width,
+            height: max(RuneSettingsMetrics.rowMinHeight, labelSize.height, controlSize.height)
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal _: ProposedViewSize,
+        subviews: Subviews,
+        cache _: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+
+        if usesStackedLayout(availableWidth: bounds.width) {
+            let labelSize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: bounds.width, height: nil)
+            )
+            subviews[0].place(
+                at: bounds.origin,
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: bounds.width, height: labelSize.height)
+            )
+
+            let controlWidth = min(bounds.width, RuneSettingsMetrics.rowControlColumnWidth)
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + labelSize.height + RuneSettingsMetrics.stackedRowSpacing
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: controlWidth, height: nil)
+            )
+            return
+        }
+
+        let labelWidth = max(
+            RuneSettingsMetrics.rowLabelMinWidth,
+            bounds.width - RuneSettingsMetrics.rowControlSpacing - RuneSettingsMetrics.rowControlColumnWidth
+        )
+        subviews[0].place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: labelWidth, height: nil)
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.maxX, y: bounds.minY),
+            anchor: .topTrailing,
+            proposal: ProposedViewSize(width: RuneSettingsMetrics.rowControlColumnWidth, height: nil)
+        )
+    }
+
+    private func usesStackedLayout(availableWidth: CGFloat) -> Bool {
+        forceStacked || availableWidth < minimumHorizontalWidth
+    }
 }
 
 struct RuneSettingsAdaptiveRow<LabelContent: View, Control: View>: View {
@@ -74,22 +175,7 @@ struct RuneSettingsAdaptiveRow<LabelContent: View, Control: View>: View {
     }
 
     var body: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                stackedLayout
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    horizontalLayout
-                    stackedLayout
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: RuneSettingsMetrics.rowMinHeight)
-    }
-
-    private var horizontalLayout: some View {
-        HStack(alignment: .top, spacing: RuneSettingsMetrics.rowControlSpacing) {
+        RuneSettingsRowLayout(forceStacked: dynamicTypeSize.isAccessibilitySize) {
             labelContent
                 .frame(
                     minWidth: RuneSettingsMetrics.rowLabelMinWidth,
@@ -98,134 +184,67 @@ struct RuneSettingsAdaptiveRow<LabelContent: View, Control: View>: View {
                 )
 
             control
-                .frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)
         }
-    }
-
-    private var stackedLayout: some View {
-        VStack(alignment: .leading, spacing: RuneSettingsMetrics.stackedRowSpacing) {
-            labelContent
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            control
-                .frame(
-                    maxWidth: RuneSettingsMetrics.rowControlColumnWidth,
-                    alignment: .leading
-                )
-        }
-        .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-struct RuneSettingsAdaptiveActionGroup<Actions: View>: View {
-    @ViewBuilder let actions: Actions
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    init(@ViewBuilder actions: () -> Actions) {
-        self.actions = actions()
-    }
-
-    var body: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                stackedLayout
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    horizontalLayout
-                    stackedLayout
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private var horizontalLayout: some View {
-        HStack(spacing: 8) {
-            actions
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var stackedLayout: some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            actions
-        }
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: RuneSettingsMetrics.rowMinHeight)
     }
 }
 
 private struct ExportOpenerRecommendation {
     let appName: String
     let kind: ConfiguredExportFileKind
-    let recommendedBundleIdentifier: String?
-
-    init(
-        appName: String,
-        kind: ConfiguredExportFileKind,
-        recommendedBundleIdentifier: String? = nil
-    ) {
-        self.appName = appName
-        self.kind = kind
-        self.recommendedBundleIdentifier = recommendedBundleIdentifier
-    }
-
-    var detectedTitle: String {
-        switch kind {
-        case .plainText:
-            return "\(appName) text editor detected"
-        case .archive:
-            return "\(appName) archive utility detected"
-        }
-    }
-
-    var suggestedTitle: String {
-        switch kind {
-        case .plainText:
-            return "\(appName) text editor suggested"
-        case .archive:
-            return "\(appName) archive utility suggested"
-        }
-    }
-
-    func detail(bundleIdentifier: String) -> String {
-        switch kind {
-        case .plainText:
-            return "Works well for .log, .txt, .yaml, .json, and terminal transcript exports. Bundle ID: \(bundleIdentifier)"
-        case .archive:
-            return "Works well for .zip log archives and transcript archives. Bundle ID: \(bundleIdentifier)"
-        }
-    }
 }
 
 private struct DetectedExportOpener {
     let appName: String
     let bundleIdentifier: String
-    let title: String
-    let detail: String
 }
 
-private struct RuneSettingsTokenButtonStyle: ButtonStyle {
-    let theme: RuneResolvedTheme
+struct RuneSettingsMenuLabel: View {
+    let title: String
+    let systemImage: String
+    var subtitle: String? = nil
 
-    func makeBody(configuration: Configuration) -> some View {
-        let palette = RuneThemePresentation(theme: theme).palette
-        configuration.label
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(palette.accent)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minHeight: RuneSettingsMetrics.compactControlHeight)
-            .background(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill((configuration.isPressed ? palette.accent.opacity(0.18) : palette.inset.opacity(0.94)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(palette.accent.opacity(configuration.isPressed ? 0.62 : 0.42), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .runeInterfaceFont(weight: .semibold)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .runeInterfaceFont(weight: .medium)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .runeInterfaceFont(relativeSize: -2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .runeInterfaceFont(relativeSize: -3, weight: .bold)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: RuneSettingsMetrics.compactControlHeight)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
     }
 }
 
@@ -279,9 +298,14 @@ private struct RuneThemeSelectorCard: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(isSelected ? palette.focusRing : palette.stroke.opacity(0.44), lineWidth: isSelected ? 1.5 : 1)
+                    .strokeBorder(
+                        isSelected ? palette.focusRing : palette.stroke.opacity(0.44),
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
             )
-            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+            .contentShape(
+                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel(theme.title)
@@ -311,7 +335,7 @@ private struct RuneThemeSelectorCard: View {
     }
 }
 
-private struct RuneSettingsIntegerLimitEditor: View {
+struct RuneSettingsIntegerLimitEditor: View {
     let title: String
     let value: Binding<Int>
     let valueSuffix: String
@@ -322,34 +346,41 @@ private struct RuneSettingsIntegerLimitEditor: View {
     let normalize: (Int) -> Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+        RuneSettingsAdaptiveRow {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Spacer(minLength: 12)
-                Text("\(normalizedValue) \(valueSuffix)")
-                    .font(.footnote.monospacedDigit())
+                    .runeInterfaceFont(weight: .semibold)
+                Text(detail)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            HStack(spacing: 10) {
-                Stepper(title, value: normalizedBinding, step: step)
-                    .labelsHidden()
-
+        } control: {
+            HStack(spacing: 8) {
                 TextField(placeholder, value: normalizedBinding, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: RuneSettingsMetrics.textFieldWidth)
+                    .runeInterfaceFont(design: .monospaced)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 76)
+                    .accessibilityLabel("\(title) value")
+
+                Text(valueSuffix)
+                    .runeInterfaceFont(relativeSize: -1)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Stepper("Adjust \(title)", value: normalizedBinding, step: step)
+                    .labelsHidden()
+                    .help("Adjust \(title) by \(step). Current value: \(normalizedValue) \(valueSuffix).")
 
                 Button("Reset") {
                     value.wrappedValue = defaultValue
                 }
                 .buttonStyle(.bordered)
+                .help("Restore \(title) to \(defaultValue) \(valueSuffix).")
             }
-
-            Text(detail)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -403,6 +434,7 @@ public struct RunePreferencesView: View {
         }
     }
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedPane: PreferencesPane = .general
     @AppStorage(RuneSettingsKeys.persistNamespaceListCache) private var persistNamespaceListCache = true
     @AppStorage(RuneSettingsKeys.diagnosticsLogging) private var diagnosticsLogging = true
@@ -434,11 +466,7 @@ public struct RunePreferencesView: View {
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
     @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
     private let inklineRecommendation = ExportOpenerRecommendation(appName: "Inkline", kind: .plainText)
-    private let quikZipRecommendation = ExportOpenerRecommendation(
-        appName: "QuikZip",
-        kind: .archive,
-        recommendedBundleIdentifier: "com.viktornyberg.quikzip"
-    )
+    private let quikZipRecommendation = ExportOpenerRecommendation(appName: "QuikZip", kind: .archive)
     @AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit) private var sessionLogCacheEntryLimit =
         RuneSettingsKeys.sessionLogCacheEntryLimitDefault
     @AppStorage(RuneSettingsKeys.resourceYAMLUndoSnapshotLimit) private var resourceYAMLUndoSnapshotLimit =
@@ -455,6 +483,8 @@ public struct RunePreferencesView: View {
     @State private var themeReloadNonce = 0
     @State private var recentAppearanceThemeIDs = UserDefaults.standard.runeAppearanceRecentThemes
     @State private var keyBindingShortcuts = Self.loadKeyBindingShortcuts()
+    @State private var detectedTextExportOpener: DetectedExportOpener?
+    @State private var detectedArchiveExportOpener: DetectedExportOpener?
 
     public init() {}
 
@@ -464,53 +494,69 @@ public struct RunePreferencesView: View {
                 .tag(PreferencesPane.general)
                 .tabItem {
                     Label(PreferencesPane.general.title(settingsString), systemImage: PreferencesPane.general.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             themesSettingsForm
                 .tag(PreferencesPane.themes)
                 .tabItem {
                     Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             keyBindingsSettingsForm
                 .tag(PreferencesPane.keyBindings)
                 .tabItem {
                     Label(PreferencesPane.keyBindings.title(settingsString), systemImage: PreferencesPane.keyBindings.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             logsSettingsForm
                 .tag(PreferencesPane.logs)
                 .tabItem {
                     Label(PreferencesPane.logs.title(settingsString), systemImage: PreferencesPane.logs.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             safetySettingsForm
                 .tag(PreferencesPane.safety)
                 .tabItem {
                     Label(PreferencesPane.safety.title(settingsString), systemImage: PreferencesPane.safety.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             diagnosticsSettingsForm
                 .tag(PreferencesPane.diagnostics)
                 .tabItem {
                     Label(PreferencesPane.diagnostics.title(settingsString), systemImage: PreferencesPane.diagnostics.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
 
             performanceSettingsForm
                 .tag(PreferencesPane.performance)
                 .tabItem {
                     Label(PreferencesPane.performance.title(settingsString), systemImage: PreferencesPane.performance.symbol)
+                        .runeInterfaceFont(weight: .medium)
                 }
         }
         .id(interfaceLanguageRaw)
         .frame(minWidth: 740, idealWidth: 820, minHeight: 540)
         .background(RuneSettingsWindowConfigurator())
+        .runeInterfaceTypography(
+            configuredFontSize: terminalFontSize,
+            systemDynamicTypeSize: dynamicTypeSize
+        )
         .runeAppearanceTheme(selectedAppearanceTheme)
         .onAppear {
             refreshRecentAppearanceThemes(recordSelectedTheme: true)
         }
         .onChange(of: appearanceThemeRaw) { _, _ in
             refreshRecentAppearanceThemes(recordSelectedTheme: true)
+        }
+        .onChange(of: selectedPane) { _, pane in
+            if pane == .logs {
+                refreshDetectedExportOpeners()
+            }
         }
     }
 
@@ -528,37 +574,23 @@ public struct RunePreferencesView: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(settingsString(.settingsMaintenance))
-                        .font(.subheadline.weight(.semibold))
-                    HStack(spacing: 10) {
-                        Button(settingsString(.settingsClearCachedClusterData), role: .destructive) {
-                            clearDiskCaches()
-                        }
-                        .buttonStyle(.bordered)
-
-                        if let cacheClearStatus {
-                            Text(cacheClearStatus)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                settingsControlRow(
+                    title: settingsString(.settingsMaintenance),
+                    detail: cacheClearStatus ?? "Remove locally cached cluster data without changing cluster resources."
+                ) {
+                    Button(settingsString(.settingsClearCachedClusterData), role: .destructive) {
+                        clearDiskCaches()
                     }
+                    .buttonStyle(.bordered)
                 }
             }
 
             settingsSection(settingsString(.settingsAppearance)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(settingsString(.settingsFontSize))
-                            .font(.subheadline.weight(.semibold))
-                        Spacer(minLength: 12)
-                        Text("\(Int(clampedTerminalFontSize.rounded())) pt")
-                            .font(.footnote.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    HStack(spacing: 10) {
+                settingsControlRow(
+                    title: settingsString(.settingsFontSize),
+                    detail: settingsString(.settingsFontSizeDetail)
+                ) {
+                    HStack(spacing: 8) {
                         Slider(
                             value: Binding(
                                 get: { clampedTerminalFontSize },
@@ -567,17 +599,18 @@ public struct RunePreferencesView: View {
                             in: RuneSettingsKeys.terminalFontSizeMinimum...RuneSettingsKeys.terminalFontSizeMaximum,
                             step: 1
                         )
+                        .accessibilityLabel(settingsString(.settingsFontSize))
+
+                        Text("\(Int(clampedTerminalFontSize.rounded())) pt")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
 
                         Button(settingsString(.settingsReset)) {
                             terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
                         }
                         .buttonStyle(.bordered)
                     }
-
-                    Text(settingsString(.settingsFontSizeDetail))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()
@@ -638,7 +671,13 @@ public struct RunePreferencesView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: RuneSettingsMetrics.rowControlColumnWidth)
+                    .pickerStyle(.menu)
+                    .runeInterfaceFont(weight: .medium)
+                    .runeInterfaceControlSize()
+                    .frame(
+                        width: RuneSettingsMetrics.compactMenuControlWidth,
+                        alignment: .trailing
+                    )
                 }
             }
 
@@ -659,25 +698,22 @@ public struct RunePreferencesView: View {
         ) {
             settingsSection("Choose theme") {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .center, spacing: 10) {
+                    settingsGridRow {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Recent")
-                                .font(.subheadline.weight(.semibold))
+                                .runeInterfaceFont(weight: .semibold)
                             Text("Current: \(selectedAppearanceTheme.title)")
-                                .font(.footnote)
-                                .foregroundStyle(selectedAppearanceTheme.palette?.secondaryText ?? Color.secondary)
+                                .runeInterfaceFont(relativeSize: -1)
+                                .foregroundStyle(
+                                    selectedAppearanceTheme.palette?.secondaryText ?? Color.secondary
+                                )
                         }
-
-                        Spacer(minLength: 12)
-
+                    } control: {
                         themeOverflowMenu
                     }
 
                     LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(minimum: 220), spacing: 12),
-                            GridItem(.flexible(minimum: 220), spacing: 12)
-                        ],
+                        columns: themeGridColumns,
                         alignment: .leading,
                         spacing: 12
                     ) {
@@ -694,42 +730,24 @@ public struct RunePreferencesView: View {
             }
 
             settingsSection("Custom themes") {
-                settingsControlRow(
-                    title: "Theme JSON files",
-                    detail: "Add compatible theme files to Rune's Themes folder, then reload."
-                ) {
-                    RuneSettingsAdaptiveActionGroup {
-                        Button {
-                            revealThemeTemplate()
-                        } label: {
-                            Label("Template", systemImage: "doc.badge.plus")
-                        }
-                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
-                        .help("Create a starter theme JSON file in Rune's Themes folder. Existing template files are left untouched.")
-
-                        Button("Open Folder") {
-                            RuneThemeCatalog.ensureUserThemesDirectory()
-                            NSWorkspace.shared.open(RuneThemeCatalog.userThemesDirectoryURL)
-                        }
-                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
-
-                        Button("Reload") {
-                            reloadAppearanceThemes()
-                        }
-                        .buttonStyle(RuneSettingsTokenButtonStyle(theme: selectedAppearanceTheme))
-
-                        SettingsHelpButton(
-                            text: "Rune can load JSON theme files using supported editor theme color fields. Start with Template, edit the colors, then press Reload."
-                        )
+                settingsGridRow {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Theme JSON files")
+                            .runeInterfaceFont(weight: .semibold)
+                        Text("Create or add compatible theme files, then reload.")
+                            .runeInterfaceFont(relativeSize: -1)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(displayThemesDirectoryPath)
+                            .runeInterfaceFont(relativeSize: -2, design: .monospaced)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                     }
+                } control: {
+                    customThemeActions
                 }
-
-                Text(RuneThemeCatalog.userThemesDirectoryURL.path)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(selectedAppearanceTheme.palette?.mutedText ?? Color.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -761,9 +779,18 @@ public struct RunePreferencesView: View {
         return availableAppearanceThemes.filter { !recentIDs.contains($0.id) }
     }
 
+    private var themeGridColumns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(minimum: 220), spacing: 12)]
+        }
+        return [
+            GridItem(.flexible(minimum: 220), spacing: 12),
+            GridItem(.flexible(minimum: 220), spacing: 12)
+        ]
+    }
+
     private var themeOverflowMenu: some View {
-        let palette = selectedAppearanceTheme.palette
-        return Menu {
+        Menu {
             if olderAppearanceThemes.isEmpty {
                 Text("No More Themes")
             } else {
@@ -776,34 +803,111 @@ public struct RunePreferencesView: View {
                 }
             }
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "paintpalette")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("More Themes")
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .imageScale(.small)
-                    .foregroundStyle(palette?.secondaryText ?? Color.secondary)
-            }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(palette?.foreground ?? Color.primary)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
-            .frame(width: 170)
-            .background(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(palette?.inset.opacity(0.96) ?? Color(nsColor: .controlBackgroundColor).opacity(0.72))
+            RuneSettingsMenuLabel(
+                title: "More Themes",
+                systemImage: "paintpalette"
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(palette?.stroke.opacity(0.50) ?? Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+            .frame(width: RuneSettingsMetrics.compactMenuControlWidth)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("More Themes")
+    }
+
+    @ViewBuilder
+    private var customThemeActions: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            HStack(spacing: 8) {
+                createThemeTemplateButton
+                customThemeMoreMenu
+                SettingsHelpButton(text: customThemesHelpText)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    createThemeTemplateButton
+                        .frame(maxWidth: .infinity)
+                    openThemesFolderButton
+                        .frame(maxWidth: .infinity)
+                }
+
+                HStack(spacing: 8) {
+                    Spacer(minLength: 8)
+                    reloadThemesButton
+                    SettingsHelpButton(text: customThemesHelpText)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var createThemeTemplateButton: some View {
+        Button {
+            revealThemeTemplate()
+        } label: {
+            Label("New Theme", systemImage: "doc.badge.plus")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Create theme template")
+        .help("Create a starter theme JSON file. Existing template files are left untouched.")
+    }
+
+    private var openThemesFolderButton: some View {
+        Button {
+            openThemesFolder()
+        } label: {
+            Label("Open Folder", systemImage: "folder")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .help("Open Rune's custom theme folder.")
+    }
+
+    private var reloadThemesButton: some View {
+        Button {
+            reloadAppearanceThemes()
+        } label: {
+            Label("Reload", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(.bordered)
+        .help("Reload custom theme files from disk.")
+    }
+
+    private var customThemeMoreMenu: some View {
+        Menu {
+            Button {
+                openThemesFolder()
+            } label: {
+                Label("Open Theme Folder", systemImage: "folder")
+            }
+
+            Button {
+                reloadAppearanceThemes()
+            } label: {
+                Label("Reload Themes", systemImage: "arrow.clockwise")
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("More custom theme actions")
+    }
+
+    private var customThemesHelpText: String {
+        "Rune can load JSON theme files using supported editor theme color fields. Create a template, edit the colors, then reload."
+    }
+
+    private var displayThemesDirectoryPath: String {
+        let path = RuneThemeCatalog.userThemesDirectoryURL.path
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        guard path.hasPrefix(homePath) else { return path }
+        return "~" + String(path.dropFirst(homePath.count))
+    }
+
+    private func openThemesFolder() {
+        RuneThemeCatalog.ensureUserThemesDirectory()
+        NSWorkspace.shared.open(RuneThemeCatalog.userThemesDirectoryURL)
     }
 
     private func selectAppearanceTheme(_ themeID: String) {
@@ -870,15 +974,15 @@ public struct RunePreferencesView: View {
             subtitle: settingsString(.settingsKeyBindingsSubtitle)
         ) {
             settingsSection("Defaults") {
-                Text("These defaults mirror common k9s mnemonics where Rune has an equivalent action. `:` stays the logical k9s command-mode key across keyboard layouts; Swedish keyboards can also bind Command Palette to `Shift-.`.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Button("Reset to default") {
-                    resetKeyBindingShortcuts()
+                settingsControlRow(
+                    title: "Default shortcuts",
+                    detail: "Mirrors common k9s mnemonics where Rune has an equivalent action. Command mode stays logical across keyboard layouts."
+                ) {
+                    Button("Reset to Default") {
+                        resetKeyBindingShortcuts()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
 
             settingsSection("Navigation") {
@@ -891,19 +995,29 @@ public struct RunePreferencesView: View {
 
             settingsSection("Actions") {
                 ForEach(RuneKeyBindingAction.allCases) { action in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(action.title)
-                                    .font(.subheadline.weight(.semibold))
-                                Text(action.detail)
-                                    .font(.footnote)
+                    settingsGridRow {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(action.title)
+                                .font(.subheadline.weight(.semibold))
+                            Text(action.detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 8) {
+                                Text("Current: \(shortcut(for: action).displayValue)")
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+
+                                if let conflict = conflictingAction(for: action) {
+                                    Text("Conflicts with \(conflict.title)")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
                             }
-
-                            Spacer(minLength: 12)
-
+                        }
+                    } control: {
+                        HStack(spacing: 6) {
                             Toggle("⌘", isOn: shortcutCommandBinding(for: action))
                                 .toggleStyle(.button)
                                 .controlSize(.small)
@@ -929,19 +1043,9 @@ public struct RunePreferencesView: View {
                                     Text(Self.displayShortcutKey(key)).tag(key)
                                 }
                             }
+                            .runeInterfaceFont(weight: .medium)
+                            .runeInterfaceControlSize()
                             .frame(width: 96)
-                        }
-
-                        HStack(spacing: 8) {
-                            Text("Current: \(shortcut(for: action).displayValue)")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-
-                            if let conflict = conflictingAction(for: action) {
-                                Text("Conflicts with \(conflict.title)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                            }
                         }
                     }
 
@@ -959,75 +1063,52 @@ public struct RunePreferencesView: View {
             subtitle: settingsString(.settingsLogsSubtitle)
         ) {
             settingsSection("Custom log windows") {
-                Text("Configure two custom presets shown in log dropdowns.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                customLogPresetRow(
+                    slot: .one,
+                    modeRaw: $customOneModeRaw,
+                    linesRaw: $customOneLinesRaw,
+                    timeValueRaw: $customOneTimeValueRaw,
+                    timeUnitRaw: $customOneTimeUnitRaw
+                )
+
+                Divider()
+
+                customLogPresetRow(
+                    slot: .two,
+                    modeRaw: $customTwoModeRaw,
+                    linesRaw: $customTwoLinesRaw,
+                    timeValueRaw: $customTwoTimeValueRaw,
+                    timeUnitRaw: $customTwoTimeUnitRaw
+                )
             }
-
-            customLogPresetSection(
-                slot: .one,
-                modeRaw: $customOneModeRaw,
-                linesRaw: $customOneLinesRaw,
-                timeValueRaw: $customOneTimeValueRaw,
-                timeUnitRaw: $customOneTimeUnitRaw
-            )
-
-            customLogPresetSection(
-                slot: .two,
-                modeRaw: $customTwoModeRaw,
-                linesRaw: $customTwoLinesRaw,
-                timeValueRaw: $customTwoTimeValueRaw,
-                timeUnitRaw: $customTwoTimeUnitRaw
-            )
 
             settingsSection("Export destination") {
                 settingsControlRow(
                     title: "Default export folder",
                     detail: "Used by Save to Export Folder and Save and Open actions."
                 ) {
-                    HStack(spacing: 8) {
-                        Text(exportFolderDisplayName.isEmpty ? "Not configured" : exportFolderDisplayName)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(exportFolderDisplayName.isEmpty ? .secondary : .primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Button("Choose…", action: chooseExportFolder)
-                        Button("Clear", action: clearExportFolder)
-                            .disabled(exportFolderDisplayName.isEmpty)
-                    }
+                    exportFolderMenu
                 }
+
+                Divider()
 
                 settingsControlRow(
-                    title: "Text opener bundle ID",
-                    detail: "Optional app bundle identifier for .log and .txt exports."
+                    title: "Text exports",
+                    detail: "Choose which app opens .log, .txt, .yaml, .json, and terminal transcript exports."
                 ) {
-                    HStack(spacing: 8) {
-                        TextField("System default", text: $exportTextOpenerBundleIdentifier)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Choose…") {
-                            chooseExportOpener(for: .plainText)
-                        }
-                    }
+                    exportOpenerMenu(inklineRecommendation)
                 }
+
+                Divider()
 
                 settingsControlRow(
-                    title: "Archive opener bundle ID",
-                    detail: "Optional app bundle identifier for .zip exports."
+                    title: "Archive exports",
+                    detail: "Choose which app opens .zip log and transcript archives."
                 ) {
-                    HStack(spacing: 8) {
-                        TextField("System default", text: $exportArchiveOpenerBundleIdentifier)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Choose…") {
-                            chooseExportOpener(for: .archive)
-                        }
-                    }
+                    exportOpenerMenu(quikZipRecommendation)
                 }
 
-                helpInline("Some apps cannot load .yaml, .log, or .zip exports from a background handoff. Inkline and QuikZip are built for Save and Open.")
-
-                exportOpenerRecommendationRow(inklineRecommendation)
-                exportOpenerRecommendationRow(quikZipRecommendation)
+                Divider()
 
                 settingsToggleRow(
                     "Privacy-safe export filenames",
@@ -1119,25 +1200,19 @@ public struct RunePreferencesView: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Log file path")
-                        .font(.subheadline.weight(.semibold))
-                    Text(DebugTraceWriter.logFileURL.path)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-
-                    HStack(spacing: 10) {
-                        Button("Reveal debug trace in Finder") {
-                            revealDebugTraceLogInFinder()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Clear debug trace log", role: .destructive) {
-                            DebugTraceWriter.clear()
-                        }
-                        .buttonStyle(.bordered)
+                settingsGridRow {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Log file")
+                            .font(.subheadline.weight(.semibold))
+                        Text(DebugTraceWriter.logFileURL.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                     }
+                } control: {
+                    debugTraceManagementMenu
                 }
             }
         }
@@ -1157,50 +1232,24 @@ public struct RunePreferencesView: View {
             }
 
             settingsSection("Terminal") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text("Scrollback")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer(minLength: 12)
-                        Text("\(clampedTerminalScrollbackLineLimit) lines")
-                            .font(.footnote.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
+                RuneSettingsIntegerLimitEditor(
+                    title: "Scrollback",
+                    value: $terminalScrollbackLineLimit,
+                    valueSuffix: "lines",
+                    step: 5_000,
+                    placeholder: "60000",
+                    defaultValue: RuneSettingsKeys.terminalScrollbackLineLimitDefault,
+                    detail: "Keeps recent shell output bounded while preserving the latest context for long-running sessions.",
+                    normalize: RuneSettingsKeys.clampedTerminalScrollbackLineLimit
+                )
 
-                    HStack(spacing: 10) {
-                        Stepper(
-                            "Terminal scrollback line limit",
-                            value: Binding(
-                                get: { clampedTerminalScrollbackLineLimit },
-                                set: {
-                                    terminalScrollbackLineLimit =
-                                        RuneSettingsKeys.clampedTerminalScrollbackLineLimit($0)
-                                }
-                            ),
-                            in: RuneSettingsKeys.terminalScrollbackLineLimitMinimum...RuneSettingsKeys.terminalScrollbackLineLimitMaximum,
-                            step: 5_000
-                        )
-                        .labelsHidden()
+                Divider()
 
-                        Button("Reset") {
-                            terminalScrollbackLineLimit = RuneSettingsKeys.terminalScrollbackLineLimitDefault
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    Text("Keeps recent shell output bounded while preserving the latest context for long-running sessions.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Divider()
-
-                    settingsToggleRow(
-                        "Save terminal view state",
-                        help: "Restores open terminal targets and log tabs on next launch. Transcripts and shell commands are not saved.",
-                        isOn: $persistTerminalWorkspaceState
-                    )
-                }
+                settingsToggleRow(
+                    "Save terminal view state",
+                    help: "Restores open terminal targets and log tabs on next launch. Transcripts and shell commands are not saved.",
+                    isOn: $persistTerminalWorkspaceState
+                )
             }
 
             settingsSection("Memory") {
@@ -1231,12 +1280,8 @@ public struct RunePreferencesView: View {
         }
     }
 
-    private var clampedTerminalScrollbackLineLimit: Int {
-        RuneSettingsKeys.clampedTerminalScrollbackLineLimit(terminalScrollbackLineLimit)
-    }
-
     @ViewBuilder
-    private func customLogPresetSection(
+    private func customLogPresetRow(
         slot: RuneCustomLogPresetSlot,
         modeRaw: Binding<String>,
         linesRaw: Binding<String>,
@@ -1247,52 +1292,77 @@ public struct RunePreferencesView: View {
         let unit = enumBinding(timeUnitRaw, default: RuneCustomLogPresetTimeUnit.minutes)
         let lines = digitsOnlyBinding(linesRaw)
         let timeValue = digitsOnlyBinding(timeValueRaw)
+        let summary = customLogPresetSummary(
+            mode: mode.wrappedValue,
+            lines: Int(lines.wrappedValue) ?? 1,
+            timeValue: Int(timeValue.wrappedValue) ?? 1,
+            timeUnit: unit.wrappedValue
+        )
 
-        settingsSection("Custom \(slot.ordinal)") {
-            Picker("Type", selection: mode) {
-                ForEach(RuneCustomLogPresetMode.allCases, id: \.rawValue) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 260)
-
-            if mode.wrappedValue == .lines {
-                LabeledContent("Lines") {
-                    TextField("5000", text: lines)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 140)
-                }
-                Text("Digits only. `99999` = since beginning.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                LabeledContent("Window") {
-                    HStack(spacing: 8) {
-                        TextField("15", text: timeValue)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 80)
-                        Picker("Unit", selection: unit) {
-                            ForEach(RuneCustomLogPresetTimeUnit.allCases, id: \.rawValue) { unit in
-                                Text(unit.title).tag(unit)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
+        settingsGridRow {
+            settingRowLabel(
+                title: "Custom \(slot.ordinal)",
+                detail: "\(summary). Shown in every log-window menu."
+            )
+        } control: {
+            HStack(spacing: 8) {
+                Picker("Type", selection: mode) {
+                    ForEach(RuneCustomLogPresetMode.allCases, id: \.rawValue) { mode in
+                        Text(mode == .lines ? "Lines" : "Time").tag(mode)
                     }
                 }
-                Text("Example: 15 minutes, 6 hours, 2 days.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .runeInterfaceFont(weight: .medium)
+                .runeInterfaceControlSize()
+                .frame(width: 80)
 
-            Text("Dropdown preview: \(UserDefaults.standard.runeCustomLogPresetConfig(slot: slot).title(slot: slot))")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            helpInline("Shown in all log-window dropdowns.")
+                if mode.wrappedValue == .lines {
+                    TextField("5000", text: lines)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospacedDigit())
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 72)
+                        .help("Digits only. Enter 99999 to load logs since the beginning.")
+
+                    Text("lines")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("15", text: timeValue)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospacedDigit())
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 54)
+
+                    Picker("Unit", selection: unit) {
+                        ForEach(RuneCustomLogPresetTimeUnit.allCases, id: \.rawValue) { unit in
+                            Text(unit.title).tag(unit)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .runeInterfaceFont(weight: .medium)
+                    .runeInterfaceControlSize()
+                    .frame(maxWidth: 104)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func customLogPresetSummary(
+        mode: RuneCustomLogPresetMode,
+        lines: Int,
+        timeValue: Int,
+        timeUnit: RuneCustomLogPresetTimeUnit
+    ) -> String {
+        switch mode {
+        case .lines:
+            let normalizedLines = max(1, lines)
+            return normalizedLines >= 99_999 ? "Since beginning" : "\(normalizedLines) lines"
+        case .time:
+            return "Last \(timeUnit.shortTitle(amount: timeValue))"
         }
     }
 
@@ -1324,6 +1394,32 @@ public struct RunePreferencesView: View {
         exportFolderDisplayName = ""
     }
 
+    private var exportFolderMenu: some View {
+        Menu {
+            Button {
+                chooseExportFolder()
+            } label: {
+                Label("Choose Folder…", systemImage: "folder.badge.plus")
+            }
+
+            if !exportFolderDisplayName.isEmpty {
+                Divider()
+                Button("Clear Folder", role: .destructive) {
+                    clearExportFolder()
+                }
+            }
+        } label: {
+            RuneSettingsMenuLabel(
+                title: exportFolderDisplayName.isEmpty ? "Not configured" : exportFolderDisplayName,
+                systemImage: "folder"
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Default export folder")
+        .accessibilityValue(exportFolderDisplayName.isEmpty ? "Not configured" : exportFolderDisplayName)
+    }
+
     private func chooseExportOpener(for kind: ConfiguredExportFileKind) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1347,40 +1443,103 @@ public struct RunePreferencesView: View {
     }
 
     @ViewBuilder
-    private func exportOpenerRecommendationRow(_ recommendation: ExportOpenerRecommendation) -> some View {
-        if let detected = detectedRecommendedExportOpener(recommendation) {
-            settingsControlRow(
-                title: detected.title,
-                detail: detected.detail
-            ) {
-                Button("Use \(detected.appName)") {
+    private func exportOpenerMenu(_ recommendation: ExportOpenerRecommendation) -> some View {
+        let selectedBundleIdentifier = exportOpenerBundleIdentifier(for: recommendation.kind)
+        let detected = detectedExportOpener(for: recommendation.kind)
+
+        Menu {
+            Button {
+                setExportOpenerBundleIdentifier("", for: recommendation.kind)
+            } label: {
+                Label(
+                    "System Default",
+                    systemImage: selectedBundleIdentifier.isEmpty ? "checkmark.circle.fill" : "macwindow"
+                )
+            }
+
+            if let detected {
+                Button {
                     setExportOpenerBundleIdentifier(detected.bundleIdentifier, for: recommendation.kind)
+                } label: {
+                    Label(
+                        detected.appName,
+                        systemImage: selectedBundleIdentifier == detected.bundleIdentifier
+                            ? "checkmark.circle.fill"
+                            : "app"
+                    )
                 }
             }
+
+            Divider()
+
+            Button {
+                chooseExportOpener(for: recommendation.kind)
+            } label: {
+                Label("Choose Application…", systemImage: "plus.app")
+            }
+        } label: {
+            RuneSettingsMenuLabel(
+                title: exportOpenerDisplayName(for: recommendation),
+                systemImage: recommendation.kind == .plainText ? "doc.text" : "archivebox"
+            )
         }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(recommendation.kind == .plainText ? "Text export opener" : "Archive export opener")
+        .accessibilityValue(exportOpenerDisplayName(for: recommendation))
     }
 
-    private func detectedRecommendedExportOpener(_ recommendation: ExportOpenerRecommendation) -> DetectedExportOpener? {
+    private func refreshDetectedExportOpeners() {
+        detectedTextExportOpener = discoverRecommendedExportOpener(inklineRecommendation)
+        detectedArchiveExportOpener = discoverRecommendedExportOpener(quikZipRecommendation)
+    }
+
+    private func discoverRecommendedExportOpener(
+        _ recommendation: ExportOpenerRecommendation
+    ) -> DetectedExportOpener? {
         if let appURL = applicationURL(named: recommendation.appName),
            let detectedBundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
            !detectedBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let bundleIdentifier = recommendation.recommendedBundleIdentifier ?? detectedBundleIdentifier
             return DetectedExportOpener(
                 appName: recommendation.appName,
-                bundleIdentifier: bundleIdentifier,
-                title: recommendation.detectedTitle,
-                detail: recommendation.detail(bundleIdentifier: bundleIdentifier)
+                bundleIdentifier: detectedBundleIdentifier
             )
         }
+        return nil
+    }
 
-        guard let bundleIdentifier = recommendation.recommendedBundleIdentifier else { return nil }
+    private func detectedExportOpener(for kind: ConfiguredExportFileKind) -> DetectedExportOpener? {
+        switch kind {
+        case .plainText:
+            return detectedTextExportOpener
+        case .archive:
+            return detectedArchiveExportOpener
+        }
+    }
 
-        return DetectedExportOpener(
-            appName: recommendation.appName,
-            bundleIdentifier: bundleIdentifier,
-            title: recommendation.suggestedTitle,
-            detail: recommendation.detail(bundleIdentifier: bundleIdentifier)
-        )
+    private func exportOpenerBundleIdentifier(for kind: ConfiguredExportFileKind) -> String {
+        switch kind {
+        case .plainText:
+            return exportTextOpenerBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .archive:
+            return exportArchiveOpenerBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func exportOpenerDisplayName(for recommendation: ExportOpenerRecommendation) -> String {
+        let bundleIdentifier = exportOpenerBundleIdentifier(for: recommendation.kind)
+        guard !bundleIdentifier.isEmpty else { return "System Default" }
+
+        if let detected = detectedExportOpener(for: recommendation.kind),
+           detected.bundleIdentifier == bundleIdentifier {
+            return detected.appName
+        }
+
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+            return appURL.deletingPathExtension().lastPathComponent
+        }
+
+        return "Selected application"
     }
 
     private func applicationURL(named appName: String) -> URL? {
@@ -1440,9 +1599,9 @@ public struct RunePreferencesView: View {
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.pageSpacing) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.title3.weight(.semibold))
+                        .runeInterfaceFont(relativeSize: 4, weight: .semibold)
                     Text(subtitle)
-                        .font(.footnote)
+                        .runeInterfaceFont(relativeSize: -1)
                         .foregroundStyle(.secondary)
                 }
 
@@ -1461,7 +1620,7 @@ public struct RunePreferencesView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .runeInterfaceFont(weight: .semibold)
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.sectionSpacing) {
@@ -1507,23 +1666,15 @@ public struct RunePreferencesView: View {
     private func settingRowLabel(title: String, detail: String?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .runeInterfaceFont(weight: .semibold)
 
             if let detail {
                 Text(detail)
-                    .font(.footnote)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-
-    @ViewBuilder
-    private func helpInline(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote)
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func enumBinding<T: RawRepresentable>(
@@ -1547,6 +1698,30 @@ public struct RunePreferencesView: View {
                 rawBinding.wrappedValue = newValue.filter(\.isNumber)
             }
         )
+    }
+
+    private var debugTraceManagementMenu: some View {
+        Menu {
+            Button {
+                revealDebugTraceLogInFinder()
+            } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+
+            Divider()
+
+            Button("Clear Debug Trace", role: .destructive) {
+                DebugTraceWriter.clear()
+            }
+        } label: {
+            RuneSettingsMenuLabel(
+                title: "Manage Log",
+                systemImage: "doc.text.magnifyingglass"
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Manage debug trace log")
     }
 
     private func revealDebugTraceLogInFinder() {

@@ -313,6 +313,116 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testEventSourceNavigationHydratesAndSelectsPodAfterOneClick() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.events)
+        try await waitUntil {
+            !harness.state.events.isEmpty && !harness.state.isLoading
+        }
+
+        let event = try XCTUnwrap(
+            harness.state.events.first(where: { $0.involvedKind?.lowercased() == "pod" })
+        )
+        let context = try XCTUnwrap(harness.state.selectedContext)
+        harness.store.clearContext(context)
+        harness.state.setPods([])
+        harness.state.resourceSearchQuery = event.reason
+        harness.server.resetRequestLines()
+
+        harness.viewModel.openEventSource(event)
+
+        try await waitUntil {
+            harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.name == event.objectName
+        }
+
+        XCTAssertTrue(
+            harness.server.requestLines().contains {
+                $0.contains("/api/v1/namespaces/\(harness.state.selectedNamespace)/pods")
+            }
+        )
+        XCTAssertEqual(harness.state.selectedPod?.namespace, event.involvedNamespace)
+        XCTAssertTrue(harness.state.resourceSearchQuery.isEmpty)
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testManualNavigationCancelsDelayedEventSourceNavigation() async throws {
+        let podListPath = "/api/v1/namespaces/alpha-zone/pods"
+        let fixture = RuneFakeK8sFixture(
+            delayedResponseTargets: [podListPath: 600_000_000]
+        )
+        let harness = try await makeHarness(fixture: fixture)
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        harness.viewModel.setSection(.events)
+        try await waitUntil {
+            !harness.state.events.isEmpty && !harness.state.isLoading
+        }
+
+        let event = try XCTUnwrap(
+            harness.state.events.first(where: { $0.involvedKind?.lowercased() == "pod" })
+        )
+        let context = try XCTUnwrap(harness.state.selectedContext)
+        harness.store.clearContext(context)
+        harness.state.setPods([])
+        harness.server.resetRequestLines()
+
+        harness.viewModel.openEventSource(event)
+        try await waitUntil {
+            harness.server.requestLines().contains { $0.contains("GET \(podListPath) ") }
+        }
+
+        harness.viewModel.setSection(.config)
+        try await Task.sleep(nanoseconds: 750_000_000)
+
+        XCTAssertEqual(harness.state.selectedSection, .config)
+        XCTAssertEqual(harness.state.selectedWorkloadKind, .configMap)
+        XCTAssertNil(harness.state.selectedPod)
+    }
+
+    func testEventSourceNavigationHydratesPodInEventNamespaceAfterOneClick() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await harness.viewModel.reloadContexts()
+        let event = EventSummary(
+            type: "Warning",
+            reason: "Pending",
+            objectName: "bravo-spoke-59fd6dfb4b-s9n2p",
+            message: "Pod is waiting to be scheduled.",
+            lastTimestamp: "2026-07-24T00:00:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: "bravo-zone"
+        )
+        harness.state.selectedSection = .events
+        harness.state.setEvents([event])
+        let context = try XCTUnwrap(harness.state.selectedContext)
+        harness.store.clearContext(context)
+        harness.state.setPods([])
+        harness.server.resetRequestLines()
+
+        harness.viewModel.openEventSource(event)
+
+        try await waitUntil {
+            harness.state.selectedNamespace == "bravo-zone"
+                && harness.state.selectedSection == .workloads
+                && harness.state.selectedWorkloadKind == .pod
+                && harness.state.selectedPod?.name == event.objectName
+        }
+
+        XCTAssertTrue(
+            harness.server.requestLines().contains {
+                $0.contains("/api/v1/namespaces/bravo-zone/pods")
+            }
+        )
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testFakeClusterLoadsPodLogsYAMLAndDescribeThroughViewModel() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -1405,6 +1515,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     private struct Harness {
         let server: RuneFakeK8sRESTServer
         let kubeconfigURL: URL
+        let store: ResourceStore
         let state: RuneAppState
         let viewModel: RuneAppViewModel
 
@@ -1425,15 +1536,23 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
+        let store = ResourceStore()
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: kubeClient,
+            store: store,
             exporter: exporter,
             configuredExporter: configuredExporter,
             overviewSnapshotPersistence: overviewSnapshotPersistence,
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
-        return Harness(server: server, kubeconfigURL: kubeconfig, state: state, viewModel: viewModel)
+        return Harness(
+            server: server,
+            kubeconfigURL: kubeconfig,
+            store: store,
+            state: state,
+            viewModel: viewModel
+        )
     }
 
     private actor SingleOverviewSnapshotCacheStore: OverviewSnapshotCacheStoring {

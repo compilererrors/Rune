@@ -13,6 +13,7 @@ struct ContextSidebarRow: View {
     let onToggleProduction: () -> Void
     let onToggleFavorite: () -> Void
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     var body: some View {
         HStack(spacing: 8) {
@@ -71,11 +72,11 @@ struct ContextSidebarRow: View {
     private var titleStack: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(displayName)
-                .font(.body.weight(.medium))
+                .runeInterfaceFont(weight: .medium)
                 .lineLimit(1)
             if let secondaryLine {
                 Text(secondaryLine)
-                    .font(.caption2)
+                    .font(.system(size: max(9, interfaceFontSize - 2)))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

@@ -402,7 +402,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
         XCTAssertTrue(gallerySource.contains("CommandPaletteView(viewModel: viewModel)"))
         XCTAssertTrue(gallerySource.contains("KubeConfigImportReviewPanel("))
         XCTAssertTrue(portForwardSource.contains(".accessibilityIdentifier(\"rune.port-forward.primary-action\")"))
-        XCTAssertTrue(providerFieldSource.contains(".accessibilityIdentifier(field.accessibilityIdentifier)"))
+        XCTAssertTrue(providerFieldSource.contains(".accessibilityIdentifier(fieldAccessibilityIdentifier)"))
         XCTAssertTrue(commandPaletteSource.contains("RuneDialogCloseButton(\"Close Command Palette\")"))
         XCTAssertTrue(importReviewSource.contains("isConfirmationPending ? \"Cancel kubeconfig import\""))
     }
@@ -539,6 +539,10 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             rootView: RuneUIComponentGallery(
                 scenario: scenario,
                 onLayoutSnapshotChange: { snapshots.append($0) }
+            )
+            .runeInterfaceTypography(
+                configuredFontSize: 12,
+                systemDynamicTypeSize: dynamicTypeSize
             )
             .dynamicTypeSize(dynamicTypeSize)
             .runeAppearanceTheme(theme.resolvedTheme)

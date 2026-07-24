@@ -12,7 +12,7 @@ enum ResourceLogsPresentationStyle: Hashable {
 struct ResourceLogsLayoutMetrics {
     static let regularOutputMinimumHeight: CGFloat = 280
     static let terminalCompactOutputMinimumHeight: CGFloat = 210
-    static let sourcePickerWidth: CGFloat = 166
+    static let sourcePickerWidth: CGFloat = 180
     static let podPickerWidth: CGFloat = 240
     static let searchChromeHeight: CGFloat = 30
     static let searchChromeMinimumWidth: CGFloat = 220
@@ -77,6 +77,8 @@ struct ResourceLogsToolbar: View {
     let onCopyAll: () -> Void
     let onToggleStreamPause: () -> Void
     var interfaceLanguageRaw: String = RuneSettingsKeys.interfaceLanguageDefault
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     var body: some View {
         switch presentationStyle {
@@ -92,12 +94,12 @@ struct ResourceLogsToolbar: View {
             LogToolbarScrollRow {
                 primaryControls
             }
-            .controlSize(.small)
+            .controlSize(toolbarControlSize)
 
             LogToolbarScrollRow {
                 toolbarActions
             }
-            .controlSize(.small)
+            .controlSize(toolbarControlSize)
         }
     }
 
@@ -106,13 +108,21 @@ struct ResourceLogsToolbar: View {
             LogToolbarScrollRow {
                 primaryControls
             }
-            .controlSize(.small)
+            .controlSize(toolbarControlSize)
 
             LogToolbarScrollRow {
                 toolbarActions
             }
-            .controlSize(.small)
+            .controlSize(toolbarControlSize)
         }
+    }
+
+    private var toolbarControlSize: ControlSize {
+        if dynamicTypeSize.isAccessibilitySize
+            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1 {
+            return .regular
+        }
+        return .small
     }
 
     private var sourceControls: some View {
@@ -355,7 +365,7 @@ struct ResourceLogsToolbar: View {
 
 private extension View {
     func logToolbarButtonFrame(width: CGFloat? = nil) -> some View {
-        font(.caption.weight(.semibold))
+        runeInterfaceFont(relativeSize: -1, weight: .semibold)
             .labelStyle(.titleAndIcon)
             .lineLimit(1)
             .frame(
@@ -364,14 +374,13 @@ private extension View {
                 maxWidth: width,
                 minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
                 idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
                 alignment: .center
             )
             .fixedSize(horizontal: true, vertical: false)
     }
 
     func logToolbarIconButtonFrame(width: CGFloat = 32) -> some View {
-        font(.caption.weight(.semibold))
+        runeInterfaceFont(relativeSize: -1, weight: .semibold)
             .labelStyle(.iconOnly)
             .frame(
                 minWidth: width,
@@ -379,7 +388,6 @@ private extension View {
                 maxWidth: width,
                 minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
                 idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
                 alignment: .center
             )
             .fixedSize(horizontal: true, vertical: false)
@@ -421,7 +429,7 @@ private struct LogToolbarGroup<Content: View>: View {
         }
         .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
         .padding(.vertical, role.verticalPadding)
-        .frame(height: role.height)
+        .frame(minHeight: role.height)
         .background {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .fill(runeThemePalette?.row.opacity(0.42) ?? Color.primary.opacity(0.055))
@@ -465,7 +473,7 @@ private struct LogToolbarPickerField<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(.caption2.weight(.bold))
+                .runeInterfaceFont(relativeSize: -2, weight: .bold)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 .lineLimit(1)
                 .tracking(0.3)
@@ -495,6 +503,7 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
     let accessibilityLabel: String
     @Binding var selection: Value
     let options: [Option]
+    @Environment(\.runeInterfaceFontSize) private var interfaceMenuFontSize
 
     init(
         _ accessibilityLabel: String,
@@ -513,7 +522,7 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
     func makeNSView(context: Context) -> NSPopUpButton {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         popup.controlSize = .small
-        popup.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        popup.font = popupFont
         popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
         popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         popup.target = context.coordinator
@@ -523,6 +532,7 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
 
     func updateNSView(_ popup: NSPopUpButton, context: Context) {
         context.coordinator.parent = self
+        popup.font = popupFont
         let titles = options.map(\.title)
         if popup.itemTitles != titles {
             popup.removeAllItems()
@@ -535,6 +545,15 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
         }
         popup.isEnabled = !options.isEmpty
         popup.setAccessibilityLabel(accessibilityLabel)
+    }
+
+    private var popupFont: NSFont {
+        NSFont.systemFont(
+            ofSize: RuneInterfaceTypography.appKitMenuFontSize(
+                systemSmallFontSize: NSFont.smallSystemFontSize,
+                interfaceMenuFontSize: interfaceMenuFontSize
+            )
+        )
     }
 
     @MainActor
@@ -604,13 +623,13 @@ private struct LogToolbarSourceSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(.caption2.weight(.bold))
+                .runeInterfaceFont(relativeSize: -2, weight: .bold)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 .lineLimit(1)
                 .tracking(0.3)
 
             Label(values.joined(separator: ", "), systemImage: "square.stack.3d.forward.dottedline")
-                .font(.caption.weight(.medium))
+                .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)

@@ -5,6 +5,94 @@ import SwiftUI
 import XCTest
 
 final class AppKitResourceTableInfrastructureTests: XCTestCase {
+    func testRefreshPlanSkipsUnchangedRowsAndTargetsOnlyChangedRows() {
+        let baseline = (0..<2_500).map { index in
+            RuneAppKitResourceTableRowSnapshot(
+                id: "resource-\(index)",
+                value: "value-\(index)"
+            )
+        }
+
+        XCTAssertEqual(
+            RuneAppKitResourceTableRefreshPlan.resolve(
+                previous: baseline,
+                current: baseline
+            ),
+            .none
+        )
+
+        var updated = baseline
+        updated[11] = RuneAppKitResourceTableRowSnapshot(
+            id: "resource-11",
+            value: "updated-11"
+        )
+        updated[1_700] = RuneAppKitResourceTableRowSnapshot(
+            id: "resource-1700",
+            value: "updated-1700",
+            cellState: 1
+        )
+        XCTAssertEqual(
+            RuneAppKitResourceTableRefreshPlan.resolve(
+                previous: baseline,
+                current: updated
+            ),
+            .rows(IndexSet([11, 1_700]))
+        )
+
+        var appended = baseline
+        appended.append(RuneAppKitResourceTableRowSnapshot(id: "resource-2500", value: "value-2500"))
+        XCTAssertEqual(
+            RuneAppKitResourceTableRefreshPlan.resolve(
+                previous: baseline,
+                current: appended
+            ),
+            .reloadAll
+        )
+
+        var reordered = baseline
+        reordered.swapAt(0, 1)
+        XCTAssertEqual(
+            RuneAppKitResourceTableRefreshPlan.resolve(
+                previous: baseline,
+                current: reordered
+            ),
+            .reloadAll
+        )
+    }
+
+    @MainActor
+    func testNoOpGeometryUpdateDoesNotInvalidateTableOrHeader() {
+        let tableView = NSTableView()
+        let first = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("first"))
+        let second = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("second"))
+        first.width = 180
+        second.width = 220
+        tableView.addTableColumn(first)
+        tableView.addTableColumn(second)
+
+        let header = NSTableHeaderView()
+        tableView.headerView = header
+        let renderedWidth: CGFloat = 418
+        tableView.frame = NSRect(x: 0, y: 0, width: renderedWidth, height: 200)
+        header.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: renderedWidth,
+            height: RuneAppKitResourceTableStyle.headerHeight
+        )
+        tableView.needsDisplay = false
+        tableView.needsLayout = false
+        header.needsDisplay = false
+        header.needsLayout = false
+
+        RuneAppKitResourceTableStyle.updateRenderedTableWidth(on: tableView)
+
+        XCTAssertFalse(tableView.needsDisplay)
+        XCTAssertFalse(tableView.needsLayout)
+        XCTAssertFalse(header.needsDisplay)
+        XCTAssertFalse(header.needsLayout)
+    }
+
     @MainActor
     func testSharedSelectionPlumbingSelectsAndClearsRows() {
         let rows = ["resource-alpha", "resource-beta", "resource-gamma"]
@@ -75,6 +163,108 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         XCTAssertTrue(source.contains("static let rowHeight: CGFloat = 34"))
         XCTAssertTrue(source.contains("button.widthAnchor.constraint(equalToConstant: RuneUILayoutMetrics.iconButtonSize)"))
         XCTAssertTrue(source.contains("button.heightAnchor.constraint(equalToConstant: RuneUILayoutMetrics.iconButtonSize)"))
+    }
+
+    func testAllResourceTablesUseSharedIdentifierBackedCellAndRowReuse() throws {
+        let source = try String(contentsOfFile: appKitResourceTablePath, encoding: .utf8)
+        let viewProviderSignature =
+            "func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?"
+        let viewProviderBodies = source
+            .components(separatedBy: viewProviderSignature)
+            .dropFirst()
+            .compactMap { remainder -> String? in
+                guard let end = remainder.range(of: "func tableViewSelectionDidChange") else {
+                    return nil
+                }
+                return String(remainder[..<end.lowerBound])
+            }
+
+        XCTAssertTrue(source.contains("private func resourceTableCellIdentifier(for tableColumn: NSTableColumn)"))
+        XCTAssertTrue(source.contains(#""rune.resource-cell.\(tableColumn.identifier.rawValue)""#))
+        XCTAssertTrue(source.contains("private func dequeueResourceTableCell<Cell: NSView>("))
+        XCTAssertTrue(source.contains("tableView.makeView(withIdentifier: identifier, owner: tableView.delegate) as? Cell"))
+        XCTAssertTrue(source.contains("cell.identifier = identifier"))
+        XCTAssertTrue(source.contains("private func dequeueResourceTableRow(from tableView: NSTableView)"))
+        XCTAssertTrue(source.contains(#"NSUserInterfaceItemIdentifier("rune.resource-row")"#))
+        XCTAssertTrue(source.contains("rowView.identifier = identifier"))
+        XCTAssertTrue(source.contains("private final class RuneAppKitCheckboxCell: NSView"))
+
+        XCTAssertEqual(
+            viewProviderBodies.count,
+            7,
+            "Every shared resource-table family must expose one AppKit view provider."
+        )
+        for body in viewProviderBodies {
+            XCTAssertTrue(
+                body.contains("resourceTableLabelCell(")
+                    || body.contains("resourceTablePillCell(")
+                    || body.contains("resourceTableFavoriteCell(")
+                    || body.contains("resourceTableCheckboxCell("),
+                "Every resource-table view provider must route cell creation through the shared dequeue/configure path."
+            )
+        }
+        XCTAssertEqual(
+            source.components(separatedBy: "dequeueResourceTableRow(from: tableView)").count - 1,
+            7,
+            "Every resource-table family must reuse identifier-backed row views."
+        )
+    }
+
+    @MainActor
+    func testHostedResourceTableActuallyReusesCellsAndRowsAcrossDistantViewports() throws {
+        let resources = (0..<160).map { index in
+            ClusterResourceSummary(
+                kind: .configMap,
+                name: String(format: "synthetic-config-%03d", index),
+                namespace: "synthetic-namespace",
+                primaryText: "\(index % 12 + 1) keys",
+                secondaryText: "\(index % 5 + 1) KiB"
+            )
+        }
+        let host = NSHostingView(rootView: AppKitGenericResourceListView(
+            kind: .configMap,
+            resources: resources,
+            selectedResourceID: nil,
+            selectedResourceIDs: [],
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: false,
+            isFavorite: { _ in false },
+            onSelectResource: { _ in },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        ).frame(width: 1_120, height: 240))
+        host.frame = NSRect(x: 0, y: 0, width: 1_120, height: 240)
+        settle(host)
+
+        let scrollView = try XCTUnwrap(findResourceTableScrollView(in: host))
+        let tableView = try XCTUnwrap(scrollView.documentView as? RuneAppKitResourceTableView)
+        XCTAssertEqual(tableView.numberOfRows, resources.count)
+
+        tableView.scrollRowToVisible(0)
+        settle(host)
+        let leadingViewport = identifierBackedVisibleViews(in: tableView)
+        XCTAssertFalse(leadingViewport.cells.isEmpty)
+        XCTAssertFalse(leadingViewport.rows.isEmpty)
+
+        tableView.scrollRowToVisible(120)
+        settle(host)
+        let distantViewport = identifierBackedVisibleViews(in: tableView)
+        XCTAssertFalse(distantViewport.cells.isEmpty)
+        XCTAssertFalse(distantViewport.rows.isEmpty)
+
+        XCTAssertFalse(
+            leadingViewport.cells.isDisjoint(with: distantViewport.cells),
+            "Scrolling to distant rows must reuse cell objects instead of rebuilding constraints and controls."
+        )
+        XCTAssertFalse(
+            leadingViewport.rows.isDisjoint(with: distantViewport.rows),
+            "Scrolling to distant rows must reuse the shared identifier-backed row views."
+        )
     }
 
     func testHorizontalOverflowIndicatorsFollowViewportPosition() {
@@ -301,6 +491,7 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("scrollView.autohidesScrollers = true"))
         XCTAssertTrue(source.contains("scrollView.horizontalScrollElasticity = .automatic"))
+        XCTAssertTrue(source.contains("scrollView.usesPredominantAxisScrolling = true"))
         XCTAssertTrue(source.contains("RuneHorizontalTableOverflowState.resolve("))
         XCTAssertTrue(source.contains("More columns are available. Scroll horizontally to reveal them."))
     }
@@ -395,6 +586,34 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         scrollView.showsHorizontalOverflowEdgeGlow = true
 
         XCTAssertTrue(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting)
+    }
+
+    @MainActor
+    func testRepeatedScrollReflectionSkipsUnchangedOverflowWork() throws {
+        let resource = ClusterResourceSummary(
+            kind: .configMap,
+            name: "synthetic-config",
+            namespace: "synthetic-namespace",
+            primaryText: "3 keys",
+            secondaryText: "1 KiB"
+        )
+        let host = NSHostingView(rootView: genericResourceView(kind: .configMap, resource: resource)
+            .frame(width: 360, height: 220))
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: 220)
+        settle(host)
+
+        let scrollView = try XCTUnwrap(findResourceTableScrollView(in: host))
+        scrollView.layoutSubtreeIfNeeded()
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let resolutionCount = scrollView.horizontalOverflowResolutionCountForTesting
+        let accessibilityCount = scrollView.accessibilityOverflowUpdateCountForTesting
+
+        for _ in 0..<1_000 {
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+
+        XCTAssertEqual(scrollView.horizontalOverflowResolutionCountForTesting, resolutionCount)
+        XCTAssertEqual(scrollView.accessibilityOverflowUpdateCountForTesting, accessibilityCount)
     }
 
     @MainActor
@@ -623,6 +842,38 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
             }
         }
         return nil
+    }
+
+    @MainActor
+    private func identifierBackedVisibleViews(
+        in tableView: NSTableView
+    ) -> (cells: Set<ObjectIdentifier>, rows: Set<ObjectIdentifier>) {
+        tableView.layoutSubtreeIfNeeded()
+        let visibleRows = tableView.rows(in: tableView.visibleRect)
+        guard visibleRows.location != NSNotFound, visibleRows.length > 0 else {
+            return ([], [])
+        }
+
+        var cells: Set<ObjectIdentifier> = []
+        var rows: Set<ObjectIdentifier> = []
+        let upperBound = min(tableView.numberOfRows, visibleRows.location + visibleRows.length)
+        for row in visibleRows.location..<upperBound {
+            if let rowView = tableView.rowView(atRow: row, makeIfNecessary: true) {
+                XCTAssertEqual(rowView.identifier?.rawValue, "rune.resource-row")
+                rows.insert(ObjectIdentifier(rowView))
+            }
+            for columnIndex in 0..<tableView.numberOfColumns {
+                guard let cell = tableView.view(
+                    atColumn: columnIndex,
+                    row: row,
+                    makeIfNecessary: true
+                ) else { continue }
+                let columnID = tableView.tableColumns[columnIndex].identifier.rawValue
+                XCTAssertEqual(cell.identifier?.rawValue, "rune.resource-cell.\(columnID)")
+                cells.insert(ObjectIdentifier(cell))
+            }
+        }
+        return (cells, rows)
     }
 
     @MainActor

@@ -26,7 +26,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("LogToolbarGroup(spacing: 6)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.window), role: .window)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.container), role: .container)"))
-        XCTAssertTrue(source.contains("static let sourcePickerWidth: CGFloat = 166"))
+        XCTAssertTrue(source.contains("static let sourcePickerWidth: CGFloat = 180"))
         XCTAssertEqual(
             source.components(separatedBy: ".frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)").count - 1,
             2
@@ -40,7 +40,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("sourceSummaryTitle: source.sourcePanelTitle"))
         XCTAssertTrue(source.contains(".toggleStyle(.button)"))
         XCTAssertTrue(source.contains(".fixedSize(horizontal: true, vertical: false)"))
-        XCTAssertTrue(source.contains(".frame(height: role.height)"))
+        XCTAssertTrue(source.contains(".frame(minHeight: role.height)"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarActionGroupHeight"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarGroupSpacing"))
@@ -73,7 +73,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains(".logToolbarButtonFrame()"))
         XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
         XCTAssertTrue(source.contains("idealWidth: width"))
-        XCTAssertTrue(source.contains("maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight"))
+        XCTAssertFalse(source.contains("maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight"))
         XCTAssertTrue(source.contains(".font(.caption.weight(.semibold))"))
     }
 
@@ -122,6 +122,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
         XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)"))
         XCTAssertTrue(source.contains("LogToolbarPopupPicker("))
+        XCTAssertTrue(source.contains("popup.font = popupFont"))
+        XCTAssertTrue(source.contains("RuneInterfaceTypography.appKitMenuFontSize("))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.row.opacity(0.42)"))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.stroke.opacity(0.28)"))
         XCTAssertFalse(toolbarGroupSource.contains("RoundedRectangle(cornerRadius: 9, style: .continuous)"))
@@ -347,7 +349,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(windowFrame.width, containerFrame.width, accuracy: 0.5)
         XCTAssertEqual(windowFrame.height, containerFrame.height, accuracy: 0.5)
         XCTAssertEqual(windowFrame.minY, containerFrame.minY, accuracy: 0.5)
-        XCTAssertEqual(ResourceLogsLayoutMetrics.sourcePickerWidth, 166)
+        XCTAssertEqual(ResourceLogsLayoutMetrics.sourcePickerWidth, 180)
 
         windowPopup.selectItem(at: 1)
         windowPopup.sendAction(windowPopup.action, to: windowPopup.target)
@@ -367,6 +369,67 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         try await settle(window: window)
         XCTAssertEqual(model.selectedContainer, "sidecar")
         XCTAssertEqual(containerPopup.indexOfSelectedItem, -1, "A stale binding must not display a different container.")
+    }
+
+    @MainActor
+    func testNativeLogPopupTextActuallyTracksBoundedInterfaceFontScale() async throws {
+        let configurations: [(
+            configuredFontSize: Double,
+            systemDynamicTypeSize: DynamicTypeSize,
+            expectedOffset: CGFloat
+        )] = [
+            (12, .large, 0),
+            (13, .large, 1),
+            (15, .large, 2),
+            (20, .xxxLarge, 3),
+            (20, .accessibility3, 3)
+        ]
+        var observedPointSizes: [CGFloat] = []
+
+        for configuration in configurations {
+            let model = ResourceLogToolbarPickerModel()
+            let host = NSHostingController(
+                rootView: ResourceLogToolbarPickerHarness(model: model)
+                    .runeInterfaceTypography(
+                        configuredFontSize: configuration.configuredFontSize,
+                        systemDynamicTypeSize: configuration.systemDynamicTypeSize
+                    )
+                    .frame(width: 700, height: 140, alignment: .topLeading)
+                    .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 700, height: 140),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+
+            try await settle(window: window)
+
+            let popups = findPopUpButtons(in: host.view).filter {
+                $0.accessibilityLabel() == "Log window" || $0.accessibilityLabel() == "Container"
+            }
+            XCTAssertEqual(popups.count, 2)
+            let expectedPointSize = NSFont.smallSystemFontSize + configuration.expectedOffset
+            for popup in popups {
+                XCTAssertFalse(popup.itemTitles.isEmpty)
+                XCTAssertEqual(
+                    try XCTUnwrap(popup.font).pointSize,
+                    expectedPointSize,
+                    accuracy: 0.01
+                )
+            }
+            observedPointSizes.append(try XCTUnwrap(popups.first?.font).pointSize)
+            closeTestWindow(window)
+        }
+
+        XCTAssertLessThan(observedPointSizes[0], observedPointSizes[1])
+        XCTAssertLessThan(observedPointSizes[1], observedPointSizes[2])
+        XCTAssertLessThan(observedPointSizes[2], observedPointSizes[3])
+        XCTAssertEqual(observedPointSizes[3], observedPointSizes[4], accuracy: 0.01)
     }
 
     func testLogSearchRunsOffMainThreadAndKeepsStableInputIdentity() throws {

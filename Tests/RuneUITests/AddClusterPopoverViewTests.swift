@@ -128,6 +128,34 @@ final class AddClusterPopoverViewTests: XCTestCase {
         }
     }
 
+    func testProviderAndLocalToolsShareOneAdaptiveGrid() throws {
+        let source = try String(contentsOf: addClusterPopoverSourceURL, encoding: .utf8)
+        let providerRegion = try XCTUnwrap(source.slice(
+            from: "private var providerToolsSection: some View",
+            to: "private var manualTokenSection: some View"
+        ))
+        let gridRegion = try XCTUnwrap(source.slice(
+            from: "private var gridColumns: [GridItem]",
+            to: "private func sectionLabel"
+        ))
+
+        XCTAssertTrue(providerRegion.contains("sectionLabel(\"Providers & local tools\")"))
+        XCTAssertTrue(providerRegion.contains("ForEach(AddClusterProviderIdentifier.allCases)"))
+        XCTAssertEqual(AddClusterProviderIdentifier.allCases.count, 4)
+        XCTAssertFalse(source.contains("sectionLabel(\"Provider Login\")"))
+        XCTAssertFalse(source.contains("sectionLabel(\"Local Tools\")"))
+
+        XCTAssertTrue(gridRegion.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(gridRegion.contains("GridItem(.flexible()"))
+        XCTAssertTrue(gridRegion.contains("GridItem(.adaptive(minimum: 170)"))
+
+        let contentWidth = RuneUILayoutMetrics.addClusterPopoverWidth
+            - RuneUILayoutMetrics.addClusterPopoverPadding * 2
+        let defaultColumnWidth = (contentWidth - 8) / 2
+        XCTAssertGreaterThanOrEqual(defaultColumnWidth, 170)
+        XCTAssertLessThan((contentWidth - 16) / 3, 170)
+    }
+
     private func makePopover(isManualTokenExpanded: Bool) -> some View {
         AddClusterPopoverView(
             kubeConfigSourceCount: 2,
@@ -148,5 +176,23 @@ final class AddClusterPopoverViewTests: XCTestCase {
             onSelectProvider: { _ in },
             onImportManualToken: {}
         )
+    }
+
+    private var addClusterPopoverSourceURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/RuneUI/Views/AddClusterPopoverView.swift")
+    }
+}
+
+private extension String {
+    func slice(from start: String, to end: String) -> String? {
+        guard let startRange = range(of: start),
+              let endRange = range(of: end, range: startRange.upperBound..<endIndex) else {
+            return nil
+        }
+        return String(self[startRange.lowerBound..<endRange.lowerBound])
     }
 }

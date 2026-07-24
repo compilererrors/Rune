@@ -127,11 +127,12 @@ struct FavoritePodPicker: View {
     private var selectedPodButtonLabel: some View {
         HStack(spacing: 8) {
             Text(selectedPodTitle)
+                .runeInterfaceFont(weight: .medium)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
             Image(systemName: "chevron.up.chevron.down")
-                .font(.caption2.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -3, weight: .semibold)
                 .foregroundStyle(.secondary)
         }
         .padding(.leading, 8)
@@ -147,7 +148,7 @@ struct FavoritePodPicker: View {
     private var podPopover: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
@@ -188,20 +189,20 @@ struct FavoritePodPicker: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: pod.id == selection ? "checkmark" : "circle")
-                        .font(.caption.weight(.semibold))
+                        .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                         .foregroundStyle(pod.id == selection ? Color.accentColor : Color.secondary.opacity(0.55))
                         .frame(width: 14)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(rowTitle(pod))
-                            .font(.caption.weight(.semibold))
+                            .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .truncationMode(.middle)
 
                         if let detail = rowDetail(pod), !detail.isEmpty {
                             Text(detail)
-                                .font(.caption2)
+                                .runeInterfaceFont(relativeSize: -2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)

@@ -27,14 +27,33 @@ extension AddClusterProviderField {
 struct AddClusterProviderCredentialField<Content: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    let field: AddClusterProviderField
+    private let titleText: String
+    private let requirementTitle: String
+    private let accessibilityRequirementHint: String
+    private let fieldAccessibilityIdentifier: String
     private let content: Content
 
     init(
         field: AddClusterProviderField,
         @ViewBuilder content: () -> Content
     ) {
-        self.field = field
+        titleText = field.title
+        requirementTitle = field.requirementTitle
+        accessibilityRequirementHint = field.accessibilityRequirementHint
+        fieldAccessibilityIdentifier = field.accessibilityIdentifier
+        self.content = content()
+    }
+
+    init(
+        title: String,
+        isRequired: Bool,
+        accessibilityIdentifier: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        titleText = title
+        requirementTitle = isRequired ? "Required" : "Optional"
+        accessibilityRequirementHint = isRequired ? "Required field" : "Optional field"
+        fieldAccessibilityIdentifier = accessibilityIdentifier
         self.content = content()
     }
 
@@ -53,9 +72,9 @@ struct AddClusterProviderCredentialField<Content: View>: View {
             .accessibilityHidden(true)
 
             content
-                .accessibilityLabel(field.title)
-                .accessibilityHint(field.accessibilityRequirementHint)
-                .accessibilityIdentifier(field.accessibilityIdentifier)
+                .accessibilityLabel(titleText)
+                .accessibilityHint(accessibilityRequirementHint)
+                .accessibilityIdentifier(fieldAccessibilityIdentifier)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -76,13 +95,13 @@ struct AddClusterProviderCredentialField<Content: View>: View {
     }
 
     private var title: some View {
-        Text(field.title)
+        Text(titleText)
             .font(.caption.weight(.semibold))
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private var requirement: some View {
-        Text(field.requirementTitle)
+        Text(requirementTitle)
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

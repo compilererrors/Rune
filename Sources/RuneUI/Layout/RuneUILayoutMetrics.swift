@@ -34,7 +34,6 @@ enum RuneUILayoutMetrics {
     static let resourceFilterFieldIdealWidth: CGFloat = 240
     static let resourceFilterFieldMaximumWidth: CGFloat = 280
     static let resourceFilterControlsMaximumWidth: CGFloat = 312
-    static let resourceFamilyCompactPickerMaximumWidth: CGFloat = 240
     static let resourceListActionsRailMinimumWidth: CGFloat = 320
     static let resourceListCompactRowSpacing: CGFloat = 6
     /// Minimum width for the resource list column (`NavigationSplitView` content).

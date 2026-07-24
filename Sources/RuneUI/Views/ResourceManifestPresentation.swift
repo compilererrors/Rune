@@ -156,6 +156,7 @@ struct ManifestYAMLActionMenus: View {
                 .help("Discard local YAML edits and return to the current loaded draft.")
         } label: {
             Label(draftTitle, systemImage: "clock.arrow.circlepath")
+                .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .runeMinimumInteractiveTarget()
         }
 
@@ -176,6 +177,7 @@ struct ManifestYAMLActionMenus: View {
                 .help("Save the current YAML text to the configured export folder and open it.")
         } label: {
             Label(fileTitle, systemImage: "doc")
+                .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .runeMinimumInteractiveTarget()
         }
     }
@@ -183,6 +185,8 @@ struct ManifestYAMLActionMenus: View {
 
 struct ManifestToolbarScrollRow<Content: View>: View {
     @ViewBuilder let content: Content
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
@@ -191,7 +195,13 @@ struct ManifestToolbarScrollRow<Content: View>: View {
             }
             .fixedSize(horizontal: true, vertical: false)
         }
-        .controlSize(.small)
+        .runeInterfaceFont(relativeSize: -1, weight: .medium)
+        .controlSize(usesRegularControls ? .regular : .small)
+    }
+
+    private var usesRegularControls: Bool {
+        dynamicTypeSize.isAccessibilitySize
+            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1
     }
 }
 
@@ -228,7 +238,7 @@ struct ManifestToolbarGroup<Content: View>: View {
         }
         .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
         .padding(.vertical, role.verticalPadding)
-        .frame(height: role.height)
+        .frame(minHeight: role.height)
         .background {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .fill(Color.primary.opacity(0.04))

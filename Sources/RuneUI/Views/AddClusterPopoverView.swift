@@ -65,6 +65,7 @@ struct AddClusterPopoverView: View {
     let onUseDefaultKubeconfig: () -> Void
     let onSelectProvider: (AddClusterProviderIdentifier) -> Void
     let onImportManualToken: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
@@ -76,8 +77,7 @@ struct AddClusterPopoverView: View {
                     header
                     discoveryStatus
                     standardSection
-                    providerLoginSection
-                    localToolsSection
+                    providerToolsSection
                     manualTokenSection
                 }
                 .padding(RuneUILayoutMetrics.addClusterPopoverPadding)
@@ -156,22 +156,15 @@ struct AddClusterPopoverView: View {
         }
     }
 
-    private var providerLoginSection: some View {
+    private var providerToolsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Provider Login")
+            sectionLabel("Providers & local tools")
 
             LazyVGrid(columns: gridColumns, spacing: 8) {
-                ForEach(AddClusterProviderIdentifier.allCases.filter { $0 != .local }) { provider in
+                ForEach(AddClusterProviderIdentifier.allCases) { provider in
                     providerTile(provider)
                 }
             }
-        }
-    }
-
-    private var localToolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Local Tools")
-            providerTile(.local)
         }
     }
 
@@ -181,21 +174,40 @@ struct AddClusterPopoverView: View {
             isExpanded: $isManualTokenExpanded
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                manualField("Context name", requirement: "Required") {
+                AddClusterProviderCredentialField(
+                    title: "Context name",
+                    isRequired: true,
+                    accessibilityIdentifier: "rune.add-cluster.manual-field.context-name"
+                ) {
                     TextField("Example: development", text: $manualContextName)
                         .textFieldStyle(.roundedBorder)
                 }
-                manualField("Server URL", requirement: "Required") {
+                AddClusterProviderCredentialField(
+                    title: "Server URL",
+                    isRequired: true,
+                    accessibilityIdentifier: "rune.add-cluster.manual-field.server-url"
+                ) {
                     TextField("https://cluster.example.invalid", text: $manualServerURL)
                         .textFieldStyle(.roundedBorder)
                 }
-                manualField("Namespace", requirement: "Optional") {
+                AddClusterProviderCredentialField(
+                    title: "Namespace",
+                    isRequired: false,
+                    accessibilityIdentifier: "rune.add-cluster.manual-field.namespace"
+                ) {
                     TextField("Optional namespace", text: $manualNamespace)
                         .textFieldStyle(.roundedBorder)
                 }
-                manualField("Bearer token", requirement: "Required") {
+                AddClusterProviderCredentialField(
+                    title: "Bearer token",
+                    isRequired: true,
+                    accessibilityIdentifier: "rune.add-cluster.manual-field.bearer-token"
+                ) {
                     SecureField("Required token", text: $manualBearerToken)
                         .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Bearer token")
+                        .accessibilityHint("Required field")
+                        .accessibilityIdentifier("rune.add-cluster.manual-field.bearer-token")
                 }
 
                 Button(action: onImportManualToken) {
@@ -216,34 +228,16 @@ struct AddClusterPopoverView: View {
     }
 
     private var gridColumns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 8),
-            GridItem(.flexible(), spacing: 8)
-        ]
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: 8)]
+        }
+        return [GridItem(.adaptive(minimum: 170), spacing: 8)]
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
-    }
-
-    private func manualField<Control: View>(
-        _ title: String,
-        requirement: String,
-        @ViewBuilder control: () -> Control
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                Spacer(minLength: 0)
-                Text(requirement)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            control()
-        }
     }
 
     private var canImportManualToken: Bool {

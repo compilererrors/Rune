@@ -11,8 +11,15 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertEqual(RuneSettingsMetrics.sectionCardPadding, 14)
         XCTAssertEqual(RuneSettingsMetrics.rowMinHeight, 38)
         XCTAssertEqual(RuneSettingsMetrics.rowControlColumnWidth, 260)
+        XCTAssertEqual(RuneSettingsMetrics.compactMenuControlWidth, 190)
         XCTAssertGreaterThan(RuneSettingsMetrics.rowLabelMinWidth, 0)
         XCTAssertGreaterThan(RuneSettingsMetrics.stackedRowSpacing, 0)
+        XCTAssertEqual(
+            RuneSettingsMetrics.rowLabelMinWidth
+                + RuneSettingsMetrics.rowControlSpacing
+                + RuneSettingsMetrics.rowControlColumnWidth,
+            512
+        )
     }
 
     func testSettingsRowStacksAtNarrowWidthAndAccessibilityTextSize() {
@@ -28,14 +35,15 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertGreaterThan(enlarged.height, wide.height)
     }
 
-    func testCustomThemeActionsStackWithoutHorizontalOverflow() {
-        let wide = adaptiveActionSize(width: 520, dynamicTypeSize: .large)
-        let narrow = adaptiveActionSize(width: 190, dynamicTypeSize: .large)
-        let enlarged = adaptiveActionSize(width: 520, dynamicTypeSize: .accessibility3)
+    func testCustomThemeActionRailKeepsPrimaryActionsVisibleWithoutVerticalWall() {
+        let wide = customThemeActionRowSize(width: 680, dynamicTypeSize: .large)
+        let narrow = customThemeActionRowSize(width: 480, dynamicTypeSize: .large)
+        let enlarged = customThemeActionRowSize(width: 680, dynamicTypeSize: .accessibility3)
 
-        XCTAssertEqual(wide.width, 520, accuracy: 0.5)
-        XCTAssertEqual(narrow.width, 190, accuracy: 0.5)
-        XCTAssertEqual(enlarged.width, 520, accuracy: 0.5)
+        XCTAssertEqual(wide.width, 680, accuracy: 0.5)
+        XCTAssertEqual(narrow.width, 480, accuracy: 0.5)
+        XCTAssertEqual(enlarged.width, 680, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(wide.height, 76)
         XCTAssertGreaterThan(narrow.height, wide.height)
         XCTAssertGreaterThan(enlarged.height, wide.height)
     }
@@ -51,11 +59,14 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("Toggle(\"⇧\""))
 
         XCTAssertTrue(source.contains("RuneSettingsAdaptiveRow(label: label, control: control)"))
-        XCTAssertTrue(source.contains("RuneSettingsAdaptiveActionGroup {"))
         XCTAssertTrue(source.contains("dynamicTypeSize.isAccessibilitySize"))
-        XCTAssertTrue(source.contains("ViewThatFits(in: .horizontal)"))
-        XCTAssertTrue(source.contains(".frame(width: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)"))
-        XCTAssertTrue(source.contains("maxWidth: RuneSettingsMetrics.rowControlColumnWidth"))
+        XCTAssertTrue(source.contains("private struct RuneSettingsRowLayout: Layout"))
+        XCTAssertTrue(source.contains("RuneSettingsRowLayout(forceStacked: dynamicTypeSize.isAccessibilitySize)"))
+        XCTAssertTrue(source.contains("forceStacked || availableWidth < minimumHorizontalWidth"))
+        XCTAssertFalse(source.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(source.contains("anchor: .topTrailing"))
+        XCTAssertTrue(source.contains("anchor: .topLeading"))
+        XCTAssertFalse(source.contains("control\n                .frame(maxWidth: RuneSettingsMetrics.rowControlColumnWidth"))
 
         XCTAssertFalse(source.contains("showsHelpIcon"))
         XCTAssertFalse(source.contains("private func helpIcon"))
@@ -63,16 +74,109 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("RuneIconButton("))
         XCTAssertTrue(source.contains("SettingsHelpButton("))
 
-        let spacer = try XCTUnwrap(source.range(of: "Spacer(minLength: 8)"))
-        let selectedCheckmark = try XCTUnwrap(
-            source.range(of: "if isSelected {", range: spacer.upperBound..<source.endIndex)
-        )
-        XCTAssertLessThan(spacer.lowerBound, selectedCheckmark.lowerBound)
+        XCTAssertTrue(source.contains(".accessibilityLabel(theme.title)"))
+        XCTAssertTrue(source.contains(".accessibilityValue(isSelected ? \"Selected\" : presentation.appearanceTitle)"))
+        XCTAssertTrue(source.contains("if isSelected {"))
 
         XCTAssertTrue(source.contains("ScrollView {"))
         XCTAssertTrue(source.contains(".padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)"))
         XCTAssertTrue(source.contains(".runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)"))
         XCTAssertTrue(source.contains(".frame(minHeight: RuneSettingsMetrics.rowMinHeight)"))
+    }
+
+    func testThemeGridAndLogSettingsKeepPurposefulConsistentLayouts() throws {
+        let source = try String(contentsOfFile: preferencesViewPath, encoding: .utf8)
+        let themes = try XCTUnwrap(source.slice(
+            from: "private var themesSettingsForm: some View",
+            to: "private var clampedTerminalFontSize"
+        ))
+        let themeMenu = try XCTUnwrap(source.slice(
+            from: "private var themeOverflowMenu: some View",
+            to: "private var customThemeActions"
+        ))
+        let logs = try XCTUnwrap(source.slice(
+            from: "private var logsSettingsForm: some View",
+            to: "private var safetySettingsForm"
+        ))
+
+        XCTAssertTrue(themes.contains("settingsSection(\"Choose theme\")"))
+        XCTAssertTrue(themes.contains("LazyVGrid("))
+        XCTAssertTrue(themes.contains("columns: themeGridColumns"))
+        XCTAssertTrue(themes.contains("RuneThemeSelectorCard("))
+        XCTAssertTrue(themes.contains("themeOverflowMenu"))
+        XCTAssertTrue(themes.contains("settingsGridRow {"))
+        XCTAssertTrue(themes.contains("} control: {\n                        themeOverflowMenu"))
+        XCTAssertTrue(themeMenu.contains("RuneSettingsMenuLabel("))
+        XCTAssertTrue(themeMenu.contains("width: RuneSettingsMetrics.compactMenuControlWidth"))
+        XCTAssertTrue(themes.contains("customThemeActions"))
+        XCTAssertTrue(themes.contains("displayThemesDirectoryPath"))
+        XCTAssertFalse(themes.contains("themePickerMenu"))
+        XCTAssertFalse(themes.contains("customThemeManagementMenu"))
+        XCTAssertFalse(themes.contains("RuneSettingsAdaptiveActionGroup"))
+
+        XCTAssertTrue(source.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(source.contains("return [GridItem(.flexible(minimum: 220), spacing: 12)]"))
+        XCTAssertTrue(source.contains("createThemeTemplateButton"))
+        XCTAssertTrue(source.contains("Label(\"New Theme\", systemImage: \"doc.badge.plus\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Create theme template\")"))
+        XCTAssertFalse(source.contains("Label(\"Create Template\", systemImage: \"doc.badge.plus\")"))
+        XCTAssertTrue(source.contains("openThemesFolderButton"))
+        XCTAssertTrue(source.contains("reloadThemesButton"))
+        XCTAssertTrue(source.contains("customThemeMoreMenu"))
+        XCTAssertTrue(source.contains("return \"~\" + String(path.dropFirst(homePath.count))"))
+
+        XCTAssertTrue(logs.contains("exportFolderMenu"))
+        XCTAssertTrue(logs.contains("exportOpenerMenu(inklineRecommendation)"))
+        XCTAssertTrue(logs.contains("exportOpenerMenu(quikZipRecommendation)"))
+        XCTAssertFalse(logs.contains("exportOpenerRecommendationRow"))
+        XCTAssertFalse(logs.contains("Text opener bundle ID"))
+        XCTAssertFalse(logs.contains("Archive opener bundle ID"))
+        XCTAssertFalse(logs.contains("Button(\"Use "))
+    }
+
+    func testLanguageMenuUsesTheSharedTrailingControlRail() throws {
+        let source = try String(contentsOfFile: preferencesViewPath, encoding: .utf8)
+        let general = try XCTUnwrap(source.slice(
+            from: "private var generalSettingsForm: some View",
+            to: "private var themesSettingsForm"
+        ))
+
+        XCTAssertTrue(general.contains("Picker(\"Language\", selection: $interfaceLanguageRaw)"))
+        XCTAssertTrue(general.contains(".pickerStyle(.menu)"))
+        XCTAssertTrue(general.contains("width: RuneSettingsMetrics.compactMenuControlWidth"))
+        XCTAssertTrue(general.contains("alignment: .trailing"))
+    }
+
+    func testPerformanceSettingsUseOneVisibleLabeledNumericControlContract() throws {
+        let source = try String(contentsOfFile: preferencesViewPath, encoding: .utf8)
+        let editor = try XCTUnwrap(source.slice(
+            from: "struct RuneSettingsIntegerLimitEditor",
+            to: "/// Settings window content."
+        ))
+        let performance = try XCTUnwrap(source.slice(
+            from: "private var performanceSettingsForm: some View",
+            to: "private func customLogPresetRow"
+        ))
+
+        XCTAssertTrue(editor.contains("RuneSettingsAdaptiveRow {"))
+        XCTAssertTrue(editor.contains("TextField(placeholder, value: normalizedBinding, format: .number)"))
+        XCTAssertTrue(editor.contains("Text(valueSuffix)"))
+        XCTAssertTrue(editor.contains(".accessibilityLabel(\"\\(title) value\")"))
+        XCTAssertTrue(editor.contains("Stepper(\"Adjust \\(title)\", value: normalizedBinding, step: step)"))
+        XCTAssertTrue(editor.contains("Button(\"Reset\")"))
+        XCTAssertTrue(editor.contains("Current value: \\(normalizedValue) \\(valueSuffix)"))
+
+        XCTAssertEqual(
+            performance.components(separatedBy: "RuneSettingsIntegerLimitEditor(").count - 1,
+            3
+        )
+        XCTAssertTrue(performance.contains("title: \"Scrollback\""))
+        XCTAssertTrue(performance.contains("valueSuffix: \"lines\""))
+        XCTAssertTrue(performance.contains("title: \"Log cache\""))
+        XCTAssertTrue(performance.contains("valueSuffix: \"resources\""))
+        XCTAssertTrue(performance.contains("title: \"YAML undo\""))
+        XCTAssertTrue(performance.contains("valueSuffix: \"snapshots\""))
+        XCTAssertFalse(performance.contains("HStack(alignment: .firstTextBaseline"))
     }
 
     private func adaptiveRowSize(
@@ -96,15 +200,20 @@ final class RunePreferencesLayoutTests: XCTestCase {
         return host.fittingSize
     }
 
-    private func adaptiveActionSize(
+    private func customThemeActionRowSize(
         width: CGFloat,
         dynamicTypeSize: DynamicTypeSize
     ) -> CGSize {
-        let host = NSHostingView(rootView: RuneSettingsAdaptiveActionGroup {
-            Button("Create Template") {}
-            Button("Open Folder") {}
-            Button("Reload") {}
-            RuneIconButton("Theme help", systemImage: "questionmark.circle") {}
+        let host = NSHostingView(rootView: RuneSettingsAdaptiveRow {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Synthetic managed files")
+                    .font(.subheadline.weight(.semibold))
+                Text("Create, open, or reload these files from one control.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } control: {
+            SyntheticCustomThemeActions()
         }
         .dynamicTypeSize(dynamicTypeSize)
         .frame(width: width))
@@ -119,5 +228,48 @@ final class RunePreferencesLayoutTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift")
             .path
+    }
+}
+
+private struct SyntheticCustomThemeActions: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            HStack(spacing: 8) {
+                Button("New Theme") {}
+                    .accessibilityLabel("Create theme template")
+                Menu("More") {
+                    Button("Open Folder") {}
+                    Button("Reload") {}
+                }
+                Button("Help", systemImage: "questionmark.circle") {}
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Button("New Theme") {}
+                        .accessibilityLabel("Create theme template")
+                        .frame(maxWidth: .infinity)
+                    Button("Open Folder") {}
+                        .frame(maxWidth: .infinity)
+                }
+                HStack(spacing: 8) {
+                    Button("Reload") {}
+                    Spacer(minLength: 8)
+                    Button("Help", systemImage: "questionmark.circle") {}
+                }
+            }
+        }
+    }
+}
+
+private extension String {
+    func slice(from start: String, to end: String) -> String? {
+        guard let startRange = range(of: start),
+              let endRange = range(of: end, range: startRange.upperBound..<endIndex) else {
+            return nil
+        }
+        return String(self[startRange.lowerBound..<endRange.lowerBound])
     }
 }

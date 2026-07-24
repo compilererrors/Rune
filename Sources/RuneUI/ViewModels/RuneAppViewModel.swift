@@ -619,6 +619,48 @@ private struct SnapshotLoadPlan: Sendable {
     var rbacClusterRoles = false
     var rbacClusterRoleBindings = false
 
+    mutating func includeEventSource(kind rawKind: String?) {
+        let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        switch kind {
+        case "", "pod":
+            pods = true
+        case "deployment":
+            deployments = true
+        case "statefulset":
+            statefulSets = true
+        case "daemonset":
+            daemonSets = true
+        case "job":
+            jobs = true
+        case "cronjob":
+            cronJobs = true
+        case "replicaset":
+            replicaSets = true
+        case "horizontalpodautoscaler":
+            horizontalPodAutoscalers = true
+        case "service":
+            services = true
+        case "ingress":
+            ingresses = true
+        case "networkpolicy":
+            networkPolicies = true
+        case "configmap":
+            configMaps = true
+        case "secret":
+            secrets = true
+        case "node":
+            nodes = true
+        case "persistentvolumeclaim":
+            persistentVolumeClaims = true
+        case "persistentvolume":
+            persistentVolumes = true
+        case "storageclass":
+            storageClasses = true
+        default:
+            break
+        }
+    }
+
     var resourceListFamilies: Set<RuneResourceListFamily> {
         var families: Set<RuneResourceListFamily> = []
         if podStatuses || pods { families.insert(.pods) }
@@ -749,6 +791,18 @@ private struct SnapshotLoadPlan: Sendable {
             break
         }
         return plan
+    }
+}
+
+private struct PendingEventSourceNavigation {
+    let event: EventSummary
+    let contextName: String?
+    let namespace: String
+
+    func matches(contextName: String?, namespace: String) -> Bool {
+        guard self.contextName == contextName else { return false }
+        return self.namespace.isEmpty
+            || self.namespace.caseInsensitiveCompare(namespace) == .orderedSame
     }
 }
 
@@ -1097,8 +1151,8 @@ public final class RuneAppViewModel: ObservableObject {
     private var navigationHistory: [NavigationCheckpoint] = []
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
-    private var pendingOpenEventSource: EventSummary?
-    /// Retries for `navigateToEventSource` when lists were not loaded for the Events-only snapshot (e.g. pods empty until workloads refresh).
+    private var pendingOpenEventSource: PendingEventSourceNavigation?
+    /// Bounded retries while the snapshot plan hydrates the pending event source family.
     private var navigateFromEventFetchAttempts = 0
     private var scheduledRefreshTask: Task<Void, Never>?
     private var pendingCurrentViewRefreshID: UUID?
@@ -3982,6 +4036,18 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func snapshotLoadPlan(
+        section: RuneSection,
+        kind: KubeResourceKind,
+        simpleMode: Bool
+    ) -> SnapshotLoadPlan {
+        var plan = SnapshotLoadPlan.forSelection(section: section, kind: kind, simpleMode: simpleMode)
+        if let pendingOpenEventSource {
+            plan.includeEventSource(kind: pendingOpenEventSource.event.involvedKind)
+        }
+        return plan
+    }
+
     private func scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: Bool, debounced: Bool) {
         guard let context = state.selectedContext else { return }
         applyCachedSnapshot(context: context, namespace: state.selectedNamespace)
@@ -4013,8 +4079,11 @@ public final class RuneAppViewModel: ObservableObject {
         guard let context = state.selectedContext else { return }
         let namespace = state.selectedNamespace
         let simpleMode = UserDefaults.standard.runeSimpleMode
-        var cancellationFamilies = SnapshotLoadPlan
-            .forSelection(section: state.selectedSection, kind: state.selectedWorkloadKind, simpleMode: simpleMode)
+        var cancellationFamilies = snapshotLoadPlan(
+            section: state.selectedSection,
+            kind: state.selectedWorkloadKind,
+            simpleMode: simpleMode
+        )
             .resourceListFamilies
         if state.selectedSection == .helm {
             if simpleMode {
@@ -4095,6 +4164,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func navigateBack() {
         guard canNavigateBack else { return }
+        cancelPendingEventSourceNavigation()
         navigationIndex -= 1
         applyNavigationCheckpoint(navigationHistory[navigationIndex])
         updateNavigationAvailability()
@@ -4102,6 +4172,7 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func navigateForward() {
         guard canNavigateForward else { return }
+        cancelPendingEventSourceNavigation()
         navigationIndex += 1
         applyNavigationCheckpoint(navigationHistory[navigationIndex])
         updateNavigationAvailability()
@@ -4571,6 +4642,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func openOverviewModule(_ module: OverviewModule) {
+        cancelPendingEventSourceNavigation()
         switch module {
         case .pods:
             setSection(.workloads, trackHistory: false, triggerReload: false)
@@ -4601,6 +4673,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func openOverviewSignal(_ item: OverviewSignalItem) {
+        cancelPendingEventSourceNavigation()
         if let operatorResourceID = item.operatorResourceID,
            let resource = state.operatorResources.first(where: { $0.id == operatorResourceID }) {
             setSection(.helm, trackHistory: false, triggerReload: false)
@@ -4613,11 +4686,13 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func openOverviewDependency(_ item: OverviewDependencyItem) {
+        cancelPendingEventSourceNavigation()
         guard let target = item.primaryTarget else { return }
         openOverviewReference(target)
     }
 
     public func openOverviewGitOpsRollup(_ item: OverviewGitOpsRollupItem) {
+        cancelPendingEventSourceNavigation()
         setSection(.helm, trackHistory: false, triggerReload: false)
         switch item.controller {
         case .all:
@@ -5239,31 +5314,51 @@ public final class RuneAppViewModel: ObservableObject {
 
     /// Sets section, namespace, and selection from an event `involvedObject` (workload or namespaced resource).
     public func openEventSource(_ event: EventSummary) {
-        navigateFromEventFetchAttempts = 0
+        cancelPendingEventSourceNavigation()
         let targetNs = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !targetNs.isEmpty && targetNs != state.selectedNamespace {
-            pendingOpenEventSource = event
+            stageEventSourceNavigation(event)
             setNamespace(targetNs, trackHistory: false, triggerReload: true)
             return
         }
         navigateToEventSource(event)
     }
 
+    private func stageEventSourceNavigation(_ event: EventSummary) {
+        let eventNamespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        pendingOpenEventSource = PendingEventSourceNavigation(
+            event: event,
+            contextName: state.selectedContext?.name,
+            namespace: eventNamespace.isEmpty ? state.selectedNamespace : eventNamespace
+        )
+    }
+
+    private func cancelPendingEventSourceNavigation() {
+        pendingOpenEventSource = nil
+        navigateFromEventFetchAttempts = 0
+    }
+
     private func deferFetchOrShowEventDetail(event: EventSummary, showEventDetail: () -> Void) {
         if navigateFromEventFetchAttempts < 2 {
             navigateFromEventFetchAttempts += 1
-            pendingOpenEventSource = event
+            stageEventSourceNavigation(event)
             scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: false, debounced: false)
         } else {
-            navigateFromEventFetchAttempts = 0
+            cancelPendingEventSourceNavigation()
             showEventDetail()
         }
     }
 
     private func navigateToEventSource(_ event: EventSummary) {
+        let startedFromEvents = state.selectedSection == .events
         let kind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let name = event.objectName.trimmingCharacters(in: .whitespacesAndNewlines)
         let namespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        defer {
+            if startedFromEvents, state.selectedSection != .events {
+                state.resourceSearchQuery = ""
+            }
+        }
 
         func matchesEventObject(candidateName: String, candidateNamespace: String?, requireNamespace: Bool = true) -> Bool {
             guard candidateName == name else { return false }
@@ -9915,7 +10010,7 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         let cachedSnapshot = store.snapshot(context: context, namespace: effectiveNamespace)
-        let plan = SnapshotLoadPlan.forSelection(
+        let plan = snapshotLoadPlan(
             section: state.selectedSection,
             kind: state.selectedWorkloadKind,
             simpleMode: UserDefaults.standard.runeSimpleMode
@@ -10514,18 +10609,26 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
 
-        if allowsBackgroundFollowUpReads, shouldLoadResourceDetailsForCurrentSection {
+        var handledPendingEventSource = false
+        if allowsBackgroundFollowUpReads, let pending = pendingOpenEventSource {
+            pendingOpenEventSource = nil
+            if pending.matches(contextName: state.selectedContext?.name, namespace: effectiveNamespace) {
+                handledPendingEventSource = true
+                navigateToEventSource(pending.event)
+            } else {
+                navigateFromEventFetchAttempts = 0
+            }
+        }
+
+        if handledPendingEventSource {
+            diagnostics.log("loadResourceSnapshot delegated details to event source selection")
+        } else if allowsBackgroundFollowUpReads, shouldLoadResourceDetailsForCurrentSection {
             let requestID = UUID()
             latestResourceDetailsRequestID = requestID
             state.beginResourceDetailLoad(scope: currentResourceDetailScope())
             await loadResourceDetailsForCurrentSelectionAsync(requestID: requestID)
         } else {
             diagnostics.log("loadResourceSnapshot skipped heavy resource details for section=\(state.selectedSection.rawValue)")
-        }
-
-        if allowsBackgroundFollowUpReads, let pending = pendingOpenEventSource {
-            pendingOpenEventSource = nil
-            navigateToEventSource(pending)
         }
 
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
@@ -12245,6 +12348,9 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func prepareNavigationMutation(trackHistory: Bool) {
+        if trackHistory {
+            cancelPendingEventSourceNavigation()
+        }
         cancelObsoleteSelectionRequests()
         guard trackHistory, !isApplyingNavigationCheckpoint, navigationHistory.isEmpty else { return }
         navigationHistory.append(currentNavigationCheckpoint())

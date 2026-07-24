@@ -226,6 +226,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     @ViewBuilder var actions: Actions
     @Environment(\.runeThemePalette) private var runeThemePalette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     init(
         selectedCount: Int,
@@ -251,7 +252,8 @@ struct RuneBulkSelectionBar<Actions: View>: View {
             compactControls
         }
         .buttonStyle(.bordered)
-        .controlSize(dynamicTypeSize.isAccessibilitySize ? .regular : .small)
+        .runeInterfaceFont(relativeSize: -1, weight: .semibold)
+        .controlSize(usesRegularControls ? .regular : .small)
         .frame(
             maxWidth: .infinity,
             minHeight: dynamicTypeSize.isAccessibilitySize
@@ -311,7 +313,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
                 : (runeThemePalette?.chipFill ?? Color.secondary.opacity(0.10))
         ) {
             Label(selectedCountText, systemImage: selectedCount > 0 ? "checkmark.square.fill" : "square")
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .labelStyle(.titleAndIcon)
                 .imageScale(.small)
                 .foregroundStyle(
@@ -364,6 +366,11 @@ struct RuneBulkSelectionBar<Actions: View>: View {
     private var selectedCountText: String {
         "\(selectedCount) selected"
     }
+
+    private var usesRegularControls: Bool {
+        dynamicTypeSize.isAccessibilitySize
+            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1
+    }
 }
 
 /// One stable control band shared by every resource list. The primary control
@@ -374,6 +381,7 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
     @ViewBuilder let primary: Primary
     @ViewBuilder let actions: Actions
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     init(
         _ accessibilityLabel: String = "Resource list controls",
@@ -390,7 +398,8 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
             inlineLayout
             compactLayout
         }
-        .controlSize(dynamicTypeSize.isAccessibilitySize ? .regular : .small)
+        .runeInterfaceFont(relativeSize: -1, weight: .medium)
+        .controlSize(usesRegularControls ? .regular : .small)
         .frame(
             maxWidth: .infinity,
             minHeight: minimumHeight,
@@ -447,9 +456,14 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
     }
 
     private var minimumHeight: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
+        usesRegularControls
             ? RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight
             : RuneUILayoutMetrics.resourceListToolbarMinimumHeight
+    }
+
+    private var usesRegularControls: Bool {
+        dynamicTypeSize.isAccessibilitySize
+            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1
     }
 }
 
@@ -582,6 +596,7 @@ struct RuneInspectorActionRow<Content: View>: View {
             }
             .fixedSize(horizontal: true, vertical: false)
         }
+        .runeInterfaceFont(relativeSize: -1, weight: .medium)
         .controlSize(.regular)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

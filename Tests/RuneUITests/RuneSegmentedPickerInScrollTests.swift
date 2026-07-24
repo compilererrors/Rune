@@ -23,47 +23,42 @@ final class RuneSegmentedPickerInScrollTests: XCTestCase {
     }
 
     @MainActor
-    func testIntrinsicOverflowPolicyReportsFullSegmentWidthForAdaptiveFallback() {
-        let host = NSHostingView(rootView: RuneSegmentedPickerInScroll(
-            "Resource type",
-            selection: .constant(0),
-            labelsHidden: true,
-            overflowBehavior: .intrinsic
-        ) {
-            ForEach(0..<8, id: \.self) { index in
-                Text("Long resource type \(index)").tag(index)
-            }
-        })
+    func testResourceFamilyPickerAlwaysHostsAllTabsWithoutMenuFallback() throws {
+        for width in [CGFloat(1_100), CGFloat(240)] {
+            let host = scrollingPickerHost(width: width)
+            let segments = try XCTUnwrap(
+                firstVisibleSubview(of: NSSegmentedControl.self, in: host),
+                "Resource-family navigation must remain a segmented tab control at \(width) points."
+            )
 
-        host.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(
-            host.fittingSize.width,
-            320,
-            "Intrinsic mode must let ViewThatFits reject an overflowing segmented control and choose its compact menu fallback."
-        )
+            XCTAssertEqual(segments.segmentCount, 8)
+            XCTAssertNil(
+                firstVisibleSubview(of: NSPopUpButton.self, in: host),
+                "Resource-family tabs must never collapse into a dropdown."
+            )
+            XCTAssertEqual(host.frame.width, width, accuracy: 0.5)
+        }
     }
 
     @MainActor
-    func testAdaptivePickerHostsSegmentsWideAndMenuAtCompactWidth() {
-        let wideHost = adaptivePickerHost(width: 1_100)
-        XCTAssertNotNil(
-            firstVisibleSubview(of: NSSegmentedControl.self, in: wideHost),
-            "A wide resource-family rail should host the full segmented control."
-        )
-        XCTAssertNil(
-            firstVisibleSubview(of: NSPopUpButton.self, in: wideHost),
-            "The compact menu should not coexist with the fitting segmented control."
-        )
+    func testInterfaceFontPreferenceReachesScrollableTabsAtEveryWidth() throws {
+        for width in [CGFloat(1_100), CGFloat(240)] {
+            let standardHost = scrollingPickerHost(width: width, configuredFontSize: 12)
+            let enlargedHost = scrollingPickerHost(width: width, configuredFontSize: 15)
+            let standardSegments = try XCTUnwrap(
+                firstVisibleSubview(of: NSSegmentedControl.self, in: standardHost)
+            )
+            let enlargedSegments = try XCTUnwrap(
+                firstVisibleSubview(of: NSSegmentedControl.self, in: enlargedHost)
+            )
 
-        let compactHost = adaptivePickerHost(width: 240)
-        XCTAssertNil(
-            firstVisibleSubview(of: NSSegmentedControl.self, in: compactHost),
-            "An overflowing segmented control must leave the hosted hierarchy at compact width."
-        )
-        XCTAssertNotNil(
-            firstVisibleSubview(of: NSPopUpButton.self, in: compactHost),
-            "The compact resource-family rail should host a native menu picker."
-        )
+            XCTAssertGreaterThan(
+                enlargedSegments.font?.pointSize ?? 0,
+                standardSegments.font?.pointSize ?? 0
+            )
+            XCTAssertNil(firstVisibleSubview(of: NSPopUpButton.self, in: standardHost))
+            XCTAssertNil(firstVisibleSubview(of: NSPopUpButton.self, in: enlargedHost))
+        }
     }
 
     func testOverflowIsDiscoverableWithoutArtificialLeadingDrift() throws {
@@ -71,7 +66,10 @@ final class RuneSegmentedPickerInScrollTests: XCTestCase {
 
         XCTAssertTrue(source.contains("ScrollView(.horizontal, showsIndicators: true)"))
         XCTAssertTrue(source.contains("Scroll horizontally to reveal additional choices"))
-        XCTAssertTrue(source.contains("case .intrinsic:"))
+        XCTAssertTrue(source.contains(".pickerStyle(.segmented)"))
+        XCTAssertFalse(source.contains(".pickerStyle(.menu)"))
+        XCTAssertFalse(source.contains("RuneAdaptiveSegmentedPicker"))
+        XCTAssertFalse(source.contains("ViewThatFits"))
         XCTAssertFalse(source.contains(".padding(.leading"))
         XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
     }
@@ -86,12 +84,14 @@ final class RuneSegmentedPickerInScrollTests: XCTestCase {
     }
 
     @MainActor
-    private func adaptivePickerHost(width: CGFloat) -> NSHostingView<some View> {
-        let picker = RuneAdaptiveSegmentedPicker(
+    private func scrollingPickerHost(
+        width: CGFloat,
+        configuredFontSize: Double = 12
+    ) -> NSHostingView<some View> {
+        let picker = RuneSegmentedPickerInScroll(
             "Resource type",
             selection: .constant(0),
-            labelsHidden: true,
-            compactMaximumWidth: 220
+            labelsHidden: true
         ) {
             Text("Pods").tag(0)
             Text("Deployments").tag(1)
@@ -100,7 +100,12 @@ final class RuneSegmentedPickerInScrollTests: XCTestCase {
             Text("Jobs").tag(4)
             Text("CronJobs").tag(5)
             Text("ReplicaSets").tag(6)
+            Text("HPAs").tag(7)
         }
+        .runeInterfaceTypography(
+            configuredFontSize: configuredFontSize,
+            systemDynamicTypeSize: .large
+        )
         .frame(width: width, height: 50, alignment: .leading)
 
         let host = NSHostingView(rootView: picker)
