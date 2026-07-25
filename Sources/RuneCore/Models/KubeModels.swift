@@ -552,6 +552,12 @@ public struct ServiceSummary: Identifiable, Hashable, Codable, Sendable {
 }
 
 public struct EventSummary: Identifiable, Hashable, Codable, Sendable {
+    /// Stable Kubernetes metadata identity (`metadata.uid`, falling back to
+    /// `metadata.name`) when the event came from the API.
+    public let eventIdentifier: String?
+    /// Namespace that scopes a metadata-name fallback. This can differ from
+    /// `involvedNamespace` for events about cluster-scoped objects.
+    public let eventNamespace: String?
     public let type: String
     public let reason: String
     public let objectName: String
@@ -564,6 +570,8 @@ public struct EventSummary: Identifiable, Hashable, Codable, Sendable {
     public let involvedNamespace: String?
 
     public init(
+        eventIdentifier: String? = nil,
+        eventNamespace: String? = nil,
         type: String,
         reason: String,
         objectName: String,
@@ -572,6 +580,8 @@ public struct EventSummary: Identifiable, Hashable, Codable, Sendable {
         involvedKind: String? = nil,
         involvedNamespace: String? = nil
     ) {
+        self.eventIdentifier = eventIdentifier
+        self.eventNamespace = eventNamespace
         self.type = type
         self.reason = reason
         self.objectName = objectName
@@ -582,7 +592,34 @@ public struct EventSummary: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var id: String {
-        "\(type)|\(reason)|\(objectName)|\(involvedKind ?? "")|\(involvedNamespace ?? "")|\(lastTimestamp ?? "")|\(message.hashValue)"
+        if let eventIdentifier = eventIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !eventIdentifier.isEmpty {
+            return [
+                "event",
+                Self.identityComponent(eventNamespace ?? involvedNamespace),
+                Self.identityComponent(eventIdentifier)
+            ].joined(separator: "|")
+        }
+
+        // Synthetic and legacy inputs may not carry Kubernetes metadata.
+        // Length-prefixed components keep the fallback deterministic and
+        // collision-safe without relying on Swift's per-process `hashValue`.
+        return [
+            "event-fallback",
+            Self.identityComponent(type),
+            Self.identityComponent(reason),
+            Self.identityComponent(objectName),
+            Self.identityComponent(involvedKind),
+            Self.identityComponent(involvedNamespace),
+            Self.identityComponent(lastTimestamp),
+            Self.identityComponent(message)
+        ].joined(separator: "|")
+    }
+
+    private static func identityComponent(_ value: String?) -> String {
+        guard let value else { return "-:" }
+        return "\(value.utf8.count):\(value)"
     }
 }
 

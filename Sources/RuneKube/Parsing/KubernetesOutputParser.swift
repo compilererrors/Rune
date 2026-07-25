@@ -890,6 +890,8 @@ public struct KubernetesOutputParser {
             .map { item in
                 let stamp = item.lastTimestamp ?? item.firstTimestamp
                 return EventSummary(
+                    eventIdentifier: item.metadata?.uid ?? item.metadata?.name,
+                    eventNamespace: item.metadata?.namespace,
                     type: item.type ?? "Normal",
                     reason: item.reason ?? "Unknown",
                     objectName: item.involvedObject.name ?? "-",
@@ -1086,6 +1088,7 @@ public struct KubernetesOutputParser {
     private struct KubeMetadata: Decodable {
         let name: String
         let namespace: String?
+        let uid: String?
         let ownerReferences: [KubeOwnerReference]?
     }
 
@@ -1464,6 +1467,7 @@ public struct KubernetesOutputParser {
     }
 
     private struct KubeEventItem: Decodable {
+        let metadata: KubeMetadata?
         let type: String?
         let reason: String?
         let message: String?

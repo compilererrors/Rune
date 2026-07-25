@@ -509,17 +509,114 @@ private final class RuneAppKitColumnWidthStore {
 }
 
 @MainActor
+func invalidateResourceTableSelectionDisplay(
+    _ rows: IndexSet,
+    in tableView: NSTableView,
+    displayImmediately: Bool = false
+) {
+    for row in rows {
+        guard row >= 0, row < tableView.numberOfRows else { continue }
+        if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) {
+            rowView.needsDisplay = true
+            if displayImmediately {
+                rowView.displayIfNeeded()
+            }
+        } else {
+            tableView.setNeedsDisplay(tableView.rect(ofRow: row))
+        }
+    }
+}
+
+/// Bridges AppKit row clicks and SwiftUI-published selection.
+/// Deferred `apply()` can otherwise snap the table back to a stale published ID
+/// after a click has already moved the AppKit selection forward.
+@MainActor
+struct RuneAppKitResourceTableSelectionBridge {
+    struct UserSelectionIntent: Equatable {
+        fileprivate let id: String
+        fileprivate let generation: Int
+    }
+
+    private(set) var pendingUserSelectedID: String?
+    private var publishedSelectedIDBeforeUserSelection: String?
+    private var staleApplyGeneration: Int?
+    private var userSelectionIntentGeneration = 0
+
+    @discardableResult
+    mutating func noteUserSelectedID(
+        _ id: String,
+        publishedSelectedID: String?,
+        staleThroughApplyGeneration: Int
+    ) -> UserSelectionIntent {
+        userSelectionIntentGeneration += 1
+        pendingUserSelectedID = id
+        publishedSelectedIDBeforeUserSelection = publishedSelectedID
+        staleApplyGeneration = staleThroughApplyGeneration
+        return UserSelectionIntent(id: id, generation: userSelectionIntentGeneration)
+    }
+
+    mutating func clearPendingUserSelectedID() {
+        guard pendingUserSelectedID != nil else { return }
+        userSelectionIntentGeneration += 1
+        pendingUserSelectedID = nil
+        publishedSelectedIDBeforeUserSelection = nil
+        staleApplyGeneration = nil
+    }
+
+    mutating func prepareToPublish(
+        _ intent: UserSelectionIntent,
+        displayedSelectedID: String?,
+        staleThroughApplyGeneration: Int
+    ) -> Bool {
+        guard intent.generation == userSelectionIntentGeneration,
+              intent.id == pendingUserSelectedID,
+              displayedSelectedID == intent.id else { return false }
+        staleApplyGeneration = staleThroughApplyGeneration
+        return true
+    }
+
+    mutating func projectedSelectedID(
+        publishedSelectedID: String?,
+        pendingSelectionIsAvailable: Bool,
+        applyGeneration: Int
+    ) -> String? {
+        guard let pendingUserSelectedID else {
+            return publishedSelectedID
+        }
+        guard pendingSelectionIsAvailable else {
+            clearPendingUserSelectedID()
+            return publishedSelectedID
+        }
+        if publishedSelectedID == pendingUserSelectedID {
+            clearPendingUserSelectedID()
+            return publishedSelectedID
+        }
+        if publishedSelectedID != publishedSelectedIDBeforeUserSelection {
+            // Published state moved somewhere other than the clicked row.
+            // Treat that as newer external navigation and let it win.
+            clearPendingUserSelectedID()
+            return publishedSelectedID
+        }
+        if applyGeneration <= (staleApplyGeneration ?? -1) {
+            // This apply was already scheduled when the click happened. Keep the
+            // clicked row until SwiftUI has had a chance to publish that click.
+            return pendingUserSelectedID
+        }
+        // A newer SwiftUI update published the same ID that preceded the click.
+        // It is authoritative (including an intentional A → B → A transition).
+        clearPendingUserSelectedID()
+        return publishedSelectedID
+    }
+}
+
+@MainActor
 func applyImmediateResourceContextMenuSelection(
     row: Int,
     in tableView: NSTableView
 ) {
+    let rowsToRedraw = tableView.selectedRowIndexes.union(IndexSet(integer: row))
     tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-    if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) {
-        rowView.needsDisplay = true
-        rowView.displayIfNeeded()
-    } else {
-        tableView.setNeedsDisplay(tableView.rect(ofRow: row))
-    }
+    invalidateResourceTableSelectionDisplay(rowsToRedraw, in: tableView, displayImmediately: true)
 }
 
 @MainActor
@@ -529,12 +626,49 @@ func applyResourceTableSelection<Row>(
     rowID: (Row) -> String,
     in tableView: NSTableView
 ) {
+    let previousSelectedRows = tableView.selectedRowIndexes
     guard let selectedID,
           let selectedRow = rows.firstIndex(where: { rowID($0) == selectedID }) else {
+        guard !previousSelectedRows.isEmpty else { return }
+        let previouslyAllowedEmptySelection = tableView.allowsEmptySelection
+        tableView.allowsEmptySelection = true
         tableView.deselectAll(nil)
+        tableView.allowsEmptySelection = previouslyAllowedEmptySelection
+        invalidateResourceTableSelectionDisplay(previousSelectedRows, in: tableView)
+        return
+    }
+    if previousSelectedRows == IndexSet(integer: selectedRow) {
         return
     }
     tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
+    invalidateResourceTableSelectionDisplay(
+        previousSelectedRows.union(IndexSet(integer: selectedRow)),
+        in: tableView
+    )
+}
+
+@MainActor
+func applyBridgedResourceTableSelection<Row>(
+    bridge: inout RuneAppKitResourceTableSelectionBridge,
+    publishedSelectedID: String?,
+    rows: [Row],
+    rowID: (Row) -> String,
+    applyGeneration: Int,
+    in tableView: NSTableView
+) {
+    let selectedID = bridge.projectedSelectedID(
+        publishedSelectedID: publishedSelectedID,
+        pendingSelectionIsAvailable: bridge.pendingUserSelectedID.map { pendingID in
+            rows.contains(where: { rowID($0) == pendingID })
+        } ?? false,
+        applyGeneration: applyGeneration
+    )
+    applyResourceTableSelection(
+        selectedID: selectedID,
+        rows: rows,
+        rowID: rowID,
+        in: tableView
+    )
 }
 
 struct RuneAppKitResourceTableRowSnapshot<Value: Hashable>: Hashable {
@@ -547,6 +681,22 @@ struct RuneAppKitResourceTableRowSnapshot<Value: Hashable>: Hashable {
         self.value = value
         self.cellState = cellState
     }
+}
+
+func displayedResourceTableRow<Value: Hashable>(
+    at row: Int,
+    in rows: [RuneAppKitResourceTableRowSnapshot<Value>]?
+) -> RuneAppKitResourceTableRowSnapshot<Value>? {
+    guard let rows, row >= 0, row < rows.count else { return nil }
+    return rows[row]
+}
+
+@MainActor
+func displayedResourceTableSelectedID<Value: Hashable>(
+    in tableView: NSTableView,
+    rows: [RuneAppKitResourceTableRowSnapshot<Value>]?
+) -> String? {
+    displayedResourceTableRow(at: tableView.selectedRow, in: rows)?.id
 }
 
 enum RuneAppKitResourceTableRefreshPlan: Equatable {
@@ -607,6 +757,10 @@ enum RuneAppKitResourceTableStyle {
         tableView.rowHeight = rowHeight
         tableView.intercellSpacing = NSSize(width: 0, height: rowGap)
         tableView.allowsMultipleSelection = false
+        // User gestures never clear selection (avoids command-click followed by
+        // a state-driven snapback). Published nil/missing IDs still explicitly
+        // clear the table through applyResourceTableSelection.
+        tableView.allowsEmptySelection = false
         tableView.allowsColumnResizing = allowsColumnResizing
         tableView.columnAutoresizingStyle = .noColumnAutoresizing
         tableView.selectionHighlightStyle = .none
@@ -1174,16 +1328,29 @@ struct AppKitPodTableView: NSViewRepresentable {
         var parent: AppKitPodTableView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var nameColumnPersistWorkItem: DispatchWorkItem?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<PodSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "pods"
 
         init(_ parent: AppKitPodTableView) {
             self.parent = parent
+            displayedRows = parent.pods.map { pod in
+                var cellState: UInt8 = 0
+                if parent.selectedPodIDs.contains(pod.id) { cellState |= 1 }
+                if parent.isFavorite(pod) { cellState |= 2 }
+                return RuneAppKitResourceTableRowSnapshot(
+                    id: pod.id,
+                    value: pod,
+                    cellState: cellState
+                )
+            }
         }
 
         func apply(parent: AppKitPodTableView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -1202,24 +1369,28 @@ struct AppKitPodTableView: NSViewRepresentable {
                     )
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.pods.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.pods.count, let tableColumn else { return nil }
-            let pod = parent.pods[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
+                  let tableColumn else { return nil }
+            let pod = snapshot.value
             guard let column = PodColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
 
             switch column {
@@ -1227,7 +1398,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                 return resourceTableCheckboxCell(
                     in: tableView,
                     column: tableColumn,
-                    isSelected: parent.selectedPodIDs.contains(pod.id),
+                    isSelected: snapshot.cellState & 1 != 0,
                     row: row,
                     resourceName: pod.name,
                     target: self,
@@ -1294,7 +1465,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                 return resourceTableFavoriteCell(
                     in: tableView,
                     column: tableColumn,
-                    isFavorite: parent.isFavorite(pod),
+                    isFavorite: snapshot.cellState & 2 != 0,
                     row: row,
                     target: self,
                     action: #selector(toggleFavoriteButton(_:))
@@ -1308,10 +1479,18 @@ struct AppKitPodTableView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.pods.count else { return }
-            parent.onSelectPod(parent.pods[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let pod = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                pod.id,
+                publishedSelectedID: parent.selectedPodID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectPod(pod)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -1321,14 +1500,28 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.pods.count else { return }
-            let pod = parent.pods[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return }
+            let pod = snapshot.value
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard pod.id != parent.selectedPodID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                pod.id,
+                publishedSelectedID: parent.selectedPodID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.pods.first(where: { $0.id == pod.id })
                 else { return }
                 self.parent.onSelectPod(current)
@@ -1356,15 +1549,15 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         @objc private func toggleBulkSelection(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.pods.count else { return }
-            parent.onToggleBulkSelection(parent.pods[sender.tag])
+            guard let pod = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleBulkSelection(pod)
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.pods.count else { return nil }
-            let pod = parent.pods[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return nil }
+            let pod = snapshot.value
             let menu = NSMenu()
-            menu.addItem(menuItem(parent.isFavorite(pod) ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), pod: pod))
+            menu.addItem(menuItem(snapshot.cellState & 2 != 0 ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), pod: pod))
             menu.addItem(.separator())
             menu.addItem(menuItem("Open Logs", action: #selector(openLogsFromMenu(_:)), pod: pod))
             menu.addItem(menuItem("Exec Shell", action: #selector(openExecFromMenu(_:)), pod: pod))
@@ -1401,9 +1594,8 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
-            guard tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.pods.count else { return }
-            parent.onToggleFavorite(parent.pods[tableView.selectedRow])
+            guard let pod = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(pod)
         }
 
         @objc private func openLogsFromMenu(_ sender: NSMenuItem) {
@@ -1555,10 +1747,19 @@ struct AppKitPodTableView: NSViewRepresentable {
             updateTableWidth(on: tableView)
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedPodID, rows: parent.pods, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<PodSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedPodID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         private func updateSortIndicator(on tableView: NSTableView) {
@@ -1592,8 +1793,8 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.pods.count else { return }
-            parent.onToggleFavorite(parent.pods[sender.tag])
+            guard let pod = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(pod)
         }
 
         private func statusColor(for status: String) -> NSColor {
@@ -1698,15 +1899,25 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         var parent: AppKitDeploymentListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<DeploymentSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "deployments"
 
         init(_ parent: AppKitDeploymentListView) {
             self.parent = parent
+            displayedRows = parent.deployments.map { deployment in
+                RuneAppKitResourceTableRowSnapshot(
+                    id: deployment.id,
+                    value: deployment,
+                    cellState: parent.isFavorite(deployment) ? 1 : 0
+                )
+            }
         }
 
         func apply(parent: AppKitDeploymentListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -1722,19 +1933,22 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                     )
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateDeploymentSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.deployments.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -1742,10 +1956,10 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.deployments.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = DeploymentColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let deployment = parent.deployments[row]
+            let deployment = snapshot.value
             switch column {
             case .name:
                 return resourceTableLabelCell(
@@ -1768,7 +1982,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                 return resourceTableFavoriteCell(
                     in: tableView,
                     column: tableColumn,
-                    isFavorite: parent.isFavorite(deployment),
+                    isFavorite: snapshot.cellState & 1 != 0,
                     row: row,
                     target: self,
                     action: #selector(toggleFavoriteButton(_:))
@@ -1778,10 +1992,18 @@ struct AppKitDeploymentListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.deployments.count else { return }
-            parent.onSelectDeployment(parent.deployments[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let deployment = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                deployment.id,
+                publishedSelectedID: parent.selectedDeploymentID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectDeployment(deployment)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -1791,14 +2013,27 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.deployments.count else { return }
-            let deployment = parent.deployments[row]
+            guard let deployment = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard deployment.id != parent.selectedDeploymentID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                deployment.id,
+                publishedSelectedID: parent.selectedDeploymentID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.deployments.first(where: { $0.id == deployment.id })
                 else { return }
                 self.parent.onSelectDeployment(current)
@@ -1817,10 +2052,10 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.deployments.count else { return nil }
-            let deployment = parent.deployments[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return nil }
+            let deployment = snapshot.value
             let menu = NSMenu()
-            menu.addItem(menuItem(parent.isFavorite(deployment) ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), deployment: deployment))
+            menu.addItem(menuItem(snapshot.cellState & 1 != 0 ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), deployment: deployment))
             menu.addItem(.separator())
             menu.addItem(menuItem("Open Unified Logs", action: #selector(openUnifiedLogsFromMenu(_:)), deployment: deployment))
             menu.addItem(menuItem("Open Rollout", action: #selector(openRolloutFromMenu(_:)), deployment: deployment))
@@ -1842,14 +2077,13 @@ struct AppKitDeploymentListView: NSViewRepresentable {
         }
 
         func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
-            guard tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.deployments.count else { return }
-            parent.onToggleFavorite(parent.deployments[tableView.selectedRow])
+            guard let deployment = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(deployment)
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.deployments.count else { return }
-            parent.onToggleFavorite(parent.deployments[sender.tag])
+            guard let deployment = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(deployment)
         }
 
         @objc private func openUnifiedLogsFromMenu(_ sender: NSMenuItem) {
@@ -1888,10 +2122,19 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedDeploymentID, rows: parent.deployments, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<DeploymentSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedDeploymentID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -2054,15 +2297,25 @@ struct AppKitServiceListView: NSViewRepresentable {
         var parent: AppKitServiceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ServiceSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "services"
 
         init(_ parent: AppKitServiceListView) {
             self.parent = parent
+            displayedRows = parent.services.map { service in
+                RuneAppKitResourceTableRowSnapshot(
+                    id: service.id,
+                    value: service,
+                    cellState: parent.isFavorite(service) ? 1 : 0
+                )
+            }
         }
 
         func apply(parent: AppKitServiceListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -2078,19 +2331,22 @@ struct AppKitServiceListView: NSViewRepresentable {
                     )
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateServiceSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.services.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -2098,10 +2354,10 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.services.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = ServiceColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let service = parent.services[row]
+            let service = snapshot.value
             switch column {
             case .name:
                 return resourceTableLabelCell(
@@ -2136,7 +2392,7 @@ struct AppKitServiceListView: NSViewRepresentable {
                 return resourceTableFavoriteCell(
                     in: tableView,
                     column: tableColumn,
-                    isFavorite: parent.isFavorite(service),
+                    isFavorite: snapshot.cellState & 1 != 0,
                     row: row,
                     target: self,
                     action: #selector(toggleFavoriteButton(_:))
@@ -2146,10 +2402,18 @@ struct AppKitServiceListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.services.count else { return }
-            parent.onSelectService(parent.services[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let service = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                service.id,
+                publishedSelectedID: parent.selectedServiceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectService(service)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2159,14 +2423,27 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.services.count else { return }
-            let service = parent.services[row]
+            guard let service = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard service.id != parent.selectedServiceID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                service.id,
+                publishedSelectedID: parent.selectedServiceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.services.first(where: { $0.id == service.id })
                 else { return }
                 self.parent.onSelectService(current)
@@ -2185,10 +2462,10 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.services.count else { return nil }
-            let service = parent.services[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return nil }
+            let service = snapshot.value
             let menu = NSMenu()
-            menu.addItem(menuItem(parent.isFavorite(service) ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), service: service))
+            menu.addItem(menuItem(snapshot.cellState & 1 != 0 ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), service: service))
             menu.addItem(.separator())
             menu.addItem(menuItem("Open Unified Logs", action: #selector(openUnifiedLogsFromMenu(_:)), service: service))
             menu.addItem(menuItem("Port Forward", action: #selector(openPortForwardFromMenu(_:)), service: service))
@@ -2211,14 +2488,13 @@ struct AppKitServiceListView: NSViewRepresentable {
         }
 
         func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
-            guard tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.services.count else { return }
-            parent.onToggleFavorite(parent.services[tableView.selectedRow])
+            guard let service = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(service)
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.services.count else { return }
-            parent.onToggleFavorite(parent.services[sender.tag])
+            guard let service = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(service)
         }
 
         @objc private func openUnifiedLogsFromMenu(_ sender: NSMenuItem) {
@@ -2261,10 +2537,19 @@ struct AppKitServiceListView: NSViewRepresentable {
             }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedServiceID, rows: parent.services, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<ServiceSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedServiceID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -2439,17 +2724,30 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         var parent: AppKitGenericResourceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ClusterResourceSummary>]?
+        private var hasAppliedDisplayedRows = false
         private var tableID: String {
             RuneGenericResourceColumnPresentation.tableID(for: parent.resolvedResourceKind)
         }
 
         init(_ parent: AppKitGenericResourceListView) {
             self.parent = parent
+            displayedRows = parent.resources.map { resource in
+                var cellState: UInt8 = 0
+                if parent.selectedResourceIDs.contains(resource.id) { cellState |= 1 }
+                if parent.isFavorite(resource) { cellState |= 2 }
+                return RuneAppKitResourceTableRowSnapshot(
+                    id: resource.id,
+                    value: resource,
+                    cellState: cellState
+                )
+            }
         }
 
         func apply(parent: AppKitGenericResourceListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -2468,19 +2766,22 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                     )
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateGenericSortIndicator(on: tableView)
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.resources.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -2488,16 +2789,16 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.resources.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = GenericResourceColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let resource = parent.resources[row]
+            let resource = snapshot.value
             switch column {
             case .selection:
                 return resourceTableCheckboxCell(
                     in: tableView,
                     column: tableColumn,
-                    isSelected: parent.selectedResourceIDs.contains(resource.id),
+                    isSelected: snapshot.cellState & 1 != 0,
                     row: row,
                     resourceName: resource.name,
                     target: self,
@@ -2544,7 +2845,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                 return resourceTableFavoriteCell(
                     in: tableView,
                     column: tableColumn,
-                    isFavorite: parent.isFavorite(resource),
+                    isFavorite: snapshot.cellState & 2 != 0,
                     row: row,
                     target: self,
                     action: #selector(toggleFavoriteButton(_:))
@@ -2554,10 +2855,18 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.resources.count else { return }
-            parent.onSelectResource(parent.resources[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let resource = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                resource.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectResource(resource)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2567,14 +2876,27 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.resources.count else { return }
-            let resource = parent.resources[row]
+            guard let resource = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard resource.id != parent.selectedResourceID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                resource.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.resources.first(where: { $0.id == resource.id })
                 else { return }
                 self.parent.onSelectResource(current)
@@ -2593,10 +2915,10 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.resources.count else { return nil }
-            let resource = parent.resources[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return nil }
+            let resource = snapshot.value
             let menu = NSMenu()
-            menu.addItem(menuItem(parent.isFavorite(resource) ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), resource: resource))
+            menu.addItem(menuItem(snapshot.cellState & 2 != 0 ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), resource: resource))
             menu.addItem(.separator())
             menu.addItem(menuItem("Describe", action: #selector(openDescribeFromMenu(_:)), resource: resource))
             menu.addItem(menuItem("Open YAML", action: #selector(openYAMLFromMenu(_:)), resource: resource))
@@ -2620,19 +2942,18 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         @objc private func toggleBulkSelection(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.resources.count else { return }
-            parent.onToggleBulkSelection(parent.resources[sender.tag])
+            guard let resource = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleBulkSelection(resource)
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.resources.count else { return }
-            parent.onToggleFavorite(parent.resources[sender.tag])
+            guard let resource = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(resource)
         }
 
         func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
-            guard tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.resources.count else { return }
-            parent.onToggleFavorite(parent.resources[tableView.selectedRow])
+            guard let resource = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(resource)
         }
 
         @objc private func toggleFavoriteFromMenu(_ sender: NSMenuItem) {
@@ -2679,10 +3000,19 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedResourceID, rows: parent.resources, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<ClusterResourceSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedResourceID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -2856,15 +3186,21 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         var parent: AppKitHelmReleaseListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<HelmReleaseSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "helmReleases"
 
         init(_ parent: AppKitHelmReleaseListView) {
             self.parent = parent
+            displayedRows = parent.releases.map {
+                RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
+            }
         }
 
         func apply(parent: AppKitHelmReleaseListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -2876,19 +3212,22 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                     RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateHelmSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.releases.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -2896,10 +3235,10 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.releases.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = HelmReleaseColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let release = parent.releases[row]
+            let release = snapshot.value
             switch column {
             case .name:
                 return resourceTableLabelCell(
@@ -2958,10 +3297,18 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.releases.count else { return }
-            parent.onSelectRelease(parent.releases[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let release = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                release.id,
+                publishedSelectedID: parent.selectedReleaseID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectRelease(release)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2970,14 +3317,27 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.releases.count else { return }
-            let release = parent.releases[row]
+            guard let release = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard release.id != parent.selectedReleaseID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                release.id,
+                publishedSelectedID: parent.selectedReleaseID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.releases.first(where: { $0.id == release.id })
                 else { return }
                 self.parent.onSelectRelease(current)
@@ -2996,8 +3356,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.releases.count else { return nil }
-            let release = parent.releases[row]
+            guard let release = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return nil }
             let menu = NSMenu()
             menu.addItem(menuItem("Copy Helm release name", action: #selector(copyReleaseNameFromMenu(_:)), release: release))
             menu.addItem(menuItem("Copy namespace", action: #selector(copyNamespaceFromMenu(_:)), release: release))
@@ -3022,10 +3381,19 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             withRelease(sender) { release in copyToClipboard(release.appVersion) }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedReleaseID, rows: parent.releases, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<HelmReleaseSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedReleaseID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -3199,15 +3567,21 @@ struct AppKitEventListView: NSViewRepresentable {
         var parent: AppKitEventListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<EventSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "events"
 
         init(_ parent: AppKitEventListView) {
             self.parent = parent
+            displayedRows = parent.events.map {
+                RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
+            }
         }
 
         func apply(parent: AppKitEventListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -3219,19 +3593,22 @@ struct AppKitEventListView: NSViewRepresentable {
                     RuneAppKitResourceTableRowSnapshot(id: $0.id, value: $0)
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateEventSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.events.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -3239,10 +3616,10 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.events.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = EventColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let event = parent.events[row]
+            let event = snapshot.value
             switch column {
             case .reason:
                 return resourceTableLabelCell(
@@ -3304,10 +3681,18 @@ struct AppKitEventListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.events.count else { return }
-            parent.onSelectEvent(parent.events[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let event = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                event.id,
+                publishedSelectedID: parent.selectedEventID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectEvent(event)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -3317,14 +3702,27 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.events.count else { return }
-            let event = parent.events[row]
+            guard let event = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard event.id != parent.selectedEventID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                event.id,
+                publishedSelectedID: parent.selectedEventID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.events.first(where: { $0.id == event.id })
                 else { return }
                 self.parent.onSelectEvent(current)
@@ -3343,8 +3741,7 @@ struct AppKitEventListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.events.count else { return nil }
-            let event = parent.events[row]
+            guard let event = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return nil }
             let menu = NSMenu()
             menu.addItem(menuItem("Copy event reason", action: #selector(copyReasonFromMenu(_:)), event: event))
             if event.involvedKind != nil {
@@ -3386,10 +3783,19 @@ struct AppKitEventListView: NSViewRepresentable {
             withEvent(sender) { event in copyToClipboard(event.message) }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedEventID, rows: parent.events, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<EventSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedEventID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -3563,15 +3969,25 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         var parent: AppKitOperatorResourceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
+        private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<OperatorResourceSummary>]?
+        private var hasAppliedDisplayedRows = false
         private let tableID = "operatorResources"
 
         init(_ parent: AppKitOperatorResourceListView) {
             self.parent = parent
+            displayedRows = parent.resources.map { resource in
+                RuneAppKitResourceTableRowSnapshot(
+                    id: resource.id,
+                    value: resource,
+                    cellState: parent.isFavorite(resource) ? 1 : 0
+                )
+            }
         }
 
         func apply(parent: AppKitOperatorResourceListView) {
+            self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
@@ -3587,19 +4003,22 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                     )
                 }
                 let refreshPlan = RuneAppKitResourceTableRefreshPlan.resolve(
-                    previous: self.displayedRows,
+                    previous: self.hasAppliedDisplayedRows ? self.displayedRows : nil,
                     current: rows
                 )
                 self.displayedRows = rows
+                self.hasAppliedDisplayedRows = true
                 self.updateColumnWidths(on: tableView)
+                self.isApplyingSelection = true
                 refreshPlan.apply(to: tableView)
-                self.applySelection(on: tableView)
+                self.applySelection(on: tableView, rows: rows, generation: generation)
+                self.isApplyingSelection = false
                 self.updateOperatorResourceSortIndicator(on: tableView)
             }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.resources.count
+            displayedRows?.count ?? 0
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -3607,10 +4026,10 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0, row < parent.resources.count,
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
                   let tableColumn,
                   let column = OperatorResourceColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
-            let resource = parent.resources[row]
+            let resource = snapshot.value
             switch column {
             case .name:
                 return resourceTableLabelCell(
@@ -3684,7 +4103,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 return resourceTableFavoriteCell(
                     in: tableView,
                     column: tableColumn,
-                    isFavorite: parent.isFavorite(resource),
+                    isFavorite: snapshot.cellState & 1 != 0,
                     row: row,
                     target: self,
                     action: #selector(toggleFavoriteButton(_:))
@@ -3694,10 +4113,18 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
-                  let tableView = notification.object as? NSTableView,
-                  tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.resources.count else { return }
-            parent.onSelectResource(parent.resources[tableView.selectedRow])
+                  let tableView = notification.object as? NSTableView else { return }
+            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+                selectionBridge.clearPendingUserSelectedID()
+                return
+            }
+            let resource = snapshot.value
+            selectionBridge.noteUserSelectedID(
+                resource.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
+            parent.onSelectResource(resource)
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -3707,14 +4134,27 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
-            guard row >= 0, row < parent.resources.count else { return }
-            let resource = parent.resources[row]
+            guard let resource = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
             guard resource.id != parent.selectedResourceID else { return }
+            let intent = selectionBridge.noteUserSelectedID(
+                resource.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
+                      let tableView = self.tableView,
+                      self.selectionBridge.prepareToPublish(
+                          intent,
+                          displayedSelectedID: displayedResourceTableSelectedID(
+                              in: tableView,
+                              rows: self.displayedRows
+                          ),
+                          staleThroughApplyGeneration: self.applyGeneration
+                      ),
                       let current = self.parent.resources.first(where: { $0.id == resource.id })
                 else { return }
                 self.parent.onSelectResource(current)
@@ -3733,10 +4173,10 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func makeMenu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, row < parent.resources.count else { return nil }
-            let resource = parent.resources[row]
+            guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return nil }
+            let resource = snapshot.value
             let menu = NSMenu()
-            menu.addItem(menuItem(parent.isFavorite(resource) ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), resource: resource))
+            menu.addItem(menuItem(snapshot.cellState & 1 != 0 ? "Remove Favorite" : "Favorite Resource", action: #selector(toggleFavoriteFromMenu(_:)), resource: resource))
             menu.addItem(.separator())
             menu.addItem(menuItem("Describe", action: #selector(openDescribeFromMenu(_:)), resource: resource))
             menu.addItem(menuItem("Open YAML", action: #selector(openYAMLFromMenu(_:)), resource: resource))
@@ -3757,14 +4197,13 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
         }
 
         func toggleFavoriteForSelectedRow(in tableView: NSTableView) {
-            guard tableView.selectedRow >= 0,
-                  tableView.selectedRow < parent.resources.count else { return }
-            parent.onToggleFavorite(parent.resources[tableView.selectedRow])
+            guard let resource = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(resource)
         }
 
         @objc private func toggleFavoriteButton(_ sender: NSButton) {
-            guard sender.tag >= 0, sender.tag < parent.resources.count else { return }
-            parent.onToggleFavorite(parent.resources[sender.tag])
+            guard let resource = displayedResourceTableRow(at: sender.tag, in: displayedRows)?.value else { return }
+            parent.onToggleFavorite(resource)
         }
 
         @objc private func openDescribeFromMenu(_ sender: NSMenuItem) {
@@ -3803,10 +4242,19 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             withResource(sender) { resource in copyToClipboard(resource.apiPath) }
         }
 
-        private func applySelection(on tableView: NSTableView) {
-            isApplyingSelection = true
-            defer { isApplyingSelection = false }
-            applyResourceTableSelection(selectedID: parent.selectedResourceID, rows: parent.resources, rowID: \.id, in: tableView)
+        private func applySelection(
+            on tableView: NSTableView,
+            rows: [RuneAppKitResourceTableRowSnapshot<OperatorResourceSummary>],
+            generation: Int
+        ) {
+            applyBridgedResourceTableSelection(
+                bridge: &selectionBridge,
+                publishedSelectedID: parent.selectedResourceID,
+                rows: rows,
+                rowID: \.id,
+                applyGeneration: generation,
+                in: tableView
+            )
         }
 
         func updateColumnWidths() {
@@ -3946,6 +4394,19 @@ final class RuneAppKitResourceTableView: NSTableView {
     )
     var onContextMenu: ((Int, NSTableView) -> NSMenu?)?
     var onFavoriteToggle: (() -> Void)?
+
+    override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
+        let rowsToRedraw = selectedRowIndexes.union(indexes)
+        super.selectRowIndexes(indexes, byExtendingSelection: extend)
+        // selectionHighlightStyle is .none, so custom row fills must be invalidated manually.
+        invalidateResourceTableSelectionDisplay(rowsToRedraw, in: self)
+    }
+
+    override func deselectAll(_ sender: Any?) {
+        let rowsToRedraw = selectedRowIndexes
+        super.deselectAll(sender)
+        invalidateResourceTableSelectionDisplay(rowsToRedraw, in: self)
+    }
 
     override func keyDown(with event: NSEvent) {
         if runeAppKitEventIsFavoriteToggle(event), let onFavoriteToggle {

@@ -125,6 +125,499 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
     }
 
     @MainActor
+    func testResourceTableDisallowsUserClearingButPublishedNilStillClears() {
+        let rows = ["resource-alpha", "resource-beta"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 320)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = dataSource
+        RuneAppKitResourceTableStyle.apply(to: tableView, allowsColumnResizing: false)
+        tableView.noteNumberOfRowsChanged()
+
+        XCTAssertFalse(
+            tableView.allowsEmptySelection,
+            "Command-click must not create a transient empty selection that state immediately snaps back."
+        )
+
+        applyResourceTableSelection(
+            selectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        applyResourceTableSelection(
+            selectedID: nil,
+            rows: rows,
+            rowID: { $0 },
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, -1)
+    }
+
+    @MainActor
+    func testSelectionBridgeKeepsUserClickAheadOfStalePublishedSelection() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let rows = ["resource-alpha", "resource-beta", "resource-gamma"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        applyResourceTableSelection(
+            selectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 0)
+
+        // User clicks beta before SwiftUI publishes the new selection.
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 7
+        )
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 7,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 1)
+        XCTAssertEqual(bridge.pendingUserSelectedID, "resource-beta")
+
+        // SwiftUI catches up — pending clears and selection stays on beta.
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 8,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 1)
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
+    func testSelectionBridgeYieldsToExternalPublishedSelection() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let rows = ["resource-alpha", "resource-beta", "resource-gamma"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 4
+        )
+
+        // External navigation publishes gamma while AppKit still shows the pending click.
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-gamma",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 5,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 2)
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
+    func testSelectionBridgeDropsPendingSelectionWhenClickedRowDisappears() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let initialRows = ["resource-alpha", "resource-beta"]
+        let dataSource = ResourceTableTestDataSource(rowCount: initialRows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 3
+        )
+
+        let updatedRows = ["resource-alpha"]
+        dataSource.rowCount = updatedRows.count
+        tableView.reloadData()
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: updatedRows,
+            rowID: { $0 },
+            applyGeneration: 3,
+            in: tableView
+        )
+
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
+    func testSelectionBridgeTreatsNewerAAfterClickingBAsAuthoritative() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let rows = ["resource-alpha", "resource-beta"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 11
+        )
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 11,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 1, "The apply already queued before the click must not snap back.")
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 12,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 0, "A newer A publication must win in an intentional A → B → A transition.")
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
+    func testSelectionBridgeTracksPendingIDAcrossRenderedRowReorder() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let initialRows = ["resource-alpha", "resource-beta"]
+        let reorderedRows = ["resource-beta", "resource-alpha"]
+        let dataSource = ResourceTableTestDataSource(rowCount: initialRows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 9
+        )
+
+        tableView.reloadData()
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: reorderedRows,
+            rowID: { $0 },
+            applyGeneration: 9,
+            in: tableView
+        )
+
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertEqual(bridge.pendingUserSelectedID, "resource-beta")
+    }
+
+    @MainActor
+    func testSelectionBridgeRejectsSupersededDeferredContextMenuIntent() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+
+        let staleIntent = bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 2
+        )
+        let currentIntent = bridge.noteUserSelectedID(
+            "resource-gamma",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 2
+        )
+
+        XCTAssertFalse(
+            bridge.prepareToPublish(
+                staleIntent,
+                displayedSelectedID: "resource-beta",
+                staleThroughApplyGeneration: 2
+            )
+        )
+        XCTAssertTrue(
+            bridge.prepareToPublish(
+                currentIntent,
+                displayedSelectedID: "resource-gamma",
+                staleThroughApplyGeneration: 3
+            )
+        )
+    }
+
+    func testDisplayedRowSnapshotKeepsRowEventsBoundToRenderedOrder() {
+        let displayedRows = [
+            RuneAppKitResourceTableRowSnapshot(id: "resource-alpha", value: "rendered-alpha"),
+            RuneAppKitResourceTableRowSnapshot(id: "resource-beta", value: "rendered-beta")
+        ]
+        let newerParentOrder = ["resource-beta", "resource-alpha"]
+
+        XCTAssertEqual(newerParentOrder[0], "resource-beta")
+        XCTAssertEqual(displayedResourceTableRow(at: 0, in: displayedRows)?.id, "resource-alpha")
+        XCTAssertEqual(displayedResourceTableRow(at: 0, in: displayedRows)?.value, "rendered-alpha")
+        XCTAssertNil(displayedResourceTableRow(at: 2, in: displayedRows))
+    }
+
+    @MainActor
+    func testCoordinatorClickUsesRenderedSnapshotWhileReorderApplyIsPending() {
+        let alpha = ServiceSummary(
+            name: "service-alpha",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "192.0.2.10"
+        )
+        let beta = ServiceSummary(
+            name: "service-beta",
+            namespace: "synthetic",
+            type: "ClusterIP",
+            clusterIP: "192.0.2.11"
+        )
+        var selectedIDs: [String] = []
+
+        func view(services: [ServiceSummary]) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: beta.id,
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: { selectedIDs.append($0.id) },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let initialView = view(services: [alpha, beta])
+        let coordinator = initialView.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: initialView)
+        settle(tableView)
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        let reorderedView = view(services: [beta, alpha])
+        coordinator.parent = reorderedView
+        coordinator.apply(parent: reorderedView)
+
+        // AppKit still renders [alpha, beta] until the queued apply runs.
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        XCTAssertEqual(selectedIDs.last, alpha.id)
+
+        settle(tableView)
+        XCTAssertEqual(
+            tableView.selectedRow,
+            1,
+            "The pending alpha click must follow alpha's ID when the rendered rows reorder."
+        )
+    }
+
+    @MainActor
+    func testCoordinatorDropsSupersededDeferredContextMenuSelection() {
+        let services = ["alpha", "beta", "gamma"].map { name in
+            ServiceSummary(
+                name: "service-\(name)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.20"
+            )
+        }
+        var selectedIDs: [String] = []
+        let view = AppKitServiceListView(
+            services: services,
+            selectedServiceID: services[0].id,
+            sortColumn: .name,
+            sortAscending: true,
+            canApplyClusterMutations: false,
+            isFavorite: { _ in false },
+            onSelectService: { selectedIDs.append($0.id) },
+            onToggleSort: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenUnifiedLogs: { _ in },
+            onOpenPortForward: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        )
+        let coordinator = view.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: view)
+        settle(tableView)
+
+        coordinator.selectRowForContextMenu(1, in: tableView)
+        coordinator.selectRowForContextMenu(2, in: tableView)
+        settle(tableView)
+
+        XCTAssertEqual(selectedIDs, [services[2].id])
+        XCTAssertEqual(tableView.selectedRow, 2)
+    }
+
+    @MainActor
+    func testApplyResourceTableSelectionSkipsNoOpReselect() {
+        let rows = ["resource-alpha", "resource-beta"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        applyResourceTableSelection(
+            selectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            in: tableView
+        )
+        let selectedIndexes = tableView.selectedRowIndexes
+        applyResourceTableSelection(
+            selectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRowIndexes, selectedIndexes)
+    }
+
+    func testResourceTableSelectionInvalidationIsWiredForCustomHighlights() throws {
+        let source = try String(contentsOfFile: appKitResourceTablePath, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("func invalidateResourceTableSelectionDisplay("))
+        XCTAssertTrue(source.contains("struct RuneAppKitResourceTableSelectionBridge"))
+        XCTAssertTrue(source.contains("func applyBridgedResourceTableSelection<Row>("))
+        XCTAssertTrue(source.contains("override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool)"))
+        XCTAssertTrue(source.contains("override func deselectAll(_ sender: Any?)"))
+        XCTAssertTrue(source.contains("allowsMultipleSelection = false"))
+        XCTAssertTrue(source.contains("allowsEmptySelection = false"))
+        XCTAssertTrue(source.contains("selectionHighlightStyle = .none"))
+        XCTAssertTrue(source.contains("action: #selector(toggleBulkSelection(_:))"))
+        XCTAssertEqual(
+            source.components(separatedBy: "private var selectionBridge = RuneAppKitResourceTableSelectionBridge()").count - 1,
+            7
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "applyBridgedResourceTableSelection(\n").count - 1,
+            7,
+            "Every resource-table coordinator must project selection through the shared bridge."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "displayedRows?.count ?? 0").count - 1,
+            7,
+            "The data source row count must come from the snapshot currently rendered by AppKit."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "self.selectionBridge.prepareToPublish(").count - 1,
+            7,
+            "Every deferred context-menu selection must verify that its user intent is still current."
+        )
+        XCTAssertFalse(source.contains("parent.pods[tableView.selectedRow]"))
+        XCTAssertFalse(source.contains("parent.deployments[tableView.selectedRow]"))
+        XCTAssertFalse(source.contains("parent.services[tableView.selectedRow]"))
+        XCTAssertFalse(source.contains("parent.releases[tableView.selectedRow]"))
+        XCTAssertFalse(source.contains("parent.events[tableView.selectedRow]"))
+        XCTAssertFalse(source.contains("parent.resources[tableView.selectedRow]"))
+        XCTAssertTrue(source.contains("func applyBridgedResourceTableSelection<Row>("))
+        XCTAssertTrue(
+            source.contains("let rowsToRedraw = selectedRowIndexes.union(indexes)"),
+            "Native clicks must invalidate the previous and next custom selection fills."
+        )
+        XCTAssertTrue(
+            source.contains("invalidateResourceTableSelectionDisplay(\n        previousSelectedRows.union(IndexSet(integer: selectedRow)),\n        in: tableView\n    )")
+                || source.contains("previousSelectedRows.union(IndexSet(integer: selectedRow))"),
+            "Programmatic selection projection must clear stale custom row fills."
+        )
+    }
+
+    @MainActor
+    func testHostedPodTableSingleSelectionKeepsOnlyOneSelectedRow() throws {
+        let pods = (0..<8).map { index in
+            PodSummary(
+                name: "pod-\(index)",
+                namespace: "default",
+                status: "Running"
+            )
+        }
+        var selectedPodID: String? = pods[0].id
+        let selectedPodIDs: Set<String> = []
+        let host = NSHostingView(rootView: AppKitPodTableView(
+            pods: pods,
+            selectedPodID: selectedPodID,
+            selectedPodIDs: selectedPodIDs,
+            sortColumn: .name,
+            sortAscending: true,
+            nameColumnWidth: 280,
+            canApplyClusterMutations: false,
+            isFavorite: { _ in false },
+            onSelectPod: { selectedPodID = $0.id },
+            onToggleBulkSelection: { _ in },
+            onToggleSort: { _ in },
+            onNameColumnWidthChanged: { _ in },
+            onToggleFavorite: { _ in },
+            onOpenLogs: { _ in },
+            onOpenExec: { _ in },
+            onOpenDescribe: { _ in },
+            onOpenYAML: { _ in },
+            onDelete: { _ in }
+        ).frame(width: 960, height: 280))
+        host.frame = NSRect(x: 0, y: 0, width: 960, height: 280)
+        settle(host)
+
+        let scrollView = try XCTUnwrap(findResourceTableScrollView(in: host))
+        let tableView = try XCTUnwrap(scrollView.documentView as? RuneAppKitResourceTableView)
+        XCTAssertEqual(tableView.allowsMultipleSelection, false)
+
+        applyResourceTableSelection(
+            selectedID: pods[0].id,
+            rows: pods,
+            rowID: \.id,
+            in: tableView
+        )
+        applyResourceTableSelection(
+            selectedID: pods[3].id,
+            rows: pods,
+            rowID: \.id,
+            in: tableView
+        )
+
+        XCTAssertEqual(tableView.selectedRowIndexes, IndexSet(integer: 3))
+        XCTAssertEqual(tableView.numberOfSelectedRows, 1)
+
+        var selectedCount = 0
+        for row in 0..<tableView.numberOfRows {
+            guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) else { continue }
+            if rowView.isSelected {
+                selectedCount += 1
+                XCTAssertEqual(row, 3)
+            }
+        }
+        XCTAssertEqual(selectedCount, 1)
+    }
+
+    @MainActor
     func testCustomThemeResolvesThroughTableHeaderHierarchy() {
         let tableView = RuneAppKitResourceTableView()
         let customTheme = RuneAppearanceTheme.fjord.resolvedTheme
@@ -920,7 +1413,7 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
 }
 
 private final class ResourceTableTestDataSource: NSObject, NSTableViewDataSource {
-    let rowCount: Int
+    var rowCount: Int
 
     init(rowCount: Int) {
         self.rowCount = rowCount

@@ -1596,7 +1596,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("state.selectTerminalSession(id: existing.id)"))
 
         XCTAssertTrue(kubeClientSource.contains("public func stopPodTerminalSession(id: String) async"))
-        XCTAssertTrue(kubeClientSource.contains("terminalSessionRegistry.remove(id: id)"))
+        XCTAssertTrue(kubeClientSource.contains("terminalSessionRegistry.remove("))
+        XCTAssertTrue(kubeClientSource.contains("rememberIfNotStarted: true"))
         XCTAssertTrue(kubeClientSource.contains("handle?.terminate()"))
         XCTAssertTrue(kubeClientSource.contains("public func stopPortForward(sessionID: String) async"))
         XCTAssertTrue(kubeClientSource.contains("portForwardRegistry.remove(id: sessionID)"))
@@ -2270,7 +2271,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("+ (reservesSortIndicator ? RuneAppKitResourceListLayout.sortIndicatorSize.width + RuneAppKitResourceTableStyle.sortIndicatorGap : 0)"))
         XCTAssertTrue(appKitPodTableSource.contains("NSImage.Name(parent.sortAscending ? \"NSAscendingSortIndicator\" : \"NSDescendingSortIndicator\")"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceTableTheme.resolved(for: controlView).headerText"))
-        XCTAssertTrue(appKitPodTableSource.contains("label.centerYAnchor.constraint(equalTo: container.centerYAnchor)"))
+        XCTAssertTrue(appKitPodTableSource.contains("label.centerYAnchor.constraint(equalTo: centerYAnchor)"))
         XCTAssertTrue(appKitPodTableSource.contains("drawSortIndicator(\n                            ascending:"))
         XCTAssertTrue(appKitPodTableSource.contains("active: headerCell.isSorted"))
         XCTAssertTrue(appKitPodTableSource.contains("resetColumnWidth(_ columnID: String)"))
@@ -2474,10 +2475,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("case .age: return PodTableLayout.ageWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .status: return PodTableLayout.statusTotalWidth"))
         XCTAssertTrue(appKitPodTableSource.contains("case .favorite: return PodTableLayout.favoriteColumnWidth"))
-        XCTAssertTrue(appKitPodTableSource.contains("return statusCell(for: pod)"))
-        XCTAssertTrue(appKitPodTableSource.contains("container.layer?.masksToBounds = true"))
-        XCTAssertTrue(appKitPodTableSource.contains("let maxPillWidth = pill.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -8)"))
-        XCTAssertTrue(appKitPodTableSource.contains("maxPillWidth.priority = .defaultHigh"))
+        XCTAssertTrue(appKitPodTableSource.contains("return resourceTablePillCell("))
+        XCTAssertTrue(appKitPodTableSource.contains("layer?.masksToBounds = true"))
+        XCTAssertTrue(appKitPodTableSource.contains("widthAnchor.constraint(greaterThanOrEqualToConstant: minimumWidth)"))
         XCTAssertTrue(appKitPodTableSource.contains("static func podColumnWidths("))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.minimumHeaderColumnWidth(title: title, reservesSortIndicator: true)"))
         XCTAssertTrue(appKitPodTableSource.contains("case .cpu: return 160"))
@@ -2485,7 +2485,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("case .restarts: return 180"))
         XCTAssertTrue(appKitPodTableSource.contains("case .age: return 140"))
         XCTAssertTrue(appKitPodTableSource.contains("case .status: return 240"))
-        XCTAssertTrue(appKitPodTableSource.contains("return favoriteCell(isFavorite: parent.isFavorite(pod), row: row)"))
+        XCTAssertTrue(appKitPodTableSource.contains("return resourceTableFavoriteCell("))
         XCTAssertTrue(appKitPodTableSource.contains("@objc private func toggleFavoriteButton"))
         XCTAssertTrue(appKitPodTableSource.contains("static let rowGap: CGFloat = 0"))
         XCTAssertTrue(appKitPodTableSource.contains("tableView.intercellSpacing = NSSize(width: 0, height: rowGap)"))
@@ -2616,7 +2616,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let appKitPodTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
 
         XCTAssertTrue(rootViewSource.contains("RuneBulkSelectionBar("))
-        XCTAssertTrue(appKitPodTableSource.contains("NSButton(checkboxWithTitle: \"\""))
+        XCTAssertTrue(appKitPodTableSource.contains("resourceTableCheckboxCell("))
+        XCTAssertTrue(appKitPodTableSource.contains("private final class RuneAppKitCheckboxCell: NSView"))
+        XCTAssertTrue(appKitPodTableSource.contains("checkbox.setButtonType(.switch)"))
         XCTAssertTrue(rootViewSource.contains("genericResourceBulkSelectionControls"))
         XCTAssertTrue(rootViewSource.contains("viewModel.requestDeleteSelectedGenericResources()"))
         XCTAssertTrue(rootViewSource.contains("Label(\"Export\", systemImage: \"square.and.arrow.up\")"))
@@ -3962,7 +3964,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(arrowGuardBlock.contains("event.keyCode == 123 || event.keyCode == 124"))
         XCTAssertTrue(arrowGuardBlock.contains("keyboardPaneFocus == .detail || (keyboardPaneFocus == .content && viewModel.state.selectedSection != .terminal)"))
         XCTAssertTrue(arrowGuardBlock.contains("[.command, .option, .control, .shift, .function]"))
-        XCTAssertTrue(rootViewSource.contains("helmBrowserTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(rootViewSource.contains("let nextTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)"))
         XCTAssertTrue(detailMoveBlock.contains("case .operatorResource:"))
         XCTAssertTrue(detailMoveBlock.contains("genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)"))
         XCTAssertTrue(detailMoveBlock.contains("case .release:"))
@@ -3991,6 +3994,35 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
         XCTAssertTrue(describeBlock.contains("genericResourceManifestTab = .describe"))
         XCTAssertTrue(yamlBlock.contains("genericResourceManifestTab = .yaml"))
+    }
+
+    func testHelmContentKeyboardNavigationUsesTheActiveBrowserTab() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let moveSelectionBlock = try functionBlock(
+            named: "private func moveContentSelection(_ direction: MoveCommandDirection)",
+            endingBefore: "private func moveOverviewCardSelection",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(moveSelectionBlock.contains("switch helmBrowserTab"))
+        XCTAssertTrue(moveSelectionBlock.contains("case .releases:"))
+        XCTAssertTrue(moveSelectionBlock.contains("items: viewModel.visibleHelmReleases"))
+        XCTAssertTrue(moveSelectionBlock.contains("case .operatorResources:"))
+        XCTAssertTrue(moveSelectionBlock.contains("items: viewModel.pagedOperatorResources"))
+        XCTAssertTrue(moveSelectionBlock.contains("viewModel.selectOperatorResource(next)"))
+    }
+
+    func testHelmKeyboardTabChangeSynchronizesTheLoadedResourceFamily() throws {
+        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let moveKindBlock = try functionBlock(
+            named: "private func moveContentKindIfNeeded(_ direction: MoveCommandDirection) -> Bool",
+            endingBefore: "private func contentKindsForSelectedSection",
+            in: rootViewSource
+        )
+
+        XCTAssertTrue(moveKindBlock.contains("let nextTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(moveKindBlock.contains("helmBrowserTab = nextTab"))
+        XCTAssertTrue(moveKindBlock.contains("viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)"))
     }
 
     func testPreferencesExposeArrowKeysForHistoryBindings() throws {

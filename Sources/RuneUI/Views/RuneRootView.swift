@@ -7184,8 +7184,23 @@ public struct RuneRootView: View {
                 viewModel.selectEvent(next)
             }
         case .helm:
-            if let next = steppedItem(items: viewModel.visibleHelmReleases, currentID: viewModel.state.selectedHelmRelease?.id, direction: direction) {
-                viewModel.selectHelmRelease(next)
+            switch helmBrowserTab {
+            case .releases:
+                if let next = steppedItem(
+                    items: viewModel.visibleHelmReleases,
+                    currentID: viewModel.state.selectedHelmRelease?.id,
+                    direction: direction
+                ) {
+                    viewModel.selectHelmRelease(next)
+                }
+            case .operatorResources:
+                if let next = steppedItem(
+                    items: viewModel.pagedOperatorResources,
+                    currentID: viewModel.state.selectedOperatorResource?.id,
+                    direction: direction
+                ) {
+                    viewModel.selectOperatorResource(next)
+                }
             }
         case .overview:
             moveOverviewCardSelection(direction)
@@ -7215,7 +7230,9 @@ public struct RuneRootView: View {
     private func moveContentKindIfNeeded(_ direction: MoveCommandDirection) -> Bool {
         guard direction == .left || direction == .right else { return false }
         if viewModel.state.selectedSection == .helm {
-            helmBrowserTab = advancedTab(current: helmBrowserTab, direction: direction)
+            let nextTab = advancedTab(current: helmBrowserTab, direction: direction)
+            helmBrowserTab = nextTab
+            viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)
             return true
         }
 

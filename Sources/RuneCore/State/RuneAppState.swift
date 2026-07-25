@@ -346,6 +346,62 @@ public final class RuneAppState: ObservableObject {
         }
     }
 
+    private func reconcileSelection<Value: Identifiable & Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<RuneAppState, Value?>,
+        in values: [Value],
+        fallback: Value?
+    ) where Value.ID == String {
+        let selectedID = self[keyPath: keyPath]?.id
+        let refreshedSelection = selectedID.flatMap { id in
+            values.first(where: { $0.id == id })
+        }
+        assignIfChanged(keyPath, refreshedSelection ?? fallback)
+    }
+
+    private var genericResourceIDs: Set<String> {
+        let resourceLists = [
+            statefulSets,
+            daemonSets,
+            jobs,
+            cronJobs,
+            replicaSets,
+            persistentVolumeClaims,
+            persistentVolumes,
+            storageClasses,
+            horizontalPodAutoscalers,
+            networkPolicies,
+            endpoints,
+            ingresses,
+            configMaps,
+            secrets,
+            nodes,
+            rbacRoles,
+            serviceAccounts,
+            rbacRoleBindings,
+            rbacClusterRoles,
+            rbacClusterRoleBindings
+        ]
+        return Set(resourceLists.joined().map(\.id))
+    }
+
+    private func reconcileSelectedGenericResourceIDs() {
+        guard !selectedGenericResourceIDs.isEmpty else { return }
+        assignIfChanged(
+            \.selectedGenericResourceIDs,
+            selectedGenericResourceIDs.intersection(genericResourceIDs)
+        )
+    }
+
+    private func setGenericResources(
+        _ resources: [ClusterResourceSummary],
+        list listKeyPath: ReferenceWritableKeyPath<RuneAppState, [ClusterResourceSummary]>,
+        selection selectionKeyPath: ReferenceWritableKeyPath<RuneAppState, ClusterResourceSummary?>
+    ) {
+        assignIfChanged(listKeyPath, resources)
+        reconcileSelection(selectionKeyPath, in: resources, fallback: resources.first)
+        reconcileSelectedGenericResourceIDs()
+    }
+
     public func setPods(_ pods: [PodSummary]) {
         assignIfChanged(\.pods, pods)
         let validSelectedPodIDs = selectedPodIDs.intersection(Set(pods.map(\.id)))
@@ -366,130 +422,95 @@ public final class RuneAppState: ObservableObject {
 
     public func setDeployments(_ deployments: [DeploymentSummary]) {
         assignIfChanged(\.deployments, deployments)
-        if let selectedDeployment, deployments.contains(selectedDeployment) {
-            return
-        }
-        if selectedDeployment != deployments.first {
-            selectedDeployment = deployments.first
-        }
+        reconcileSelection(\.selectedDeployment, in: deployments, fallback: deployments.first)
     }
 
     public func setServices(_ services: [ServiceSummary]) {
-        self.services = services
-        if let selectedService, services.contains(selectedService) {
-            return
-        }
-        selectedService = services.first
+        assignIfChanged(\.services, services)
+        reconcileSelection(\.selectedService, in: services, fallback: services.first)
     }
 
     public func setEvents(_ events: [EventSummary]) {
-        self.events = events
-        if let selectedEvent, events.contains(selectedEvent) {
-            return
-        }
-        selectedEvent = events.first
+        assignIfChanged(\.events, events)
+        reconcileSelection(\.selectedEvent, in: events, fallback: events.first)
     }
 
     public func setHelmReleases(_ releases: [HelmReleaseSummary]) {
-        helmReleases = releases
-        if let selectedHelmRelease, releases.contains(selectedHelmRelease) { return }
-        selectedHelmRelease = releases.first
+        assignIfChanged(\.helmReleases, releases)
+        reconcileSelection(\.selectedHelmRelease, in: releases, fallback: releases.first)
     }
 
     public func setOperatorResources(_ resources: [OperatorResourceSummary]) {
-        operatorResources = resources
-        if let selectedOperatorResource, resources.contains(selectedOperatorResource) { return }
-        selectedOperatorResource = nil
+        assignIfChanged(\.operatorResources, resources)
+        reconcileSelection(\.selectedOperatorResource, in: resources, fallback: nil)
     }
 
     public func setStatefulSets(_ resources: [ClusterResourceSummary]) {
-        statefulSets = resources
-        if let selectedStatefulSet, resources.contains(selectedStatefulSet) { return }
-        selectedStatefulSet = resources.first
+        setGenericResources(resources, list: \.statefulSets, selection: \.selectedStatefulSet)
     }
 
     public func setDaemonSets(_ resources: [ClusterResourceSummary]) {
-        daemonSets = resources
-        if let selectedDaemonSet, resources.contains(selectedDaemonSet) { return }
-        selectedDaemonSet = resources.first
+        setGenericResources(resources, list: \.daemonSets, selection: \.selectedDaemonSet)
     }
 
     public func setJobs(_ resources: [ClusterResourceSummary]) {
-        jobs = resources
-        if let selectedJob, resources.contains(selectedJob) { return }
-        selectedJob = resources.first
+        setGenericResources(resources, list: \.jobs, selection: \.selectedJob)
     }
 
     public func setCronJobs(_ resources: [ClusterResourceSummary]) {
-        cronJobs = resources
-        if let selectedCronJob, resources.contains(selectedCronJob) { return }
-        selectedCronJob = resources.first
+        setGenericResources(resources, list: \.cronJobs, selection: \.selectedCronJob)
     }
 
     public func setReplicaSets(_ resources: [ClusterResourceSummary]) {
-        replicaSets = resources
-        if let selectedReplicaSet, resources.contains(selectedReplicaSet) { return }
-        selectedReplicaSet = resources.first
+        setGenericResources(resources, list: \.replicaSets, selection: \.selectedReplicaSet)
     }
 
     public func setPersistentVolumeClaims(_ resources: [ClusterResourceSummary]) {
-        persistentVolumeClaims = resources
-        if let selectedPersistentVolumeClaim, resources.contains(selectedPersistentVolumeClaim) { return }
-        selectedPersistentVolumeClaim = resources.first
+        setGenericResources(
+            resources,
+            list: \.persistentVolumeClaims,
+            selection: \.selectedPersistentVolumeClaim
+        )
     }
 
     public func setPersistentVolumes(_ resources: [ClusterResourceSummary]) {
-        persistentVolumes = resources
-        if let selectedPersistentVolume, resources.contains(selectedPersistentVolume) { return }
-        selectedPersistentVolume = resources.first
+        setGenericResources(resources, list: \.persistentVolumes, selection: \.selectedPersistentVolume)
     }
 
     public func setStorageClasses(_ resources: [ClusterResourceSummary]) {
-        storageClasses = resources
-        if let selectedStorageClass, resources.contains(selectedStorageClass) { return }
-        selectedStorageClass = resources.first
+        setGenericResources(resources, list: \.storageClasses, selection: \.selectedStorageClass)
     }
 
     public func setHorizontalPodAutoscalers(_ resources: [ClusterResourceSummary]) {
-        horizontalPodAutoscalers = resources
-        if let selectedHorizontalPodAutoscaler, resources.contains(selectedHorizontalPodAutoscaler) { return }
-        selectedHorizontalPodAutoscaler = resources.first
+        setGenericResources(
+            resources,
+            list: \.horizontalPodAutoscalers,
+            selection: \.selectedHorizontalPodAutoscaler
+        )
     }
 
     public func setNetworkPolicies(_ resources: [ClusterResourceSummary]) {
-        networkPolicies = resources
-        if let selectedNetworkPolicy, resources.contains(selectedNetworkPolicy) { return }
-        selectedNetworkPolicy = resources.first
+        setGenericResources(resources, list: \.networkPolicies, selection: \.selectedNetworkPolicy)
     }
 
     public func setEndpoints(_ resources: [ClusterResourceSummary]) {
-        endpoints = resources
-        if let selectedEndpoint, resources.contains(selectedEndpoint) { return }
-        selectedEndpoint = resources.first
+        setGenericResources(resources, list: \.endpoints, selection: \.selectedEndpoint)
     }
 
     public func setIngresses(_ resources: [ClusterResourceSummary]) {
-        ingresses = resources
-        if let selectedIngress, resources.contains(selectedIngress) { return }
-        selectedIngress = resources.first
+        setGenericResources(resources, list: \.ingresses, selection: \.selectedIngress)
     }
 
     public func setConfigMaps(_ resources: [ClusterResourceSummary]) {
-        configMaps = resources
-        if let selectedConfigMap, resources.contains(selectedConfigMap) { return }
-        selectedConfigMap = resources.first
+        setGenericResources(resources, list: \.configMaps, selection: \.selectedConfigMap)
     }
 
     public func setSecrets(_ resources: [ClusterResourceSummary]) {
-        secrets = resources
-        if let selectedSecret, resources.contains(selectedSecret) { return }
-        selectedSecret = resources.first
+        setGenericResources(resources, list: \.secrets, selection: \.selectedSecret)
     }
 
     public func setNodes(_ resources: [ClusterResourceSummary]) {
-        nodes = resources
-        if let selectedNode, resources.contains(selectedNode) { return }
-        selectedNode = resources.first
+        setGenericResources(resources, list: \.nodes, selection: \.selectedNode)
     }
 
     public func setRBACData(
@@ -499,12 +520,13 @@ public final class RuneAppState: ObservableObject {
         clusterRoles: [ClusterResourceSummary],
         clusterRoleBindings: [ClusterResourceSummary]
     ) {
-        rbacRoles = roles
-        self.serviceAccounts = serviceAccounts
-        rbacRoleBindings = roleBindings
-        rbacClusterRoles = clusterRoles
-        rbacClusterRoleBindings = clusterRoleBindings
+        assignIfChanged(\.rbacRoles, roles)
+        assignIfChanged(\.serviceAccounts, serviceAccounts)
+        assignIfChanged(\.rbacRoleBindings, roleBindings)
+        assignIfChanged(\.rbacClusterRoles, clusterRoles)
+        assignIfChanged(\.rbacClusterRoleBindings, clusterRoleBindings)
         reconcileRBACSelection()
+        reconcileSelectedGenericResourceIDs()
     }
 
     public func setSelectedRBACResource(_ resource: ClusterResourceSummary?) {
@@ -524,18 +546,18 @@ public final class RuneAppState: ObservableObject {
         }()
 
         guard !listForKind.isEmpty else {
-            selectedRBACResource = nil
+            assignIfChanged(\.selectedRBACResource, nil)
             return
         }
 
         if let current = selectedRBACResource,
            current.kind == selectedWorkloadKind,
            let match = listForKind.first(where: { $0.id == current.id }) {
-            selectedRBACResource = match
+            assignIfChanged(\.selectedRBACResource, match)
             return
         }
 
-        selectedRBACResource = listForKind.first
+        assignIfChanged(\.selectedRBACResource, listForKind.first)
     }
 
     public func setOverviewSnapshot(
