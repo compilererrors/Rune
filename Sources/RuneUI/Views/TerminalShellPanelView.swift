@@ -156,10 +156,6 @@ struct TerminalShellPanelView: View {
                 isComposingNewSession: isComposingNewSession,
                 selectedPod: selectedPod,
                 canApplyMutations: canApplyMutations,
-                selectedShellPodID: $selectedShellPodID,
-                onStartSession: { pod in
-                    onStartSession(pod, selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName)
-                },
                 onSelectSession: onSelectSession,
                 onCloseSession: onCloseSession,
                 onComposeNewSession: onComposeNewSession
@@ -197,13 +193,13 @@ struct TerminalShellPanelView: View {
         }
         .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
         .onAppear {
-            syncShellPodSelectionToActiveSession()
             syncContainerSelectionToActiveSession()
+            syncShellPodSelectionToActiveSession()
             focusPromptIfConnected()
         }
         .onChange(of: activeSessionID) { _, _ in
-            syncShellPodSelectionToActiveSession()
             syncContainerSelectionToActiveSession()
+            syncShellPodSelectionToActiveSession()
             focusPromptIfConnected()
         }
         .onChange(of: selectedPod?.id) { _, _ in

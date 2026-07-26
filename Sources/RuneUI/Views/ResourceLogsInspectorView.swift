@@ -494,7 +494,7 @@ private struct LogToolbarPickerField<Content: View>: View {
 
 }
 
-private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
+struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
     struct Option: Hashable {
         let value: Value
         let title: String
@@ -521,30 +521,12 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        popup.controlSize = .small
-        popup.font = popupFont
-        popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        popup.target = context.coordinator
-        popup.action = #selector(Coordinator.selectionChanged(_:))
+        context.coordinator.attach(to: popup)
         return popup
     }
 
     func updateNSView(_ popup: NSPopUpButton, context: Context) {
-        context.coordinator.parent = self
-        popup.font = popupFont
-        let titles = options.map(\.title)
-        if popup.itemTitles != titles {
-            popup.removeAllItems()
-            popup.addItems(withTitles: titles)
-        }
-        if let selectedIndex = options.firstIndex(where: { $0.value == selection }) {
-            popup.selectItem(at: selectedIndex)
-        } else {
-            popup.select(nil)
-        }
-        popup.isEnabled = !options.isEmpty
-        popup.setAccessibilityLabel(accessibilityLabel)
+        context.coordinator.update(parent: self, popup: popup)
     }
 
     private var popupFont: NSFont {
@@ -557,17 +539,140 @@ private struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSMenuDelegate {
+        private struct Projection {
+            let options: [Option]
+            let selection: Value
+        }
+
         var parent: LogToolbarPopupPicker
+        private(set) var displayedOptions: [Option] = []
+        private var trackedOptions: [Option] = []
+        private var deferredProjection: Projection?
+        private var pendingUserSelection: Value?
+        private var isMenuTracking = false
+        private var isAwaitingMenuAction = false
+        private var menuCloseGeneration: UInt64 = 0
+        private weak var popup: NSPopUpButton?
 
         init(parent: LogToolbarPopupPicker) {
             self.parent = parent
         }
 
+        func attach(to popup: NSPopUpButton) {
+            self.popup = popup
+            popup.controlSize = .small
+            popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            popup.target = self
+            popup.action = #selector(selectionChanged(_:))
+            popup.menu?.delegate = self
+            update(parent: parent, popup: popup)
+        }
+
+        func update(parent: LogToolbarPopupPicker, popup: NSPopUpButton) {
+            self.parent = parent
+            self.popup = popup
+            popup.menu?.delegate = self
+            popup.font = parent.popupFont
+            popup.setAccessibilityLabel(parent.accessibilityLabel)
+
+            let projection = Projection(
+                options: parent.options,
+                selection: parent.selection
+            )
+            guard !isMenuTracking, !isAwaitingMenuAction else {
+                deferredProjection = projection
+                return
+            }
+            apply(projection, to: popup)
+        }
+
+        func menuWillOpen(_ menu: NSMenu) {
+            guard let popup, popup.menu === menu else { return }
+            if isAwaitingMenuAction {
+                finishDeferredProjection(on: popup)
+            }
+            menuCloseGeneration &+= 1
+            isMenuTracking = true
+            isAwaitingMenuAction = false
+            trackedOptions = displayedOptions
+            deferredProjection = nil
+        }
+
+        func menuDidClose(_ menu: NSMenu) {
+            guard let popup, popup.menu === menu else { return }
+            isMenuTracking = false
+            isAwaitingMenuAction = true
+            menuCloseGeneration &+= 1
+            let generation = menuCloseGeneration
+
+            // AppKit can close the menu before delivering its target/action. Waiting one
+            // main-loop turn keeps the displayed option snapshot alive for that action.
+            DispatchQueue.main.async { [weak self, weak popup] in
+                guard let self, let popup,
+                      self.menuCloseGeneration == generation,
+                      self.isAwaitingMenuAction else {
+                    return
+                }
+                self.finishDeferredProjection(on: popup)
+            }
+        }
+
         @objc func selectionChanged(_ sender: NSPopUpButton) {
             let index = sender.indexOfSelectedItem
-            guard parent.options.indices.contains(index) else { return }
-            parent.selection = parent.options[index].value
+            let actionOptions = (isMenuTracking || isAwaitingMenuAction)
+                ? trackedOptions
+                : displayedOptions
+            guard actionOptions.indices.contains(index) else { return }
+            let value = actionOptions[index].value
+            pendingUserSelection = value
+            parent.selection = value
+        }
+
+        func finishDeferredProjection(on popup: NSPopUpButton) {
+            menuCloseGeneration &+= 1
+            isMenuTracking = false
+            isAwaitingMenuAction = false
+            let projection = deferredProjection ?? Projection(
+                options: parent.options,
+                selection: parent.selection
+            )
+            deferredProjection = nil
+            apply(projection, to: popup)
+            trackedOptions = []
+        }
+
+        private func apply(_ projection: Projection, to popup: NSPopUpButton) {
+            let protectedSelection: Value
+            if let pendingUserSelection {
+                if projection.selection == pendingUserSelection {
+                    protectedSelection = pendingUserSelection
+                    self.pendingUserSelection = nil
+                } else if projection.options.contains(where: { $0.value == pendingUserSelection }) {
+                    protectedSelection = pendingUserSelection
+                } else {
+                    protectedSelection = projection.selection
+                    self.pendingUserSelection = nil
+                }
+            } else {
+                protectedSelection = projection.selection
+            }
+
+            let titles = projection.options.map(\.title)
+            if popup.itemTitles != titles {
+                popup.removeAllItems()
+                popup.addItems(withTitles: titles)
+            }
+            displayedOptions = projection.options
+            if let selectedIndex = projection.options.firstIndex(where: {
+                $0.value == protectedSelection
+            }) {
+                popup.selectItem(at: selectedIndex)
+            } else {
+                popup.select(nil)
+            }
+            popup.isEnabled = !projection.options.isEmpty
         }
     }
 }

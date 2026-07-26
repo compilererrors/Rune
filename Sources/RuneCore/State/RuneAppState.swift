@@ -25,6 +25,12 @@ public struct ResourceDetailScope: Hashable, Codable, Sendable {
     }
 }
 
+public enum RuneResourceSelectionChannel: Hashable, Sendable {
+    case resource(KubeResourceKind)
+    case helmRelease
+    case operatorResource
+}
+
 @MainActor
 public final class RuneAppState: ObservableObject {
     private let maxSessionLogCacheCharacters = 1_000_000
@@ -54,29 +60,198 @@ public final class RuneAppState: ObservableObject {
     @Published public var selectedSection: RuneSection = .overview
     @Published public var selectedWorkloadKind: KubeResourceKind = .pod
 
-    @Published public var selectedPod: PodSummary?
+    @Published public var selectedPod: PodSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.pod),
+                from: oldValue?.id,
+                to: selectedPod?.id
+            )
+        }
+    }
     @Published public private(set) var selectedPodIDs: Set<String> = []
     @Published public private(set) var selectedGenericResourceIDs: Set<String> = []
-    @Published public var selectedDeployment: DeploymentSummary?
-    @Published public var selectedService: ServiceSummary?
-    @Published public var selectedEvent: EventSummary?
-    @Published public var selectedStatefulSet: ClusterResourceSummary?
-    @Published public var selectedDaemonSet: ClusterResourceSummary?
-    @Published public var selectedJob: ClusterResourceSummary?
-    @Published public var selectedCronJob: ClusterResourceSummary?
-    @Published public var selectedReplicaSet: ClusterResourceSummary?
-    @Published public var selectedPersistentVolumeClaim: ClusterResourceSummary?
-    @Published public var selectedPersistentVolume: ClusterResourceSummary?
-    @Published public var selectedStorageClass: ClusterResourceSummary?
-    @Published public var selectedHorizontalPodAutoscaler: ClusterResourceSummary?
-    @Published public var selectedNetworkPolicy: ClusterResourceSummary?
-    @Published public var selectedEndpoint: ClusterResourceSummary?
-    @Published public var selectedIngress: ClusterResourceSummary?
-    @Published public var selectedConfigMap: ClusterResourceSummary?
-    @Published public var selectedSecret: ClusterResourceSummary?
-    @Published public var selectedNode: ClusterResourceSummary?
-    @Published public var selectedHelmRelease: HelmReleaseSummary?
-    @Published public private(set) var selectedOperatorResource: OperatorResourceSummary?
+    @Published public var selectedDeployment: DeploymentSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.deployment),
+                from: oldValue?.id,
+                to: selectedDeployment?.id
+            )
+        }
+    }
+    @Published public var selectedService: ServiceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.service),
+                from: oldValue?.id,
+                to: selectedService?.id
+            )
+        }
+    }
+    @Published public var selectedEvent: EventSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.event),
+                from: oldValue?.id,
+                to: selectedEvent?.id
+            )
+        }
+    }
+    @Published public var selectedStatefulSet: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.statefulSet),
+                from: oldValue?.id,
+                to: selectedStatefulSet?.id
+            )
+        }
+    }
+    @Published public var selectedDaemonSet: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.daemonSet),
+                from: oldValue?.id,
+                to: selectedDaemonSet?.id
+            )
+        }
+    }
+    @Published public var selectedJob: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.job),
+                from: oldValue?.id,
+                to: selectedJob?.id
+            )
+        }
+    }
+    @Published public var selectedCronJob: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.cronJob),
+                from: oldValue?.id,
+                to: selectedCronJob?.id
+            )
+        }
+    }
+    @Published public var selectedReplicaSet: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.replicaSet),
+                from: oldValue?.id,
+                to: selectedReplicaSet?.id
+            )
+        }
+    }
+    @Published public var selectedPersistentVolumeClaim: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.persistentVolumeClaim),
+                from: oldValue?.id,
+                to: selectedPersistentVolumeClaim?.id
+            )
+        }
+    }
+    @Published public var selectedPersistentVolume: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.persistentVolume),
+                from: oldValue?.id,
+                to: selectedPersistentVolume?.id
+            )
+        }
+    }
+    @Published public var selectedStorageClass: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.storageClass),
+                from: oldValue?.id,
+                to: selectedStorageClass?.id
+            )
+        }
+    }
+    @Published public var selectedHorizontalPodAutoscaler: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.horizontalPodAutoscaler),
+                from: oldValue?.id,
+                to: selectedHorizontalPodAutoscaler?.id
+            )
+        }
+    }
+    @Published public var selectedNetworkPolicy: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.networkPolicy),
+                from: oldValue?.id,
+                to: selectedNetworkPolicy?.id
+            )
+        }
+    }
+    @Published public var selectedEndpoint: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.endpoint),
+                from: oldValue?.id,
+                to: selectedEndpoint?.id
+            )
+        }
+    }
+    @Published public var selectedIngress: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.ingress),
+                from: oldValue?.id,
+                to: selectedIngress?.id
+            )
+        }
+    }
+    @Published public var selectedConfigMap: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.configMap),
+                from: oldValue?.id,
+                to: selectedConfigMap?.id
+            )
+        }
+    }
+    @Published public var selectedSecret: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.secret),
+                from: oldValue?.id,
+                to: selectedSecret?.id
+            )
+        }
+    }
+    @Published public var selectedNode: ClusterResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .resource(.node),
+                from: oldValue?.id,
+                to: selectedNode?.id
+            )
+        }
+    }
+    @Published public var selectedHelmRelease: HelmReleaseSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .helmRelease,
+                from: oldValue?.id,
+                to: selectedHelmRelease?.id
+            )
+        }
+    }
+    @Published public private(set) var selectedOperatorResource: OperatorResourceSummary? {
+        didSet {
+            advanceResourceSelectionRevision(
+                for: .operatorResource,
+                from: oldValue?.id,
+                to: selectedOperatorResource?.id
+            )
+        }
+    }
+    private var resourceSelectionRevisions: [RuneResourceSelectionChannel: UInt64] = [:]
 
     @Published public private(set) var pods: [PodSummary] = []
     @Published public private(set) var deployments: [DeploymentSummary] = []
@@ -104,7 +279,9 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var rbacRoleBindings: [ClusterResourceSummary] = []
     @Published public private(set) var rbacClusterRoles: [ClusterResourceSummary] = []
     @Published public private(set) var rbacClusterRoleBindings: [ClusterResourceSummary] = []
-    @Published public private(set) var selectedRBACResource: ClusterResourceSummary?
+    @Published public private(set) var selectedRBACResource: ClusterResourceSummary? {
+        didSet { advanceRBACSelectionRevisions(from: oldValue, to: selectedRBACResource) }
+    }
     @Published public private(set) var overviewPods: [PodSummary] = []
     @Published public private(set) var overviewDeploymentsCount: Int = 0
     @Published public private(set) var overviewServicesCount: Int = 0
@@ -127,6 +304,9 @@ public final class RuneAppState: ObservableObject {
     @Published public private(set) var resourceYAML: String = ""
     /// Last manifest YAML Rune fetched for the selected resource. Baseline for unsaved-edit detection and Revert.
     @Published public private(set) var resourceYAMLBaseline: String = ""
+    /// Monotonic token advanced only by local draft mutations. Async readers use it
+    /// to reject server responses that started before a newer user edit.
+    public private(set) var resourceYAMLDraftRevision: UInt64 = 0
     @Published public private(set) var resourceYAMLUndoSnapshot: String?
     private var resourceYAMLUndoStack: [String] = []
     @Published public private(set) var resourceYAMLValidationIssues: [YAMLValidationIssue] = []
@@ -346,6 +526,57 @@ public final class RuneAppState: ObservableObject {
         }
     }
 
+    public func resourceSelectionRevision(for channel: RuneResourceSelectionChannel) -> UInt64 {
+        resourceSelectionRevisions[channel, default: 0]
+    }
+
+    private func advanceResourceSelectionRevision(
+        for channel: RuneResourceSelectionChannel,
+        from previousID: String?,
+        to currentID: String?
+    ) {
+        guard previousID != currentID else { return }
+        resourceSelectionRevisions[channel, default: 0] &+= 1
+    }
+
+    private func advanceRBACSelectionRevisions(
+        from previous: ClusterResourceSummary?,
+        to current: ClusterResourceSummary?
+    ) {
+        if previous?.kind == current?.kind, let kind = current?.kind ?? previous?.kind {
+            advanceResourceSelectionRevision(
+                for: .resource(kind),
+                from: previous?.id,
+                to: current?.id
+            )
+            return
+        }
+
+        if let previous {
+            advanceResourceSelectionRevision(
+                for: .resource(previous.kind),
+                from: previous.id,
+                to: nil
+            )
+        }
+        if let current {
+            advanceResourceSelectionRevision(
+                for: .resource(current.kind),
+                from: nil,
+                to: current.id
+            )
+        }
+    }
+
+    private func assignSelectionIfChanged<Value: Identifiable & Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<RuneAppState, Value?>,
+        _ value: Value?
+    ) where Value.ID == String {
+        let previous = self[keyPath: keyPath]
+        guard previous != value else { return }
+        self[keyPath: keyPath] = value
+    }
+
     private func reconcileSelection<Value: Identifiable & Equatable>(
         _ keyPath: ReferenceWritableKeyPath<RuneAppState, Value?>,
         in values: [Value],
@@ -355,7 +586,7 @@ public final class RuneAppState: ObservableObject {
         let refreshedSelection = selectedID.flatMap { id in
             values.first(where: { $0.id == id })
         }
-        assignIfChanged(keyPath, refreshedSelection ?? fallback)
+        assignSelectionIfChanged(keyPath, refreshedSelection ?? fallback)
     }
 
     private var genericResourceIDs: Set<String> {
@@ -410,14 +641,10 @@ public final class RuneAppState: ObservableObject {
         }
         if let current = selectedPod,
            let match = pods.first(where: { $0.id == current.id }) {
-            if selectedPod != match {
-                selectedPod = match
-            }
+            assignSelectionIfChanged(\.selectedPod, match)
             return
         }
-        if selectedPod != pods.first {
-            selectedPod = pods.first
-        }
+        assignSelectionIfChanged(\.selectedPod, pods.first)
     }
 
     public func setDeployments(_ deployments: [DeploymentSummary]) {
@@ -435,14 +662,32 @@ public final class RuneAppState: ObservableObject {
         reconcileSelection(\.selectedEvent, in: events, fallback: events.first)
     }
 
-    public func setHelmReleases(_ releases: [HelmReleaseSummary]) {
+    public func setHelmReleases(
+        _ releases: [HelmReleaseSummary],
+        selectFallback: Bool = true
+    ) {
         assignIfChanged(\.helmReleases, releases)
-        reconcileSelection(\.selectedHelmRelease, in: releases, fallback: releases.first)
+        let fallback = selectFallback && selectedOperatorResource == nil
+            ? releases.first
+            : nil
+        reconcileSelection(\.selectedHelmRelease, in: releases, fallback: fallback)
+        if selectedOperatorResource != nil {
+            assignSelectionIfChanged(\.selectedHelmRelease, nil)
+        }
     }
 
-    public func setOperatorResources(_ resources: [OperatorResourceSummary]) {
+    public func setOperatorResources(
+        _ resources: [OperatorResourceSummary],
+        selectFallback: Bool = false
+    ) {
         assignIfChanged(\.operatorResources, resources)
-        reconcileSelection(\.selectedOperatorResource, in: resources, fallback: nil)
+        let fallback = selectFallback && selectedHelmRelease == nil
+            ? resources.first
+            : nil
+        reconcileSelection(\.selectedOperatorResource, in: resources, fallback: fallback)
+        if selectedHelmRelease != nil {
+            assignSelectionIfChanged(\.selectedOperatorResource, nil)
+        }
     }
 
     public func setStatefulSets(_ resources: [ClusterResourceSummary]) {
@@ -530,7 +775,7 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func setSelectedRBACResource(_ resource: ClusterResourceSummary?) {
-        selectedRBACResource = resource
+        assignSelectionIfChanged(\.selectedRBACResource, resource)
     }
 
     public func reconcileRBACSelection() {
@@ -546,18 +791,18 @@ public final class RuneAppState: ObservableObject {
         }()
 
         guard !listForKind.isEmpty else {
-            assignIfChanged(\.selectedRBACResource, nil)
+            assignSelectionIfChanged(\.selectedRBACResource, nil)
             return
         }
 
         if let current = selectedRBACResource,
            current.kind == selectedWorkloadKind,
            let match = listForKind.first(where: { $0.id == current.id }) {
-            assignIfChanged(\.selectedRBACResource, match)
+            assignSelectionIfChanged(\.selectedRBACResource, match)
             return
         }
 
-        assignIfChanged(\.selectedRBACResource, listForKind.first)
+        assignSelectionIfChanged(\.selectedRBACResource, listForKind.first)
     }
 
     public func setOverviewSnapshot(
@@ -590,7 +835,7 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func setSelectedPod(_ pod: PodSummary?) {
-        selectedPod = pod
+        assignSelectionIfChanged(\.selectedPod, pod)
     }
 
     public func setSelectedPodIDs(_ ids: Set<String>) {
@@ -629,75 +874,75 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func setSelectedDeployment(_ deployment: DeploymentSummary?) {
-        selectedDeployment = deployment
+        assignSelectionIfChanged(\.selectedDeployment, deployment)
     }
 
     public func setSelectedService(_ service: ServiceSummary?) {
-        selectedService = service
+        assignSelectionIfChanged(\.selectedService, service)
     }
 
     public func setSelectedEvent(_ event: EventSummary?) {
-        selectedEvent = event
+        assignSelectionIfChanged(\.selectedEvent, event)
     }
 
     public func setSelectedStatefulSet(_ resource: ClusterResourceSummary?) {
-        selectedStatefulSet = resource
+        assignSelectionIfChanged(\.selectedStatefulSet, resource)
     }
 
     public func setSelectedDaemonSet(_ resource: ClusterResourceSummary?) {
-        selectedDaemonSet = resource
+        assignSelectionIfChanged(\.selectedDaemonSet, resource)
     }
 
     public func setSelectedJob(_ resource: ClusterResourceSummary?) {
-        selectedJob = resource
+        assignSelectionIfChanged(\.selectedJob, resource)
     }
 
     public func setSelectedCronJob(_ resource: ClusterResourceSummary?) {
-        selectedCronJob = resource
+        assignSelectionIfChanged(\.selectedCronJob, resource)
     }
 
     public func setSelectedReplicaSet(_ resource: ClusterResourceSummary?) {
-        selectedReplicaSet = resource
+        assignSelectionIfChanged(\.selectedReplicaSet, resource)
     }
 
     public func setSelectedPersistentVolumeClaim(_ resource: ClusterResourceSummary?) {
-        selectedPersistentVolumeClaim = resource
+        assignSelectionIfChanged(\.selectedPersistentVolumeClaim, resource)
     }
 
     public func setSelectedPersistentVolume(_ resource: ClusterResourceSummary?) {
-        selectedPersistentVolume = resource
+        assignSelectionIfChanged(\.selectedPersistentVolume, resource)
     }
 
     public func setSelectedStorageClass(_ resource: ClusterResourceSummary?) {
-        selectedStorageClass = resource
+        assignSelectionIfChanged(\.selectedStorageClass, resource)
     }
 
     public func setSelectedHorizontalPodAutoscaler(_ resource: ClusterResourceSummary?) {
-        selectedHorizontalPodAutoscaler = resource
+        assignSelectionIfChanged(\.selectedHorizontalPodAutoscaler, resource)
     }
 
     public func setSelectedNetworkPolicy(_ resource: ClusterResourceSummary?) {
-        selectedNetworkPolicy = resource
+        assignSelectionIfChanged(\.selectedNetworkPolicy, resource)
     }
 
     public func setSelectedEndpoint(_ resource: ClusterResourceSummary?) {
-        selectedEndpoint = resource
+        assignSelectionIfChanged(\.selectedEndpoint, resource)
     }
 
     public func setSelectedIngress(_ resource: ClusterResourceSummary?) {
-        selectedIngress = resource
+        assignSelectionIfChanged(\.selectedIngress, resource)
     }
 
     public func setSelectedConfigMap(_ resource: ClusterResourceSummary?) {
-        selectedConfigMap = resource
+        assignSelectionIfChanged(\.selectedConfigMap, resource)
     }
 
     public func setSelectedSecret(_ resource: ClusterResourceSummary?) {
-        selectedSecret = resource
+        assignSelectionIfChanged(\.selectedSecret, resource)
     }
 
     public func setSelectedNode(_ resource: ClusterResourceSummary?) {
-        selectedNode = resource
+        assignSelectionIfChanged(\.selectedNode, resource)
     }
 
     public func setPodLogs(_ logs: String) {
@@ -849,16 +1094,20 @@ public final class RuneAppState: ObservableObject {
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
     public func updateResourceYAMLDraft(_ yaml: String) {
+        guard yaml != resourceYAML else { return }
         pushResourceYAMLUndoSnapshotIfNeeded(for: yaml)
         resourceYAML = yaml
+        advanceResourceYAMLDraftRevision()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
     }
 
     /// Discards local edits and restores the last loaded cluster YAML.
     public func revertResourceYAMLToClusterSnapshot() {
+        guard resourceYAMLBaseline != resourceYAML else { return }
         pushResourceYAMLUndoSnapshotIfNeeded(for: resourceYAMLBaseline)
         resourceYAML = resourceYAMLBaseline
+        advanceResourceYAMLDraftRevision()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
     }
@@ -871,8 +1120,13 @@ public final class RuneAppState: ObservableObject {
         guard let previous = resourceYAMLUndoStack.popLast() else { return }
         resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
         resourceYAML = previous
+        advanceResourceYAMLDraftRevision()
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
+    }
+
+    private func advanceResourceYAMLDraftRevision() {
+        resourceYAMLDraftRevision &+= 1
     }
 
     private func pushResourceYAMLUndoSnapshotIfNeeded(for nextYAML: String) {
@@ -1009,6 +1263,33 @@ public final class RuneAppState: ObservableObject {
     }
 
     @discardableResult
+    public func removeTerminalSession(id: String) -> PodTerminalSession? {
+        guard let index = terminalSessions.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+        let removed = terminalSessions.remove(at: index)
+
+        if activeTerminalSessionID == id {
+            let fallbackIndex = min(index, terminalSessions.count - 1)
+            if terminalSessions.indices.contains(fallbackIndex) {
+                let fallback = terminalSessions[fallbackIndex]
+                activeTerminalSessionID = fallback.id
+                terminalSession = fallback
+            } else {
+                activeTerminalSessionID = nil
+                terminalSession = nil
+            }
+        } else if let activeTerminalSessionID,
+                  let active = terminalSessions.first(where: { $0.id == activeTerminalSessionID }) {
+            terminalSession = active
+        } else {
+            activeTerminalSessionID = terminalSessions.first?.id
+            terminalSession = terminalSessions.first
+        }
+        return removed
+    }
+
+    @discardableResult
     public func removeTerminalSessions(contextName: String, namespace: String? = nil) -> [PodTerminalSession] {
         let removed = terminalSessions.filter {
             $0.contextName == contextName && (namespace == nil || $0.namespace == namespace)
@@ -1136,11 +1417,17 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func setSelectedHelmRelease(_ release: HelmReleaseSummary?) {
-        selectedHelmRelease = release
+        if release != nil {
+            assignSelectionIfChanged(\.selectedOperatorResource, nil)
+        }
+        assignSelectionIfChanged(\.selectedHelmRelease, release)
     }
 
     public func setSelectedOperatorResource(_ resource: OperatorResourceSummary?) {
-        selectedOperatorResource = resource
+        if resource != nil {
+            assignSelectionIfChanged(\.selectedHelmRelease, nil)
+        }
+        assignSelectionIfChanged(\.selectedOperatorResource, resource)
     }
 
     public func setHelmValues(_ values: String) {

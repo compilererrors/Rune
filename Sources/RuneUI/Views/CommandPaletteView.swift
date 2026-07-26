@@ -32,6 +32,34 @@ enum CommandPalettePresentation {
     }
 }
 
+@MainActor
+final class CommandPaletteActivationGate {
+    private(set) var isExecuting = false
+
+    @discardableResult
+    func perform(
+        isPalettePresented: () -> Bool,
+        action: () -> Void
+    ) -> Bool {
+        guard !isExecuting else { return false }
+        isExecuting = true
+        action()
+
+        // A rejected/no-op command leaves the palette open and must not lock it.
+        // A successful command closes it synchronously; keep the gate closed until
+        // this view disappears so queued Return events or a double-click cannot
+        // execute the same command a second time.
+        if isPalettePresented() {
+            isExecuting = false
+        }
+        return true
+    }
+
+    func reset() {
+        isExecuting = false
+    }
+}
+
 struct CommandPaletteView: View {
     private enum FocusTarget: Hashable {
         case input
@@ -43,6 +71,7 @@ struct CommandPaletteView: View {
     @State private var selectedItemID: String?
     @State private var localKeyMonitor: Any?
     @State private var isPrefixHelpPresented = false
+    @State private var activationGate = CommandPaletteActivationGate()
     @FocusState private var focusedTarget: FocusTarget?
     @FocusState private var prefixHelpFocusedItemID: String?
     @Environment(\.runeThemePalette) private var runeThemePalette
@@ -129,7 +158,9 @@ struct CommandPaletteView: View {
                             ForEach(items) { item in
                                 Button {
                                     selectedItemID = item.id
-                                    viewModel.executeCommandPaletteItem(item)
+                                    activate {
+                                        viewModel.executeCommandPaletteItem(item)
+                                    }
                                 } label: {
                                     HStack(spacing: 10) {
                                         Image(systemName: item.symbolName)
@@ -158,6 +189,7 @@ struct CommandPaletteView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(activationGate.isExecuting)
                                 .id(item.id)
                             }
                         }
@@ -197,6 +229,7 @@ struct CommandPaletteView: View {
         )
         .background(runeThemePalette?.content.opacity(0.98) ?? Color(nsColor: .windowBackgroundColor).opacity(0.82))
         .onAppear {
+            activationGate.reset()
             let prefill = viewModel.consumeCommandPalettePrefillQuery()
             if !prefill.isEmpty {
                 query = prefill
@@ -353,20 +386,35 @@ struct CommandPaletteView: View {
         if focusedTarget == .input {
             if let selectedItemID,
                let selectedItem = items.first(where: { $0.id == selectedItemID }) {
-                viewModel.executeCommandPaletteItem(selectedItem)
+                activate {
+                    viewModel.executeCommandPaletteItem(selectedItem)
+                }
                 return
             }
-            viewModel.executeCommandPaletteQuery(query)
+            activate {
+                viewModel.executeCommandPaletteQuery(query)
+            }
             return
         }
 
         if let selectedItemID,
            let selectedItem = items.first(where: { $0.id == selectedItemID }) {
-            viewModel.executeCommandPaletteItem(selectedItem)
+            activate {
+                viewModel.executeCommandPaletteItem(selectedItem)
+            }
             return
         }
 
-        viewModel.executeCommandPaletteQuery(query)
+        activate {
+            viewModel.executeCommandPaletteQuery(query)
+        }
+    }
+
+    private func activate(_ action: () -> Void) {
+        activationGate.perform(
+            isPalettePresented: { viewModel.state.isCommandPalettePresented },
+            action: action
+        )
     }
 
     @ViewBuilder
@@ -463,6 +511,9 @@ struct CommandPaletteView: View {
 
     private func handleLocalKeyEvent(_ event: NSEvent, items: [CommandPaletteItem]) -> Bool {
         guard !isPrefixHelpPresented else { return false }
+        guard !activationGate.isExecuting else {
+            return event.keyCode == 36 || event.keyCode == 76
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let hasBlockingModifiers = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
         if hasBlockingModifiers {

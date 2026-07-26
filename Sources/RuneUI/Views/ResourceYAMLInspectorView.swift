@@ -56,6 +56,7 @@ struct ResourceYAMLEditorSurface: View {
 
 struct ResourceYAMLInspectorPane: View {
     let resourceReference: String
+    let documentIdentity: ResourceDetailScope?
     @Binding var yamlText: String
     let yamlDisplayText: String
     let yamlFooterText: String
@@ -211,7 +212,7 @@ struct ResourceYAMLInspectorPane: View {
         } footer: {
             EmptyView()
         }
-        .onChange(of: baseline) { _, _ in
+        .onChange(of: documentIdentity) { _, _ in
             isInlineEditing = false
         }
     }

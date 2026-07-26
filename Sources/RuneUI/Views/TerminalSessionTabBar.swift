@@ -44,8 +44,6 @@ struct TerminalSessionTabBar: View {
     let isComposingNewSession: Bool
     let selectedPod: PodSummary?
     let canApplyMutations: Bool
-    @Binding var selectedShellPodID: String
-    let onStartSession: (PodSummary) -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
     let onComposeNewSession: () -> Void
@@ -85,7 +83,7 @@ struct TerminalSessionTabBar: View {
         let presentation = TerminalSessionTabPresentation.make(session: session, number: number)
         return ZStack {
             Button {
-                select(session)
+                activateSession(session)
             } label: {
                 HStack(spacing: 6) {
                     TerminalStatusDot(
@@ -134,8 +132,7 @@ struct TerminalSessionTabBar: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func select(_ session: PodTerminalSession) {
-        selectedShellPodID = "\(session.namespace)/\(session.podName)"
+    func activateSession(_ session: PodTerminalSession) {
         onSelectSession(session.id)
     }
 

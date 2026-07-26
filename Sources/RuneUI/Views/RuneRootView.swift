@@ -1012,6 +1012,44 @@ struct RuneRootKeyboardNavigationContext {
     }
 }
 
+@MainActor
+final class RuneScopedLatestRequestGate {
+    struct Token: Equatable, Sendable {
+        let scopeGeneration: UInt64
+        let requestGeneration: UInt64
+    }
+
+    private(set) var scopeGeneration: UInt64 = 0
+    private var requestGeneration: UInt64 = 0
+    private var latestToken: Token?
+
+    @discardableResult
+    func advanceScope() -> UInt64 {
+        scopeGeneration &+= 1
+        requestGeneration &+= 1
+        latestToken = nil
+        return scopeGeneration
+    }
+
+    func begin(expectedScopeGeneration: UInt64? = nil) -> Token? {
+        if let expectedScopeGeneration,
+           expectedScopeGeneration != scopeGeneration {
+            return nil
+        }
+        requestGeneration &+= 1
+        let token = Token(
+            scopeGeneration: scopeGeneration,
+            requestGeneration: requestGeneration
+        )
+        latestToken = token
+        return token
+    }
+
+    func isCurrent(_ token: Token) -> Bool {
+        latestToken == token && token.scopeGeneration == scopeGeneration
+    }
+}
+
 public struct RuneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -1071,6 +1109,7 @@ public struct RuneRootView: View {
     @State private var connectedAddClusterNativeContextBindingIDs: Set<String> = []
     @State private var isCheckingAddClusterNativeProfiles = false
     @State private var addClusterNativeContextAnalysisMessage: String?
+    @State private var addClusterNativeContextRefreshGate = RuneScopedLatestRequestGate()
     @State private var isManualAddClusterExpanded = false
     @State private var isAddClusterProviderCommandDetailsExpanded = false
     @State private var isAddClusterProviderLoginOutputExpanded = false
@@ -1740,6 +1779,8 @@ public struct RuneRootView: View {
                     )
             }
             .sheet(item: $selectedAddClusterProvider, onDismiss: {
+                addClusterNativeContextRefreshGate.advanceScope()
+                isCheckingAddClusterNativeProfiles = false
                 viewModel.cancelNativeCloudClusterImport()
             }) { provider in
                 addClusterProviderSheet(provider)
@@ -2845,7 +2886,11 @@ public struct RuneRootView: View {
         .interactiveDismissDisabled(viewModel.isRunningNativeCloudClusterImport)
         .task(id: "\(provider.rawValue)-\(viewModel.isConnectingNativeKubernetesAuth)") {
             guard presentation.requiresCompatibleImportedContext else { return }
-            await refreshAddClusterNativeContexts(for: provider)
+            let scopeGeneration = addClusterNativeContextRefreshGate.scopeGeneration
+            await refreshAddClusterNativeContexts(
+                for: provider,
+                expectedScopeGeneration: scopeGeneration
+            )
         }
     }
 
@@ -2971,9 +3016,13 @@ public struct RuneRootView: View {
         case .refreshContexts:
             Button {
                 viewModel.refreshKubeConfigSourcesFromDiscovery()
+                let scopeGeneration = addClusterNativeContextRefreshGate.scopeGeneration
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 250_000_000)
-                    await refreshAddClusterNativeContexts(for: provider)
+                    await refreshAddClusterNativeContexts(
+                        for: provider,
+                        expectedScopeGeneration: scopeGeneration
+                    )
                 }
             } label: {
                 Label(action.title, systemImage: action.systemImage)
@@ -3017,9 +3066,22 @@ public struct RuneRootView: View {
     }
 
     @MainActor
-    private func refreshAddClusterNativeContexts(for provider: RuneAddClusterProvider) async {
+    private func refreshAddClusterNativeContexts(
+        for provider: RuneAddClusterProvider,
+        expectedScopeGeneration: UInt64
+    ) async {
+        guard selectedAddClusterProvider == provider,
+              let requestToken = addClusterNativeContextRefreshGate.begin(
+                expectedScopeGeneration: expectedScopeGeneration
+              )
+        else {
+            return
+        }
+
         guard !RuneExternalCommandPolicy.allowsExternalCommands,
               let nativeProvider = provider.nativeAuthProvider else {
+            guard addClusterNativeContextRefreshGate.isCurrent(requestToken),
+                  selectedAddClusterProvider == provider else { return }
             addClusterNativeContextOptions = []
             selectedAddClusterNativeContextBindingID = nil
             connectedAddClusterNativeContextBindingIDs = []
@@ -3031,7 +3093,8 @@ public struct RuneRootView: View {
         isCheckingAddClusterNativeProfiles = true
         addClusterNativeContextAnalysisMessage = nil
         defer {
-            if selectedAddClusterProvider == provider {
+            if addClusterNativeContextRefreshGate.isCurrent(requestToken),
+               selectedAddClusterProvider == provider {
                 isCheckingAddClusterNativeProfiles = false
             }
         }
@@ -3042,7 +3105,9 @@ public struct RuneRootView: View {
                 try KubeConfigNativeAuthAnalyzer().analyze(sources: sources)
             }.value
             try Task.checkCancellation()
-            guard selectedAddClusterProvider == provider else { return }
+            guard addClusterNativeContextRefreshGate.isCurrent(requestToken),
+                  selectedAddClusterProvider == provider,
+                  viewModel.state.kubeConfigSources == sources else { return }
 
             let options = AddClusterNativeContextResolver.compatibleOptions(
                 provider: nativeProvider,
@@ -3069,12 +3134,17 @@ public struct RuneRootView: View {
             var connected = Set<String>()
             for option in options {
                 try Task.checkCancellation()
+                guard addClusterNativeContextRefreshGate.isCurrent(requestToken),
+                      selectedAddClusterProvider == provider,
+                      viewModel.state.kubeConfigSources == sources else { return }
                 if let status = try? await viewModel.nativeAuthProfileStatus(for: option.request),
                    status.isConnected {
                     connected.insert(option.id)
                 }
             }
-            guard selectedAddClusterProvider == provider else { return }
+            guard addClusterNativeContextRefreshGate.isCurrent(requestToken),
+                  selectedAddClusterProvider == provider,
+                  viewModel.state.kubeConfigSources == sources else { return }
             connectedAddClusterNativeContextBindingIDs = connected
             if options.isEmpty {
                 addClusterNativeContextAnalysisMessage = "Import a \(provider.title) kubeconfig to add this cluster. Rune checks its authentication settings after import."
@@ -3082,7 +3152,8 @@ public struct RuneRootView: View {
         } catch is CancellationError {
             return
         } catch {
-            guard selectedAddClusterProvider == provider else { return }
+            guard addClusterNativeContextRefreshGate.isCurrent(requestToken),
+                  selectedAddClusterProvider == provider else { return }
             addClusterNativeContextOptions = []
             selectedAddClusterNativeContextBindingID = nil
             connectedAddClusterNativeContextBindingIDs = []
@@ -3091,6 +3162,7 @@ public struct RuneRootView: View {
     }
 
     private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider) {
+        addClusterNativeContextRefreshGate.advanceScope()
         viewModel.clearManualKubeConfigSecret()
         if !viewModel.isRunningCloudKubeConfigImport {
             viewModel.clearCloudKubeConfigImportStatus()
@@ -3100,6 +3172,7 @@ public struct RuneRootView: View {
         selectedAddClusterNativeContextBindingID = nil
         connectedAddClusterNativeContextBindingIDs = []
         addClusterNativeContextAnalysisMessage = nil
+        isCheckingAddClusterNativeProfiles = false
         isAddClusterProviderCommandDetailsExpanded = false
         isAddClusterProviderLoginOutputExpanded = false
         addClusterPopoverPresented = false
@@ -3107,11 +3180,13 @@ public struct RuneRootView: View {
     }
 
     private func closeAddClusterProviderSheet(showPopover: Bool = false) {
+        addClusterNativeContextRefreshGate.advanceScope()
         selectedAddClusterProvider = nil
         addClusterNativeContextOptions = []
         selectedAddClusterNativeContextBindingID = nil
         connectedAddClusterNativeContextBindingIDs = []
         addClusterNativeContextAnalysisMessage = nil
+        isCheckingAddClusterNativeProfiles = false
         isAddClusterProviderCommandDetailsExpanded = false
         isAddClusterProviderLoginOutputExpanded = false
         if !showPopover {
@@ -4306,6 +4381,10 @@ public struct RuneRootView: View {
                 AppKitPodTableView(
                     pods: pods,
                     selectedPodID: viewModel.state.selectedPod?.id,
+                    selectionRevision: viewModel.state.resourceSelectionRevision(for: .resource(.pod)),
+                    selectionRevisionAfterSelect: {
+                        viewModel.state.resourceSelectionRevision(for: .resource(.pod))
+                    },
                     selectedPodIDs: viewModel.state.selectedPodIDs,
                     sortColumn: viewModel.podSortColumn,
                     sortAscending: viewModel.podSortAscending,
@@ -4356,6 +4435,10 @@ public struct RuneRootView: View {
                 AppKitDeploymentListView(
                     deployments: deployments,
                     selectedDeploymentID: viewModel.state.selectedDeployment?.id,
+                    selectionRevision: viewModel.state.resourceSelectionRevision(for: .resource(.deployment)),
+                    selectionRevisionAfterSelect: {
+                        viewModel.state.resourceSelectionRevision(for: .resource(.deployment))
+                    },
                     sortColumn: viewModel.deploymentSortColumn,
                     sortAscending: viewModel.deploymentSortAscending,
                     canApplyClusterMutations: viewModel.canApplyClusterMutations,
@@ -4430,6 +4513,10 @@ public struct RuneRootView: View {
                     AppKitServiceListView(
                         services: services,
                         selectedServiceID: viewModel.state.selectedService?.id,
+                        selectionRevision: viewModel.state.resourceSelectionRevision(for: .resource(.service)),
+                        selectionRevisionAfterSelect: {
+                            viewModel.state.resourceSelectionRevision(for: .resource(.service))
+                        },
                         sortColumn: viewModel.serviceSortColumn,
                         sortAscending: viewModel.serviceSortAscending,
                         canApplyClusterMutations: viewModel.canApplyClusterMutations,
@@ -4578,6 +4665,10 @@ public struct RuneRootView: View {
             AppKitHelmReleaseListView(
                 releases: releases,
                 selectedReleaseID: viewModel.state.selectedHelmRelease?.id,
+                selectionRevision: viewModel.state.resourceSelectionRevision(for: .helmRelease),
+                selectionRevisionAfterSelect: {
+                    viewModel.state.resourceSelectionRevision(for: .helmRelease)
+                },
                 sortColumn: viewModel.helmReleaseSortColumn,
                 sortAscending: viewModel.helmReleaseSortAscending,
                 onSelectRelease: { release in
@@ -4603,6 +4694,10 @@ public struct RuneRootView: View {
             AppKitOperatorResourceListView(
                 resources: viewModel.pagedOperatorResources,
                 selectedResourceID: viewModel.state.selectedOperatorResource?.id,
+                selectionRevision: viewModel.state.resourceSelectionRevision(for: .operatorResource),
+                selectionRevisionAfterSelect: {
+                    viewModel.state.resourceSelectionRevision(for: .operatorResource)
+                },
                 sortColumn: viewModel.operatorResourceSortColumn,
                 sortAscending: viewModel.operatorResourceSortAscending,
                 showsPrinterColumns: viewModel.showsOperatorPrinterColumnsForCurrentFamily,
@@ -4639,6 +4734,10 @@ public struct RuneRootView: View {
             AppKitEventListView(
                 events: events,
                 selectedEventID: viewModel.state.selectedEvent?.id,
+                selectionRevision: viewModel.state.resourceSelectionRevision(for: .resource(.event)),
+                selectionRevisionAfterSelect: {
+                    viewModel.state.resourceSelectionRevision(for: .resource(.event))
+                },
                 sortColumn: viewModel.eventSortColumn,
                 sortAscending: viewModel.eventSortAscending,
                 onSelectEvent: viewModel.selectEvent,
@@ -6080,6 +6179,7 @@ public struct RuneRootView: View {
     private var yamlBlock: some View {
         ResourceYAMLInspectorPane(
             resourceReference: manifestResourceReference,
+            documentIdentity: viewModel.state.resourceDetailScope,
             yamlText: yamlDraftBinding,
             yamlDisplayText: viewModel.state.resourceYAML,
             yamlFooterText: yamlFooterText,
@@ -6703,6 +6803,14 @@ public struct RuneRootView: View {
                 kind: viewModel.state.selectedWorkloadKind,
                 resources: resources,
                 selectedResourceID: selection?.id,
+                selectionRevision: viewModel.state.resourceSelectionRevision(
+                    for: .resource(viewModel.state.selectedWorkloadKind)
+                ),
+                selectionRevisionAfterSelect: {
+                    viewModel.state.resourceSelectionRevision(
+                        for: .resource(viewModel.state.selectedWorkloadKind)
+                    )
+                },
                 selectedResourceIDs: viewModel.state.selectedGenericResourceIDs,
                 sortColumn: viewModel.genericResourceSortColumn,
                 sortAscending: viewModel.genericResourceSortAscending,

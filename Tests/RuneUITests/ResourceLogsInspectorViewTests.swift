@@ -122,7 +122,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
         XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)"))
         XCTAssertTrue(source.contains("LogToolbarPopupPicker("))
-        XCTAssertTrue(source.contains("popup.font = popupFont"))
+        XCTAssertTrue(source.contains("popup.font = parent.popupFont"))
         XCTAssertTrue(source.contains("RuneInterfaceTypography.appKitMenuFontSize("))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.row.opacity(0.42)"))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.stroke.opacity(0.28)"))
@@ -145,7 +145,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         ))
         let pickerFieldSource = try XCTUnwrap(source.slice(
             from: "private struct LogToolbarPickerField",
-            to: "private struct LogToolbarPopupPicker"
+            to: "struct LogToolbarPopupPicker"
         ))
         let matchCaseStart = try XCTUnwrap(findControls.range(of: "struct RuneMatchCaseButton: View"))
         let matchCaseSource = String(findControls[matchCaseStart.lowerBound...])

@@ -145,6 +145,20 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(yamlSource.contains(".allowsHitTesting(isVisible)"))
     }
 
+    func testYAMLQuickEditResetsForDocumentChangeButNotBaselineRefresh() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLInspectorPane",
+            to: "struct ManifestUnsavedEditsChip"
+        ))
+
+        XCTAssertTrue(yamlPaneSource.contains("let documentIdentity: ResourceDetailScope?"))
+        XCTAssertTrue(yamlPaneSource.contains(".onChange(of: documentIdentity)"))
+        XCTAssertFalse(yamlPaneSource.contains(".onChange(of: baseline)"))
+        XCTAssertTrue(rootSource.contains("documentIdentity: viewModel.state.resourceDetailScope"))
+    }
+
     func testYAMLAndDescribeUseGroupedManifestToolbarAndCompactStatus() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)

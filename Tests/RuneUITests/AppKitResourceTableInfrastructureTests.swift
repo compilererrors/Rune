@@ -358,6 +358,118 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testSelectionBridgeRejectsDeferredIntentAfterNewerParentRevision() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let intent = bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 2,
+            publishedSelectionRevision: 1
+        )
+
+        XCTAssertFalse(
+            bridge.prepareToPublish(
+                intent,
+                displayedSelectedID: "resource-beta",
+                staleThroughApplyGeneration: 3,
+                publishedSelectedID: "resource-gamma",
+                publishedSelectionRevision: 2
+            ),
+            "A deferred mouse intent must not overwrite a selection that advanced while it was queued."
+        )
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
+    func testVersionedSelectionBridgeUsesActualPostClickRevisionAcrossIntermediateProjection() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let rows = ["resource-alpha", "resource-beta", "resource-gamma"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        let intent = bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 4,
+            publishedSelectionRevision: 1
+        )
+        bridge.confirmPublishedUserSelection(intent, selectionRevision: 5)
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-gamma",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 5,
+            publishedSelectionRevision: 4,
+            in: tableView
+        )
+        XCTAssertEqual(
+            tableView.selectedRow,
+            1,
+            "A projection newer than the parent baseline can still predate the click's actual state revision."
+        )
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 6,
+            publishedSelectionRevision: 5,
+            in: tableView
+        )
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-gamma",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 7,
+            publishedSelectionRevision: 4,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 8,
+            publishedSelectionRevision: 6,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 0)
+    }
+
+    @MainActor
+    func testSelectionBridgeResetAcceptsLowerRevisionFromAnotherResourceFamily() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let intent = bridge.noteUserSelectedID(
+            "pod-beta",
+            publishedSelectedID: "pod-alpha",
+            staleThroughApplyGeneration: 2,
+            publishedSelectionRevision: 9
+        )
+        bridge.confirmPublishedUserSelection(intent, selectionRevision: 10)
+
+        bridge.reset()
+
+        XCTAssertNil(bridge.pendingUserSelectedID)
+        XCTAssertEqual(
+            bridge.projectedSelectedID(
+                publishedSelectedID: "service-alpha",
+                pendingSelectionIsAvailable: true,
+                applyGeneration: 3,
+                publishedSelectionRevision: 0
+            ),
+            "service-alpha",
+            "A generic table reused for another resource kind must not carry the previous kind's revision high-water mark."
+        )
+    }
+
     func testDisplayedRowSnapshotKeepsRowEventsBoundToRenderedOrder() {
         let displayedRows = [
             RuneAppKitResourceTableRowSnapshot(id: "resource-alpha", value: "rendered-alpha"),
@@ -436,6 +548,487 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
     }
 
     @MainActor
+    func testCoordinatorRejectsClickForDisplayedRowRemovedFromLatestParent() {
+        let services = ["alpha", "beta", "gamma"].enumerated().map { index, name in
+            ServiceSummary(
+                name: "service-\(name)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.\(40 + index)"
+            )
+        }
+        var selectedIDs: [String] = []
+
+        func view(services: [ServiceSummary]) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: services[0].id,
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: { selectedIDs.append($0.id) },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let initialView = view(services: services)
+        let coordinator = initialView.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: initialView)
+        settle(tableView)
+        XCTAssertEqual(tableView.numberOfRows, 3)
+        XCTAssertEqual(tableView.selectedRow, 0)
+
+        let updatedView = view(services: Array(services.prefix(2)))
+        coordinator.apply(parent: updatedView)
+
+        // The parent already contains A/B, but AppKit still exposes the old A/B/C snapshot.
+        XCTAssertEqual(tableView.numberOfRows, 3)
+        tableView.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+
+        XCTAssertTrue(
+            selectedIDs.isEmpty,
+            "A click on removed C must not publish its stale rendered model."
+        )
+
+        settle(tableView)
+        XCTAssertEqual(tableView.numberOfRows, 2)
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertLessThan(tableView.selectedRow, updatedView.services.count)
+    }
+
+    @MainActor
+    func testCoordinatorKeepsLatestRapidClickAcrossRepeatedStaleParentProjection() {
+        let services = ["alpha", "beta", "gamma"].map { name in
+            ServiceSummary(
+                name: "service-\(name)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.30"
+            )
+        }
+        var selectedIDs: [String] = []
+        var liveSelectionRevision: UInt64 = 1
+
+        func view(selectedID: String, revision: UInt64) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: selectedID,
+                selectionRevision: revision,
+                selectionRevisionAfterSelect: { liveSelectionRevision },
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: {
+                    selectedIDs.append($0.id)
+                    liveSelectionRevision += 1
+                },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let initialView = view(selectedID: services[0].id, revision: 1)
+        let coordinator = initialView.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: initialView)
+        settle(tableView)
+
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        XCTAssertEqual(selectedIDs.last, services[1].id)
+        XCTAssertEqual(liveSelectionRevision, 2)
+
+        let betaProjection = view(selectedID: services[1].id, revision: 2)
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+
+        tableView.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        XCTAssertEqual(selectedIDs.last, services[2].id)
+        XCTAssertEqual(liveSelectionRevision, 3)
+
+        // A SwiftUI value built while beta was current can reach updateNSView
+        // after the gamma click. It must not overwrite the newer user intent.
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+
+        XCTAssertEqual(tableView.selectedRow, 2)
+        XCTAssertEqual(selectedIDs, [services[1].id, services[2].id])
+
+        let gammaProjection = view(selectedID: services[2].id, revision: 3)
+        coordinator.apply(parent: gammaProjection)
+        settle(tableView)
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+        XCTAssertEqual(
+            tableView.selectedRow,
+            2,
+            "A stale beta projection must stay rejected after gamma was acknowledged."
+        )
+
+        // The coordinator's parent is still the stale beta projection while
+        // AppKit correctly displays gamma. Right-clicking beta must therefore
+        // compare with the displayed selection, not skip publication because
+        // the stale parent already says beta.
+        coordinator.selectRowForContextMenu(1, in: tableView)
+        settle(tableView)
+        XCTAssertEqual(selectedIDs.last, services[1].id)
+        XCTAssertEqual(liveSelectionRevision, 4)
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        liveSelectionRevision = 5
+        let newerExternalAlphaProjection = view(selectedID: services[0].id, revision: 5)
+        coordinator.apply(parent: newerExternalAlphaProjection)
+        settle(tableView)
+        XCTAssertEqual(
+            tableView.selectedRow,
+            0,
+            "A genuinely newer external selection revision must remain authoritative."
+        )
+    }
+
+    @MainActor
+    func testCoordinatorProtectsProposedRowBeforeMouseUpFromQueuedStaleApply() {
+        let services = ["alpha", "beta", "gamma"].map { name in
+            ServiceSummary(
+                name: "service-\(name)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.50"
+            )
+        }
+        var selectedIDs: [String] = []
+        var liveSelectionRevision: UInt64 = 2
+
+        func view(selectedID: String, revision: UInt64) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: selectedID,
+                selectionRevision: revision,
+                selectionRevisionAfterSelect: { liveSelectionRevision },
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: {
+                    selectedIDs.append($0.id)
+                    liveSelectionRevision += 1
+                },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let betaProjection = view(selectedID: services[1].id, revision: 2)
+        let coordinator = betaProjection.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        // This is the real AppKit race window: the proposed row is known at
+        // mouse-down, but selectionDidChange does not arrive until mouse-up.
+        XCTAssertEqual(
+            coordinator.tableView(
+                tableView,
+                selectionIndexesForProposedSelection: IndexSet(integer: 2)
+            ),
+            IndexSet(integer: 2)
+        )
+        coordinator.apply(parent: betaProjection)
+        settle(tableView)
+
+        XCTAssertEqual(
+            tableView.selectedRow,
+            2,
+            "The apply queued during mouse tracking must preserve the proposed gamma row."
+        )
+        XCTAssertTrue(selectedIDs.isEmpty, "Selection must publish once, when the gesture completes.")
+
+        tableView.finishMouseSelectionTracking()
+
+        XCTAssertEqual(selectedIDs, [services[2].id])
+        XCTAssertEqual(liveSelectionRevision, 3)
+        XCTAssertEqual(tableView.selectedRow, 2)
+
+        let gammaProjection = view(selectedID: services[2].id, revision: 3)
+        coordinator.apply(parent: gammaProjection)
+        settle(tableView)
+        _ = coordinator.tableView(
+            tableView,
+            selectionIndexesForProposedSelection: IndexSet(integer: 0)
+        )
+
+        // An external selection at exactly the click's expected next
+        // revision is authoritative; it must not be mistaken for stale state.
+        liveSelectionRevision = 4
+        let externalBetaProjection = view(selectedID: services[1].id, revision: 4)
+        coordinator.apply(parent: externalBetaProjection)
+        settle(tableView)
+        XCTAssertEqual(tableView.selectedRow, 1)
+
+        tableView.finishMouseSelectionTracking()
+        XCTAssertEqual(selectedIDs, [services[2].id])
+        XCTAssertEqual(tableView.selectedRow, 1)
+    }
+
+    @MainActor
+    func testCoordinatorRejectsDeferredContextSelectionAfterNewerExternalNavigation() {
+        let services = ["alpha", "beta", "gamma"].map { name in
+            ServiceSummary(
+                name: "service-\(name)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.51"
+            )
+        }
+        var selectedIDs: [String] = []
+        var liveSelectionRevision: UInt64 = 1
+
+        func view(
+            services: [ServiceSummary],
+            selectedID: String,
+            revision: UInt64
+        ) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: selectedID,
+                selectionRevision: revision,
+                selectionRevisionAfterSelect: { liveSelectionRevision },
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: {
+                    selectedIDs.append($0.id)
+                    liveSelectionRevision += 1
+                },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let initialView = view(
+            services: services,
+            selectedID: services[0].id,
+            revision: 1
+        )
+        let coordinator = initialView.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: initialView)
+        settle(tableView)
+
+        coordinator.selectRowForContextMenu(1, in: tableView)
+
+        liveSelectionRevision = 3
+        let reorderedServices = [services[2], services[1], services[0]]
+        coordinator.apply(
+            parent: view(
+                services: reorderedServices,
+                selectedID: services[2].id,
+                revision: 3
+            )
+        )
+        settle(tableView)
+
+        XCTAssertTrue(
+            selectedIDs.isEmpty,
+            "The older deferred beta intent must not republish over external gamma."
+        )
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertEqual(reorderedServices[tableView.selectedRow].id, services[2].id)
+    }
+
+    @MainActor
+    func testCoordinatorKeepsEveryOneOfSixtyFourRapidProposedSelections() {
+        let services = (0..<8).map { index in
+            ServiceSummary(
+                name: "service-\(index)",
+                namespace: "synthetic",
+                type: "ClusterIP",
+                clusterIP: "192.0.2.\(60 + index)"
+            )
+        }
+        var selectedIDs: [String] = []
+        var authoritativeSelectedID = services[0].id
+        var liveSelectionRevision: UInt64 = 1
+
+        func view(
+            services: [ServiceSummary],
+            selectedID: String,
+            revision: UInt64
+        ) -> AppKitServiceListView {
+            AppKitServiceListView(
+                services: services,
+                selectedServiceID: selectedID,
+                selectionRevision: revision,
+                selectionRevisionAfterSelect: { liveSelectionRevision },
+                sortColumn: .name,
+                sortAscending: true,
+                canApplyClusterMutations: false,
+                isFavorite: { _ in false },
+                onSelectService: {
+                    authoritativeSelectedID = $0.id
+                    selectedIDs.append($0.id)
+                    liveSelectionRevision += 1
+                },
+                onToggleSort: { _ in },
+                onToggleFavorite: { _ in },
+                onOpenUnifiedLogs: { _ in },
+                onOpenPortForward: { _ in },
+                onOpenDescribe: { _ in },
+                onOpenYAML: { _ in },
+                onDelete: { _ in }
+            )
+        }
+
+        let initialView = view(
+            services: services,
+            selectedID: authoritativeSelectedID,
+            revision: liveSelectionRevision
+        )
+        let coordinator = initialView.makeCoordinator()
+        let tableView = RuneAppKitResourceTableView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 240)
+        )
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        coordinator.tableView = tableView
+        coordinator.apply(parent: initialView)
+        settle(tableView)
+
+        var renderedServices = services
+        for click in 0..<64 {
+            let target = services[(click * 5 + 1) % services.count]
+            let targetRow = try! XCTUnwrap(
+                renderedServices.firstIndex(where: { $0.id == target.id })
+            )
+            let staleSelectedID = authoritativeSelectedID
+            let staleRevision = liveSelectionRevision
+
+            _ = coordinator.tableView(
+                tableView,
+                selectionIndexesForProposedSelection: IndexSet(integer: targetRow)
+            )
+
+            if click.isMultiple(of: 8) {
+                let temporarilyFiltered = renderedServices.filter { $0.id != target.id }
+                coordinator.apply(
+                    parent: view(
+                        services: temporarilyFiltered,
+                        selectedID: staleSelectedID,
+                        revision: staleRevision
+                    )
+                )
+                settle(tableView)
+                XCTAssertEqual(
+                    selectedIDs.count,
+                    click,
+                    "A stale filtered projection must not complete or discard click \(click)."
+                )
+            }
+
+            let shift = (click + 1) % services.count
+            var reordered = Array(services[shift...] + services[..<shift])
+            if !click.isMultiple(of: 2) {
+                reordered.reverse()
+            }
+            coordinator.apply(
+                parent: view(
+                    services: reordered,
+                    selectedID: staleSelectedID,
+                    revision: staleRevision
+                )
+            )
+            settle(tableView)
+            renderedServices = reordered
+
+            XCTAssertEqual(
+                renderedServices[tableView.selectedRow].id,
+                target.id,
+                "Click \(click) snapped back before mouse-up."
+            )
+            tableView.finishMouseSelectionTracking()
+            XCTAssertEqual(selectedIDs.last, target.id, "Click \(click) published the wrong row ID.")
+            XCTAssertEqual(authoritativeSelectedID, target.id)
+        }
+
+        coordinator.apply(
+            parent: view(
+                services: renderedServices,
+                selectedID: authoritativeSelectedID,
+                revision: liveSelectionRevision
+            )
+        )
+        settle(tableView)
+        let penultimateID = selectedIDs[selectedIDs.count - 2]
+        coordinator.apply(
+            parent: view(
+                services: renderedServices,
+                selectedID: penultimateID,
+                revision: liveSelectionRevision - 1
+            )
+        )
+        settle(tableView)
+
+        XCTAssertEqual(selectedIDs.count, 64)
+        XCTAssertEqual(
+            renderedServices[tableView.selectedRow].id,
+            authoritativeSelectedID,
+            "A stale projection after the stress run must not undo the sixty-fourth click."
+        )
+    }
+
+    @MainActor
     func testCoordinatorDropsSupersededDeferredContextMenuSelection() {
         let services = ["alpha", "beta", "gamma"].map { name in
             ServiceSummary(
@@ -505,10 +1098,23 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
 
     func testResourceTableSelectionInvalidationIsWiredForCustomHighlights() throws {
         let source = try String(contentsOfFile: appKitResourceTablePath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("func invalidateResourceTableSelectionDisplay("))
         XCTAssertTrue(source.contains("struct RuneAppKitResourceTableSelectionBridge"))
         XCTAssertTrue(source.contains("func applyBridgedResourceTableSelection<Row>("))
+        XCTAssertTrue(source.contains("override func mouseDown(with event: NSEvent)"))
+        XCTAssertTrue(
+            source.contains(
+                "super.mouseDown(with: event)\n        finishMouseSelectionTracking()"
+            )
+        )
+        XCTAssertTrue(
+            source.contains(
+                "(delegate as? RuneAppKitResourceTableSelectionTrackingDelegate)?"
+            ),
+            "The shared table must finish a captured gesture even if an interleaved programmatic selection suppresses AppKit's usual notification."
+        )
         XCTAssertTrue(source.contains("override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool)"))
         XCTAssertTrue(source.contains("override func deselectAll(_ sender: Any?)"))
         XCTAssertTrue(source.contains("allowsMultipleSelection = false"))
@@ -533,6 +1139,47 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
             source.components(separatedBy: "self.selectionBridge.prepareToPublish(").count - 1,
             7,
             "Every deferred context-menu selection must verify that its user intent is still current."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "var selectionRevisionAfterSelect: (() -> UInt64)? = nil").count - 1,
+            7,
+            "All seven resource tables must read the actual state revision after a click."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "confirmPublishedUserSelection(").count - 1,
+            15,
+            "The bridge declaration plus direct and context-menu paths must confirm post-click revisions."
+        )
+        XCTAssertEqual(
+            rootSource.components(separatedBy: "resourceSelectionRevision(").count - 1,
+            14,
+            "Every production middle-panel table must use a family-scoped revision for both projection and its live post-click acknowledgement."
+        )
+        XCTAssertTrue(source.contains("selectionRevisionKind != parent.resolvedResourceKind"))
+        XCTAssertTrue(source.contains("selectionBridge.reset()"))
+        XCTAssertEqual(
+            source.components(separatedBy: "first(where: { $0.id == intent.id })").count - 1,
+            7,
+            "Every direct-click path must resolve its captured intent ID against the latest parent rows."
+        )
+        XCTAssertEqual(
+            source.components(
+                separatedBy: "selectionIndexesForProposedSelection proposedSelectionIndexes"
+            ).count - 1,
+            7,
+            "Every resource table must capture mouse intent before selectionDidChange at mouse-up."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "private var proposedUserSelectionIntent:").count - 1,
+            7,
+            "Every resource table must retain the proposed row ID across the AppKit mouse-tracking window."
+        )
+        XCTAssertEqual(
+            source.components(
+                separatedBy: "func resourceTableDidFinishMouseSelection(_ tableView: NSTableView)"
+            ).count - 1,
+            8,
+            "The tracking protocol plus all seven coordinators must finalize a gesture after mouseDown returns."
         )
         XCTAssertFalse(source.contains("parent.pods[tableView.selectedRow]"))
         XCTAssertFalse(source.contains("parent.deployments[tableView.selectedRow]"))

@@ -7122,6 +7122,39 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testClosingBackgroundTerminalTabNeverActivatesItOrClearsActiveDraft() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let first = PodTerminalSession(
+            id: "shell-a",
+            contextName: "synthetic",
+            namespace: "default",
+            podName: "api-0",
+            shell: "sh",
+            status: .connected
+        )
+        let second = PodTerminalSession(
+            id: "shell-b",
+            contextName: "synthetic",
+            namespace: "default",
+            podName: "worker-0",
+            shell: "sh",
+            status: .connected
+        )
+        state.setTerminalSession(first)
+        state.setTerminalSession(second)
+        state.selectTerminalSession(id: first.id)
+        viewModel.terminalSessionInput = "unfinished command"
+
+        viewModel.closeTerminalSession(id: second.id)
+
+        XCTAssertEqual(state.terminalSessions.map(\.id), [first.id])
+        XCTAssertEqual(state.activeTerminalSessionID, first.id)
+        XCTAssertEqual(state.terminalSession?.id, first.id)
+        XCTAssertEqual(viewModel.terminalSessionInput, "unfinished command")
+    }
+
+    @MainActor
     func testTerminalSessionMutationsStayScopedToActiveTab() {
         let state = RuneAppState()
         state.setTerminalSession(PodTerminalSession(

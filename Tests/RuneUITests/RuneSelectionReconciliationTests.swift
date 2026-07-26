@@ -3,6 +3,50 @@ import XCTest
 
 final class RuneSelectionReconciliationTests: XCTestCase {
     @MainActor
+    func testSelectionRevisionIsScopedAndTracksIdentityChangesButNotSameIDRefreshes() {
+        let state = RuneAppState()
+        let first = PodSummary(name: "pod-a", namespace: "selection-test", status: "Pending")
+        let refreshedFirst = PodSummary(name: "pod-a", namespace: "selection-test", status: "Running")
+        let second = PodSummary(name: "pod-b", namespace: "selection-test", status: "Running")
+
+        state.setPods([first, second])
+        let podChannel: RuneResourceSelectionChannel = .resource(.pod)
+        let initialSelectionRevision = state.resourceSelectionRevision(for: podChannel)
+
+        state.setPods([refreshedFirst, second])
+        XCTAssertEqual(state.selectedPod, refreshedFirst)
+        XCTAssertEqual(
+            state.resourceSelectionRevision(for: podChannel),
+            initialSelectionRevision,
+            "Refreshing the selected model with the same stable ID must not create a new selection revision."
+        )
+
+        let service = ServiceSummary(
+            name: "service-a",
+            namespace: "selection-test",
+            type: "ClusterIP",
+            clusterIP: "192.0.2.1"
+        )
+        state.setServices([service])
+        XCTAssertEqual(
+            state.resourceSelectionRevision(for: podChannel),
+            initialSelectionRevision,
+            "A background selection change in another resource family must not supersede a pending pod click."
+        )
+        XCTAssertEqual(state.resourceSelectionRevision(for: .resource(.service)), 1)
+
+        state.setSelectedPod(second)
+        XCTAssertEqual(state.resourceSelectionRevision(for: podChannel), initialSelectionRevision + 1)
+
+        state.selectedPod = refreshedFirst
+        XCTAssertEqual(
+            state.resourceSelectionRevision(for: podChannel),
+            initialSelectionRevision + 2,
+            "Direct selection mutations must carry a newer revision for AppKit projections."
+        )
+    }
+
+    @MainActor
     func testTypedSelectionsUseLatestModelsWithTheSameID() {
         let state = RuneAppState()
 

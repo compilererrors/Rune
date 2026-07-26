@@ -531,28 +531,57 @@ func invalidateResourceTableSelectionDisplay(
 /// Deferred `apply()` can otherwise snap the table back to a stale published ID
 /// after a click has already moved the AppKit selection forward.
 @MainActor
+protocol RuneAppKitResourceTableSelectionTrackingDelegate: AnyObject {
+    func resourceTableDidFinishMouseSelection(_ tableView: NSTableView)
+}
+
+@MainActor
 struct RuneAppKitResourceTableSelectionBridge {
     struct UserSelectionIntent: Equatable {
         fileprivate let id: String
         fileprivate let generation: Int
+        fileprivate let expectedSelectionRevision: UInt64?
     }
 
     private(set) var pendingUserSelectedID: String?
     private var publishedSelectedIDBeforeUserSelection: String?
     private var staleApplyGeneration: Int?
+    private var pendingExpectedSelectionRevision: UInt64?
+    private var highWaterSelectionRevision: UInt64?
+    private var highWaterSelectedID: String?
     private var userSelectionIntentGeneration = 0
+
+    mutating func reset() {
+        self = Self()
+    }
 
     @discardableResult
     mutating func noteUserSelectedID(
         _ id: String,
         publishedSelectedID: String?,
-        staleThroughApplyGeneration: Int
+        staleThroughApplyGeneration: Int,
+        publishedSelectionRevision: UInt64? = nil
     ) -> UserSelectionIntent {
         userSelectionIntentGeneration += 1
         pendingUserSelectedID = id
         publishedSelectedIDBeforeUserSelection = publishedSelectedID
         staleApplyGeneration = staleThroughApplyGeneration
-        return UserSelectionIntent(id: id, generation: userSelectionIntentGeneration)
+        let expectedSelectionRevision: UInt64?
+        if let publishedSelectionRevision {
+            let revisionFloor = max(
+                publishedSelectionRevision,
+                highWaterSelectionRevision ?? publishedSelectionRevision
+            )
+            expectedSelectionRevision = revisionFloor == .max ? .max : revisionFloor + 1
+        } else {
+            expectedSelectionRevision = nil
+        }
+        pendingExpectedSelectionRevision = expectedSelectionRevision
+        return UserSelectionIntent(
+            id: id,
+            generation: userSelectionIntentGeneration,
+            expectedSelectionRevision: expectedSelectionRevision
+        )
     }
 
     mutating func clearPendingUserSelectedID() {
@@ -561,25 +590,115 @@ struct RuneAppKitResourceTableSelectionBridge {
         pendingUserSelectedID = nil
         publishedSelectedIDBeforeUserSelection = nil
         staleApplyGeneration = nil
+        pendingExpectedSelectionRevision = nil
+    }
+
+    @discardableResult
+    mutating func confirmPublishedUserSelection(
+        _ intent: UserSelectionIntent,
+        selectionRevision: UInt64?
+    ) -> Bool {
+        guard intent.generation == userSelectionIntentGeneration,
+              intent.id == pendingUserSelectedID else { return false }
+        guard let selectionRevision,
+              let pendingExpectedSelectionRevision else { return true }
+        let confirmedRevision = max(selectionRevision, pendingExpectedSelectionRevision)
+        self.pendingExpectedSelectionRevision = confirmedRevision
+        recordHighWater(revision: confirmedRevision, selectedID: intent.id)
+        return true
     }
 
     mutating func prepareToPublish(
         _ intent: UserSelectionIntent,
         displayedSelectedID: String?,
-        staleThroughApplyGeneration: Int
+        staleThroughApplyGeneration: Int,
+        publishedSelectedID: String? = nil,
+        publishedSelectionRevision: UInt64? = nil
     ) -> Bool {
         guard intent.generation == userSelectionIntentGeneration,
-              intent.id == pendingUserSelectedID,
-              displayedSelectedID == intent.id else { return false }
+              intent.id == pendingUserSelectedID else { return false }
+        if let expectedSelectionRevision = intent.expectedSelectionRevision,
+           let publishedSelectionRevision,
+           publishedSelectionRevision >= expectedSelectionRevision,
+           publishedSelectedID != intent.id {
+            // A newer authoritative navigation happened while this gesture was
+            // deferred. The old mouse intent must not overwrite it.
+            clearPendingUserSelectedID()
+            return false
+        }
+        guard displayedSelectedID == intent.id else { return false }
         staleApplyGeneration = staleThroughApplyGeneration
         return true
+    }
+
+    mutating func noteProposedUserSelection<Value: Hashable>(
+        _ proposedSelectionIndexes: IndexSet,
+        in tableView: NSTableView,
+        displayedRows: [RuneAppKitResourceTableRowSnapshot<Value>]?,
+        latestRows: [Value],
+        latestRowID: (Value) -> String,
+        publishedSelectedID: String?,
+        staleThroughApplyGeneration: Int,
+        publishedSelectionRevision: UInt64? = nil
+    ) -> UserSelectionIntent? {
+        guard proposedSelectionIndexes.count == 1,
+              let row = proposedSelectionIndexes.first,
+              let snapshot = displayedResourceTableRow(at: row, in: displayedRows),
+              snapshot.id != displayedResourceTableSelectedID(in: tableView, rows: displayedRows),
+              latestRows.contains(where: { latestRowID($0) == snapshot.id })
+        else { return nil }
+
+        return noteUserSelectedID(
+            snapshot.id,
+            publishedSelectedID: publishedSelectedID,
+            staleThroughApplyGeneration: staleThroughApplyGeneration,
+            publishedSelectionRevision: publishedSelectionRevision
+        )
+    }
+
+    mutating func userSelectionIntentToPublish(
+        proposedIntent: UserSelectionIntent?,
+        displayedSelectedID: String?,
+        publishedSelectedID: String?,
+        staleThroughApplyGeneration: Int,
+        publishedSelectionRevision: UInt64? = nil
+    ) -> UserSelectionIntent? {
+        guard let displayedSelectedID else {
+            clearPendingUserSelectedID()
+            return nil
+        }
+        guard let proposedIntent else {
+            return noteUserSelectedID(
+                displayedSelectedID,
+                publishedSelectedID: publishedSelectedID,
+                staleThroughApplyGeneration: staleThroughApplyGeneration,
+                publishedSelectionRevision: publishedSelectionRevision
+            )
+        }
+        guard prepareToPublish(
+            proposedIntent,
+            displayedSelectedID: displayedSelectedID,
+            staleThroughApplyGeneration: staleThroughApplyGeneration,
+            publishedSelectedID: publishedSelectedID,
+            publishedSelectionRevision: publishedSelectionRevision
+        ) else { return nil }
+        return proposedIntent
     }
 
     mutating func projectedSelectedID(
         publishedSelectedID: String?,
         pendingSelectionIsAvailable: Bool,
-        applyGeneration: Int
+        applyGeneration: Int,
+        publishedSelectionRevision: UInt64? = nil
     ) -> String? {
+        if let publishedSelectionRevision {
+            return projectedVersionedSelectedID(
+                publishedSelectedID: publishedSelectedID,
+                publishedSelectionRevision: publishedSelectionRevision,
+                pendingSelectionIsAvailable: pendingSelectionIsAvailable
+            )
+        }
+
         guard let pendingUserSelectedID else {
             return publishedSelectedID
         }
@@ -606,6 +725,75 @@ struct RuneAppKitResourceTableSelectionBridge {
         // It is authoritative (including an intentional A → B → A transition).
         clearPendingUserSelectedID()
         return publishedSelectedID
+    }
+
+    private mutating func projectedVersionedSelectedID(
+        publishedSelectedID: String?,
+        publishedSelectionRevision: UInt64,
+        pendingSelectionIsAvailable: Bool
+    ) -> String? {
+        if let pendingUserSelectedID,
+           let pendingExpectedSelectionRevision {
+            guard pendingSelectionIsAvailable else {
+                if publishedSelectionRevision < pendingExpectedSelectionRevision {
+                    // A stale/filtering projection can temporarily omit the
+                    // row during mouse tracking. Keep the ID intent alive so a
+                    // following projection can restore it before mouse-up.
+                    return selectedIDProtectedByHighWater(
+                        publishedSelectedID: publishedSelectedID,
+                        publishedSelectionRevision: publishedSelectionRevision
+                    )
+                }
+                clearPendingUserSelectedID()
+                return selectedIDProtectedByHighWater(
+                    publishedSelectedID: publishedSelectedID,
+                    publishedSelectionRevision: publishedSelectionRevision
+                )
+            }
+
+            if publishedSelectionRevision >= pendingExpectedSelectionRevision {
+                recordHighWater(
+                    revision: publishedSelectionRevision,
+                    selectedID: publishedSelectedID
+                )
+                clearPendingUserSelectedID()
+                return publishedSelectedID
+            }
+
+            // Older projections cannot supersede the latest user click.
+            return pendingUserSelectedID
+        }
+
+        return selectedIDProtectedByHighWater(
+            publishedSelectedID: publishedSelectedID,
+            publishedSelectionRevision: publishedSelectionRevision
+        )
+    }
+
+    private mutating func selectedIDProtectedByHighWater(
+        publishedSelectedID: String?,
+        publishedSelectionRevision: UInt64
+    ) -> String? {
+        if let highWaterSelectionRevision {
+            if publishedSelectionRevision < highWaterSelectionRevision {
+                return highWaterSelectedID
+            }
+            if publishedSelectionRevision == highWaterSelectionRevision,
+               publishedSelectedID != highWaterSelectedID {
+                return highWaterSelectedID
+            }
+        }
+        recordHighWater(
+            revision: publishedSelectionRevision,
+            selectedID: publishedSelectedID
+        )
+        return publishedSelectedID
+    }
+
+    private mutating func recordHighWater(revision: UInt64, selectedID: String?) {
+        guard highWaterSelectionRevision.map({ revision >= $0 }) ?? true else { return }
+        highWaterSelectionRevision = revision
+        highWaterSelectedID = selectedID
     }
 }
 
@@ -654,6 +842,7 @@ func applyBridgedResourceTableSelection<Row>(
     rows: [Row],
     rowID: (Row) -> String,
     applyGeneration: Int,
+    publishedSelectionRevision: UInt64? = nil,
     in tableView: NSTableView
 ) {
     let selectedID = bridge.projectedSelectedID(
@@ -661,7 +850,8 @@ func applyBridgedResourceTableSelection<Row>(
         pendingSelectionIsAvailable: bridge.pendingUserSelectedID.map { pendingID in
             rows.contains(where: { rowID($0) == pendingID })
         } ?? false,
-        applyGeneration: applyGeneration
+        applyGeneration: applyGeneration,
+        publishedSelectionRevision: publishedSelectionRevision
     )
     applyResourceTableSelection(
         selectedID: selectedID,
@@ -1259,6 +1449,8 @@ func resolvedRuneResourceTableTheme(for view: NSView) -> RuneResolvedTheme {
 struct AppKitPodTableView: NSViewRepresentable {
     let pods: [PodSummary]
     let selectedPodID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let selectedPodIDs: Set<String>
     let sortColumn: PodListSortColumn
     let sortAscending: Bool
@@ -1324,11 +1516,18 @@ struct AppKitPodTableView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitPodTableView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var nameColumnPersistWorkItem: DispatchWorkItem?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<PodSummary>]?
@@ -1477,20 +1676,62 @@ struct AppKitPodTableView: NSViewRepresentable {
             dequeueResourceTableRow(from: tableView)
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.pods,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedPodID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedPodID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let pod = parent.pods.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let pod = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                pod.id,
-                publishedSelectedID: parent.selectedPodID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectPod(pod)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -1502,14 +1743,22 @@ struct AppKitPodTableView: NSViewRepresentable {
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let snapshot = displayedResourceTableRow(at: row, in: displayedRows) else { return }
             let pod = snapshot.value
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard pod.id != parent.selectedPodID else { return }
+            guard pod.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 pod.id,
                 publishedSelectedID: parent.selectedPodID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -1520,11 +1769,19 @@ struct AppKitPodTableView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedPodID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.pods.first(where: { $0.id == pod.id })
                 else { return }
                 self.parent.onSelectPod(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -1758,6 +2015,9 @@ struct AppKitPodTableView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -1834,6 +2094,8 @@ struct AppKitPodTableView: NSViewRepresentable {
 struct AppKitDeploymentListView: NSViewRepresentable {
     let deployments: [DeploymentSummary]
     let selectedDeploymentID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let sortColumn: DeploymentListSortColumn
     let sortAscending: Bool
     let canApplyClusterMutations: Bool
@@ -1895,11 +2157,18 @@ struct AppKitDeploymentListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitDeploymentListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<DeploymentSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -1990,20 +2259,62 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.deployments,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedDeploymentID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedDeploymentID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let deployment = parent.deployments.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let deployment = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                deployment.id,
-                publishedSelectedID: parent.selectedDeploymentID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectDeployment(deployment)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2014,14 +2325,22 @@ struct AppKitDeploymentListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let deployment = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard deployment.id != parent.selectedDeploymentID else { return }
+            guard deployment.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 deployment.id,
                 publishedSelectedID: parent.selectedDeploymentID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -2032,11 +2351,19 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedDeploymentID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.deployments.first(where: { $0.id == deployment.id })
                 else { return }
                 self.parent.onSelectDeployment(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -2133,6 +2460,9 @@ struct AppKitDeploymentListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -2232,6 +2562,8 @@ struct AppKitDeploymentListView: NSViewRepresentable {
 struct AppKitServiceListView: NSViewRepresentable {
     let services: [ServiceSummary]
     let selectedServiceID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let sortColumn: ServiceListSortColumn
     let sortAscending: Bool
     let canApplyClusterMutations: Bool
@@ -2293,11 +2625,18 @@ struct AppKitServiceListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitServiceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ServiceSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -2400,20 +2739,62 @@ struct AppKitServiceListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.services,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedServiceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedServiceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let service = parent.services.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let service = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                service.id,
-                publishedSelectedID: parent.selectedServiceID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectService(service)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2424,14 +2805,22 @@ struct AppKitServiceListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let service = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard service.id != parent.selectedServiceID else { return }
+            guard service.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 service.id,
                 publishedSelectedID: parent.selectedServiceID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -2442,11 +2831,19 @@ struct AppKitServiceListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedServiceID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.services.first(where: { $0.id == service.id })
                 else { return }
                 self.parent.onSelectService(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -2548,6 +2945,9 @@ struct AppKitServiceListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -2651,6 +3051,8 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     var kind: KubeResourceKind? = nil
     let resources: [ClusterResourceSummary]
     let selectedResourceID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let selectedResourceIDs: Set<String>
     let sortColumn: GenericResourceListSortColumn
     let sortAscending: Bool
@@ -2720,11 +3122,19 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitGenericResourceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
+        private var selectionRevisionKind: KubeResourceKind?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<ClusterResourceSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -2734,6 +3144,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 
         init(_ parent: AppKitGenericResourceListView) {
             self.parent = parent
+            selectionRevisionKind = parent.resolvedResourceKind
             displayedRows = parent.resources.map { resource in
                 var cellState: UInt8 = 0
                 if parent.selectedResourceIDs.contains(resource.id) { cellState |= 1 }
@@ -2747,6 +3158,11 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
         }
 
         func apply(parent: AppKitGenericResourceListView) {
+            if selectionRevisionKind != parent.resolvedResourceKind {
+                selectionRevisionKind = parent.resolvedResourceKind
+                selectionBridge.reset()
+                proposedUserSelectionIntent = nil
+            }
             self.parent = parent
             guard let tableView else { return }
             applyGeneration += 1
@@ -2853,20 +3269,62 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.resources,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let resource = parent.resources.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let resource = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                resource.id,
-                publishedSelectedID: parent.selectedResourceID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectResource(resource)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -2877,14 +3335,22 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let resource = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard resource.id != parent.selectedResourceID else { return }
+            guard resource.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 resource.id,
                 publishedSelectedID: parent.selectedResourceID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -2895,11 +3361,19 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedResourceID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.resources.first(where: { $0.id == resource.id })
                 else { return }
                 self.parent.onSelectResource(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -3011,6 +3485,9 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -3133,6 +3610,8 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 struct AppKitHelmReleaseListView: NSViewRepresentable {
     let releases: [HelmReleaseSummary]
     let selectedReleaseID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let sortColumn: HelmReleaseListSortColumn
     let sortAscending: Bool
     let onSelectRelease: (HelmReleaseSummary) -> Void
@@ -3182,11 +3661,18 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitHelmReleaseListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<HelmReleaseSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -3295,20 +3781,62 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.releases,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedReleaseID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedReleaseID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let release = parent.releases.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let release = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                release.id,
-                publishedSelectedID: parent.selectedReleaseID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectRelease(release)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -3318,14 +3846,22 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let release = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard release.id != parent.selectedReleaseID else { return }
+            guard release.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 release.id,
                 publishedSelectedID: parent.selectedReleaseID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -3336,11 +3872,19 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedReleaseID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.releases.first(where: { $0.id == release.id })
                 else { return }
                 self.parent.onSelectRelease(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -3392,6 +3936,9 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -3514,6 +4061,8 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
 struct AppKitEventListView: NSViewRepresentable {
     let events: [EventSummary]
     let selectedEventID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let sortColumn: EventListSortColumn
     let sortAscending: Bool
     let onSelectEvent: (EventSummary) -> Void
@@ -3563,11 +4112,18 @@ struct AppKitEventListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitEventListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<EventSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -3679,20 +4235,62 @@ struct AppKitEventListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.events,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedEventID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedEventID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let event = parent.events.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let event = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                event.id,
-                publishedSelectedID: parent.selectedEventID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectEvent(event)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -3703,14 +4301,22 @@ struct AppKitEventListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let event = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard event.id != parent.selectedEventID else { return }
+            guard event.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 event.id,
                 publishedSelectedID: parent.selectedEventID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -3721,11 +4327,19 @@ struct AppKitEventListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedEventID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.events.first(where: { $0.id == event.id })
                 else { return }
                 self.parent.onSelectEvent(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -3794,6 +4408,9 @@ struct AppKitEventListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -3907,6 +4524,8 @@ struct AppKitEventListView: NSViewRepresentable {
 struct AppKitOperatorResourceListView: NSViewRepresentable {
     let resources: [OperatorResourceSummary]
     let selectedResourceID: String?
+    var selectionRevision: UInt64 = 0
+    var selectionRevisionAfterSelect: (() -> UInt64)? = nil
     let sortColumn: OperatorResourceListSortColumn
     let sortAscending: Bool
     let showsPrinterColumns: Bool
@@ -3965,11 +4584,18 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator:
+        NSObject,
+        NSTableViewDataSource,
+        NSTableViewDelegate,
+        RuneAppKitResourceTableSelectionTrackingDelegate
+    {
         var parent: AppKitOperatorResourceListView
         weak var tableView: NSTableView?
         private var isApplyingSelection = false
         private var selectionBridge = RuneAppKitResourceTableSelectionBridge()
+        private var proposedUserSelectionIntent:
+            RuneAppKitResourceTableSelectionBridge.UserSelectionIntent?
         private var applyGeneration = 0
         private var displayedRows: [RuneAppKitResourceTableRowSnapshot<OperatorResourceSummary>]?
         private var hasAppliedDisplayedRows = false
@@ -4111,20 +4737,62 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             }
         }
 
+        func tableView(
+            _ tableView: NSTableView,
+            selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+        ) -> IndexSet {
+            guard !isApplyingSelection else { return proposedSelectionIndexes }
+            if let intent = selectionBridge.noteProposedUserSelection(
+                proposedSelectionIndexes,
+                in: tableView,
+                displayedRows: displayedRows,
+                latestRows: parent.resources,
+                latestRowID: \.id,
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ) {
+                proposedUserSelectionIntent = intent
+            }
+            return proposedSelectionIndexes
+        }
+
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection,
                   let tableView = notification.object as? NSTableView else { return }
-            guard let snapshot = displayedResourceTableRow(at: tableView.selectedRow, in: displayedRows) else {
+            let proposedIntent = proposedUserSelectionIntent
+            proposedUserSelectionIntent = nil
+            guard let intent = selectionBridge.userSelectionIntentToPublish(
+                proposedIntent: proposedIntent,
+                displayedSelectedID: displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ),
+                publishedSelectedID: parent.selectedResourceID,
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
+            ),
+                  let resource = parent.resources.first(where: { $0.id == intent.id })
+            else {
                 selectionBridge.clearPendingUserSelectedID()
                 return
             }
-            let resource = snapshot.value
-            selectionBridge.noteUserSelectedID(
-                resource.id,
-                publishedSelectedID: parent.selectedResourceID,
-                staleThroughApplyGeneration: applyGeneration
-            )
             parent.onSelectResource(resource)
+            selectionBridge.confirmPublishedUserSelection(
+                intent,
+                selectionRevision: parent.selectionRevisionAfterSelect?()
+            )
+        }
+
+        func resourceTableDidFinishMouseSelection(_ tableView: NSTableView) {
+            guard proposedUserSelectionIntent != nil else { return }
+            tableViewSelectionDidChange(
+                Notification(name: NSTableView.selectionDidChangeNotification, object: tableView)
+            )
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
@@ -4135,14 +4803,22 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
 
         func selectRowForContextMenu(_ row: Int, in tableView: NSTableView) {
             guard let resource = displayedResourceTableRow(at: row, in: displayedRows)?.value else { return }
+            let previouslyDisplayedSelectedID = displayedResourceTableSelectedID(
+                in: tableView,
+                rows: displayedRows
+            )
             isApplyingSelection = true
             defer { isApplyingSelection = false }
             applyImmediateResourceContextMenuSelection(row: row, in: tableView)
-            guard resource.id != parent.selectedResourceID else { return }
+            guard resource.id != previouslyDisplayedSelectedID else { return }
+            proposedUserSelectionIntent = nil
             let intent = selectionBridge.noteUserSelectedID(
                 resource.id,
                 publishedSelectedID: parent.selectedResourceID,
-                staleThroughApplyGeneration: applyGeneration
+                staleThroughApplyGeneration: applyGeneration,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -4153,11 +4829,19 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                               in: tableView,
                               rows: self.displayedRows
                           ),
-                          staleThroughApplyGeneration: self.applyGeneration
+                          staleThroughApplyGeneration: self.applyGeneration,
+                          publishedSelectedID: self.parent.selectedResourceID,
+                          publishedSelectionRevision: self.parent.selectionRevisionAfterSelect == nil
+                              ? nil
+                              : self.parent.selectionRevision
                       ),
                       let current = self.parent.resources.first(where: { $0.id == resource.id })
                 else { return }
                 self.parent.onSelectResource(current)
+                self.selectionBridge.confirmPublishedUserSelection(
+                    intent,
+                    selectionRevision: self.parent.selectionRevisionAfterSelect?()
+                )
             }
         }
 
@@ -4253,6 +4937,9 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
                 rows: rows,
                 rowID: \.id,
                 applyGeneration: generation,
+                publishedSelectionRevision: parent.selectionRevisionAfterSelect == nil
+                    ? nil
+                    : parent.selectionRevision,
                 in: tableView
             )
         }
@@ -4394,6 +5081,16 @@ final class RuneAppKitResourceTableView: NSTableView {
     )
     var onContextMenu: ((Int, NSTableView) -> NSMenu?)?
     var onFavoriteToggle: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        finishMouseSelectionTracking()
+    }
+
+    func finishMouseSelectionTracking() {
+        (delegate as? RuneAppKitResourceTableSelectionTrackingDelegate)?
+            .resourceTableDidFinishMouseSelection(self)
+    }
 
     override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
         let rowsToRedraw = selectedRowIndexes.union(indexes)

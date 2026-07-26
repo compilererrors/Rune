@@ -2374,6 +2374,165 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testViewModelRapidResourceMenuSwitchBenchmarkKPI() {
+        let resourceCount = 500
+        let state = RuneAppState()
+        state.setPods(benchmarkPods(count: resourceCount))
+        state.setDeployments(benchmarkDeployments(count: resourceCount))
+        state.setServices(benchmarkServices(count: resourceCount))
+        state.setStatefulSets(
+            benchmarkClusterResources(
+                kind: .statefulSet,
+                prefix: "statefulset",
+                count: resourceCount
+            )
+        )
+        state.setEndpoints(
+            benchmarkClusterResources(
+                kind: .endpoint,
+                prefix: "endpoint",
+                count: resourceCount
+            )
+        )
+        state.setIngresses(
+            benchmarkClusterResources(
+                kind: .ingress,
+                prefix: "ingress",
+                count: resourceCount
+            )
+        )
+        state.setConfigMaps(
+            benchmarkClusterResources(
+                kind: .configMap,
+                prefix: "configmap",
+                count: resourceCount
+            )
+        )
+        state.setSecrets(
+            benchmarkClusterResources(
+                kind: .secret,
+                prefix: "secret",
+                count: resourceCount
+            )
+        )
+        state.setPersistentVolumeClaims(
+            benchmarkClusterResources(
+                kind: .persistentVolumeClaim,
+                prefix: "persistentvolumeclaim",
+                count: resourceCount
+            )
+        )
+        state.setStorageClasses(
+            benchmarkClusterResources(
+                kind: .storageClass,
+                prefix: "storageclass",
+                count: resourceCount,
+                namespace: nil
+            )
+        )
+        state.setRBACData(
+            roles: benchmarkClusterResources(
+                kind: .role,
+                prefix: "role",
+                count: resourceCount
+            ),
+            serviceAccounts: benchmarkClusterResources(
+                kind: .serviceAccount,
+                prefix: "serviceaccount",
+                count: resourceCount
+            ),
+            roleBindings: [],
+            clusterRoles: [],
+            clusterRoleBindings: []
+        )
+        state.setSelectedPod(nil)
+        state.setSelectedDeployment(nil)
+        state.setSelectedService(nil)
+        state.setSelectedStatefulSet(nil)
+        state.setSelectedEndpoint(nil)
+        state.setSelectedIngress(nil)
+        state.setSelectedConfigMap(nil)
+        state.setSelectedSecret(nil)
+        state.setSelectedPersistentVolumeClaim(nil)
+        state.setSelectedStorageClass(nil)
+
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let routes: [(section: RuneSection, kind: KubeResourceKind)] = [
+            (.workloads, .pod),
+            (.workloads, .deployment),
+            (.workloads, .statefulSet),
+            (.networking, .service),
+            (.networking, .endpoint),
+            (.networking, .ingress),
+            (.config, .configMap),
+            (.config, .secret),
+            (.storage, .persistentVolumeClaim),
+            (.storage, .storageClass)
+        ]
+        let switchCount = 240
+
+        func visibleCount(for kind: KubeResourceKind) -> Int {
+            switch kind {
+            case .pod:
+                return viewModel.visiblePods.count
+            case .deployment:
+                return viewModel.visibleDeployments.count
+            case .statefulSet:
+                return viewModel.visibleStatefulSets.count
+            case .service:
+                return viewModel.visibleServices.count
+            case .endpoint:
+                return viewModel.visibleEndpoints.count
+            case .ingress:
+                return viewModel.visibleIngresses.count
+            case .configMap:
+                return viewModel.visibleConfigMaps.count
+            case .secret:
+                return viewModel.visibleSecrets.count
+            case .persistentVolumeClaim:
+                return viewModel.visiblePersistentVolumeClaims.count
+            case .storageClass:
+                return viewModel.visibleStorageClasses.count
+            default:
+                return 0
+            }
+        }
+
+        var projectedResourceCount = 0
+        let elapsedSeconds = minimumElapsedSeconds {
+            projectedResourceCount = 0
+            for index in 0..<switchCount {
+                let route = routes[index % routes.count]
+                viewModel.setSection(route.section)
+                viewModel.setWorkloadKind(route.kind)
+                projectedResourceCount += visibleCount(for: route.kind)
+            }
+        }
+
+        XCTAssertNil(state.selectedContext)
+        XCTAssertEqual(state.selectedSection, .storage)
+        XCTAssertEqual(state.selectedWorkloadKind, .storageClass)
+        XCTAssertEqual(projectedResourceCount, switchCount * resourceCount)
+        XCTAssertFalse(state.isLoading)
+        XCTAssertFalse(state.isLoadingResourceDetails)
+        #if DEBUG
+        let maximumSeconds = 1.25
+        #else
+        let maximumSeconds = 0.45
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumSeconds,
+            "KPI: 240 synchronous resource-menu switches with 500 preloaded rows per family should stay below \(maximumSeconds)s without a context or network work."
+        )
+    }
+
+    @MainActor
     func testCommandPaletteGlobalSearchAndAliasBenchmarkKPI() {
         let state = RuneAppState()
         state.setContexts((0..<500).map { index in
@@ -2565,6 +2724,221 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             0.080,
             "KPI: context-menu row highlight must be visual-first and stay below 80ms for 200 row selections in debug."
         )
+    }
+
+    @MainActor
+    func testBridgedRapidAppKitSelectionBenchmarkKPI() {
+        typealias Snapshot = RuneAppKitResourceTableRowSnapshot<String>
+
+        let resourceIDs = (0..<2_500).map { "resource-\($0)" }
+        let canonicalRows = resourceIDs.map { Snapshot(id: $0, value: $0) }
+        let dataSource = BenchmarkTableDataSource(rowCount: resourceIDs.count)
+        let tableView = benchmarkTable(columnIDs: ["name"])
+        tableView.dataSource = dataSource
+        tableView.delegate = dataSource
+        tableView.noteNumberOfRowsChanged()
+        let intentCount = 256
+
+        func reorderedRows(for iteration: Int) -> [Snapshot] {
+            let shift = (iteration * 37 + 13) % canonicalRows.count
+            var rows = Array(canonicalRows[shift...] + canonicalRows[..<shift])
+            if !iteration.isMultiple(of: 2) {
+                rows.reverse()
+            }
+            return rows
+        }
+
+        func runSelectionPass() -> (
+            isValid: Bool,
+            publicationCount: Int,
+            confirmationCount: Int,
+            transientFilterCount: Int,
+            protectedStaleCount: Int,
+            finalRevision: UInt64,
+            finalPublishedID: String?,
+            finalDisplayedID: String?
+        ) {
+            var bridge = RuneAppKitResourceTableSelectionBridge()
+            var displayedRows = canonicalRows
+            var publishedSelectedID: String? = resourceIDs[0]
+            var publishedSelectionRevision: UInt64 = 1
+            var applyGeneration = 0
+            var publicationCount = 0
+            var confirmationCount = 0
+            var transientFilterCount = 0
+            var protectedStaleCount = 0
+            var isValid = true
+
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            applyGeneration += 1
+            applyBridgedResourceTableSelection(
+                bridge: &bridge,
+                publishedSelectedID: publishedSelectedID,
+                rows: displayedRows,
+                rowID: \.id,
+                applyGeneration: applyGeneration,
+                publishedSelectionRevision: publishedSelectionRevision,
+                in: tableView
+            )
+
+            for iteration in 0..<intentCount {
+                var targetRow = (iteration * 997 + 1) % displayedRows.count
+                if displayedRows[targetRow].id == publishedSelectedID {
+                    targetRow = (targetRow + 1) % displayedRows.count
+                }
+                let targetID = displayedRows[targetRow].id
+                let previousPublishedID = publishedSelectedID
+                let previousRevision = publishedSelectionRevision
+
+                guard let proposedIntent = bridge.noteProposedUserSelection(
+                    IndexSet(integer: targetRow),
+                    in: tableView,
+                    displayedRows: displayedRows,
+                    latestRows: resourceIDs,
+                    latestRowID: { $0 },
+                    publishedSelectedID: publishedSelectedID,
+                    staleThroughApplyGeneration: applyGeneration,
+                    publishedSelectionRevision: publishedSelectionRevision
+                ) else {
+                    isValid = false
+                    break
+                }
+                tableView.selectRowIndexes(
+                    IndexSet(integer: targetRow),
+                    byExtendingSelection: false
+                )
+
+                let reordered = reorderedRows(for: iteration)
+                if iteration.isMultiple(of: 8) {
+                    let transientlyFiltered = reordered.filter { $0.id != targetID }
+                    applyGeneration += 1
+                    applyBridgedResourceTableSelection(
+                        bridge: &bridge,
+                        publishedSelectedID: previousPublishedID,
+                        rows: transientlyFiltered,
+                        rowID: \.id,
+                        applyGeneration: applyGeneration,
+                        publishedSelectionRevision: previousRevision,
+                        in: tableView
+                    )
+                    displayedRows = transientlyFiltered
+                    transientFilterCount += 1
+                }
+
+                applyGeneration += 1
+                applyBridgedResourceTableSelection(
+                    bridge: &bridge,
+                    publishedSelectedID: previousPublishedID,
+                    rows: reordered,
+                    rowID: \.id,
+                    applyGeneration: applyGeneration,
+                    publishedSelectionRevision: previousRevision,
+                    in: tableView
+                )
+                displayedRows = reordered
+
+                guard displayedResourceTableSelectedID(
+                    in: tableView,
+                    rows: displayedRows
+                ) == targetID,
+                      let intentToPublish = bridge.userSelectionIntentToPublish(
+                          proposedIntent: proposedIntent,
+                          displayedSelectedID: targetID,
+                          publishedSelectedID: previousPublishedID,
+                          staleThroughApplyGeneration: applyGeneration,
+                          publishedSelectionRevision: previousRevision
+                      )
+                else {
+                    isValid = false
+                    break
+                }
+
+                publicationCount += 1
+                publishedSelectedID = targetID
+                publishedSelectionRevision += 1
+                if bridge.confirmPublishedUserSelection(
+                    intentToPublish,
+                    selectionRevision: publishedSelectionRevision
+                ) {
+                    confirmationCount += 1
+                } else {
+                    isValid = false
+                    break
+                }
+
+                applyGeneration += 1
+                applyBridgedResourceTableSelection(
+                    bridge: &bridge,
+                    publishedSelectedID: publishedSelectedID,
+                    rows: displayedRows,
+                    rowID: \.id,
+                    applyGeneration: applyGeneration,
+                    publishedSelectionRevision: publishedSelectionRevision,
+                    in: tableView
+                )
+
+                if iteration.isMultiple(of: 8) {
+                    let postAcknowledgementRows = reorderedRows(
+                        for: iteration + intentCount
+                    )
+                    applyGeneration += 1
+                    applyBridgedResourceTableSelection(
+                        bridge: &bridge,
+                        publishedSelectedID: previousPublishedID,
+                        rows: postAcknowledgementRows,
+                        rowID: \.id,
+                        applyGeneration: applyGeneration,
+                        publishedSelectionRevision: previousRevision,
+                        in: tableView
+                    )
+                    displayedRows = postAcknowledgementRows
+                    if displayedResourceTableSelectedID(
+                        in: tableView,
+                        rows: displayedRows
+                    ) == targetID {
+                        protectedStaleCount += 1
+                    } else {
+                        isValid = false
+                        break
+                    }
+                }
+            }
+
+            return (
+                isValid,
+                publicationCount,
+                confirmationCount,
+                transientFilterCount,
+                protectedStaleCount,
+                publishedSelectionRevision,
+                publishedSelectedID,
+                displayedResourceTableSelectedID(in: tableView, rows: displayedRows)
+            )
+        }
+
+        var result = runSelectionPass()
+        let elapsedSeconds = minimumElapsedSeconds {
+            result = runSelectionPass()
+        }
+
+        XCTAssertTrue(result.isValid)
+        XCTAssertEqual(result.publicationCount, intentCount)
+        XCTAssertEqual(result.confirmationCount, intentCount)
+        XCTAssertEqual(result.transientFilterCount, intentCount / 8)
+        XCTAssertEqual(result.protectedStaleCount, intentCount / 8)
+        XCTAssertEqual(result.finalRevision, UInt64(intentCount + 1))
+        XCTAssertEqual(result.finalDisplayedID, result.finalPublishedID)
+        #if DEBUG
+        let maximumSeconds = 1.0
+        #else
+        let maximumSeconds = 0.45
+        #endif
+        XCTAssertLessThan(
+            elapsedSeconds,
+            maximumSeconds,
+            "KPI: 256 bridged AppKit selection intents across 2,500 IDs, including transient filters, reorders, and stale/current revisions, should stay below \(maximumSeconds)s."
+        )
+        withExtendedLifetime(dataSource) {}
     }
 
     func testPodNameColumnResizeLayoutBenchmarkKPI() {

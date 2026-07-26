@@ -3,6 +3,33 @@ import XCTest
 @testable import RuneUI
 
 final class AddClusterNativeContextResolverTests: XCTestCase {
+    @MainActor
+    func testLatestRequestGateRejectsOlderSameSheetCompletion() throws {
+        let gate = RuneScopedLatestRequestGate()
+        let scope = gate.advanceScope()
+        let requests = try (0..<64).map { _ in
+            try XCTUnwrap(gate.begin(expectedScopeGeneration: scope))
+        }
+
+        XCTAssertTrue(requests.dropLast().allSatisfy { !gate.isCurrent($0) })
+        XCTAssertTrue(gate.isCurrent(try XCTUnwrap(requests.last)))
+    }
+
+    @MainActor
+    func testLatestRequestGateRejectsDelayedWorkAfterSameProviderReopens() throws {
+        let gate = RuneScopedLatestRequestGate()
+        let firstSheetScope = gate.advanceScope()
+        let firstSheetRequest = try XCTUnwrap(
+            gate.begin(expectedScopeGeneration: firstSheetScope)
+        )
+
+        let reopenedSheetScope = gate.advanceScope()
+
+        XCTAssertNil(gate.begin(expectedScopeGeneration: firstSheetScope))
+        XCTAssertFalse(gate.isCurrent(firstSheetRequest))
+        XCTAssertNotNil(gate.begin(expectedScopeGeneration: reopenedSheetScope))
+    }
+
     func testCurrentCompatibleContextWinsWhenProviderHasMultipleOptions() throws {
         let first = descriptor(context: "synthetic-eks-a", provider: .awsEKS)
         let current = descriptor(context: "synthetic-eks-b", provider: .awsEKS)

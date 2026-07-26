@@ -599,7 +599,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(tabBarSource.contains(".frame(width: 216, height: 28"))
         XCTAssertTrue(tabBarSource.contains(".contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius"))
-        XCTAssertTrue(tabBarSource.contains("Button {\n                select(session)"))
+        XCTAssertTrue(tabBarSource.contains("Button {\n                activateSession(session)"))
+        XCTAssertTrue(tabBarSource.contains("onSelectSession(session.id)"))
         XCTAssertFalse(tabBarSource.contains(".onTapGesture"))
         XCTAssertTrue(tabBarSource.contains("RuneIconButton(\"Close terminal tab\""))
     }
@@ -680,7 +681,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(shellSource.contains("private var selectedTerminalContainerName"))
         XCTAssertTrue(shellSource.contains("private var containerOptions"))
         XCTAssertTrue(shellSource.contains("containerPicker"))
-        XCTAssertTrue(shellSource.contains("onStartSession(pod, selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName)"))
+        XCTAssertTrue(shellSource.contains("let containerName = selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName"))
+        XCTAssertTrue(shellSource.contains("onStartSession(selectedPod, containerName)"))
         XCTAssertTrue(shellSource.contains("session.containerName"))
         XCTAssertTrue(viewModelSource.contains("PodTerminalSessionDiagnostic.classify"))
         XCTAssertTrue(viewModelSource.contains("diagnostic.transcriptMessage"))
@@ -1584,8 +1586,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
 
         XCTAssertTrue(viewModelSource.contains("public func closeTerminalSession(id: String)"))
-        XCTAssertTrue(viewModelSource.contains("state.selectTerminalSession(id: id)"))
-        XCTAssertTrue(viewModelSource.contains("stopTerminalSession(resetState: true)"))
+        XCTAssertTrue(viewModelSource.contains("guard state.removeTerminalSession(id: id) != nil else { return }"))
+        let closeSessionBlock = try functionBlock(
+            named: "public func closeTerminalSession(id: String)",
+            endingBefore: "public func clearTerminalSessionTranscript()",
+            in: viewModelSource
+        )
+        XCTAssertTrue(closeSessionBlock.contains("let wasActive = state.activeTerminalSessionID == id"))
+        XCTAssertFalse(closeSessionBlock.contains("state.selectTerminalSession(id: id)"))
+        XCTAssertTrue(closeSessionBlock.contains("await kubeClient.stopPodTerminalSession(id: id)"))
+        XCTAssertTrue(viewModelSource.contains("public func stopTerminalSession(resetState: Bool = false)"))
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPodTerminalSession(id: sessionID)"))
         XCTAssertTrue(viewModelSource.contains("public func stopPortForward(_ session: PortForwardSession)"))
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPortForward(sessionID: session.id)"))

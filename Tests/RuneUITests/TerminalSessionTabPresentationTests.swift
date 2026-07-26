@@ -41,4 +41,40 @@ final class TerminalSessionTabPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.accessibilityLabel.contains("container"))
         XCTAssertFalse(presentation.helpText.contains("Container:"))
     }
+
+    @MainActor
+    func testSessionTabPublishesOnlyStableSessionIntent() {
+        let session = PodTerminalSession(
+            id: "shell-sidecar",
+            contextName: "synthetic",
+            namespace: "default",
+            podName: "api-0",
+            containerName: "sidecar",
+            shell: "sh",
+            status: .connected
+        )
+        var selectedSessionIDs: [String] = []
+        var composeCount = 0
+        let tabBar = TerminalSessionTabBar(
+            sessions: [session],
+            activeSessionID: nil,
+            isComposingNewSession: false,
+            selectedPod: nil,
+            canApplyMutations: true,
+            onSelectSession: { selectedSessionIDs.append($0) },
+            onCloseSession: { _ in },
+            onComposeNewSession: { composeCount += 1 }
+        )
+
+        for _ in 0..<64 {
+            tabBar.activateSession(session)
+        }
+
+        XCTAssertEqual(selectedSessionIDs, Array(repeating: session.id, count: 64))
+        XCTAssertEqual(
+            composeCount,
+            0,
+            "Selecting an existing session tab must not transiently publish a pod choice that composes a new draft."
+        )
+    }
 }
