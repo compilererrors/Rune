@@ -3191,9 +3191,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             var checksum: CGFloat = 0
             for _ in 0..<80 {
                 for translation in translations {
-                    let width = PodTableLayout.resizePreviewWidth(
-                        committedWidth: PodTableLayout.nameColumnDefaultWidth,
-                        translation: translation
+                    let width = PodTableLayout.clampedNameColumnWidth(
+                        PodTableLayout.nameColumnDefaultWidth + translation
                     )
                     checksum += PodTableLayout.nameColumnFrameWidth(width)
                     checksum += PodTableLayout.minimumScrollableWidth(nameColumnWidth: width)
@@ -3207,9 +3206,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         var roundedWidths = true
         let elapsedSeconds = minimumElapsedSeconds(repetitions: 5) {
             for (index, translation) in translations.enumerated() {
-                let width = PodTableLayout.resizePreviewWidth(
-                    committedWidth: PodTableLayout.nameColumnDefaultWidth,
-                    translation: translation
+                let width = PodTableLayout.clampedNameColumnWidth(
+                    PodTableLayout.nameColumnDefaultWidth + translation
                 )
                 if index == 0 {
                     firstWidth = width

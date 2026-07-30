@@ -972,17 +972,13 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         favorites.insert(pods[0].id)
 
         XCTAssertEqual(
+            FavoritePodPickerPresentation.sortedPods(pods, isFavoritePod: { favorites.contains($0.id) }).map(\.id),
+            [pods[0].id, pods[1].id, pods[2].id]
+        )
+        XCTAssertEqual(
             FavoritePodPickerPresentation.selectedPod(in: pods, selection: pods[2].id)?.id,
             pods[2].id,
             "Changing favorites must not pin the picker to the favorite pod; selection remains an independent pod id."
-        )
-        XCTAssertEqual(
-            FavoritePodPickerPresentation.rowIcon(for: pods[2], selection: pods[2].id, isFavoritePod: { favorites.contains($0.id) }),
-            "checkmark"
-        )
-        XCTAssertEqual(
-            FavoritePodPickerPresentation.rowIcon(for: pods[0], selection: pods[2].id, isFavoritePod: { favorites.contains($0.id) }),
-            "star.fill"
         )
     }
 

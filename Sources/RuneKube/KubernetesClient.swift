@@ -74,8 +74,6 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     private let unifiedLogsMaxConcurrentPodFetches: Int = 3
     /// Keep per-pod log fetch short so one slow pod does not block the whole merged view.
     private let unifiedLogsPerPodTimeout: TimeInterval = 8
-    /// One merged backend call can use a slightly larger budget than the per-pod fallback.
-    private let unifiedLogsAggregateTimeout: TimeInterval = 20
     /// Selector/pod-discovery for unified logs should fail fast; stale workloads should not block the inspector for minutes.
     private let unifiedLogsSelectorTimeout: TimeInterval = 12
     /// Validation should feel near-live while still giving the API server room on slower clusters.
@@ -2390,27 +2388,6 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
     }
 
-    private func serviceSelectorViaREST(
-        environment: [String: String],
-        context: KubeContext,
-        namespace: String,
-        serviceName: String
-    ) async throws -> [String: String]? {
-        do {
-            let raw = try await restClient.serviceSelector(
-                environment: environment,
-                contextName: context.name,
-                namespace: namespace,
-                serviceName: serviceName,
-                timeout: unifiedLogsSelectorTimeout
-            )
-            return try parser.parseServiceSelector(from: raw)
-        } catch {
-            try rethrowCancellationIfNeeded(error)
-            return nil
-        }
-    }
-
     private func requiredServiceSelectorViaREST(
         environment: [String: String],
         context: KubeContext,
@@ -2431,27 +2408,6 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
     }
 
-    private func deploymentSelectorViaREST(
-        environment: [String: String],
-        context: KubeContext,
-        namespace: String,
-        deploymentName: String
-    ) async throws -> [String: String]? {
-        do {
-            let raw = try await restClient.deploymentSelector(
-                environment: environment,
-                contextName: context.name,
-                namespace: namespace,
-                deploymentName: deploymentName,
-                timeout: unifiedLogsSelectorTimeout
-            )
-            return try parser.parseDeploymentSelector(from: raw)
-        } catch {
-            try rethrowCancellationIfNeeded(error)
-            return nil
-        }
-    }
-
     private func requiredDeploymentSelectorViaREST(
         environment: [String: String],
         context: KubeContext,
@@ -2469,28 +2425,6 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             return try parser.parseDeploymentSelector(from: raw)
         } catch {
             throw RuneError.parseError(message: "deployment selector could not be parsed")
-        }
-    }
-
-    private func podsBySelectorViaREST(
-        environment: [String: String],
-        context: KubeContext,
-        namespace: String,
-        selector: String
-    ) async throws -> [PodSummary]? {
-        do {
-            let raw = try await restClient.podsBySelector(
-                environment: environment,
-                contextName: context.name,
-                namespace: namespace,
-                selector: selector,
-                timeout: unifiedLogsSelectorTimeout
-            )
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return try parser.parsePodsListJSON(namespace: namespace, from: trimmed)
-        } catch {
-            try rethrowCancellationIfNeeded(error)
-            return nil
         }
     }
 
@@ -2829,21 +2763,6 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
 
         return message.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func transportValidationIssue(from error: Error) -> YAMLValidationIssue {
-        let message: String
-        if case let RuneError.commandFailed(_, detail) = error {
-            message = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            message = error.localizedDescription
-        }
-
-        return YAMLValidationIssue(
-            source: .transport,
-            severity: .warning,
-            message: normalizeValidationMessage(message)
-        )
     }
 
     private static func validationIssues(from error: Error, yaml: String) -> [YAMLValidationIssue]? {

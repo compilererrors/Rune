@@ -15,7 +15,6 @@
   "daemonSets": "DaemonSets",
   "deployments": "Deployments",
   "describe": "Describe",
-  "describeReadOnlyNote": "Describe output is read-only. Edit YAML, then Apply.",
   "done": "Done",
   "draft": "Draft",
   "edit": "Edit",

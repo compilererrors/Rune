@@ -1025,19 +1025,6 @@ public struct KubernetesOutputParser {
         let items: [Item]
     }
 
-    private struct KubePodList: Decodable {
-        let items: [KubePodItem]
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            items = try c.decodeIfPresent([KubePodItem].self, forKey: .items) ?? []
-        }
-
-        enum CodingKeys: String, CodingKey {
-            case items
-        }
-    }
-
     private struct KubePodItem: Decodable {
         let metadata: KubePodRowMetadata
         let spec: KubePodSpec?

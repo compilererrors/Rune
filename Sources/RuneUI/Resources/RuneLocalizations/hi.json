@@ -15,7 +15,6 @@
   "daemonSets": "DaemonSets",
   "deployments": "Deployments",
   "describe": "Describe",
-  "describeReadOnlyNote": "Describe output read-only है. YAML संपादित करें, फिर लागू करें.",
   "done": "हो गया",
   "draft": "ड्राफ्ट",
   "edit": "संपादित करें",

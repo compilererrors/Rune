@@ -5867,48 +5867,6 @@ private final class RuneAppKitCheckboxCell: NSView {
     }
 }
 
-private final class RuneAppKitSingleLineResourceCell: NSView {
-    init(title: String, badgeText: String, badgeColor: NSColor, isFavorite: Bool) {
-        super.init(frame: .zero)
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
-        titleLabel.lineBreakMode = .byTruncatingMiddle
-        titleLabel.maximumNumberOfLines = 1
-        titleLabel.toolTip = title
-
-        let badge = RuneAppKitResourceStatusPillView(text: badgeText, color: badgeColor, minimumWidth: 34)
-        let favorite = NSImageView()
-        favorite.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "Favorite")
-        favorite.contentTintColor = .systemYellow
-        favorite.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .semibold)
-        favorite.imageScaling = .scaleProportionallyDown
-        favorite.setAccessibilityLabel("Favorite")
-        favorite.isHidden = !isFavorite
-
-        for view in [titleLabel, badge, favorite] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
-        }
-
-        NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badge.trailingAnchor.constraint(equalTo: favorite.leadingAnchor, constant: -8),
-            badge.centerYAnchor.constraint(equalTo: centerYAnchor),
-            favorite.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            favorite.centerYAnchor.constraint(equalTo: centerYAnchor),
-            favorite.widthAnchor.constraint(equalToConstant: 14),
-            favorite.heightAnchor.constraint(equalToConstant: 14),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badge.leadingAnchor, constant: -12)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-}
-
 private final class RuneAppKitResourceStatusPillView: NSView {
     private let label: NSTextField
     private var color: NSColor

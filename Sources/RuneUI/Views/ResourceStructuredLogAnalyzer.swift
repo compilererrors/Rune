@@ -336,34 +336,6 @@ enum ResourceStructuredLogAnalyzer {
         try cancellationCheck()
     }
 
-    private static func lineRanges(in bytes: [UInt8]) -> [(start: Int, end: Int)] {
-        var ranges: [(Int, Int)] = []
-        ranges.reserveCapacity(max(1, bytes.count / 96))
-        var start = 0
-        var index = 0
-        while index < bytes.count {
-            if bytes[index] == UInt8(ascii: "\n") {
-                let end = index > start && bytes[index - 1] == UInt8(ascii: "\r") ? index - 1 : index
-                ranges.append((start, end))
-                start = index + 1
-            }
-            index += 1
-        }
-        if start < bytes.count {
-            ranges.append((start, bytes.count))
-        }
-        return ranges
-    }
-
-    private static func jsonObjectRange(in line: String) -> Range<String.Index>? {
-        guard let start = line.firstIndex(of: "{"),
-              let end = line.lastIndex(of: "}"),
-              start <= end else {
-            return nil
-        }
-        return start..<line.index(after: end)
-    }
-
     private static func jsonRange(in bytes: [UInt8], start: Int, end: Int) -> Range<Int>? {
         var objectStart: Int?
         var objectEnd: Int?

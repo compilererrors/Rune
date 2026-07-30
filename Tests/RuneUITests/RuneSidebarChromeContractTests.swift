@@ -746,7 +746,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(favoritePodPickerSource.contains("onToggleFavoritePod(pod)"))
         XCTAssertFalse(favoritePodPickerSource.contains("Picker(title, selection: $selection)"))
         XCTAssertTrue(favoritePodPickerSource.contains("FavoritePodPickerPresentation.selectedPod(in: pods, selection: selection)"))
-        XCTAssertTrue(favoritePodPickerSource.contains("if pod.id == selection { return \"checkmark\" }"))
         XCTAssertTrue(favoritePodPickerSource.contains("pods.first { $0.id == selection }"))
         XCTAssertTrue(favoritePodPickerSource.contains("FavoritePodPickerPresentation.selectedFavoriteIcon("))
         XCTAssertTrue(favoritePodPickerSource.contains("static func selectedFavoriteIcon("))
@@ -1112,7 +1111,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         let eventsPane = try functionBlock(
             named: "private var eventsPane: some View {",
-            endingBefore: "private var sectionPlaceholder",
+            endingBefore: "private var detailPane",
             in: source
         )
         let genericResourceList = try functionBlock(
@@ -2462,7 +2461,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertEqual(appKitPodTableSource.components(separatedBy: "RuneAppKitResourceTableStyle.apply(to: tableView").count - 1, 1)
         XCTAssertFalse(appKitPodTableSource.contains("usesAlternatingRowBackgroundColors = false\n        tableView.backgroundColor = .clear\n        tableView.gridStyleMask = []\n        tableView.headerView"))
         XCTAssertTrue(appKitPodTableSource.contains("lineBreakMode: NSLineBreakMode = .byTruncatingTail"))
-        XCTAssertTrue(appKitPodTableSource.contains("titleLabel.lineBreakMode = .byTruncatingMiddle"))
     }
 
     func testPodNameColumnWidthIsClampedToUsableRange() throws {
@@ -3587,7 +3585,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("onToggleSort: viewModel.toggleGenericResourceSort"))
         XCTAssertTrue(appKitPodTableSource.contains("updateGenericSortIndicator"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.genericColumnWidths(visibleWidth: visibleWidth)"))
-        XCTAssertFalse(rootViewSource.contains("genericResourceContextMenu(resource, action: action)"))
         XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Open YAML\""))
         XCTAssertTrue(appKitPodTableSource.contains("menu.addItem(menuItem(\"Describe\""))
         XCTAssertTrue(rootViewSource.contains("AppKitHelmReleaseListView("))
@@ -3623,8 +3620,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("RuneAppKitResourceListLayout.eventColumnWidths(visibleWidth: visibleWidth)"))
         XCTAssertFalse(rootViewSource.contains("List(viewModel.visibleEvents)"))
         XCTAssertTrue(appKitPodTableSource.contains("Open Unified Logs"))
-        XCTAssertTrue(rootViewSource.contains("Open YAML"))
-        XCTAssertTrue(rootViewSource.contains("Describe"))
     }
 
     func testAppKitFavoriteResourceListsExposeKeyboardToggle() throws {

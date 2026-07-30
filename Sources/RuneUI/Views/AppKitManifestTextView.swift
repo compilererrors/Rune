@@ -141,6 +141,11 @@ struct AppKitManifestTextView: NSViewRepresentable {
         )
     }
 
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator _: Coordinator) {
+        guard let textView = scrollView.documentView as? PlainManifestTextView else { return }
+        textView.prepareForDismantling()
+    }
+
     private var clampedFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
     }
@@ -1012,11 +1017,19 @@ private final class PlainManifestTextView: NSTextView {
         }
     }
 
+    fileprivate func prepareForDismantling() {
+        removeTabKeyMonitor()
+    }
+
     private func removeTabKeyMonitor() {
         if let tabKeyMonitor {
             NSEvent.removeMonitor(tabKeyMonitor)
             self.tabKeyMonitor = nil
         }
+    }
+
+    isolated deinit {
+        removeTabKeyMonitor()
     }
 
     private func shouldHandleYAMLTabKey(_ event: NSEvent) -> Bool {

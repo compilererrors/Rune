@@ -3555,10 +3555,6 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
                 return try ClientTLSIdentity.temporaryIdentity(certificateData: certificateMaterial, keyData: keyData)
             }
 
-            func optionalClientTLSIdentity() -> ClientTLSIdentity? {
-                try? resolvedClientTLSIdentityIfAvailable()
-            }
-
             private func resolvedClientCertificateData() throws -> Data? {
                 if let clientCertificateData,
                    let decoded = Data(base64Encoded: clientCertificateData, options: .ignoreUnknownCharacters) {

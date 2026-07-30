@@ -587,10 +587,6 @@ private struct KubernetesNativeAuthArgumentSet {
         self.positionals = positionals
     }
 
-    func hasOption(named names: [String]) -> Bool {
-        names.contains { options[Self.normalizedName($0)] != nil }
-    }
-
     func value(for names: [String]) -> String? {
         values(for: names).first
     }

@@ -287,7 +287,6 @@ final class RuneInspectorScaffoldTests: XCTestCase {
             XCTAssertTrue(block.contains("RuneInspectorScaffold("))
             XCTAssertTrue(block.contains("? .vertical : .selfManaged"))
             XCTAssertTrue(block.contains("onRefresh: refreshDetailPane"))
-            XCTAssertFalse(block.contains("copyableInspectorTitle("))
         }
         XCTAssertTrue(pod.contains("showsActions: podInspectorTab == .overview"))
         XCTAssertTrue(deployment.contains("showsActions: deploymentInspectorTab == .overview"))
@@ -298,7 +297,6 @@ final class RuneInspectorScaffoldTests: XCTestCase {
             XCTAssertTrue(block.contains("RuneInspectorScaffold("))
             XCTAssertTrue(block.contains("bodyScrollBehavior:"))
             XCTAssertTrue(block.contains("onRefresh: refreshDetailPane"))
-            XCTAssertFalse(block.contains("copyableInspectorTitle("))
         }
         XCTAssertTrue(generic.contains("? .vertical : .selfManaged"))
         XCTAssertTrue(operatorResource.contains("? .vertical : .selfManaged"))

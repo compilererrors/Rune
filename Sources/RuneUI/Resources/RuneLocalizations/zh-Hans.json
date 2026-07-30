@@ -15,7 +15,6 @@
   "daemonSets": "DaemonSet",
   "deployments": "Deployment",
   "describe": "描述",
-  "describeReadOnlyNote": "Describe 输出为只读。请编辑 YAML 后再应用。",
   "done": "完成",
   "draft": "草稿",
   "edit": "编辑",

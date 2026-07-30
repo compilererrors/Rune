@@ -15,7 +15,6 @@
   "daemonSets": "DaemonSets",
   "deployments": "Deployments",
   "describe": "Describe",
-  "describeReadOnlyNote": "Describe-Ausgabe ist schreibgeschuetzt. YAML bearbeiten, dann anwenden.",
   "done": "Fertig",
   "draft": "Entwurf",
   "edit": "Bearbeiten",

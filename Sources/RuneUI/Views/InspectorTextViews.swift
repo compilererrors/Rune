@@ -135,36 +135,3 @@ struct InspectorReadOnlyTextSurface: View {
         }
     }
 }
-
-struct InspectorPlainTextScrollSurface: View {
-    let text: String
-    let minHeight: CGFloat
-    let resetID: String
-
-    var body: some View {
-        InspectorTextSurface(minHeight: minHeight) {
-            GeometryReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    Text(text)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(
-                            minWidth: max(
-                                0,
-                                proxy.size.width - RuneUILayoutMetrics.inspectorDocumentHorizontalInset * 2
-                            ),
-                            minHeight: max(
-                                0,
-                                proxy.size.height - RuneUILayoutMetrics.inspectorDocumentVerticalInset * 2
-                            ),
-                            alignment: .topLeading
-                        )
-                        .padding(.horizontal, RuneUILayoutMetrics.inspectorDocumentHorizontalInset)
-                        .padding(.vertical, RuneUILayoutMetrics.inspectorDocumentVerticalInset)
-                }
-                .id("\(resetID):\(text.count)")
-            }
-        }
-    }
-}

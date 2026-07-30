@@ -6719,25 +6719,6 @@ public final class RuneAppViewModel: ObservableObject {
         pendingWriteAction = .createJobFromCronJob(cronJobName: cronJob.name, jobName: jobName)
     }
 
-    private func runCreateManualJobFromCronJob(cronJobName: String, jobName: String) {
-        guard let context = state.selectedContext else { return }
-        Task {
-            do {
-                try await kubeClient.createJobFromCronJob(
-                    from: state.kubeConfigSources,
-                    context: context,
-                    namespace: state.selectedNamespace,
-                    cronJobName: cronJobName,
-                    jobName: jobName
-                )
-                setWorkloadKind(.job, trackHistory: false, triggerReload: true)
-                refreshCurrentView()
-            } catch {
-                state.setError(error)
-            }
-        }
-    }
-
     public func selectIngress(_ resource: ClusterResourceSummary?) {
         selectIngress(resource, trackHistory: true)
     }

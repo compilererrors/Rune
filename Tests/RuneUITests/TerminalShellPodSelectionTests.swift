@@ -104,11 +104,6 @@ final class TerminalShellPodSelectionTests: XCTestCase {
             "star.fill",
             "Terminal picker should show the selected pod as favorited after toggling the terminal star on."
         )
-        XCTAssertEqual(
-            FavoritePodPickerPresentation.rowIcon(for: api, selection: worker.id, isFavoritePod: isFavorite),
-            "star.fill",
-            "Right-panel terminal log picker should show the same pod favorite state."
-        )
 
         toggleFavorite(api)
 
@@ -116,11 +111,6 @@ final class TerminalShellPodSelectionTests: XCTestCase {
             FavoritePodPickerPresentation.selectedFavoriteIcon(in: pods, selection: api.id, isFavoritePod: isFavorite),
             "star",
             "Terminal picker should unmark the selected pod after toggling the terminal star off."
-        )
-        XCTAssertEqual(
-            FavoritePodPickerPresentation.rowIcon(for: api, selection: worker.id, isFavoritePod: isFavorite),
-            "circle",
-            "Right-panel terminal log picker should also reflect the unmarked state."
         )
 
         toggleFavorite(worker)

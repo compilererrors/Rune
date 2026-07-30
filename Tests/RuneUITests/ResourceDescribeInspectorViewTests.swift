@@ -467,7 +467,6 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(describePaneSource.contains("ManifestActionToolbar("))
         XCTAssertTrue(describePaneSource.contains("statusText: statusText"))
-        XCTAssertFalse(describePaneSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
         XCTAssertTrue(describePaneSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
         XCTAssertFalse(describePaneSource.contains(".confirmationDialog("))
         XCTAssertTrue(describePaneSource.contains("if let staleContentState = documentState.staleContentState"))
@@ -480,7 +479,6 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testDescribeOpensClearlyLabeledYAMLEditorWithoutRedundantConfirmation() throws {
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
 
-        XCTAssertFalse(describeSource.contains("ManifestInlineNote(t(.describeReadOnlyNote))"))
         XCTAssertTrue(describeSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
         XCTAssertTrue(describeSource.contains(".accessibilityIdentifier(\"resource-describe-edit-yaml\")"))
         XCTAssertTrue(describeSource.contains("onOpenYAMLEditor()"))

@@ -919,14 +919,6 @@ enum PodTableLayout {
             + statusTotalWidth
             + favoriteColumnWidth
     }
-
-    static func resizePreviewWidth(committedWidth: CGFloat, translation: CGFloat) -> CGFloat {
-        clampedNameColumnWidth(committedWidth + translation)
-    }
-
-    static func resizeCommitWidth(committedWidth: CGFloat, translation: CGFloat) -> CGFloat {
-        clampedNameColumnWidth(committedWidth + translation)
-    }
 }
 
 enum RuneRootKeyboardPane: CaseIterable, Equatable {
@@ -4875,18 +4867,6 @@ public struct RuneRootView: View {
             .runeHelp(viewModel.state.selectedEvent.map(eventHint(for:)) ?? "", enabled: showHoverTooltips)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var sectionPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.state.selectedSection.localizedTitle(appString) + " is being implemented")
-                .font(.title3.weight(.bold))
-            Text("Flow and shortcuts are already wired so section switching feels instant.")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(20)
-        .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous))
     }
 
     private var detailPane: some View {
@@ -9084,46 +9064,6 @@ public struct RuneRootView: View {
     }
 
     @ViewBuilder
-    private func genericResourceContextMenu(
-        _ resource: ClusterResourceSummary,
-        action: @escaping (ClusterResourceSummary?) -> Void
-    ) -> some View {
-        Button {
-            viewModel.toggleFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name)
-        } label: {
-            Label(
-                viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) ? "Remove Favorite" : "Favorite Resource",
-                systemImage: viewModel.isFavoriteResource(kind: resource.kind, namespace: resource.namespace, name: resource.name) ? "star.slash" : "star"
-            )
-        }
-        Divider()
-        Button {
-            action(resource)
-            genericResourceManifestTab = .describe
-        } label: {
-            Label("Describe", systemImage: "doc.text.magnifyingglass")
-        }
-        Button {
-            action(resource)
-            genericResourceManifestTab = .yaml
-        } label: {
-            Label("Open YAML", systemImage: "curlybraces")
-        }
-        Divider()
-        copyMenuItem(value: resource.name, label: "\(resource.kind.singularTypeName) name")
-        if let namespace = resource.namespace {
-            copyMenuItem(value: namespace, label: "namespace")
-        }
-        Divider()
-        Button(role: .destructive) {
-            viewModel.requestDeleteResource(kind: resource.kind, name: resource.name)
-        } label: {
-            Label("Delete \(resource.kind.singularTypeName)", systemImage: "trash")
-        }
-        .disabled(!viewModel.canApplyClusterMutations)
-    }
-
-    @ViewBuilder
     private func copyMenuItem(value: String, label: String) -> some View {
         if normalizedCopyValue(value) != nil {
             Button("Copy \(label)") {
@@ -9141,22 +9081,6 @@ public struct RuneRootView: View {
             ) {
                 copyToClipboard(value)
             }
-        }
-    }
-
-    private func copyableInspectorTitle(_ value: String, label: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(value)
-                .font(.title2.weight(.bold))
-                .lineLimit(1)
-                .textSelection(.enabled)
-            copyButton(value: value, label: label)
-            Spacer(minLength: 0)
-            detailRefreshButton
-        }
-        .help(value)
-        .contextMenu {
-            copyMenuItem(value: value, label: label)
         }
     }
 
@@ -9190,19 +9114,6 @@ public struct RuneRootView: View {
             viewModel.reloadLogsForSelection()
         case .helmInspector:
             viewModel.refreshSelectedHelmInspector()
-        }
-    }
-
-    private func copyableInlineText(_ text: String, copyValue: String, label: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(text)
-                .font(.body.weight(.medium))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            copyButton(value: copyValue, label: label)
-        }
-        .contextMenu {
-            copyMenuItem(value: copyValue, label: label)
         }
     }
 
@@ -9517,10 +9428,6 @@ public struct RuneRootView: View {
 
     private var editorFill: Color {
         RuneSurfaceKind.editor.fill(theme: activeAppearanceTheme)
-    }
-
-    private func contentListRowChrome(isSelected: Bool) -> some View {
-        RuneSurfaceBackground(kind: .listRow(isSelected: isSelected))
     }
 
     private var overviewEventsCardHelp: String {

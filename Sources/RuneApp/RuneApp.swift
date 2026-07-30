@@ -170,7 +170,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
             window.orderOut(nil)
         }
         window.collectionBehavior.insert(.moveToActiveSpace)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
 

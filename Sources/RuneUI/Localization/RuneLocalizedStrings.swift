@@ -43,7 +43,6 @@ public enum RuneLocalizedStringKey: String, CaseIterable, Sendable {
     case daemonSets
     case deployments
     case describe
-    case describeReadOnlyNote
     case done
     case draft
     case edit

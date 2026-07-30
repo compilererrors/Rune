@@ -17,11 +17,6 @@ struct FavoritePodPickerPresentation {
         }
     }
 
-    static func rowIcon(for pod: PodSummary, selection: String, isFavoritePod: (PodSummary) -> Bool) -> String {
-        if pod.id == selection { return "checkmark" }
-        return isFavoritePod(pod) ? "star.fill" : "circle"
-    }
-
     static func selectedFavoriteIcon(
         in pods: [PodSummary],
         selection: String,

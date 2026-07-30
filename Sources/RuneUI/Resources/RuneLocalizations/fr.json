@@ -15,7 +15,6 @@
   "daemonSets": "DaemonSets",
   "deployments": "Deployments",
   "describe": "Describe",
-  "describeReadOnlyNote": "La sortie Describe est en lecture seule. Modifiez le YAML, puis appliquez.",
   "done": "Termine",
   "draft": "Brouillon",
   "edit": "Modifier",
