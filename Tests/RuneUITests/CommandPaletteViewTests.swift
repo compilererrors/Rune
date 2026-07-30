@@ -9,11 +9,11 @@ final class CommandPaletteViewTests: XCTestCase {
     func testCommonPrefixShortcutsStaySmallAndProduceFocusedQueries() {
         let shortcuts = CommandPalettePresentation.commonPrefixShortcuts
 
-        XCTAssertEqual(shortcuts.count, 4)
-        XCTAssertEqual(shortcuts.map(\.queryPrefix), [":po", ":deploy", ":svc", ":ns"])
+        XCTAssertEqual(shortcuts.count, 6)
+        XCTAssertEqual(shortcuts.map(\.queryPrefix), [":po", ":deploy", ":svc", ":logs", ":so", ":ns"])
         XCTAssertEqual(
             shortcuts.map { CommandPalettePresentation.prefillQuery(for: $0.queryPrefix) },
-            [":po ", ":deploy ", ":svc ", ":ns "]
+            [":po ", ":deploy ", ":svc ", ":logs ", ":so ", ":ns "]
         )
         XCTAssertEqual(Set(shortcuts.map(\.id)).count, shortcuts.count)
     }

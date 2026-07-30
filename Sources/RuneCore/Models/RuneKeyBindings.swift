@@ -120,6 +120,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
     case describe
     case logs
     case saveLogs
+    case saveToExportFolder
+    case saveAndOpen
     case shell
     case edit
     case yaml
@@ -139,7 +141,9 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .focusNextPane: return "Focus Next Pane"
         case .describe: return "Describe"
         case .logs: return "Logs"
-        case .saveLogs: return "Save / Export"
+        case .saveLogs: return "Save As…"
+        case .saveToExportFolder: return "Save to Default Folder"
+        case .saveAndOpen: return "Save & Open"
         case .shell: return "Shell / Scale"
         case .edit: return "Edit"
         case .yaml: return "YAML"
@@ -168,7 +172,11 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .logs:
             return "Open pod logs or unified service/deployment logs."
         case .saveLogs:
-            return "Save or export the active detail panel when supported: logs, YAML, Describe, rollout history, or Helm text."
+            return "Save the active detail panel with the system file picker when supported."
+        case .saveToExportFolder:
+            return "Save the active detail panel to the configured default export folder when supported."
+        case .saveAndOpen:
+            return "Save the active detail panel to the configured default export folder, then open it with the preferred app."
         case .shell:
             return "Open pod exec, or deployment scale controls where Rune supports the k9s `s` workflow."
         case .edit:
@@ -204,6 +212,10 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
             return RuneKeyboardShortcut(key: "l", requiresShift: false)!
         case .saveLogs:
             return RuneKeyboardShortcut(key: "s", requiresShift: false, requiresCommand: true)!
+        case .saveToExportFolder:
+            return RuneKeyboardShortcut(key: "s", requiresShift: false, requiresCommand: true, requiresOption: true)!
+        case .saveAndOpen:
+            return RuneKeyboardShortcut(key: "s", requiresShift: true, requiresCommand: true, requiresOption: true)!
         case .shell:
             return RuneKeyboardShortcut(key: "s", requiresShift: false)!
         case .edit:
@@ -239,6 +251,8 @@ public enum RuneKeyBindingAction: String, CaseIterable, Identifiable, Sendable {
         case .describe: return RuneSettingsKeys.keyBindingDescribe
         case .logs: return RuneSettingsKeys.keyBindingLogs
         case .saveLogs: return RuneSettingsKeys.keyBindingSaveLogs
+        case .saveToExportFolder: return RuneSettingsKeys.keyBindingSaveToExportFolder
+        case .saveAndOpen: return RuneSettingsKeys.keyBindingSaveAndOpen
         case .shell: return RuneSettingsKeys.keyBindingShell
         case .edit: return RuneSettingsKeys.keyBindingEdit
         case .yaml: return RuneSettingsKeys.keyBindingYAML

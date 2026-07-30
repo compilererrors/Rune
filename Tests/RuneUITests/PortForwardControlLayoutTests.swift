@@ -43,6 +43,47 @@ final class PortForwardControlLayoutTests: XCTestCase {
         }
     }
 
+    func testEndpointFieldsKeepActiveEditorAcrossResponsiveLayoutChange() async throws {
+        let model = SyntheticPortForwardFieldsModel()
+        let host = NSHostingController(
+            rootView: SyntheticPortForwardFieldsHarness(model: model)
+                .frame(width: 760, height: 180, alignment: .topLeading)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 180),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+
+        try await settle(window: window)
+        let originalField = try XCTUnwrap(
+            editableTextFields(in: host.view).first { $0.placeholderString == "Local" }
+        )
+        window.makeFirstResponder(originalField)
+        try await settle(window: window)
+        let originalEditor = try XCTUnwrap(originalField.currentEditor() as? NSTextView)
+        originalEditor.setSelectedRange(NSRange(location: 2, length: 0))
+
+        model.width = PortForwardControlLayoutMetrics.supportedInspectorWidth
+        try await settle(window: window)
+
+        let compactField = try XCTUnwrap(
+            editableTextFields(in: host.view).first { $0.placeholderString == "Local" }
+        )
+        XCTAssertTrue(compactField === originalField)
+        XCTAssertTrue(compactField.currentEditor() === originalEditor)
+        XCTAssertTrue(window.firstResponder === originalEditor)
+        XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 0))
+    }
+
     func testPrimaryActionDispatchesExactlyOneStartOrStopOperation() {
         var startCount = 0
         var stoppedSessionIDs: [String] = []
@@ -101,7 +142,7 @@ final class PortForwardControlLayoutTests: XCTestCase {
         XCTAssertEqual(rootPane.occurrences(of: "PortForwardPrimaryActionButton("), 1)
         XCTAssertTrue(rootPane.contains("PortForwardEndpointFields("))
         XCTAssertFalse(rootSessionRow.contains("viewModel.stopPortForward(session)"))
-        XCTAssertTrue(controlsSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(controlsSource.contains("PortForwardEndpointLayout"))
         XCTAssertFalse(controlsSource.contains("ScrollView(.horizontal"))
     }
 
@@ -227,6 +268,45 @@ final class PortForwardControlLayoutTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private func editableTextFields(in view: NSView) -> [NSTextField] {
+        var fields: [NSTextField] = []
+        if let textField = view as? NSTextField, textField.isEditable {
+            fields.append(textField)
+        }
+        for subview in view.subviews {
+            fields.append(contentsOf: editableTextFields(in: subview))
+        }
+        return fields
+    }
+
+    private func settle(window: NSWindow) async throws {
+        for _ in 0..<6 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+}
+
+@MainActor
+private final class SyntheticPortForwardFieldsModel: ObservableObject {
+    @Published var width: CGFloat = 760
+    @Published var localPort = "8080"
+    @Published var remotePort = "80"
+    @Published var address = "127.0.0.1"
+}
+
+private struct SyntheticPortForwardFieldsHarness: View {
+    @ObservedObject var model: SyntheticPortForwardFieldsModel
+
+    var body: some View {
+        PortForwardEndpointFields(
+            localPort: $model.localPort,
+            remotePort: $model.remotePort,
+            address: $model.address
+        )
+        .frame(width: model.width)
     }
 }
 

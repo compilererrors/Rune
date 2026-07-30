@@ -2306,6 +2306,15 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         viewModel.isDetailPaneVisible = true
     }
 
+    private func prepareResourceListLayoutTestViewModel(_ viewModel: RuneAppViewModel) {
+        prepareLayoutTestViewModel(viewModel)
+        if viewModel.state.contexts.isEmpty {
+            let context = KubeContext(name: "layout-test-context")
+            viewModel.state.setContexts([context])
+            viewModel.state.selectedContext = context
+        }
+    }
+
     private func hostSnapshot(
         viewModel: RuneAppViewModel,
         rootView: (RuneAppViewModel, @escaping (RuneRootLayoutSnapshot) -> Void) -> RuneRootView,
@@ -2504,7 +2513,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         theme: ResourceVisualTheme,
         dynamicTypeSize: DynamicTypeSize
     ) async throws -> ResourceVisualSnapshot {
-        prepareLayoutTestViewModel(viewModel)
+        prepareResourceListLayoutTestViewModel(viewModel)
         viewModel.state.selectedSection = .workloads
         viewModel.state.selectedWorkloadKind = .pod
         var layoutSnapshots: [RuneRootLayoutSnapshot] = []
@@ -2826,7 +2835,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         kind: KubeResourceKind,
         windowWidth: CGFloat = 1_440
     ) async throws -> MiddlePanelTableSnapshot {
-        prepareLayoutTestViewModel(viewModel)
+        prepareResourceListLayoutTestViewModel(viewModel)
         viewModel.state.selectedSection = section
         viewModel.state.selectedWorkloadKind = kind
         var layoutSnapshots: [RuneRootLayoutSnapshot] = []

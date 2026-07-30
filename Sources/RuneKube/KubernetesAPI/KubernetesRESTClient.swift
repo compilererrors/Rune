@@ -818,7 +818,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
         timeout: TimeInterval
     ) async throws {
         let sanitizedYAML = Self.serverSideApplyYAML(from: yaml)
-        let manifest = try YAMLManifestIdentity.parse(yaml: sanitizedYAML, defaultNamespace: defaultNamespace)
+        let manifest = try KubernetesManifestIdentity.parse(
+            yaml: sanitizedYAML,
+            defaultNamespace: defaultNamespace
+        )
         let resource = KubernetesRESTPath.resourceName(for: manifest.kind)
         let path = try resourcePath(
             kind: manifest.kind,
@@ -1515,7 +1518,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 }
                 throw RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
-                    message: retryAnnotatedErrorMessage(errorMessage, decision: retryDecision)
+                    message: KubernetesRESTErrorMessageFormatter.appendingRetryAdvice(
+                        to: errorMessage,
+                        method: method,
+                        decision: retryDecision
+                    )
                 )
             }
             guard let http = response as? HTTPURLResponse else {
@@ -1581,10 +1588,17 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     outcome: .httpError,
                     started: attemptStarted
                 )
-                let message = responseBody.isEmpty ? "HTTP \(http.statusCode)" : "HTTP \(http.statusCode): \(responseBody)"
+                let message = KubernetesRESTErrorMessageFormatter.httpErrorMessage(
+                    statusCode: http.statusCode,
+                    responseBody: responseBody
+                )
                 throw RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
-                    message: retryAnnotatedErrorMessage(message, decision: retryDecision)
+                    message: KubernetesRESTErrorMessageFormatter.appendingRetryAdvice(
+                        to: message,
+                        method: method,
+                        decision: retryDecision
+                    )
                 )
             }
 
@@ -3727,50 +3741,37 @@ private struct NormalizedKubeConfig: Decodable, Sendable {
     }
 }
 
-private struct YAMLManifestIdentity {
-    let apiVersion: String
-    let kind: KubeResourceKind
-    let namespace: String
-    let name: String
+public struct KubernetesManifestIdentity: Equatable, Sendable {
+    public let apiVersion: String
+    public let kind: KubeResourceKind
+    public let namespace: String
+    public let name: String
 
-    static func parse(yaml: String, defaultNamespace: String) throws -> YAMLManifestIdentity {
-        var apiVersion: String?
-        var rawKind: String?
-        var metadataIndent: Int?
-        var name: String?
-        var namespace: String?
-
-        for originalLine in yaml.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init) {
-            let line = stripInlineComment(originalLine)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, trimmed != "---" else { continue }
-            let indent = line.prefix { $0 == " " }.count
-            if indent == 0 {
-                if let value = scalarValue(trimmed, key: "apiVersion") { apiVersion = value }
-                if let value = scalarValue(trimmed, key: "kind") { rawKind = value }
-                if trimmed == "metadata:" {
-                    metadataIndent = indent
-                } else if metadataIndent != nil, !trimmed.hasPrefix("-") {
-                    metadataIndent = nil
-                }
-                continue
-            }
-            if metadataIndent != nil, indent > (metadataIndent ?? 0) {
-                if let value = scalarValue(trimmed, key: "name") { name = value }
-                if let value = scalarValue(trimmed, key: "namespace") { namespace = value }
-            }
+    public static func parse(
+        yaml: String,
+        defaultNamespace: String
+    ) throws -> KubernetesManifestIdentity {
+        let document: ManifestDocument
+        do {
+            document = try YAMLDecoder().decode(ManifestDocument.self, from: yaml)
+        } catch {
+            throw RuneError.parseError(
+                message: "Could not parse YAML manifest: \(String(describing: error))"
+            )
         }
 
-        guard let apiVersion, !apiVersion.isEmpty else {
+        guard let apiVersion = document.apiVersion, !apiVersion.isEmpty else {
             throw RuneError.parseError(message: "YAML manifest is missing apiVersion")
         }
-        guard let rawKind, let kind = KubeResourceKind(manifestKind: rawKind) else {
+        guard let rawKind = document.kind,
+              let kind = KubeResourceKind(manifestKind: rawKind) else {
             throw RuneError.parseError(message: "YAML manifest kind is not supported by Rune")
         }
-        guard let name, !name.isEmpty else {
+        guard let name = document.metadata?.name, !name.isEmpty else {
             throw RuneError.parseError(message: "YAML manifest is missing metadata.name")
         }
-        return YAMLManifestIdentity(
+        let namespace = document.metadata?.namespace
+        return KubernetesManifestIdentity(
             apiVersion: apiVersion,
             kind: kind,
             namespace: kind.isNamespaced ? (namespace?.isEmpty == false ? namespace! : defaultNamespace) : "",
@@ -3778,33 +3779,15 @@ private struct YAMLManifestIdentity {
         )
     }
 
-    private static func scalarValue(_ line: String, key: String) -> String? {
-        let prefix = "\(key):"
-        guard line.hasPrefix(prefix) else { return nil }
-        let trimmed = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-        if trimmed.count >= 2,
-           let first = trimmed.first,
-           let last = trimmed.last,
-           (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-            return String(trimmed.dropFirst().dropLast())
-        }
-        return trimmed
-    }
+    private struct ManifestDocument: Decodable {
+        let apiVersion: String?
+        let kind: String?
+        let metadata: Metadata?
 
-    private static func stripInlineComment(_ line: String) -> String {
-        var inSingle = false
-        var inDouble = false
-        for index in line.indices {
-            let char = line[index]
-            if char == "'", !inDouble { inSingle.toggle() }
-            if char == "\"", !inSingle { inDouble.toggle() }
-            if char == "#", !inSingle, !inDouble {
-                if index == line.startIndex || line[line.index(before: index)] == " " {
-                    return String(line[..<index])
-                }
-            }
+        struct Metadata: Decodable {
+            let name: String?
+            let namespace: String?
         }
-        return line
     }
 }
 
@@ -4243,6 +4226,47 @@ struct RESTResponse: Sendable {
     let contentType: String
 }
 
+enum KubernetesRESTErrorMessageFormatter {
+    static func httpErrorMessage(statusCode: Int, responseBody: String) -> String {
+        let trimmedBody = responseBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBody.isEmpty else {
+            return "HTTP \(statusCode)"
+        }
+
+        if let data = trimmedBody.data(using: .utf8),
+           let status = try? JSONDecoder().decode(KubernetesStatusPayload.self, from: data),
+           status.kind == "Status",
+           let statusMessage = status.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !statusMessage.isEmpty {
+            return "HTTP \(statusCode): \(statusMessage)"
+        }
+
+        return "HTTP \(statusCode): \(trimmedBody)"
+    }
+
+    static func appendingRetryAdvice(
+        to message: String,
+        method: String,
+        decision: KubernetesRequestRetryDecision
+    ) -> String {
+        guard decision.isRetryable,
+              KubernetesRequestRetryPolicy.isSafeRetryMethod(method)
+        else {
+            return message
+        }
+
+        let delayDescription = decision.suggestedDelayNanoseconds.map {
+            " after \($0 / 1_000_000) ms"
+        } ?? ""
+        return "\(message) | Temporary Kubernetes API error. You can safely retry this read\(delayDescription)."
+    }
+
+    private struct KubernetesStatusPayload: Decodable {
+        let kind: String?
+        let message: String?
+    }
+}
+
 private struct PortOwner {
     let pid: String
     let command: String
@@ -4593,12 +4617,6 @@ private func networkErrorMessage(_ error: Error, resolved: ResolvedRESTContext, 
         }
     }
     return details.joined(separator: " | ")
-}
-
-private func retryAnnotatedErrorMessage(_ message: String, decision: KubernetesRequestRetryDecision) -> String {
-    guard decision.isRetryable else { return message }
-    let delayDescription = decision.suggestedDelayNanoseconds.map { " after \($0 / 1_000_000) ms" } ?? ""
-    return "\(message) | transient \(decision.category.rawValue), safe to retry\(delayDescription)"
 }
 
 private func sleepBeforeKubernetesRetry(

@@ -22,18 +22,22 @@ struct ResourceManifestInspectorLayout<Header: View, Toolbar: View, Status: View
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorSectionSpacing) {
             header
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             toolbar
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             status
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             surface
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
 
             footer
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

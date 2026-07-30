@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 import RuneCore
 import RuneFakeK8sSupport
@@ -145,6 +146,43 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
     }
 
     @MainActor
+    func testContextReloadNeverPairsReplacementContextWithLeavingNamespaceState() async throws {
+        let contextA = KubeContext(name: "synthetic-context-a")
+        let contextB = KubeContext(name: "synthetic-context-b")
+        let state = RuneAppState()
+        state.setContexts([contextA])
+        state.selectedContext = contextA
+        state.selectedNamespace = "scope-a-only"
+        state.setNamespaces(["scope-a-only"])
+        let viewModel = makeViewModel(
+            state: state,
+            kubeContextList: { _ in [contextB] }
+        )
+        var observedTargetScopes: [(namespaces: [String], selectedNamespace: String)] = []
+        let observation = Publishers.CombineLatest3(
+            state.$selectedContext,
+            state.$namespaces,
+            state.$selectedNamespace
+        )
+        .sink { context, namespaces, selectedNamespace in
+            guard context == contextB else { return }
+            observedTargetScopes.append((namespaces, selectedNamespace))
+        }
+        defer { observation.cancel() }
+
+        try await viewModel.reloadContexts()
+
+        XCTAssertEqual(state.selectedContext, contextB)
+        XCTAssertFalse(
+            observedTargetScopes.contains {
+                $0.namespaces.contains("scope-a-only")
+                    || $0.selectedNamespace == "scope-a-only"
+            },
+            "Reloading a changed context list must publish an empty namespace boundary before selecting its replacement."
+        )
+    }
+
+    @MainActor
     func testSavedWorkspaceDelayedRetryDoesNotReplayInspectorOrLogPresentation() async throws {
         let state = podSelectionState()
         let viewModel = makeViewModel(state: state)
@@ -205,8 +243,8 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
             kind: .deployment,
             name: deployment.name
         )
-        let initialYAML = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: initial\n"
-        let refreshedYAML = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: refreshed\n"
+        let initialYAML = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: synthetic-deployment\n  labels:\n    revision: initial\n"
+        let refreshedYAML = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: synthetic-deployment\n  labels:\n    revision: refreshed\n"
         let firstDraft = "metadata: [\n# first local draft\n"
         let latestDraft = "metadata: [\n# latest local draft\n"
         let validationIssue = YAMLValidationIssue(
@@ -1565,6 +1603,85 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
         XCTAssertEqual(state.helmReleases, [baselineRelease])
         XCTAssertNotEqual(state.snapshotFreshness.status, .live)
     }
+
+    #if DEBUG
+    @MainActor
+    func testCancelledContextPrefetchCannotOverwriteNewerTargetNamespaceCache() async throws {
+        let previousPrefetch = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts
+        )
+        let previousPersistence = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.persistNamespaceListCache
+        )
+        UserDefaults.standard.runeBackgroundPrefetchOtherContexts = true
+        UserDefaults.standard.runePersistNamespaceListCache = false
+        defer {
+            if let previousPrefetch {
+                UserDefaults.standard.set(
+                    previousPrefetch,
+                    forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: RuneSettingsKeys.backgroundPrefetchOtherContexts
+                )
+            }
+            if let previousPersistence {
+                UserDefaults.standard.set(
+                    previousPersistence,
+                    forKey: RuneSettingsKeys.persistNamespaceListCache
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: RuneSettingsKeys.persistNamespaceListCache
+                )
+            }
+        }
+
+        let namespacePath = "/api/v1/namespaces"
+        let fixture = RuneFakeK8sFixture(
+            delayedResponseTargets: [namespacePath: 220_000_000]
+        )
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        let kubeConfigURL = try writeSyntheticKubeConfig(server.kubeconfigYAML())
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: kubeConfigURL.deletingLastPathComponent())
+        }
+
+        let current = KubeContext(name: "synthetic-current-context")
+        let target = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeConfigURL)])
+        state.setContexts([current, target])
+        state.selectedContext = current
+        state.selectedNamespace = "current-scope"
+        state.setFavoriteContextNames([target.name])
+        let store = ResourceStore()
+        let viewModel = makeViewModel(
+            state: state,
+            kubeClient: KubernetesClient(commandTimeout: 2),
+            store: store
+        )
+
+        viewModel.scheduleContextOverviewPrefetchForTesting(currentContext: current)
+        try await waitUntil {
+            server.requestLines().contains { $0.hasPrefix("GET \(namespacePath) ") }
+        }
+
+        viewModel.cancelContextOverviewPrefetchForTesting()
+        store.cacheNamespaces(["newer-foreground-only"], context: target)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            store.namespaces(context: target),
+            ["newer-foreground-only"],
+            "A transport completion from a cancelled prefetch generation must not replace newer target-context data."
+        )
+        XCTAssertEqual(state.selectedContext, current)
+        XCTAssertEqual(state.selectedNamespace, "current-scope")
+    }
+    #endif
 
     @MainActor
     func testCancelledHelmFollowUpFinishesAlreadyAppliedSnapshotAsLive() async throws {

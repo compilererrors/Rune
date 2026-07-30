@@ -20,12 +20,18 @@ struct AppKitManifestTextView: NSViewRepresentable {
     var searchQuery = ""
     var searchMatchCase = false
     var selectedSearchMatchIndex = 0
+    var searchMatchRanges: [NSRange]?
+    var searchNavigationRevision = 0
+    var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
+    var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
+    var onUndoCommand: (() -> Void)?
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AppKitManifestTextView
         var isUpdatingFromSwiftUI = false
+        var appliedEditorRestorationSequence: UInt64?
 
         init(parent: AppKitManifestTextView) {
             self.parent = parent
@@ -36,7 +42,12 @@ struct AppKitManifestTextView: NSViewRepresentable {
                   let textView = notification.object as? PlainManifestTextView
             else { return }
 
-            parent.text = textView.string
+            let presentation = textView.consumePendingEditPresentation()
+            if let onEditorEdit = parent.onEditorEdit {
+                onEditorEdit(textView.string, presentation)
+            } else {
+                parent.text = textView.string
+            }
         }
     }
 
@@ -58,6 +69,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
         scrollView.verticalScrollElasticity = .allowed
 
         let textView = PlainManifestTextView(frame: .zero)
+        textView.onUndoCommand = onUndoCommand
         textView.configure(
             isEditable: isEditable,
             fontSize: clampedFontSize,
@@ -68,14 +80,20 @@ struct AppKitManifestTextView: NSViewRepresentable {
         )
         textView.delegate = context.coordinator
         textView.setStringKeepingSelection(text)
-        textView.applySearchHighlights(
-            query: searchQuery,
-            matchCase: searchMatchCase,
-            selectedIndex: selectedSearchMatchIndex
-        )
 
         scrollView.documentView = textView
         scrollView.configureLineNumberGutter(textView: textView, isVisible: contentStyle == .yaml && showsLineNumbers)
+        applyEditorRestorationIfNeeded(
+            to: textView,
+            coordinator: context.coordinator
+        )
+        textView.applySearchHighlights(
+            query: searchQuery,
+            matchCase: searchMatchCase,
+            selectedIndex: selectedSearchMatchIndex,
+            precomputedRanges: searchMatchRanges,
+            navigationRevision: searchNavigationRevision
+        )
         return scrollView
     }
 
@@ -83,6 +101,7 @@ struct AppKitManifestTextView: NSViewRepresentable {
         context.coordinator.parent = self
 
         guard let textView = scrollView.documentView as? PlainManifestTextView else { return }
+        textView.onUndoCommand = onUndoCommand
         textView.configure(
             isEditable: isEditable,
             fontSize: clampedFontSize,
@@ -104,11 +123,17 @@ struct AppKitManifestTextView: NSViewRepresentable {
 
         // Keep scroll/document geometry in sync even when the text itself is unchanged.
         textView.refreshViewportGeometry()
+        applyEditorRestorationIfNeeded(
+            to: textView,
+            coordinator: context.coordinator
+        )
         textView.navigateIfNeeded(navigationRequest)
         textView.applySearchHighlights(
             query: searchQuery,
             matchCase: searchMatchCase,
-            selectedIndex: selectedSearchMatchIndex
+            selectedIndex: selectedSearchMatchIndex,
+            precomputedRanges: searchMatchRanges,
+            navigationRevision: searchNavigationRevision
         )
         (scrollView as? ManifestTextScrollView)?.configureLineNumberGutter(
             textView: textView,
@@ -118,6 +143,20 @@ struct AppKitManifestTextView: NSViewRepresentable {
 
     private var clampedFontSize: CGFloat {
         CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
+    }
+
+    private func applyEditorRestorationIfNeeded(
+        to textView: PlainManifestTextView,
+        coordinator: Coordinator
+    ) {
+        guard let request = editorRestorationRequest,
+              request.sequence != coordinator.appliedEditorRestorationSequence,
+              request.yaml == text
+        else {
+            return
+        }
+        coordinator.appliedEditorRestorationSequence = request.sequence
+        textView.restoreEditorPresentation(request.presentation)
     }
 }
 
@@ -231,9 +270,31 @@ final class ManifestTextScrollView: NSScrollView {
 
 final class YAMLLineNumberGutterOverlayView: NSView {
     fileprivate weak var textView: PlainManifestTextView?
+    private var cursorTrackingArea: NSTrackingArea?
 
     override var isOpaque: Bool { true }
     override var isFlipped: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        cursorTrackingArea = trackingArea
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let textView else { return }
@@ -336,7 +397,11 @@ private final class PlainManifestTextView: NSTextView {
     private var manifestThemeID = RuneSettingsKeys.appearanceThemeDefault
     private var manifestPalette = ManifestPalette.resolved(RuneAppearanceTheme.native.resolvedTheme)
     private var searchHighlightRanges: [NSRange] = []
+    private var activeSearchHighlightRange: NSRange?
     private var lastAppliedSearchKey = ""
+    private var lastSearchNavigationRevision: Int?
+    private var pendingEditPresentation: ResourceYAMLEditorPresentation?
+    var onUndoCommand: (() -> Void)?
 
     override var isOpaque: Bool { false }
 
@@ -373,6 +438,13 @@ private final class PlainManifestTextView: NSTextView {
             self.isEditable = isEditable
         }
         applyStaticConfigurationIfNeeded()
+        let allowsNativeUndo = isEditable && onUndoCommand == nil
+        if allowsUndo != allowsNativeUndo {
+            allowsUndo = allowsNativeUndo
+            if !allowsNativeUndo {
+                undoManager?.removeAllActions()
+            }
+        }
         applyThemeConfiguration()
         let shouldUseRichText = contentStyle == .ansiLogs
         if isRichText != shouldUseRichText {
@@ -400,7 +472,7 @@ private final class PlainManifestTextView: NSTextView {
         importsGraphics = false
         usesFindBar = true
         usesFontPanel = false
-        allowsUndo = true
+        allowsUndo = false
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticDataDetectionEnabled = false
@@ -452,8 +524,13 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     private func applyTextContainerInsets() {
-        let baseHorizontalInset = showsLineNumbers ? currentLineNumberGutterMetrics.textInset : 10
-        let targetInset = NSSize(width: baseHorizontalInset, height: 10)
+        let baseHorizontalInset = showsLineNumbers
+            ? currentLineNumberGutterMetrics.textInset
+            : RuneUILayoutMetrics.inspectorDocumentHorizontalInset
+        let targetInset = NSSize(
+            width: baseHorizontalInset,
+            height: RuneUILayoutMetrics.inspectorDocumentVerticalInset
+        )
         guard abs(textContainerInset.width - targetInset.width) > 0.5
             || abs(textContainerInset.height - targetInset.height) > 0.5
         else {
@@ -471,6 +548,7 @@ private final class PlainManifestTextView: NSTextView {
 
     func setStringKeepingSelection(_ newValue: String) {
         let selected = selectedRanges
+        pendingEditPresentation = nil
         representedText = newValue
         if contentStyle != .ansiLogs {
             string = newValue
@@ -479,11 +557,100 @@ private final class PlainManifestTextView: NSTextView {
         applyTextContainerInsets()
         refreshLayout()
         if !selected.isEmpty {
-            selectedRanges = selected.map { range in
-                NSValue(range: NSRange(
-                    location: min(range.rangeValue.location, string.utf16.count),
-                    length: min(range.rangeValue.length, max(0, string.utf16.count - range.rangeValue.location))
-                ))
+            selectedRanges = selected.map {
+                NSValue(range: clampedSelectionRange($0.rangeValue))
+            }
+        }
+    }
+
+    override func shouldChangeText(
+        in affectedCharRange: NSRange,
+        replacementString: String?
+    ) -> Bool {
+        guard super.shouldChangeText(
+            in: affectedCharRange,
+            replacementString: replacementString
+        ) else {
+            return false
+        }
+        guard isEditable,
+              let replacementString
+        else {
+            return true
+        }
+
+        let source = string as NSString
+        let boundedRange = NSIntersectionRange(
+            affectedCharRange,
+            NSRange(location: 0, length: source.length)
+        )
+        guard source.substring(with: boundedRange) != replacementString else {
+            return true
+        }
+
+        if pendingEditPresentation == nil {
+            let viewportOrigin = enclosingScrollView?.contentView.bounds.origin ?? .zero
+            pendingEditPresentation = ResourceYAMLEditorPresentation(
+                selections: selectedRanges.map {
+                    ResourceYAMLEditorSelection(
+                        location: $0.rangeValue.location,
+                        length: $0.rangeValue.length
+                    )
+                },
+                viewportX: Double(viewportOrigin.x),
+                viewportY: Double(viewportOrigin.y),
+                hadKeyboardFocus: window?.firstResponder === self
+            )
+        }
+        return true
+    }
+
+    func consumePendingEditPresentation() -> ResourceYAMLEditorPresentation? {
+        defer { pendingEditPresentation = nil }
+        return pendingEditPresentation
+    }
+
+    private func clampedSelectionRange(_ range: NSRange) -> NSRange {
+        let textLength = string.utf16.count
+        let location = max(0, min(range.location, textLength))
+        return NSRange(
+            location: location,
+            length: max(0, min(range.length, textLength - location))
+        )
+    }
+
+    func restoreEditorPresentation(_ presentation: ResourceYAMLEditorPresentation) {
+        let restoredRanges = presentation.selections.map {
+            NSValue(range: clampedSelectionRange(NSRange(
+                location: $0.location,
+                length: $0.length
+            )))
+        }
+        if !restoredRanges.isEmpty {
+            selectedRanges = restoredRanges
+        }
+
+        guard let scrollView = enclosingScrollView else { return }
+        if let layoutManager, let textContainer {
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        scrollView.layoutSubtreeIfNeeded()
+
+        let clipView = scrollView.contentView
+        let proposedBounds = NSRect(
+            origin: NSPoint(
+                x: CGFloat(presentation.viewportX),
+                y: CGFloat(presentation.viewportY)
+            ),
+            size: clipView.bounds.size
+        )
+        clipView.scroll(to: clipView.constrainBoundsRect(proposedBounds).origin)
+        scrollView.reflectScrolledClipView(clipView)
+
+        if presentation.hadKeyboardFocus, isEditable {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isEditable else { return }
+                self.window?.makeFirstResponder(self)
             }
         }
     }
@@ -541,46 +708,172 @@ private final class PlainManifestTextView: NSTextView {
         refreshLineNumberGutterOverlay()
     }
 
-    func applySearchHighlights(query: String, matchCase: Bool, selectedIndex: Int) {
-        guard let storage = textStorage else { return }
+    func applySearchHighlights(
+        query: String,
+        matchCase: Bool,
+        selectedIndex: Int,
+        precomputedRanges: [NSRange]?,
+        navigationRevision: Int
+    ) {
+        guard let storage = textStorage, let layoutManager else { return }
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
             clearSearchHighlights(in: storage)
             lastAppliedSearchKey = ""
+            lastSearchNavigationRevision = navigationRevision
             return
         }
 
-        let searchKey = "\(documentRevision):\(trimmedQuery):\(matchCase):\(selectedIndex)"
-        guard lastAppliedSearchKey != searchKey else { return }
-        lastAppliedSearchKey = searchKey
-        clearSearchHighlights(in: storage)
+        let ranges = precomputedRanges ?? InspectorFindIndex(
+            text: storage.string,
+            query: trimmedQuery,
+            matchCase: matchCase
+        ).ranges
+        let firstRange = ranges.first ?? NSRange(location: 0, length: 0)
+        let lastRange = ranges.last ?? NSRange(location: 0, length: 0)
+        let searchKey = [
+            "\(documentRevision)",
+            trimmedQuery,
+            matchCase ? "case" : "folded",
+            "\(ranges.count)",
+            "\(firstRange.location):\(firstRange.length)",
+            "\(lastRange.location):\(lastRange.length)"
+        ].joined(separator: ":")
 
-        let index = InspectorFindIndex(text: storage.string, query: trimmedQuery, matchCase: matchCase)
-        guard !index.ranges.isEmpty else { return }
-
-        let highlightColor = NSColor.systemYellow.withAlphaComponent(0.28)
-        let activeColor = manifestPalette.accent.withAlphaComponent(0.34)
-        let activeIndex = index.clampedIndex(selectedIndex)
-        for (offset, range) in index.ranges.enumerated() where NSMaxRange(range) <= storage.length {
-            storage.addAttribute(
-                .backgroundColor,
-                value: offset == activeIndex ? activeColor : highlightColor,
-                range: range
-            )
-            searchHighlightRanges.append(range)
+        if lastAppliedSearchKey != searchKey {
+            clearSearchHighlights(in: storage)
+            lastAppliedSearchKey = searchKey
+            let passiveLimit = min(ranges.count, 4_096)
+            searchHighlightRanges.reserveCapacity(passiveLimit)
+            for range in ranges.prefix(passiveLimit) where NSMaxRange(range) <= storage.length {
+                applyPassiveSearchHighlight(range, layoutManager: layoutManager)
+                searchHighlightRanges.append(range)
+            }
         }
 
-        if activeIndex < index.ranges.count {
-            scrollRangeToVisible(index.ranges[activeIndex])
+        guard !ranges.isEmpty else {
+            activeSearchHighlightRange = nil
+            lastSearchNavigationRevision = navigationRevision
+            return
         }
+
+        let activeIndex = min(max(selectedIndex, 0), ranges.count - 1)
+        let activeRange = ranges[activeIndex]
+        guard NSMaxRange(activeRange) <= storage.length else { return }
+
+        if activeSearchHighlightRange != activeRange {
+            if let previousActiveRange = activeSearchHighlightRange {
+                if searchHighlightRanges.contains(previousActiveRange) {
+                    applyPassiveSearchHighlight(previousActiveRange, layoutManager: layoutManager)
+                } else {
+                    removeSearchHighlightAttributes(previousActiveRange, layoutManager: layoutManager)
+                }
+            }
+            applyActiveSearchHighlight(activeRange, layoutManager: layoutManager)
+            activeSearchHighlightRange = activeRange
+        }
+
+        guard navigationRevision != lastSearchNavigationRevision else { return }
+        setSelectedRange(activeRange)
+        guard enclosingScrollView != nil else { return }
+        lastSearchNavigationRevision = navigationRevision
+        centerSearchRange(
+            activeRange,
+            animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
     }
 
     private func clearSearchHighlights(in storage: NSTextStorage) {
-        guard !searchHighlightRanges.isEmpty else { return }
+        guard let layoutManager else {
+            searchHighlightRanges.removeAll(keepingCapacity: true)
+            activeSearchHighlightRange = nil
+            return
+        }
         for range in searchHighlightRanges where NSMaxRange(range) <= storage.length {
-            storage.removeAttribute(.backgroundColor, range: range)
+            removeSearchHighlightAttributes(range, layoutManager: layoutManager)
+        }
+        if let activeSearchHighlightRange,
+           NSMaxRange(activeSearchHighlightRange) <= storage.length,
+           !searchHighlightRanges.contains(activeSearchHighlightRange) {
+            removeSearchHighlightAttributes(activeSearchHighlightRange, layoutManager: layoutManager)
         }
         searchHighlightRanges.removeAll(keepingCapacity: true)
+        activeSearchHighlightRange = nil
+    }
+
+    private func applyPassiveSearchHighlight(_ range: NSRange, layoutManager: NSLayoutManager) {
+        layoutManager.addTemporaryAttributes([
+            .backgroundColor: manifestPalette.searchMatchBackground,
+            .underlineColor: manifestPalette.searchMatchUnderline,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ], forCharacterRange: range)
+    }
+
+    private func applyActiveSearchHighlight(_ range: NSRange, layoutManager: NSLayoutManager) {
+        layoutManager.addTemporaryAttributes([
+            .backgroundColor: manifestPalette.activeSearchMatchBackground,
+            .underlineColor: manifestPalette.activeSearchMatchUnderline,
+            .underlineStyle: NSUnderlineStyle.thick.rawValue
+        ], forCharacterRange: range)
+    }
+
+    private func removeSearchHighlightAttributes(_ range: NSRange, layoutManager: NSLayoutManager) {
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+    }
+
+    private func centerSearchRange(_ range: NSRange, animated: Bool) {
+        guard let layoutManager,
+              let textContainer,
+              let scrollView = enclosingScrollView,
+              range.location <= string.utf16.count
+        else {
+            return
+        }
+
+        layoutManager.ensureLayout(forCharacterRange: range)
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: range,
+            actualCharacterRange: nil
+        )
+        guard glyphRange.location < layoutManager.numberOfGlyphs else { return }
+
+        var targetRect = layoutManager.boundingRect(
+            forGlyphRange: glyphRange,
+            in: textContainer
+        )
+        let textOrigin = textContainerOrigin
+        targetRect.origin.x += textOrigin.x
+        targetRect.origin.y += textOrigin.y
+
+        let clipView = scrollView.contentView
+        let visibleBounds = clipView.bounds
+        let documentBounds = scrollView.documentView?.bounds ?? bounds
+        var targetOrigin = visibleBounds.origin
+        targetOrigin.y = targetRect.midY - visibleBounds.height / 2
+        if targetRect.minX < visibleBounds.minX || targetRect.maxX > visibleBounds.maxX {
+            targetOrigin.x = targetRect.midX - visibleBounds.width / 2
+        }
+        targetOrigin.x = min(
+            max(documentBounds.minX, targetOrigin.x),
+            max(documentBounds.minX, documentBounds.maxX - visibleBounds.width)
+        )
+        targetOrigin.y = min(
+            max(documentBounds.minY, targetOrigin.y),
+            max(documentBounds.minY, documentBounds.maxY - visibleBounds.height)
+        )
+
+        if animated, window != nil {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.allowsImplicitAnimation = true
+                clipView.animator().setBoundsOrigin(targetOrigin)
+            }
+        } else {
+            clipView.scroll(to: targetOrigin)
+        }
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private func yamlViewportAnalysisRange(in source: String) -> NSRange {
@@ -636,10 +929,27 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if let onUndoCommand, shouldHandleUndoCommand(event) {
+            onUndoCommand()
+            return
+        }
         if handleYAMLTabKey(event) {
             return
         }
         super.keyDown(with: event)
+    }
+
+    private func shouldHandleUndoCommand(_ event: NSEvent) -> Bool {
+        guard isEditable,
+              event.type == .keyDown,
+              event.charactersIgnoringModifiers?.lowercased() == "z"
+        else {
+            return false
+        }
+
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let disallowedModifiers: NSEvent.ModifierFlags = [.shift, .option, .control, .function]
+        return modifiers.contains(.command) && modifiers.isDisjoint(with: disallowedModifiers)
     }
 
     override func insertTab(_ sender: Any?) {
@@ -1072,6 +1382,10 @@ private struct ManifestPalette {
     let foreground: NSColor
     let accent: NSColor
     let selection: NSColor
+    let searchMatchBackground: NSColor
+    let searchMatchUnderline: NSColor
+    let activeSearchMatchBackground: NSColor
+    let activeSearchMatchUnderline: NSColor
     let key: NSColor
     let string: NSColor
     let number: NSColor
@@ -1108,7 +1422,8 @@ private struct ManifestPalette {
             anchor: syntax.anchor,
             danger: appKit.danger,
             warning: appKit.warning,
-            selectionAlpha: selectionAlpha(for: theme, fallback: appKit.selectedAlpha)
+            selectionAlpha: selectionAlpha(for: theme, fallback: appKit.selectedAlpha),
+            usesLightBackground: theme.preferredColorScheme == .light
         )
     }
 
@@ -1127,6 +1442,10 @@ private struct ManifestPalette {
         foreground: .labelColor,
         accent: .controlAccentColor,
         selection: NSColor.controlAccentColor.withAlphaComponent(0.22),
+        searchMatchBackground: NSColor.findHighlightColor.withAlphaComponent(0.58),
+        searchMatchUnderline: NSColor.systemOrange,
+        activeSearchMatchBackground: NSColor.controlAccentColor.withAlphaComponent(0.48),
+        activeSearchMatchUnderline: NSColor.controlAccentColor,
         key: NSColor.systemBlue.withAlphaComponent(0.95),
         string: NSColor.systemGreen.withAlphaComponent(0.9),
         number: NSColor.systemOrange.withAlphaComponent(0.95),
@@ -1158,7 +1477,8 @@ private struct ManifestPalette {
         anchor: String,
         danger: String,
         warning: String,
-        selectionAlpha: CGFloat = 0.24
+        selectionAlpha: CGFloat = 0.24,
+        usesLightBackground: Bool = false
     ) -> ManifestPalette {
         let accentColor = NSColor.runeHex(accent)
         let dangerColor = NSColor.runeHex(danger)
@@ -1167,6 +1487,10 @@ private struct ManifestPalette {
             foreground: NSColor.runeHex(foreground),
             accent: accentColor,
             selection: accentColor.withAlphaComponent(selectionAlpha),
+            searchMatchBackground: warningColor.withAlphaComponent(usesLightBackground ? 0.30 : 0.38),
+            searchMatchUnderline: warningColor.withAlphaComponent(0.98),
+            activeSearchMatchBackground: accentColor.withAlphaComponent(usesLightBackground ? 0.38 : 0.52),
+            activeSearchMatchUnderline: accentColor,
             key: NSColor.runeHex(key),
             string: NSColor.runeHex(string),
             number: NSColor.runeHex(number),

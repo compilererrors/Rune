@@ -646,6 +646,14 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "l", modifiers: [])), .logs)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command])), .saveLogs)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.control])), .saveLogs)
+        XCTAssertEqual(
+            resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command, .option])),
+            .saveToExportFolder
+        )
+        XCTAssertEqual(
+            resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [.command, .option, .shift])),
+            .saveAndOpen
+        )
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "s", modifiers: [])), .shell)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "e", modifiers: [])), .edit)
         XCTAssertEqual(resolver.action(for: RuneKeyBindingInput(baseKey: "y", modifiers: [])), .yaml)
@@ -689,13 +697,37 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertNil(resolver.action(for: RuneKeyBindingInput(baseKey: ":", modifiers: [])))
     }
 
-    func testDefaultRuneKeyBindingsHaveUniqueShortcuts() {
-        let grouped = Dictionary(grouping: RuneKeyBindingAction.allCases) { action in
-            action.defaultShortcut.storageValue
+    func testDefaultRuneKeyBindingsHaveUniqueEffectiveShortcuts() {
+        let shortcuts = RuneKeyBindingAction.allCases.flatMap { action in
+            ([action.defaultShortcut] + action.alternateShortcuts).map {
+                (action: action, shortcut: $0)
+            }
         }
+        let grouped = Dictionary(grouping: shortcuts) { $0.shortcut.storageValue }
+        let conflicts = grouped.filter { $0.value.count > 1 }
+        let conflictSummary = conflicts.mapValues { entries in
+            entries.map { $0.action.rawValue }
+        }
+
+        XCTAssertTrue(conflicts.isEmpty, "Conflicting effective default shortcuts: \(conflictSummary)")
+    }
+
+    func testRuneKeyBindingActionsHaveUniqueSettingsKeysAndSaveMetadata() {
+        let grouped = Dictionary(grouping: RuneKeyBindingAction.allCases, by: \.settingsKey)
         let conflicts = grouped.filter { $0.value.count > 1 }
 
-        XCTAssertTrue(conflicts.isEmpty, "Conflicting default shortcuts: \(conflicts)")
+        XCTAssertTrue(conflicts.isEmpty, "Conflicting key-binding settings keys: \(conflicts)")
+        XCTAssertEqual(RuneKeyBindingAction.saveLogs.title, "Save As…")
+        XCTAssertEqual(RuneKeyBindingAction.saveToExportFolder.title, "Save to Default Folder")
+        XCTAssertEqual(RuneKeyBindingAction.saveAndOpen.title, "Save & Open")
+        XCTAssertEqual(
+            RuneKeyBindingAction.saveToExportFolder.settingsKey,
+            RuneSettingsKeys.keyBindingSaveToExportFolder
+        )
+        XCTAssertEqual(
+            RuneKeyBindingAction.saveAndOpen.settingsKey,
+            RuneSettingsKeys.keyBindingSaveAndOpen
+        )
     }
 
     func testExecutableSearchPathKeepsShellPathAndAddsMacFallbacks() {

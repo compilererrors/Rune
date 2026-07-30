@@ -575,6 +575,37 @@ private func assertLogSearch(processID: pid_t) throws {
     print("log-search-e2e passed value=tick status=\(statusLabel) next=\(nextStatusLabel)")
 }
 
+private func openCommandPalette(processID: pid_t) throws {
+    let root = try activateApplication(processID: processID)
+    guard let button = waitForElement(
+        in: root,
+        identifier: "rune.command-palette.open",
+        fallbackLabel: "Command Palette",
+        timeout: 4
+    ) else {
+        throw SmokeAXError.elementMissing("rune.command-palette.open")
+    }
+    try performPress(button, operation: "open command palette")
+
+    guard let input = waitForElement(
+        in: root,
+        identifier: "rune.command-palette.input",
+        fallbackLabel: "Search commands and resources",
+        timeout: 4
+    ) else {
+        throw SmokeAXError.elementMissing("rune.command-palette.input")
+    }
+    let focusResult = AXUIElementSetAttributeValue(
+        input,
+        kAXFocusedAttribute as CFString,
+        kCFBooleanTrue
+    )
+    guard focusResult == .success else {
+        throw SmokeAXError.accessibilityFailure("focus command palette input", focusResult)
+    }
+    print("command-palette-open passed")
+}
+
 private func activateApplication(processID: pid_t) throws -> AXUIElement {
     guard let application = NSRunningApplication(processIdentifier: processID), !application.isTerminated else {
         throw SmokeAXError.applicationUnavailable(processID)
@@ -597,6 +628,10 @@ private func activateApplication(processID: pid_t) throws -> AXUIElement {
     var titlebarFocusWindowID: CGWindowID?
     while Date() < windowDeadline {
         if !applicationWindows(root).isEmpty {
+            if titlebarFocusWindowID == nil {
+                titlebarFocusWindowID = clickTitlebarOfOnScreenLayerZeroWindow(processID: processID)
+                Thread.sleep(forTimeInterval: 0.10)
+            }
             return root
         }
         if titlebarFocusWindowID == nil {
@@ -677,26 +712,26 @@ private func assertCompare(processID: pid_t) throws {
     let root = try activateApplication(processID: processID)
     guard let selectAll = waitForLabeledElement(
         in: root,
-        label: "Select All",
+        label: "Select Visible",
         role: kAXButtonRole as String
     ) else {
-        throw SmokeAXError.elementMissing("Select All")
+        throw SmokeAXError.elementMissing("Select Visible")
     }
-    try performPress(selectAll, operation: "select all generic resources")
+    try performPress(selectAll, operation: "select visible generic resources")
 
-    let compareDeadline = Date().addingTimeInterval(3)
-    var compareButton: AXUIElement?
-    repeat {
-        if let candidate = findButton(in: root, label: "Compare"), boolAttribute(candidate, kAXEnabledAttribute) {
-            compareButton = candidate
-            break
-        }
-        Thread.sleep(forTimeInterval: 0.05)
-    } while Date() < compareDeadline
-    guard let compareButton else {
-        throw SmokeAXError.assertion("Compare did not enable after Select All")
+    guard let actionsButton = waitForLabeledElement(in: root, label: "Actions", timeout: 3) else {
+        throw SmokeAXError.assertion("Actions did not appear after Select Visible")
     }
-    try performPress(compareButton, operation: "open resource comparison")
+    try performPress(actionsButton, operation: "open generic resource actions")
+    guard let compareAction = waitForLabeledElement(
+        in: root,
+        label: "Compare Selected",
+        role: kAXMenuItemRole as String,
+        timeout: 3
+    ) else {
+        throw SmokeAXError.elementMissing("Compare Selected")
+    }
+    try performPress(compareAction, operation: "open resource comparison")
 
     guard waitForLabeledElement(in: root, label: "Compare selected resources", timeout: 3) != nil,
           let copyButton = waitForLabeledElement(
@@ -731,7 +766,7 @@ private func assertCompare(processID: pid_t) throws {
     try performPress(doneButton, operation: "close resource comparison")
     if let deselectAll = waitForLabeledElement(
         in: root,
-        label: "Deselect All",
+        label: "Deselect Visible",
         role: kAXButtonRole as String,
         timeout: 2
     ) {
@@ -926,6 +961,8 @@ do {
         print("focus passed")
     case "log-search":
         try assertLogSearch(processID: processID)
+    case "open-command-palette":
+        try openCommandPalette(processID: processID)
     case "enable-skip-cluster":
         try enableSkipClusterSetting(processID: processID)
     case "skip-cluster-nav":

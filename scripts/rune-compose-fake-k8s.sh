@@ -82,6 +82,8 @@ case "$SUBCOMMAND" in
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans
     rm -f "$ROOT_DIR/docker-compose/generated/orbit-seeded.ok" \
       "$ROOT_DIR/docker-compose/generated/lattice-seeded.ok" \
+      "$ROOT_DIR/docker-compose/generated/orbit-internal.yaml" \
+      "$ROOT_DIR/docker-compose/generated/lattice-internal.yaml" \
       "$ROOT_DIR/docker-compose/generated/orbit-host.yaml" \
       "$ROOT_DIR/docker-compose/generated/lattice-host.yaml" \
       "$MERGED_KUBECONFIG"

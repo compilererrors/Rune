@@ -179,6 +179,49 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertFalse(performance.contains("HStack(alignment: .firstTextBaseline"))
     }
 
+    func testIntegerLimitEditorKeepsPartialValueAndCaretWhileTypingAboveMinimum() async throws {
+        let model = SyntheticIntegerLimitModel(value: 128)
+        let host = NSHostingController(
+            rootView: SyntheticIntegerLimitEditorHarness(model: model)
+                .frame(width: 620, height: 100)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 100),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+
+        try await settle(window: window)
+        let textField = try XCTUnwrap(editableTextFields(in: host.view).first)
+        window.makeFirstResponder(textField)
+        try await settle(window: window)
+        let fieldEditor = try XCTUnwrap(textField.currentEditor() as? NSTextView)
+        fieldEditor.setSelectedRange(NSRange(location: 0, length: fieldEditor.string.utf16.count))
+
+        fieldEditor.insertText("2", replacementRange: fieldEditor.selectedRange())
+        try await settle(window: window)
+
+        XCTAssertEqual(model.value, 16)
+        XCTAssertEqual(fieldEditor.string, "2")
+        XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 1, length: 0))
+
+        fieldEditor.insertText("0", replacementRange: fieldEditor.selectedRange())
+        fieldEditor.insertText("0", replacementRange: fieldEditor.selectedRange())
+        try await settle(window: window)
+
+        XCTAssertEqual(model.value, 200)
+        XCTAssertEqual(fieldEditor.string, "200")
+        XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 3, length: 0))
+    }
+
     private func adaptiveRowSize(
         width: CGFloat,
         dynamicTypeSize: DynamicTypeSize
@@ -228,6 +271,50 @@ final class RunePreferencesLayoutTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/RuneUI/Views/RunePreferencesView.swift")
             .path
+    }
+
+    private func editableTextFields(in view: NSView) -> [NSTextField] {
+        var fields: [NSTextField] = []
+        if let textField = view as? NSTextField, textField.isEditable {
+            fields.append(textField)
+        }
+        for subview in view.subviews {
+            fields.append(contentsOf: editableTextFields(in: subview))
+        }
+        return fields
+    }
+
+    private func settle(window: NSWindow) async throws {
+        for _ in 0..<6 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+}
+
+@MainActor
+private final class SyntheticIntegerLimitModel: ObservableObject {
+    @Published var value: Int
+
+    init(value: Int) {
+        self.value = value
+    }
+}
+
+private struct SyntheticIntegerLimitEditorHarness: View {
+    @ObservedObject var model: SyntheticIntegerLimitModel
+
+    var body: some View {
+        RuneSettingsIntegerLimitEditor(
+            title: "Synthetic limit",
+            value: $model.value,
+            valueSuffix: "items",
+            step: 8,
+            placeholder: "128",
+            defaultValue: 128,
+            detail: "Synthetic integer input.",
+            normalize: { max(16, $0) }
+        )
     }
 }
 

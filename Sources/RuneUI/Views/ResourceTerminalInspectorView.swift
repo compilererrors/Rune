@@ -121,7 +121,7 @@ struct ResourceTerminalWorkspaceView: View {
     var body: some View {
         GeometryReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorSectionSpacing) {
                     TerminalPortForwardPanelView(
                         isExpanded: $isPortForwardExpanded,
                         contextName: contextName,

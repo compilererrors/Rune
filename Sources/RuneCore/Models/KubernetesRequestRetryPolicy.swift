@@ -98,9 +98,18 @@ public enum KubernetesRequestRetryPolicy {
         decision: KubernetesRequestRetryDecision,
         attempt: Int
     ) -> Bool {
-        guard decision.isRetryable, attempt > 0, attempt < maximumAttempts else {
+        guard decision.isRetryable,
+              isSafeRetryMethod(method),
+              attempt > 0,
+              attempt < maximumAttempts
+        else {
             return false
         }
+
+        return true
+    }
+
+    public static func isSafeRetryMethod(_ method: String) -> Bool {
         switch method.uppercased() {
         case "GET", "HEAD":
             return true

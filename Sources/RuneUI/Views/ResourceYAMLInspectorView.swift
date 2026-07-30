@@ -12,6 +12,11 @@ struct ResourceYAMLEditorSurface: View {
     let searchQuery: String
     let searchMatchCase: Bool
     let selectedSearchMatchIndex: Int
+    var searchIndex: InspectorFindIndex?
+    var searchNavigationRevision = 0
+    var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
+    var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
+    var onUndoCommand: (() -> Void)?
 
     var body: some View {
         let activeImplementation = inlineEditing ? implementation : .readOnlyScroll
@@ -26,10 +31,14 @@ struct ResourceYAMLEditorSurface: View {
                         contentStyle: .yaml,
                         externalValidationIssues: validationIssues,
                         navigationRequest: navigationRequest,
+                        largeTextShowsLineNumbers: true,
                         showsLineNumbers: true,
                         searchQuery: searchQuery,
                         searchMatchCase: searchMatchCase,
-                        selectedSearchMatchIndex: selectedSearchMatchIndex
+                        selectedSearchMatchIndex: selectedSearchMatchIndex,
+                        searchIndex: searchIndex,
+                        searchMatchRanges: searchIndex?.ranges ?? [],
+                        searchNavigationRevision: searchNavigationRevision
                     )
                 case .swiftUITextEditor:
                     TextEditor(text: $text)
@@ -46,7 +55,12 @@ struct ResourceYAMLEditorSurface: View {
                         showsLineNumbers: true,
                         searchQuery: searchQuery,
                         searchMatchCase: searchMatchCase,
-                        selectedSearchMatchIndex: selectedSearchMatchIndex
+                        selectedSearchMatchIndex: selectedSearchMatchIndex,
+                        searchMatchRanges: searchIndex?.ranges ?? [],
+                        searchNavigationRevision: searchNavigationRevision,
+                        editorRestorationRequest: editorRestorationRequest,
+                        onEditorEdit: onEditorEdit,
+                        onUndoCommand: onUndoCommand
                     )
                 }
             }
@@ -81,6 +95,8 @@ struct ResourceYAMLInspectorPane: View {
     let onExportAndOpen: () -> Void
     let readOnlyResetID: String
     var documentState: ManifestDocumentState? = nil
+    var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
+    var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hidesManagedFields = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
@@ -133,6 +149,13 @@ struct ResourceYAMLInspectorPane: View {
                 statusText: statusText,
                 onApply: onApply
             ) {
+                if isInlineEditing {
+                    ManifestEditorUndoButton(
+                        canUndo: canUndoEdit,
+                        onUndo: onUndoEdit
+                    )
+                }
+
                 if inlineEditorImplementation.supportsInlineEditing {
                     Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
                         isInlineEditing.toggle()
@@ -150,10 +173,8 @@ struct ResourceYAMLInspectorPane: View {
                     fileTitle: t(.file),
                     yamlTextIsEmpty: yamlText.isEmpty,
                     hasUnsavedEdits: hasUnsavedEdits,
-                    canUndoEdit: canUndoEdit,
                     canReapplySnapshot: canReapplySnapshot,
                     onReapplySnapshot: onReapplySnapshot,
-                    onUndoEdit: onUndoEdit,
                     onRevert: {
                         onRevert()
                         isInlineEditing = false
@@ -193,7 +214,7 @@ struct ResourceYAMLInspectorPane: View {
                 matchCase: $findMatchCase,
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
-            ) {
+            ) { searchIndex, searchNavigationRevision in
                 ManifestDocumentSurface(state: resolvedDocumentState) {
                     ResourceYAMLEditorSurface(
                         text: $yamlText,
@@ -205,7 +226,12 @@ struct ResourceYAMLInspectorPane: View {
                         navigationRequest: issueNavigationRequest,
                         searchQuery: findQuery,
                         searchMatchCase: findMatchCase,
-                        selectedSearchMatchIndex: selectedFindMatchIndex
+                        selectedSearchMatchIndex: selectedFindMatchIndex,
+                        searchIndex: searchIndex,
+                        searchNavigationRevision: searchNavigationRevision,
+                        editorRestorationRequest: editorRestorationRequest,
+                        onEditorEdit: onEditorEdit,
+                        onUndoCommand: onUndoEdit
                     )
                 }
             }
@@ -346,7 +372,11 @@ struct ResourceYAMLEditorSheetView: View {
     let isValidating: Bool
     let canUndoEdit: Bool
     let canReapplySnapshot: Bool
+    let canDryRun: Bool
+    let isRunningDryRun: Bool
+    let dryRunStatus: String?
     let onApply: () -> Void
+    let onDryRun: () -> Void
     let onReapplySnapshot: () -> Void
     let onUndoEdit: () -> Void
     let onRevert: () -> Void
@@ -356,6 +386,8 @@ struct ResourceYAMLEditorSheetView: View {
     let onExportAndOpen: () -> Void
     let onClose: () -> Void
     var documentState: ManifestDocumentState? = nil
+    var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
+    var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
     @State private var issueNavigationRequest: YAMLTextNavigationRequest?
@@ -405,19 +437,33 @@ struct ResourceYAMLEditorSheetView: View {
                 applyHelp: hasUnsavedEdits
                     ? "Sends the manifest to the cluster. Closing this sheet does not."
                     : "No local YAML changes to apply.",
+                statusText: dryRunStatus,
                 onApply: onApply
             ) {
-                EmptyView()
+                Button(action: onDryRun) {
+                    Label("Dry Run", systemImage: "checkmark.shield")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canDryRun || isRunningDryRun)
+                .help(
+                    isRunningDryRun
+                        ? "Kubernetes is checking this draft."
+                        : "Checks this draft with Kubernetes. Nothing is applied."
+                )
+                .accessibilityIdentifier("resource-yaml-server-dry-run")
+
+                ManifestEditorUndoButton(
+                    canUndo: canUndoEdit,
+                    onUndo: onUndoEdit
+                )
             } secondaryActions: {
                 ManifestYAMLActionMenus(
                     draftTitle: t(.draft),
                     fileTitle: t(.file),
                     yamlTextIsEmpty: yamlText.isEmpty,
                     hasUnsavedEdits: hasUnsavedEdits,
-                    canUndoEdit: canUndoEdit,
                     canReapplySnapshot: canReapplySnapshot,
                     onReapplySnapshot: onReapplySnapshot,
-                    onUndoEdit: onUndoEdit,
                     onRevert: onRevert,
                     onImport: onImport,
                     onExport: onExport,
@@ -440,7 +486,7 @@ struct ResourceYAMLEditorSheetView: View {
                 matchCase: $findMatchCase,
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
-            ) {
+            ) { searchIndex, searchNavigationRevision in
                 ManifestDocumentSurface(state: resolvedDocumentState) {
                     ResourceYAMLEditorSurface(
                         text: $yamlText,
@@ -452,12 +498,17 @@ struct ResourceYAMLEditorSheetView: View {
                         navigationRequest: issueNavigationRequest,
                         searchQuery: findQuery,
                         searchMatchCase: findMatchCase,
-                        selectedSearchMatchIndex: selectedFindMatchIndex
+                        selectedSearchMatchIndex: selectedFindMatchIndex,
+                        searchIndex: searchIndex,
+                        searchNavigationRevision: searchNavigationRevision,
+                        editorRestorationRequest: editorRestorationRequest,
+                        onEditorEdit: onEditorEdit,
+                        onUndoCommand: onUndoEdit
                     )
                 }
             }
 
-            Text("Close dismisses this sheet only. Nothing is sent to the cluster until you tap Apply YAML or Apply on the Describe tab.")
+            Text("Dry Run sends this draft to Kubernetes for validation but never applies it. Apply YAML can write only after confirmation.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -468,6 +519,7 @@ struct ResourceYAMLEditorSheetView: View {
             height: RuneUILayoutMetrics.wideDialogHeight
         )
         .background(.regularMaterial)
+        .runePointerCursor()
     }
 
     private func navigateToIssue(_ issue: YAMLValidationIssue) {
@@ -490,6 +542,7 @@ struct YAMLValidationSummaryView: View {
     let expandedListMaxHeight: CGFloat?
     let onSelectIssue: (YAMLValidationIssue) -> Void
     private let maxVisibleIssues = 6
+    private let inlineExpandedIssueLimit = 3
     @State private var isExpanded = false
 
     init(
@@ -550,8 +603,8 @@ struct YAMLValidationSummaryView: View {
                 expandedIssues
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
+        .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
         .background {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
                 .fill(Color.primary.opacity(0.035))
@@ -590,7 +643,7 @@ struct YAMLValidationSummaryView: View {
 
     @ViewBuilder
     private var expandedIssues: some View {
-        if let expandedListMaxHeight {
+        if let expandedListMaxHeight, issues.count > inlineExpandedIssueLimit {
             ScrollView(.vertical, showsIndicators: true) {
                 issueList
             }
@@ -639,12 +692,26 @@ struct YAMLValidationSummaryView: View {
     }
 
     private var summaryTitle: String {
-        if isValidating, issues.isEmpty {
-            return "Validating YAML against Kubernetes…"
+        Self.summaryTitle(
+            errorCount: errorCount,
+            warningCount: warningCount,
+            isValidating: isValidating
+        )
+    }
+
+    static func summaryTitle(
+        errorCount: Int,
+        warningCount: Int,
+        isValidating: Bool
+    ) -> String {
+        if isValidating, errorCount == 0, warningCount == 0 {
+            return "Checking local YAML…"
         }
 
         if errorCount > 0, warningCount > 0 {
-            return "\(errorCount) errors, \(warningCount) warnings"
+            let errors = errorCount == 1 ? "error" : "errors"
+            let warnings = warningCount == 1 ? "warning" : "warnings"
+            return "\(errorCount) \(errors), \(warningCount) \(warnings)"
         }
         if errorCount > 0 {
             return errorCount == 1 ? "1 YAML error" : "\(errorCount) YAML errors"
@@ -652,7 +719,7 @@ struct YAMLValidationSummaryView: View {
         if warningCount > 0 {
             return warningCount == 1 ? "1 validation warning" : "\(warningCount) validation warnings"
         }
-        return "No YAML problems"
+        return "No local YAML problems"
     }
 
     private func symbolName(for issue: YAMLValidationIssue) -> String {

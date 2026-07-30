@@ -595,6 +595,276 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         )
     }
 
+    func testDockerComposeManualYAMLDryRunDoesNotMutateAndApplyRevalidatesBeforeWrite() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousApplyDryRun = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun
+        )
+        UserDefaults.standard.runeEnableDemoCluster = false
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = true
+        defer {
+            restoreDemoSetting(previousDemoSetting)
+            restoreUserDefault(
+                previousApplyDryRun,
+                forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun
+            )
+        }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let configName = "rune-it-dry-run-\(Self.shortTestID())"
+        let baselineYAML = Self.configMapYAML(
+            name: configName,
+            namespace: namespace,
+            value: "baseline"
+        )
+        let editedYAML = Self.configMapYAML(
+            name: configName,
+            namespace: namespace,
+            value: "edited-after-confirmation"
+        )
+        addTeardownBlock {
+            try? await harness.kubeClient.deleteResource(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: .configMap,
+                name: configName
+            )
+        }
+
+        try await harness.kubeClient.applyYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            yaml: baselineYAML
+        )
+        try await waitForConfigMap(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            name: configName
+        )
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.config)
+        harness.viewModel.setWorkloadKind(.configMap)
+        try await waitUntil(timeout: 30) {
+            harness.state.configMaps.contains { $0.name == configName }
+                && !harness.state.isLoading
+        }
+        harness.viewModel.selectConfigMap(
+            try XCTUnwrap(harness.state.configMaps.first { $0.name == configName })
+        )
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedConfigMap?.name == configName
+                && harness.state.resourceYAML.contains("baseline")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        let beforeEdit = await yamlPatchCounts(in: harness)
+        harness.state.updateResourceYAMLDraft(editedYAML)
+        try await waitUntil {
+            harness.state.resourceYAML == editedYAML
+                && harness.state.resourceYAMLValidationIssues.isEmpty
+        }
+        try await Task.sleep(nanoseconds: 350_000_000)
+        let afterEdit = await yamlPatchCounts(in: harness)
+        XCTAssertEqual(afterEdit.dryRun, beforeEdit.dryRun)
+        XCTAssertEqual(afterEdit.apply, beforeEdit.apply)
+
+        harness.viewModel.requestDryRunSelectedResourceYAML()
+        try await waitUntil(timeout: 20) {
+            harness.viewModel.resourceYAMLDryRunStatus
+                == "Dry run passed. Nothing was applied."
+        }
+
+        let afterManualDryRun = await yamlPatchCounts(in: harness)
+        XCTAssertEqual(afterManualDryRun.dryRun, beforeEdit.dryRun + 1)
+        XCTAssertEqual(afterManualDryRun.apply, beforeEdit.apply)
+        XCTAssertNil(harness.viewModel.pendingWriteAction)
+        XCTAssertTrue(harness.state.writeAuditLog.isEmpty)
+
+        let afterManualDryRunYAML = try await harness.kubeClient.resourceYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(afterManualDryRunYAML.contains("baseline"))
+        XCTAssertFalse(afterManualDryRunYAML.contains("edited-after-confirmation"))
+
+        let beforeApplyPreview = await yamlPatchCounts(in: harness)
+        harness.viewModel.requestApplySelectedResourceYAML()
+        try await waitUntil(timeout: 20) {
+            harness.viewModel.pendingWriteDryRunStatus
+                == "Passed. Kubernetes accepted the server-side dry-run."
+        }
+
+        let afterApplyPreview = await yamlPatchCounts(in: harness)
+        XCTAssertEqual(afterApplyPreview.dryRun, beforeApplyPreview.dryRun + 1)
+        XCTAssertEqual(afterApplyPreview.apply, beforeApplyPreview.apply)
+        XCTAssertNotNil(harness.viewModel.pendingWriteAction)
+
+        let afterApplyPreviewYAML = try await harness.kubeClient.resourceYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(afterApplyPreviewYAML.contains("baseline"))
+        XCTAssertFalse(afterApplyPreviewYAML.contains("edited-after-confirmation"))
+
+        let beforeConfirmation = await yamlPatchCounts(in: harness)
+        harness.viewModel.confirmPendingWriteAction()
+        try await waitUntil(timeout: 30) {
+            harness.state.writeAuditLog.contains { entry in
+                entry.action == "Apply YAML"
+                    && entry.resource == "configmap/\(configName)"
+                    && entry.status == "Succeeded"
+            }
+        }
+
+        let afterConfirmation = await yamlPatchCounts(in: harness)
+        XCTAssertEqual(afterConfirmation.dryRun, beforeConfirmation.dryRun + 1)
+        XCTAssertEqual(afterConfirmation.apply, beforeConfirmation.apply + 1)
+        XCTAssertNil(harness.viewModel.pendingWriteAction)
+
+        let appliedYAML = try await harness.kubeClient.resourceYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(appliedYAML.contains("edited-after-confirmation"))
+        XCTAssertFalse(appliedYAML.contains("baseline"))
+        XCTAssertNil(harness.state.lastError)
+    }
+
+    func testDockerComposeManualYAMLDryRunSurfacesTypedKubernetesErrorWithoutMutation() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let configName = "rune-it-dry-run-error-\(Self.shortTestID())"
+        let baselineYAML = Self.configMapYAML(
+            name: configName,
+            namespace: namespace,
+            value: "baseline"
+        )
+        let invalidServerDraft = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: \(configName)
+          namespace: \(namespace)
+          generation: not-a-number
+          labels:
+            app.kubernetes.io/managed-by: rune-integration-test
+        data:
+          delete-guard: must-not-apply
+        """
+        let generationLine = try XCTUnwrap(
+            invalidServerDraft
+                .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+                .firstIndex { $0.contains("generation:") }
+        ) + 1
+        addTeardownBlock {
+            try? await harness.kubeClient.deleteResource(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: .configMap,
+                name: configName
+            )
+        }
+
+        try await harness.kubeClient.applyYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            yaml: baselineYAML
+        )
+        try await waitForConfigMap(
+            client: harness.kubeClient,
+            sources: sources,
+            context: context,
+            namespace: namespace,
+            name: configName
+        )
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.config)
+        harness.viewModel.setWorkloadKind(.configMap)
+        try await waitUntil(timeout: 30) {
+            harness.state.configMaps.contains { $0.name == configName }
+                && !harness.state.isLoading
+        }
+        harness.viewModel.selectConfigMap(
+            try XCTUnwrap(harness.state.configMaps.first { $0.name == configName })
+        )
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedConfigMap?.name == configName
+                && harness.state.resourceYAML.contains("baseline")
+                && !harness.state.isLoadingResourceDetails
+        }
+
+        harness.state.updateResourceYAMLDraft(invalidServerDraft)
+        try await waitUntil {
+            harness.state.resourceYAML == invalidServerDraft
+                && harness.state.resourceYAMLValidationIssues.isEmpty
+        }
+        let beforeDryRun = await yamlPatchCounts(in: harness)
+
+        harness.viewModel.requestDryRunSelectedResourceYAML()
+        try await waitUntil(timeout: 20) {
+            harness.viewModel.resourceYAMLDryRunStatus?.hasPrefix("Dry run blocked:") == true
+        }
+
+        let status = try XCTUnwrap(harness.viewModel.resourceYAMLDryRunStatus)
+        XCTAssertTrue(status.contains("metadata.generation"))
+        XCTAssertFalse(status.contains(#""kind":"Status""#))
+        XCTAssertFalse(status.contains("safe to retry"))
+
+        let issue = try XCTUnwrap(
+            harness.state.resourceYAMLValidationIssues.first {
+                $0.source == .kubernetes && $0.severity == .error
+            }
+        )
+        XCTAssertEqual(issue.line, generationLine)
+        XCTAssertEqual(issue.column, 3)
+        XCTAssertTrue(issue.message.contains("metadata.generation"))
+
+        let afterDryRun = await yamlPatchCounts(in: harness)
+        XCTAssertEqual(afterDryRun.dryRun, beforeDryRun.dryRun + 1)
+        XCTAssertEqual(afterDryRun.apply, beforeDryRun.apply)
+        XCTAssertNil(harness.viewModel.pendingWriteAction)
+        XCTAssertTrue(harness.state.writeAuditLog.isEmpty)
+
+        let clusterYAML = try await harness.kubeClient.resourceYAML(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(clusterYAML.contains("baseline"))
+        XCTAssertFalse(clusterYAML.contains("must-not-apply"))
+        XCTAssertNil(harness.state.lastError)
+    }
+
     func testDockerComposeRollbackSafetyFlowAgainstFakeCluster() async throws {
         let harness = try makeHarness()
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
@@ -619,16 +889,15 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let context = KubeContext(name: "fake-orbit-mesh")
         let namespace = "alpha-zone"
         let deploymentName = "rune-it-rollback-\(Self.shortTestID())"
-        defer {
-            Task {
-                try? await client.deleteResource(
-                    from: [KubeConfigSource(url: harness.kubeconfigURL)],
-                    context: context,
-                    namespace: namespace,
-                    kind: .deployment,
-                    name: deploymentName
-                )
-            }
+        let cleanupSources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        addTeardownBlock {
+            try? await client.deleteResource(
+                from: cleanupSources,
+                context: context,
+                namespace: namespace,
+                kind: .deployment,
+                name: deploymentName
+            )
         }
 
         try await client.applyYAML(
@@ -827,6 +1096,10 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
         if let dependency = dependencies.first(where: { $0.primaryTarget?.kind == .deployment }) {
             harness.viewModel.setSection(.overview)
+            try await waitUntil(timeout: 20) {
+                harness.state.selectedSection == .overview
+                    && !harness.state.isLoading
+            }
             harness.viewModel.openOverviewDependency(dependency)
             try await waitUntil(timeout: 20) {
                 harness.state.selectedSection == .workloads
@@ -836,12 +1109,18 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         }
 
         if let incident = incidents.first {
-            let objectName = incident.title.components(separatedBy: " • ").last ?? ""
+            let eventID = try XCTUnwrap(incident.target?.name)
+            let event = try XCTUnwrap(
+                (harness.state.overviewEvents + harness.state.events).first { $0.id == eventID }
+            )
             harness.viewModel.setSection(.overview)
+            try await waitUntil(timeout: 20) {
+                harness.state.selectedSection == .overview
+                    && !harness.state.isLoading
+            }
             harness.viewModel.openOverviewSignal(incident)
             try await waitUntil(timeout: 20) {
-                harness.state.selectedSection == .events
-                    || harness.state.selectedPod?.name == objectName
+                self.didNavigateFromOverview(to: event, state: harness.state)
             }
         }
 
@@ -867,6 +1146,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 && !harness.state.resourceDescribe.isEmpty
                 && !harness.state.isLoading
                 && !harness.state.isLoadingResourceDetails
+                && !harness.state.isValidatingResourceYAML
         }
 
         let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
@@ -899,7 +1179,11 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertEqual(ViewModelResourceStateSnapshot(state: harness.state), stateBeforeAuthDoctor)
         let authDoctorRequestMetrics = await harness.kubeClient.restRequestMetricsReport().metrics
         let authDoctorRequests = authDoctorRequestMetrics.dropFirst(requestMetricCountBeforeAuthDoctor)
-        XCTAssertFalse(authDoctorRequests.contains(where: isMutatingAuthDoctorRequest))
+        let mutatingAuthDoctorRequests = authDoctorRequests.filter(isMutatingAuthDoctorRequest)
+        XCTAssertTrue(
+            mutatingAuthDoctorRequests.isEmpty,
+            "Auth Doctor issued mutating requests: \(mutatingAuthDoctorRequests.map { "\($0.method) \($0.apiPath)" })"
+        )
         XCTAssertEqual(harness.state.writeAuditLog.count, 0)
         XCTAssertFalse(harness.state.authDoctorChecks.contains { $0.id == "helm-rollback-dry-run" })
 
@@ -947,16 +1231,15 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
         let namespace = "alpha-zone"
         let configName = "rune-it-delete-guard-\(Self.shortTestID())"
-        defer {
-            Task {
-                try? await harness.kubeClient.deleteResource(
-                    from: sources,
-                    context: context,
-                    namespace: namespace,
-                    kind: .configMap,
-                    name: configName
-                )
-            }
+        let cleanupClient = harness.kubeClient
+        addTeardownBlock {
+            try? await cleanupClient.deleteResource(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: .configMap,
+                name: configName
+            )
         }
 
         try await harness.kubeClient.applyYAML(
@@ -1089,6 +1372,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             kubeClient: kubeClient,
             exporter: exporter,
             configuredExporter: configuredExporter,
+            contextPreferences: DockerComposeEmptyContextPreferencesStore(),
             helmCommandRunner: helmRunner,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -1502,13 +1786,97 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     }
 
     private func isMutatingAuthDoctorRequest(_ metric: KubernetesRESTRequestMetric) -> Bool {
+        if metric.apiPath.contains("dryRun=") {
+            return false
+        }
         switch metric.method {
         case "PATCH", "PUT", "DELETE":
             return true
         case "POST":
             let isReadOnlyAuthorizationReview = metric.apiPath.contains("subjectaccessreviews")
-            let isDryRun = metric.apiPath.contains("dryRun=")
-            return !isReadOnlyAuthorizationReview && !isDryRun
+            return !isReadOnlyAuthorizationReview
+        default:
+            return false
+        }
+    }
+
+    private func yamlPatchCounts(in harness: Harness) async -> (dryRun: Int, apply: Int) {
+        let patchMetrics = await harness.kubeClient.restRequestMetricsReport().metrics.filter {
+            $0.method == "PATCH"
+        }
+        return (
+            dryRun: patchMetrics.filter { $0.apiPath.contains("dryRun=") }.count,
+            apply: patchMetrics.filter { !$0.apiPath.contains("dryRun=") }.count
+        )
+    }
+
+    private func didNavigateFromOverview(to event: EventSummary, state: RuneAppState) -> Bool {
+        if state.selectedSection == .events, state.selectedEvent?.id == event.id {
+            return true
+        }
+
+        let objectName = event.objectName
+        switch event.involvedKind?.lowercased() {
+        case "pod":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .pod
+                && state.selectedPod?.name == objectName
+        case "deployment":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .deployment
+                && state.selectedDeployment?.name == objectName
+        case "statefulset":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .statefulSet
+                && state.selectedStatefulSet?.name == objectName
+        case "daemonset":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .daemonSet
+                && state.selectedDaemonSet?.name == objectName
+        case "job":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .job
+                && state.selectedJob?.name == objectName
+        case "cronjob":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .cronJob
+                && state.selectedCronJob?.name == objectName
+        case "replicaset":
+            return state.selectedSection == .workloads
+                && state.selectedWorkloadKind == .replicaSet
+                && state.selectedReplicaSet?.name == objectName
+        case "service":
+            return state.selectedSection == .networking
+                && state.selectedWorkloadKind == .service
+                && state.selectedService?.name == objectName
+        case "ingress":
+            return state.selectedSection == .networking
+                && state.selectedWorkloadKind == .ingress
+                && state.selectedIngress?.name == objectName
+        case "configmap":
+            return state.selectedSection == .config
+                && state.selectedWorkloadKind == .configMap
+                && state.selectedConfigMap?.name == objectName
+        case "secret":
+            return state.selectedSection == .config
+                && state.selectedWorkloadKind == .secret
+                && state.selectedSecret?.name == objectName
+        case "node":
+            return state.selectedSection == .storage
+                && state.selectedWorkloadKind == .node
+                && state.selectedNode?.name == objectName
+        case "persistentvolumeclaim":
+            return state.selectedSection == .storage
+                && state.selectedWorkloadKind == .persistentVolumeClaim
+                && state.selectedPersistentVolumeClaim?.name == objectName
+        case "persistentvolume":
+            return state.selectedSection == .storage
+                && state.selectedWorkloadKind == .persistentVolume
+                && state.selectedPersistentVolume?.name == objectName
+        case "storageclass":
+            return state.selectedSection == .storage
+                && state.selectedWorkloadKind == .storageClass
+                && state.selectedStorageClass?.name == objectName
         default:
             return false
         }
@@ -1566,6 +1934,14 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                       nginx -g 'daemon off;'
         """
     }
+}
+
+private struct DockerComposeEmptyContextPreferencesStore: ContextPreferencesStoring {
+    func loadFavoriteContextNames() -> Set<String> {
+        []
+    }
+
+    func saveFavoriteContextNames(_ names: Set<String>) {}
 }
 
 private final class DockerComposeRecordingHelmCommandRunner: HelmCommandRunning, @unchecked Sendable {

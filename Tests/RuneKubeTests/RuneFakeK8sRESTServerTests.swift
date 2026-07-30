@@ -146,6 +146,377 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         XCTAssertTrue(logs.contains("synthetic REST fake log"))
     }
 
+    func testResourceYAMLRequestMatrixRoutesScopesAndPreservesLargeUnicodePayloads() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let longValue = "synthetic-start-" + String(repeating: "λ", count: 8_192) + "-終"
+        let configMapYAML = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: orbit-lens-settings
+          namespace: alpha-zone
+        data:
+          multiline: |-
+            synthetic first line
+            synthetic café λ
+          long-value: "\(longValue)"
+        """
+        let scenarios = [
+            ResourceYAMLRequestScenario(
+                name: "namespaced ConfigMap validation with multiline, Unicode, and a long line",
+                operation: .validate,
+                yaml: configMapYAML,
+                expectedTarget: "/api/v1/namespaces/alpha-zone/configmaps/orbit-lens-settings?fieldManager=rune&force=true&dryRun=All"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced ConfigMap apply with multiline, Unicode, and a long line",
+                operation: .apply,
+                yaml: configMapYAML,
+                expectedTarget: "/api/v1/namespaces/alpha-zone/configmaps/orbit-lens-settings?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced Deployment apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: orbit-lens
+                  namespace: alpha-zone
+                spec:
+                  replicas: 3
+                """,
+                expectedTarget: "/apis/apps/v1/namespaces/alpha-zone/deployments/orbit-lens?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced Pod owner metadata never overrides the apply target",
+                operation: .apply,
+                yaml: """
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: synthetic-pod
+                  namespace: alpha-zone
+                  labels:
+                    name: nested-label-value
+                  ownerReferences:
+                    - apiVersion: apps/v1
+                      kind: ReplicaSet
+                      name: synthetic-owner
+                spec:
+                  containers:
+                    - name: synthetic-container
+                      image: example.invalid/synthetic:1
+                """,
+                expectedTarget: "/api/v1/namespaces/alpha-zone/pods/synthetic-pod?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "cluster-scoped Node apply ignores manifest namespace",
+                operation: .apply,
+                yaml: """
+                apiVersion: v1
+                kind: Node
+                metadata:
+                  name: orbit-node-a
+                  namespace: synthetic-ignored-zone
+                spec:
+                  unschedulable: true
+                """,
+                expectedTarget: "/api/v1/nodes/orbit-node-a?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced Secret validation uses the default namespace and remains dry-run",
+                operation: .validate,
+                yaml: """
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: synthetic-settings
+                type: Opaque
+                stringData:
+                  greeting: synthetic-only
+                """,
+                expectedTarget: "/api/v1/namespaces/alpha-zone/secrets/synthetic-settings?fieldManager=rune&force=true&dryRun=All"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced batch Job apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: batch/v1
+                kind: Job
+                metadata:
+                  name: synthetic-batch-run
+                  namespace: alpha-zone
+                spec:
+                  template:
+                    spec:
+                      restartPolicy: Never
+                      containers:
+                        - name: task
+                          image: example.invalid/synthetic:1
+                """,
+                expectedTarget: "/apis/batch/v1/namespaces/alpha-zone/jobs/synthetic-batch-run?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced networking Ingress apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: networking.k8s.io/v1
+                kind: Ingress
+                metadata:
+                  name: synthetic-edge
+                  namespace: alpha-zone
+                spec:
+                  rules: []
+                """,
+                expectedTarget: "/apis/networking.k8s.io/v1/namespaces/alpha-zone/ingresses/synthetic-edge?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced autoscaling HPA apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: autoscaling/v2
+                kind: HorizontalPodAutoscaler
+                metadata:
+                  name: synthetic-scaler
+                  namespace: alpha-zone
+                spec:
+                  minReplicas: 1
+                  maxReplicas: 3
+                  scaleTargetRef:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    name: orbit-lens
+                """,
+                expectedTarget: "/apis/autoscaling/v2/namespaces/alpha-zone/horizontalpodautoscalers/synthetic-scaler?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced RBAC Role apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: synthetic-reader
+                  namespace: alpha-zone
+                rules:
+                  - apiGroups: [""]
+                    resources: ["configmaps"]
+                    verbs: ["get"]
+                """,
+                expectedTarget: "/apis/rbac.authorization.k8s.io/v1/namespaces/alpha-zone/roles/synthetic-reader?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "cluster-scoped RBAC ClusterRole apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRole
+                metadata:
+                  name: synthetic-reader-global
+                rules:
+                  - apiGroups: [""]
+                    resources: ["namespaces"]
+                    verbs: ["get"]
+                """,
+                expectedTarget: "/apis/rbac.authorization.k8s.io/v1/clusterroles/synthetic-reader-global?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "namespaced storage PVC apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: v1
+                kind: PersistentVolumeClaim
+                metadata:
+                  name: synthetic-cache
+                  namespace: alpha-zone
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 1Mi
+                """,
+                expectedTarget: "/api/v1/namespaces/alpha-zone/persistentvolumeclaims/synthetic-cache?fieldManager=rune&force=true"
+            ),
+            ResourceYAMLRequestScenario(
+                name: "cluster-scoped storage StorageClass apply",
+                operation: .apply,
+                yaml: """
+                apiVersion: storage.k8s.io/v1
+                kind: StorageClass
+                metadata:
+                  name: synthetic-storage
+                provisioner: example.invalid/synthetic
+                volumeBindingMode: WaitForFirstConsumer
+                """,
+                expectedTarget: "/apis/storage.k8s.io/v1/storageclasses/synthetic-storage?fieldManager=rune&force=true"
+            )
+        ]
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        for scenario in scenarios {
+            server.resetRequestLines()
+
+            switch scenario.operation {
+            case .apply:
+                try await client.applyYAML(
+                    from: sources,
+                    context: context,
+                    namespace: "alpha-zone",
+                    yaml: scenario.yaml
+                )
+            case .validate:
+                let issues = try await client.validateResourceYAML(
+                    from: sources,
+                    context: context,
+                    namespace: "alpha-zone",
+                    yaml: scenario.yaml
+                )
+                XCTAssertTrue(issues.isEmpty, "\(scenario.name): \(issues)")
+            }
+
+            let patches = server.requests().filter { $0.requestLine.hasPrefix("PATCH ") }
+            let patch = try XCTUnwrap(
+                patches.first,
+                "\(scenario.name): expected one server-side apply PATCH"
+            )
+            XCTAssertEqual(patches.count, 1, scenario.name)
+            XCTAssertTrue(
+                patch.requestLine.hasPrefix("PATCH \(scenario.expectedTarget) "),
+                "\(scenario.name): \(patch.requestLine)"
+            )
+            XCTAssertEqual(patch.body, scenario.yaml, scenario.name)
+            XCTAssertEqual(patch.body?.utf8.count, scenario.yaml.utf8.count, scenario.name)
+        }
+    }
+
+    func testResourceYAMLRejectionMatrixStopsBeforeAnyMutationRequest() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let scenarios = [
+            RejectedResourceYAMLScenario(
+                name: "generic CRD kind",
+                operation: .apply,
+                yaml: """
+                apiVersion: synthetic.example.invalid/v1
+                kind: SyntheticWidget
+                metadata:
+                  name: matrix-widget
+                  namespace: alpha-zone
+                spec:
+                  message: synthetic
+                """,
+                expectedErrorFragment: "kind is not supported"
+            ),
+            RejectedResourceYAMLScenario(
+                name: "missing metadata.name",
+                operation: .validate,
+                yaml: """
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  namespace: alpha-zone
+                data:
+                  message: synthetic
+                """,
+                expectedErrorFragment: "missing metadata.name"
+            )
+        ]
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        for scenario in scenarios {
+            server.resetRequestLines()
+
+            switch scenario.operation {
+            case .apply:
+                do {
+                    try await client.applyYAML(
+                        from: sources,
+                        context: context,
+                        namespace: "alpha-zone",
+                        yaml: scenario.yaml
+                    )
+                    XCTFail("\(scenario.name): expected client-side rejection")
+                } catch {
+                    XCTAssertTrue(
+                        String(describing: error).contains(scenario.expectedErrorFragment),
+                        "\(scenario.name): \(error)"
+                    )
+                }
+            case .validate:
+                let issues = try await client.validateResourceYAML(
+                    from: sources,
+                    context: context,
+                    namespace: "alpha-zone",
+                    yaml: scenario.yaml
+                )
+                XCTAssertTrue(
+                    issues.contains { $0.message.contains(scenario.expectedErrorFragment) },
+                    "\(scenario.name): \(issues)"
+                )
+            }
+
+            XCTAssertFalse(
+                server.requests().contains { $0.requestLine.hasPrefix("PATCH ") },
+                "\(scenario.name): rejected YAML must not reach a mutation endpoint"
+            )
+        }
+    }
+
+    func testConfigMapApplyThenUndoSendsReversiblePayloadSequence() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let baselineYAML = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: orbit-lens-settings
+          namespace: alpha-zone
+        data:
+          mode: baseline
+        """
+        let editedYAML = baselineYAML.replacingOccurrences(of: "mode: baseline", with: "mode: edited")
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+
+        try await client.applyYAML(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            yaml: editedYAML
+        )
+        try await client.applyYAML(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            yaml: baselineYAML
+        )
+
+        let patches = server.requests().filter { request in
+            request.requestLine.hasPrefix(
+                "PATCH /api/v1/namespaces/alpha-zone/configmaps/orbit-lens-settings?"
+            )
+        }
+        XCTAssertEqual(patches.map(\.body), [editedYAML, baselineYAML])
+    }
+
     func testAllContainerLogsPreserveSuccessfulOutputAndNamePartialFailures() async throws {
         let server = try await RuneFakeK8sRESTServer.start()
         defer { server.stop() }
@@ -847,4 +1218,23 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
+}
+
+private enum ResourceYAMLRequestOperation {
+    case apply
+    case validate
+}
+
+private struct ResourceYAMLRequestScenario {
+    let name: String
+    let operation: ResourceYAMLRequestOperation
+    let yaml: String
+    let expectedTarget: String
+}
+
+private struct RejectedResourceYAMLScenario {
+    let name: String
+    let operation: ResourceYAMLRequestOperation
+    let yaml: String
+    let expectedErrorFragment: String
 }

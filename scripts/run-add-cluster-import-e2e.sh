@@ -21,7 +21,8 @@ LAUNCH_HELPER="$TEST_STATE_DIR/rune-app-launch"
 MODULE_CACHE_DIR="$TEST_STATE_DIR/module-cache"
 TEST_APP_BUNDLE="$TEST_STATE_DIR/RuneAddClusterE2E.app"
 TEST_APP_BIN="$TEST_APP_BUNDLE/Contents/MacOS/RuneApp"
-ACTIVATION_PROOF="$TEST_STATE_DIR/Library/Application Support/Rune/namespace-lists/fake-orbit-mesh.json"
+ACTIVATION_CONTEXT_NAME="fake-orbit-mesh"
+ACTIVATION_PROOF=""
 APP_PID=""
 
 cleanup() {
@@ -56,12 +57,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command_name in codesign ditto docker find kubectl plutil xcrun; do
+for command_name in awk codesign ditto docker find kubectl plutil shasum xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Missing required command: $command_name" >&2
     exit 1
   fi
 done
+
+ACTIVATION_CONTEXT_HASH="$(
+  printf '%s' "$ACTIVATION_CONTEXT_NAME" | shasum -a 256 | awk '{print $1}'
+)"
+ACTIVATION_PROOF="$TEST_STATE_DIR/Library/Application Support/Rune/namespace-lists/v2-$ACTIVATION_CONTEXT_HASH.json"
 
 mkdir -p "$TEST_STATE_DIR" "$MODULE_CACHE_DIR"
 

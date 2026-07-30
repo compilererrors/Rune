@@ -976,11 +976,9 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         let appName = "rune-it-http-\(Self.shortTestID())"
         let localPort = try await availableLocalPort()
 
-        defer {
-            Task {
-                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .service, name: appName)
-                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: appName)
-            }
+        addTeardownBlock {
+            try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .service, name: appName)
+            try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: appName)
         }
 
         let namespaces = try await client.listNamespaces(from: fixture.sources, context: context)
@@ -1076,12 +1074,12 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         let namespace = "alpha-zone"
         let configName = "rune-it-config-\(Self.shortTestID())"
         let deploymentName = "rune-it-editor-\(Self.shortTestID())"
+        let jobName = "rune-it-job-\(Self.shortTestID())"
 
-        defer {
-            Task {
-                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: deploymentName)
-                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .configMap, name: configName)
-            }
+        addTeardownBlock {
+            try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .job, name: jobName)
+            try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .deployment, name: deploymentName)
+            try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .configMap, name: configName)
         }
 
         let baselineConfig = Self.configMapYAML(name: configName, namespace: namespace, value: "baseline")
@@ -1104,6 +1102,16 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             yaml: editedConfig
         )
         XCTAssertTrue(validationIssues.isEmpty)
+
+        let afterDryRunYAML = try await client.resourceYAML(
+            from: fixture.sources,
+            context: context,
+            namespace: namespace,
+            kind: .configMap,
+            name: configName
+        )
+        XCTAssertTrue(afterDryRunYAML.contains("baseline"))
+        XCTAssertFalse(afterDryRunYAML.contains("edited-from-yaml"))
 
         try await client.applyYAML(from: fixture.sources, context: context, namespace: namespace, yaml: editedConfig)
         let editedYAML = try await client.resourceYAML(
@@ -1223,6 +1231,15 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertEqual(rollout.status, .ready)
 
         let cronJobName = "orbit-sweep-cycle"
+        addTeardownBlock {
+            try? await client.patchCronJobSuspend(
+                from: fixture.sources,
+                context: context,
+                namespace: namespace,
+                name: cronJobName,
+                suspend: false
+            )
+        }
         try await client.patchCronJobSuspend(
             from: fixture.sources,
             context: context,
@@ -1255,12 +1272,6 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             secondaryText: "Active"
         )
 
-        let jobName = "rune-it-job-\(Self.shortTestID())"
-        defer {
-            Task {
-                try? await client.deleteResource(from: fixture.sources, context: context, namespace: namespace, kind: .job, name: jobName)
-            }
-        }
         try await client.createJobFromCronJob(
             from: fixture.sources,
             context: context,

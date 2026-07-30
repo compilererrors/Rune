@@ -15,8 +15,16 @@ struct TerminalTranscriptSurface: View {
     @State private var searchQuery = ""
     @State private var searchMatchCase = false
     @State private var selectedSearchMatchIndex = 0
+    @State private var searchNavigationRevision = 0
+    @State private var publishedRenderModel: TerminalTranscriptRenderModel?
+    @State private var publishedSearchRevision = 0
+    @State private var searchTask: Task<Void, Never>?
+    @State private var searchLifecycleGeneration = 0
+    @State private var searchWorkLane =
+        RuneSingleFlightLatestPendingWorkLane<TerminalTranscriptRenderModel>()
     @State private var isLargeTextPinnedToBottom = true
     @State private var lastReportedGridSize: (columns: Int, rows: Int)?
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     private var shouldUseLargeTextSurface: Bool {
@@ -29,37 +37,71 @@ struct TerminalTranscriptSurface: View {
 
     var body: some View {
         let warning = RuneSemanticColorRole.warning.color(in: runeThemePalette)
-        let model = TerminalTranscriptRenderModel(
-            text: text,
-            query: searchQuery,
-            matchCase: searchMatchCase,
-            usesLargeTextSurface: shouldUseLargeTextSurface
-        )
-        let resolvedSearchMatchIndex = model.searchIndex.clampedIndex(selectedSearchMatchIndex)
+        let activeModel = publishedRenderModel.flatMap { model in
+            model.isSearchNavigableSnapshot(
+                for: text,
+                query: searchQuery,
+                matchCase: searchMatchCase
+            )
+                ? model
+                : nil
+        }
+        let activeSearchIndex = activeModel?.searchIndex
+        let resolvedSearchMatchIndex = activeSearchIndex?.clampedIndex(selectedSearchMatchIndex) ?? 0
+        let displayedTextIndex = publishedRenderModel.flatMap { model in
+            model.isRenderableSnapshot(for: text) ? model.textIndex : nil
+        }
+        let normalizedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let largeTextScrollTargetLine: Int? = if !normalizedQuery.isEmpty {
+            activeModel?.scrollTargetLine(
+                selectedIndex: resolvedSearchMatchIndex,
+                isPinnedToBottom: false
+            )
+        } else if isLargeTextPinnedToBottom {
+            displayedTextIndex?.lineCount
+        } else {
+            nil
+        }
 
         InspectorTextSurface(minHeight: height) {
             Group {
-                if shouldUseLargeTextSurface, let textIndex = model.textIndex {
-                    RuneLargeTextSurface(
-                        index: textIndex,
-                        placeholder: "No terminal output",
-                        scrollTargetLine: model.scrollTargetLine(
-                            selectedIndex: resolvedSearchMatchIndex,
-                            isPinnedToBottom: isLargeTextPinnedToBottom
-                        ),
-                        showsLineNumbers: true,
-                        fontSize: fontSize,
-                        onNearBottomChange: { isNearBottom in
-                            isLargeTextPinnedToBottom = isNearBottom
-                        }
-                    )
+                if shouldUseLargeTextSurface {
+                    if let displayedTextIndex {
+                        RuneLargeTextSurface(
+                            index: displayedTextIndex,
+                            placeholder: "No terminal output",
+                            scrollTargetLine: largeTextScrollTargetLine,
+                            scrollTargetRevision: Self.largeTextSearchNavigationRevision(
+                                normalizedQuery: normalizedQuery,
+                                searchIndex: activeSearchIndex,
+                                navigationRevision: searchNavigationRevision
+                            ),
+                            scrollsOnTargetLineChange: false,
+                            searchMatchRanges: activeSearchIndex?.ranges ?? [],
+                            selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                            horizontalContentInset: RuneUILayoutMetrics.inspectorDocumentHorizontalInset,
+                            verticalContentInset: RuneUILayoutMetrics.inspectorDocumentVerticalInset,
+                            showsLineNumbers: false,
+                            fontSize: fontSize,
+                            onNearBottomChange: { isNearBottom in
+                                isLargeTextPinnedToBottom = isNearBottom
+                            }
+                        )
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .accessibilityLabel("Preparing terminal output")
+                    }
                 } else {
                     TerminalTranscriptTextView(
                         text: text,
                         fontSize: fontSize,
-                        searchQuery: searchQuery,
-                        searchMatchCase: searchMatchCase,
+                        searchIndex: activeSearchIndex,
+                        searchResultRevision: publishedSearchRevision,
                         selectedSearchMatchIndex: resolvedSearchMatchIndex,
+                        searchNavigationRevision: searchNavigationRevision,
+                        reduceMotion: accessibilityReduceMotion,
                         onPasteText: onPasteText
                     )
                 }
@@ -85,18 +127,18 @@ struct TerminalTranscriptSurface: View {
         .overlay(alignment: .topTrailing) {
             if isSearchVisible {
                 TerminalTranscriptSearchBar(
-                    searchIndex: model.searchIndex,
+                    searchIndex: activeSearchIndex,
                     resolvedSearchMatchIndex: resolvedSearchMatchIndex,
                     query: $searchQuery,
                     matchCase: $searchMatchCase,
-                    onPrevious: { advanceSearch(by: -1) },
-                    onNext: { advanceSearch(by: 1) },
+                    onPrevious: { advanceSearch(by: -1, in: activeSearchIndex) },
+                    onNext: { advanceSearch(by: 1, in: activeSearchIndex) },
                     onClose: {
                         isSearchVisible = false
                         searchQuery = ""
                     }
                 )
-                    .padding(10)
+                    .padding(RuneUILayoutMetrics.inspectorOverlayInset)
             } else {
                 RuneIconButton("Find in terminal", systemImage: "magnifyingglass") {
                     isSearchVisible = true
@@ -109,8 +151,9 @@ struct TerminalTranscriptSurface: View {
                     RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
                         .stroke(Color.primary.opacity(0.16), lineWidth: 1)
                 )
-                .padding(10)
+                .padding(RuneUILayoutMetrics.inspectorOverlayInset)
                 .keyboardShortcut("f", modifiers: [.command])
+                .runePointerCursor()
             }
         }
         .overlay(alignment: .topLeading) {
@@ -128,28 +171,97 @@ struct TerminalTranscriptSurface: View {
                             .stroke(warning.opacity(0.42), lineWidth: 1)
                     )
                     .foregroundStyle(warning)
-                    .padding(10)
+                    .padding(RuneUILayoutMetrics.inspectorOverlayInset)
                     .help("Older terminal output was discarded by the scrollback limit")
                     .accessibilityLabel("Scrollback trimmed")
+                    .runePointerCursor()
             }
         }
         .onChange(of: searchQuery) { _, _ in
             selectedSearchMatchIndex = 0
+            searchNavigationRevision &+= 1
+            scheduleSearch(debounceNanoseconds: TerminalTranscriptSearchWork.queryDebounceNanoseconds)
         }
         .onChange(of: searchMatchCase) { _, _ in
             selectedSearchMatchIndex = 0
+            searchNavigationRevision &+= 1
+            scheduleSearch(debounceNanoseconds: TerminalTranscriptSearchWork.queryDebounceNanoseconds)
         }
         .onChange(of: text) { _, _ in
-            selectedSearchMatchIndex = model.searchIndex.clampedIndex(selectedSearchMatchIndex)
+            scheduleSearch(debounceNanoseconds: TerminalTranscriptSearchWork.textDebounceNanoseconds)
+        }
+        .onAppear {
+            scheduleSearch(debounceNanoseconds: 0)
+        }
+        .onDisappear {
+            searchLifecycleGeneration &+= 1
+            searchTask?.cancel()
+            Task {
+                await searchWorkLane.cancel()
+            }
         }
     }
 
-    private func advanceSearch(by delta: Int) {
-        let searchIndex = TerminalTranscriptSearchIndex(text: text, query: searchQuery, matchCase: searchMatchCase)
+    private func advanceSearch(by delta: Int, in searchIndex: TerminalTranscriptSearchIndex?) {
+        guard let searchIndex else { return }
         let resolvedSearchMatchIndex = searchIndex.clampedIndex(selectedSearchMatchIndex)
         let count = searchIndex.ranges.count
         guard count > 0 else { return }
         selectedSearchMatchIndex = (resolvedSearchMatchIndex + delta + count) % count
+        searchNavigationRevision &+= 1
+    }
+
+    private func scheduleSearch(debounceNanoseconds: UInt64) {
+        searchTask?.cancel()
+        let requestedText = text
+        let requestedQuery = searchQuery
+        let requestedMatchCase = searchMatchCase
+        let usesLargeTextSurface = shouldUseLargeTextSurface
+        let lifecycleGeneration = searchLifecycleGeneration
+        let reusableTextIndex = publishedRenderModel?.originalText == requestedText
+            ? publishedRenderModel?.textIndex
+            : nil
+
+        let task = Task { @MainActor in
+            if debounceNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            }
+            guard !Task.isCancelled,
+                  searchLifecycleGeneration == lifecycleGeneration else {
+                return
+            }
+            if debounceNanoseconds > 0 {
+                searchTask = nil
+            }
+
+            guard let result = await searchWorkLane.submit(
+                priority: .userInitiated,
+                operation: {
+                    try TerminalTranscriptRenderModel(
+                        text: requestedText,
+                        query: requestedQuery,
+                        matchCase: requestedMatchCase,
+                        usesLargeTextSurface: usesLargeTextSurface,
+                        reusableTextIndex: reusableTextIndex,
+                        cancellationCheck: { try Task.checkCancellation() }
+                    )
+                }
+            ) else {
+                return
+            }
+
+            guard searchLifecycleGeneration == lifecycleGeneration,
+                  searchQuery == requestedQuery,
+                  searchMatchCase == requestedMatchCase else {
+                return
+            }
+            publishedRenderModel = result
+            publishedSearchRevision &+= 1
+            selectedSearchMatchIndex = result.searchIndex.clampedIndex(selectedSearchMatchIndex)
+        }
+        if debounceNanoseconds > 0 {
+            searchTask = task
+        }
     }
 
     private func reportGridSize(_ size: CGSize) {
@@ -159,6 +271,15 @@ struct TerminalTranscriptSurface: View {
         }
         lastReportedGridSize = grid
         onResizeGrid(grid.columns, grid.rows)
+    }
+
+    static func largeTextSearchNavigationRevision(
+        normalizedQuery: String,
+        searchIndex: TerminalTranscriptSearchIndex?,
+        navigationRevision: Int
+    ) -> Int? {
+        guard !normalizedQuery.isEmpty, searchIndex != nil else { return nil }
+        return navigationRevision
     }
 
     nonisolated static func terminalGridSize(surfaceSize: CGSize, fontSize: CGFloat) -> (columns: Int, rows: Int) {
@@ -178,13 +299,14 @@ struct TerminalTranscriptSurface: View {
 }
 
 struct TerminalTranscriptSearchBar: View {
-    let searchIndex: TerminalTranscriptSearchIndex
+    let searchIndex: TerminalTranscriptSearchIndex?
     let resolvedSearchMatchIndex: Int
     @Binding var query: String
     @Binding var matchCase: Bool
     let onPrevious: () -> Void
     let onNext: () -> Void
     let onClose: () -> Void
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         RuneFindBarChrome("Terminal find controls") {
@@ -192,15 +314,20 @@ struct TerminalTranscriptSearchBar: View {
         } secondary: {
             navigationControls
         }
-        .terminalSearchCursor(.arrow)
         .onExitCommand(perform: onClose)
+        .onAppear {
+            focusSearchField()
+        }
+        .onChange(of: matchCase) { _, _ in
+            focusSearchField()
+        }
     }
 
     private var searchField: some View {
-        HStack(spacing: 8) {
+        RuneInspectorControlGridRow {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-
+        } content: {
             TextField("Find in terminal", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
@@ -209,15 +336,18 @@ struct TerminalTranscriptSearchBar: View {
                     idealWidth: RuneFindBarMetrics.idealSearchFieldWidth,
                     maxWidth: .infinity
                 )
-                .onSubmit(onNext)
-                .terminalSearchCursor(.arrow)
+                .focused($isSearchFieldFocused)
+                .onSubmit {
+                    navigate(onNext)
+                }
+                .runeTextInputCursor()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var navigationControls: some View {
         HStack(spacing: 8) {
-            Text(searchIndex.statusText(selectedIndex: resolvedSearchMatchIndex))
+            Text(statusText)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -226,15 +356,15 @@ struct TerminalTranscriptSearchBar: View {
             RuneIconButton(
                 "Previous match",
                 systemImage: "chevron.up",
-                isDisabled: searchIndex.ranges.isEmpty,
-                action: onPrevious
+                isDisabled: searchIndex?.ranges.isEmpty != false,
+                action: { navigate(onPrevious) }
             )
 
             RuneIconButton(
                 "Next match",
                 systemImage: "chevron.down",
-                isDisabled: searchIndex.ranges.isEmpty,
-                action: onNext
+                isDisabled: searchIndex?.ranges.isEmpty != false,
+                action: { navigate(onNext) }
             )
 
             RuneMatchCaseButton(isSelected: $matchCase)
@@ -243,57 +373,98 @@ struct TerminalTranscriptSearchBar: View {
         }
         .fixedSize(horizontal: true, vertical: false)
     }
-}
 
-private struct TerminalSearchCursorModifier: ViewModifier {
-    let cursor: NSCursor
-    @State private var didPushCursor = false
+    private var statusText: String {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        guard let searchIndex else { return "…" }
+        return searchIndex.statusText(selectedIndex: resolvedSearchMatchIndex)
+    }
 
-    func body(content: Content) -> some View {
-        content
-            .onHover { isHovering in
-                if isHovering {
-                    if !didPushCursor {
-                        cursor.push()
-                        didPushCursor = true
-                    } else {
-                        cursor.set()
-                    }
-                } else if didPushCursor {
-                    NSCursor.pop()
-                    didPushCursor = false
-                }
-            }
-            .onDisappear {
-                if didPushCursor {
-                    NSCursor.pop()
-                    didPushCursor = false
-                }
-            }
+    private func navigate(_ action: () -> Void) {
+        action()
+        focusSearchField()
+    }
+
+    private func focusSearchField() {
+        isSearchFieldFocused = true
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+        }
     }
 }
 
-private extension View {
-    func terminalSearchCursor(_ cursor: NSCursor) -> some View {
-        modifier(TerminalSearchCursorModifier(cursor: cursor))
-    }
-}
-
-struct TerminalTranscriptRenderModel: Equatable {
+struct TerminalTranscriptRenderModel: Equatable, Sendable {
+    let originalText: String
+    let query: String
+    let matchCase: Bool
     let textIndex: RuneLargeTextIndex?
     let searchIndex: TerminalTranscriptSearchIndex
 
     init(text: String, query: String, matchCase: Bool, usesLargeTextSurface: Bool) {
+        self.init(
+            text: text,
+            query: query,
+            matchCase: matchCase,
+            usesLargeTextSurface: usesLargeTextSurface,
+            reusableTextIndex: nil,
+            cancellationCheck: {}
+        )
+    }
+
+    init(
+        text: String,
+        query: String,
+        matchCase: Bool,
+        usesLargeTextSurface: Bool,
+        reusableTextIndex: RuneLargeTextIndex?,
+        cancellationCheck: () throws -> Void
+    ) rethrows {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        originalText = text
+        self.query = trimmedQuery
+        self.matchCase = matchCase
         let shouldBuildLineIndex = usesLargeTextSurface || !trimmedQuery.isEmpty
-        let textIndex = shouldBuildLineIndex ? RuneLargeTextIndex(text: text) : nil
+        let textIndex: RuneLargeTextIndex?
+        if !shouldBuildLineIndex {
+            textIndex = nil
+        } else if let reusableTextIndex, reusableTextIndex.text == text {
+            try cancellationCheck()
+            textIndex = reusableTextIndex
+        } else {
+            textIndex = try RuneLargeTextIndex(
+                text: text,
+                cancellationCheck: cancellationCheck
+            )
+        }
         self.textIndex = textIndex
-        self.searchIndex = TerminalTranscriptSearchIndex(
+        self.searchIndex = try TerminalTranscriptSearchIndex(
             text: text,
             textIndex: textIndex,
             normalizedQuery: trimmedQuery,
-            matchCase: matchCase
+            matchCase: matchCase,
+            cancellationCheck: cancellationCheck
         )
+    }
+
+    func isCurrent(text: String, query: String, matchCase: Bool) -> Bool {
+        originalText == text
+            && self.query == query.trimmingCharacters(in: .whitespacesAndNewlines)
+            && self.matchCase == matchCase
+    }
+
+    func isRenderableSnapshot(for text: String) -> Bool {
+        originalText == text
+            || (!originalText.isEmpty && text.hasPrefix(originalText))
+    }
+
+    func isSearchNavigableSnapshot(
+        for text: String,
+        query: String,
+        matchCase: Bool
+    ) -> Bool {
+        isRenderableSnapshot(for: text)
+            && self.query == query.trimmingCharacters(in: .whitespacesAndNewlines)
+            && self.matchCase == matchCase
     }
 
     func scrollTargetLine(selectedIndex: Int, isPinnedToBottom: Bool = true) -> Int? {
@@ -305,9 +476,9 @@ struct TerminalTranscriptRenderModel: Equatable {
     }
 }
 
-struct TerminalTranscriptSearchIndex: Equatable {
+struct TerminalTranscriptSearchIndex: Equatable, Sendable {
+    let textIndex: RuneLargeTextIndex?
     let ranges: [NSRange]
-    let matchLineNumbers: [Int]
     private let hasQuery: Bool
 
     init(text: String, query: String, matchCase: Bool) {
@@ -321,18 +492,46 @@ struct TerminalTranscriptSearchIndex: Equatable {
         normalizedQuery trimmedQuery: String,
         matchCase: Bool
     ) {
+        self.init(
+            text: text,
+            textIndex: providedTextIndex,
+            normalizedQuery: trimmedQuery,
+            matchCase: matchCase,
+            cancellationCheck: {}
+        )
+    }
+
+    init(
+        text: String,
+        textIndex providedTextIndex: RuneLargeTextIndex?,
+        normalizedQuery trimmedQuery: String,
+        matchCase: Bool,
+        cancellationCheck: () throws -> Void
+    ) rethrows {
         hasQuery = !trimmedQuery.isEmpty
         guard !trimmedQuery.isEmpty else {
+            textIndex = providedTextIndex
             ranges = []
-            matchLineNumbers = []
             return
         }
 
-        let index = providedTextIndex ?? RuneLargeTextIndex(text: text)
+        let index: RuneLargeTextIndex
+        if let providedTextIndex {
+            try cancellationCheck()
+            index = providedTextIndex
+        } else {
+            index = try RuneLargeTextIndex(
+                text: text,
+                cancellationCheck: cancellationCheck
+            )
+        }
+        textIndex = index
         let options: NSString.CompareOptions = matchCase ? [] : [.caseInsensitive]
-        let result = index.search(query: trimmedQuery, options: options)
-        ranges = result.matches.map(\.range)
-        matchLineNumbers = result.matches.map(\.lineNumber)
+        ranges = try index.searchRanges(
+            query: trimmedQuery,
+            options: options,
+            cancellationCheck: cancellationCheck
+        )
     }
 
     func clampedIndex(_ index: Int) -> Int {
@@ -347,17 +546,26 @@ struct TerminalTranscriptSearchIndex: Equatable {
     }
 
     func matchLineNumber(selectedIndex: Int) -> Int? {
-        guard !matchLineNumbers.isEmpty else { return nil }
-        return matchLineNumbers[clampedIndex(selectedIndex)]
+        guard let textIndex, !ranges.isEmpty else { return nil }
+        return textIndex.lineNumber(
+            containingUTF16Location: ranges[clampedIndex(selectedIndex)].location
+        )
     }
+}
+
+private enum TerminalTranscriptSearchWork {
+    static let queryDebounceNanoseconds: UInt64 = 35_000_000
+    static let textDebounceNanoseconds: UInt64 = 0
 }
 
 private struct TerminalTranscriptTextView: NSViewRepresentable {
     let text: String
     let fontSize: CGFloat
-    let searchQuery: String
-    let searchMatchCase: Bool
+    let searchIndex: TerminalTranscriptSearchIndex?
+    let searchResultRevision: Int
     let selectedSearchMatchIndex: Int
+    let searchNavigationRevision: Int
+    let reduceMotion: Bool
     let onPasteText: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -399,7 +607,10 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width, .height]
-        textView.textContainerInset = NSSize(width: 10, height: 10)
+        textView.textContainerInset = NSSize(
+            width: RuneUILayoutMetrics.inspectorDocumentHorizontalInset,
+            height: RuneUILayoutMetrics.inspectorDocumentVerticalInset
+        )
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.font = terminalFont
@@ -439,6 +650,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
         let shouldStickToBottom = isNearBottom(scrollView)
         if textView.string != text {
+            clearSearchHighlights(in: textView, coordinator: context.coordinator)
             if text.hasPrefix(textView.string),
                let textStorage = textView.textStorage {
                 let suffix = String(text.dropFirst(textView.string.count))
@@ -455,16 +667,19 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
                 textView.string = text
             }
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-            applySearchHighlights(in: textView, coordinator: context.coordinator)
             textView.invalidateIntrinsicContentSize()
             textView.layoutSubtreeIfNeeded()
-            if shouldStickToBottom {
+            let hasActiveSearchMatch = applySearchHighlights(
+                in: textView,
+                coordinator: context.coordinator
+            )
+            if shouldStickToBottom, !hasActiveSearchMatch {
                 let range = NSRange(location: max(0, text.utf16.count - 1), length: 0)
                 textView.scrollRangeToVisible(range)
             }
         } else {
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-            applySearchHighlights(in: textView, coordinator: context.coordinator)
+            _ = applySearchHighlights(in: textView, coordinator: context.coordinator)
         }
     }
 
@@ -475,54 +690,169 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         return maxOffset - clipBounds.origin.y < 28
     }
 
-    private func applySearchHighlights(in textView: NSTextView, coordinator: Coordinator) {
-        guard let storage = textView.textStorage else { return }
-        let fullRange = NSRange(location: 0, length: storage.length)
-        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else {
-            if coordinator.hasAppliedSearchHighlights {
-                storage.removeAttribute(.backgroundColor, range: fullRange)
-                coordinator.hasAppliedSearchHighlights = false
-                coordinator.lastAppliedSearchKey = ""
+    @discardableResult
+    private func applySearchHighlights(
+        in textView: NSTextView,
+        coordinator: Coordinator
+    ) -> Bool {
+        guard let storage = textView.textStorage,
+              let layoutManager = textView.layoutManager else {
+            return false
+        }
+        guard let searchIndex else {
+            clearSearchHighlights(in: textView, coordinator: coordinator)
+            return false
+        }
+
+        if coordinator.appliedSearchResultRevision != searchResultRevision {
+            clearSearchHighlights(in: textView, coordinator: coordinator)
+            coordinator.appliedSearchResultRevision = searchResultRevision
+
+            let passiveRanges = searchIndex.ranges.prefix(Coordinator.passiveHighlightLimit)
+            coordinator.passiveSearchHighlightRanges.reserveCapacity(passiveRanges.count)
+            for range in passiveRanges where NSMaxRange(range) <= storage.length {
+                applyPassiveSearchHighlight(range, layoutManager: layoutManager)
+                coordinator.passiveSearchHighlightRanges.append(range)
             }
+        }
+
+        guard !searchIndex.ranges.isEmpty else {
+            coordinator.activeSearchHighlightRange = nil
+            coordinator.lastCenteredNavigationRevision = searchNavigationRevision
+            return false
+        }
+
+        let activeIndex = searchIndex.clampedIndex(selectedSearchMatchIndex)
+        let activeRange = searchIndex.ranges[activeIndex]
+        guard NSMaxRange(activeRange) <= storage.length else { return false }
+
+        if coordinator.activeSearchHighlightRange != activeRange {
+            if let previousRange = coordinator.activeSearchHighlightRange {
+                removeSearchHighlightAttributes(previousRange, layoutManager: layoutManager)
+                if coordinator.passiveSearchHighlightRanges.contains(previousRange) {
+                    applyPassiveSearchHighlight(previousRange, layoutManager: layoutManager)
+                }
+            }
+            applyActiveSearchHighlight(activeRange, layoutManager: layoutManager)
+            coordinator.activeSearchHighlightRange = activeRange
+        }
+
+        let shouldCenter =
+            coordinator.lastCenteredNavigationRevision != searchNavigationRevision
+        if shouldCenter {
+            coordinator.lastCenteredNavigationRevision = searchNavigationRevision
+            centerSearchRange(activeRange, in: textView, animated: !reduceMotion)
+        }
+        return true
+    }
+
+    private func clearSearchHighlights(in textView: NSTextView, coordinator: Coordinator) {
+        guard let layoutManager = textView.layoutManager else {
+            coordinator.resetSearchHighlights()
+            return
+        }
+        let textLength = textView.textStorage?.length ?? 0
+        for range in coordinator.passiveSearchHighlightRanges where NSMaxRange(range) <= textLength {
+            removeSearchHighlightAttributes(range, layoutManager: layoutManager)
+        }
+        if let activeRange = coordinator.activeSearchHighlightRange,
+           NSMaxRange(activeRange) <= textLength,
+           !coordinator.passiveSearchHighlightRanges.contains(activeRange) {
+            removeSearchHighlightAttributes(activeRange, layoutManager: layoutManager)
+        }
+        coordinator.resetSearchHighlights()
+    }
+
+    private func applyPassiveSearchHighlight(_ range: NSRange, layoutManager: NSLayoutManager) {
+        let highlightColor = NSColor.systemYellow.withAlphaComponent(0.56)
+        layoutManager.addTemporaryAttributes([
+            .backgroundColor: highlightColor,
+            .underlineColor: NSColor.systemYellow,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ], forCharacterRange: range)
+    }
+
+    private func applyActiveSearchHighlight(_ range: NSRange, layoutManager: NSLayoutManager) {
+        layoutManager.addTemporaryAttributes([
+            .backgroundColor: NSColor.selectedContentBackgroundColor.withAlphaComponent(0.90),
+            .foregroundColor: NSColor.selectedTextColor,
+            .underlineColor: NSColor.selectedTextColor,
+            .underlineStyle: NSUnderlineStyle.thick.rawValue
+        ], forCharacterRange: range)
+    }
+
+    private func removeSearchHighlightAttributes(_ range: NSRange, layoutManager: NSLayoutManager) {
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+    }
+
+    private func centerSearchRange(_ activeRange: NSRange, in textView: NSTextView, animated: Bool) {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer,
+              let scrollView = textView.enclosingScrollView else {
+            textView.scrollRangeToVisible(activeRange)
             return
         }
 
-        let searchKey = "\(textView.string.hashValue):\(trimmedQuery):\(searchMatchCase):\(selectedSearchMatchIndex)"
-        guard coordinator.lastAppliedSearchKey != searchKey else { return }
-        coordinator.lastAppliedSearchKey = searchKey
-
-        storage.removeAttribute(.backgroundColor, range: fullRange)
-
-        let index = TerminalTranscriptSearchIndex(
-            text: textView.string,
-            query: trimmedQuery,
-            matchCase: searchMatchCase
+        layoutManager.ensureLayout(forCharacterRange: activeRange)
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: activeRange,
+            actualCharacterRange: nil
         )
-        guard !index.ranges.isEmpty else {
-            coordinator.hasAppliedSearchHighlights = false
+        guard glyphRange.location < layoutManager.numberOfGlyphs else {
+            textView.scrollRangeToVisible(activeRange)
             return
         }
 
-        let highlightColor = NSColor.systemYellow.withAlphaComponent(0.28)
-        let activeColor = NSColor.controlAccentColor.withAlphaComponent(0.42)
-        for (offset, range) in index.ranges.enumerated() where NSMaxRange(range) <= storage.length {
-            storage.addAttribute(
-                .backgroundColor,
-                value: offset == index.clampedIndex(selectedSearchMatchIndex) ? activeColor : highlightColor,
-                range: range
-            )
-        }
+        var targetRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        let textOrigin = textView.textContainerOrigin
+        targetRect.origin.x += textOrigin.x
+        targetRect.origin.y += textOrigin.y
 
-        let activeRange = index.ranges[index.clampedIndex(selectedSearchMatchIndex)]
-        textView.scrollRangeToVisible(activeRange)
-        coordinator.hasAppliedSearchHighlights = true
+        let clipView = scrollView.contentView
+        let visibleBounds = clipView.bounds
+        let documentBounds = scrollView.documentView?.bounds ?? textView.bounds
+        var targetOrigin = visibleBounds.origin
+        targetOrigin.y = targetRect.midY - visibleBounds.height / 2
+        if targetRect.minX < visibleBounds.minX || targetRect.maxX > visibleBounds.maxX {
+            targetOrigin.x = targetRect.midX - visibleBounds.width / 2
+        }
+        targetOrigin.x = min(
+            max(documentBounds.minX, targetOrigin.x),
+            max(documentBounds.minX, documentBounds.maxX - visibleBounds.width)
+        )
+        targetOrigin.y = min(
+            max(documentBounds.minY, targetOrigin.y),
+            max(documentBounds.minY, documentBounds.maxY - visibleBounds.height)
+        )
+
+        if animated, textView.window != nil {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.10
+                clipView.animator().setBoundsOrigin(targetOrigin)
+            }
+        } else {
+            clipView.scroll(to: targetOrigin)
+        }
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     final class Coordinator {
-        var lastAppliedSearchKey = ""
-        var hasAppliedSearchHighlights = false
+        static let passiveHighlightLimit = 4_096
+
+        var appliedSearchResultRevision: Int?
+        var passiveSearchHighlightRanges: [NSRange] = []
+        var activeSearchHighlightRange: NSRange?
+        var lastCenteredNavigationRevision: Int?
         var lastFontSize: CGFloat?
+
+        func resetSearchHighlights() {
+            appliedSearchResultRevision = nil
+            passiveSearchHighlightRanges.removeAll(keepingCapacity: true)
+            activeSearchHighlightRange = nil
+        }
     }
 
     private var terminalFont: NSFont {
@@ -539,7 +869,6 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         }
         textView.invalidateIntrinsicContentSize()
         textView.needsLayout = true
-        coordinator.lastAppliedSearchKey = ""
     }
 }
 

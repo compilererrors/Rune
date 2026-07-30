@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 @testable import RuneCore
@@ -117,7 +118,10 @@ final class RuneDockerComposeKubeConfigImportIntegrationTests: XCTestCase {
         )
 
         XCTAssertNil(state.lastError)
-        XCTAssertEqual(state.kubeConfigSources.map(\.url), [importedSource])
+        XCTAssertEqual(
+            state.kubeConfigSources.map { canonicalFilePath($0.url) },
+            [canonicalFilePath(importedSource)]
+        )
     }
 
     private func assertDeployment(
@@ -127,12 +131,35 @@ final class RuneDockerComposeKubeConfigImportIntegrationTests: XCTestCase {
         viewModel: RuneAppViewModel,
         state: RuneAppState
     ) async throws {
+        let foreignNamespace = namespace == "alpha-zone" ? "delta-zone" : "alpha-zone"
+        let foreignDeployment = deploymentName == "orbit-lens"
+            ? "aurora-signal-weaver"
+            : "orbit-lens"
+        var foreignNamespacePublications: [String] = []
+        let scopeObserver = state.$selectedContext
+            .combineLatest(state.$selectedNamespace)
+            .sink { context, selectedNamespace in
+                guard context?.name == contextName,
+                      !selectedNamespace.isEmpty,
+                      selectedNamespace != namespace else {
+                    return
+                }
+                foreignNamespacePublications.append(selectedNamespace)
+            }
+        defer { scopeObserver.cancel() }
+
         viewModel.setContext(KubeContext(name: contextName))
         try await waitUntil(timeout: 30) {
             state.selectedContext?.name == contextName
+                && state.selectedNamespace == namespace
                 && state.namespaces.contains(namespace)
                 && !state.isLoading
         }
+        XCTAssertFalse(state.namespaces.contains(foreignNamespace))
+        XCTAssertTrue(
+            foreignNamespacePublications.isEmpty,
+            "Context \(contextName) published namespaces from another context: \(foreignNamespacePublications)"
+        )
 
         viewModel.setNamespace(namespace)
         viewModel.setSection(.workloads)
@@ -145,6 +172,7 @@ final class RuneDockerComposeKubeConfigImportIntegrationTests: XCTestCase {
                 && state.deployments.contains { $0.name == deploymentName }
                 && !state.isLoading
         }
+        XCTAssertFalse(state.deployments.contains { $0.name == foreignDeployment })
     }
 
     private func assertLocalOnlyFixture(_ raw: String) throws {
@@ -173,6 +201,10 @@ final class RuneDockerComposeKubeConfigImportIntegrationTests: XCTestCase {
             let token = trimmed.dropFirst("token:".count).trimmingCharacters(in: .whitespaces)
             return token.isEmpty ? nil : token
         }
+    }
+
+    private func canonicalFilePath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func waitUntil(

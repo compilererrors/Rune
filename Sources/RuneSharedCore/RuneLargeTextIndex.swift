@@ -213,16 +213,55 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive],
         cancellationCheck: () throws -> Void
     ) rethrows -> RuneLargeTextSearchResult {
+        let ranges = try searchRanges(
+            query: query,
+            options: options,
+            cancellationCheck: cancellationCheck
+        )
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var matches: [RuneLargeTextMatch] = []
+        matches.reserveCapacity(ranges.count)
+        for (index, range) in ranges.enumerated() {
+            if index.isMultiple(of: 1_024) {
+                try cancellationCheck()
+            }
+            matches.append(RuneLargeTextMatch(
+                index: index,
+                range: range,
+                lineNumber: lineNumber(containingUTF16Location: range.location)
+            ))
+        }
+        try cancellationCheck()
+
+        return RuneLargeTextSearchResult(
+            query: !normalizedQuery.isEmpty && utf16Length > 0 ? normalizedQuery : "",
+            totalLineCount: lineCount,
+            matches: matches
+        )
+    }
+
+    public func searchRanges(
+        query: String,
+        options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+    ) -> [NSRange] {
+        searchRanges(query: query, options: options, cancellationCheck: {})
+    }
+
+    public func searchRanges(
+        query: String,
+        options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive],
+        cancellationCheck: () throws -> Void
+    ) rethrows -> [NSRange] {
         try cancellationCheck()
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedQuery.isEmpty, utf16Length > 0 else {
-            return RuneLargeTextSearchResult(query: "", totalLineCount: lineCount, matches: [])
+            return []
         }
 
         let nsText = text as NSString
-        var matches: [RuneLargeTextMatch] = []
+        var ranges: [NSRange] = []
         let queryUTF16Length = max(1, normalizedQuery.utf16.count)
-        matches.reserveCapacity(min(utf16Length / max(1, queryUTF16Length * 8), 4_096))
+        ranges.reserveCapacity(min(utf16Length / max(1, queryUTF16Length * 8), 4_096))
         let primarySearchChunkLength = 262_144
         let overlapLength = min(
             utf16Length,
@@ -242,21 +281,12 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
                 continue
             }
 
-            matches.append(RuneLargeTextMatch(
-                index: matches.count,
-                range: matchRange,
-                lineNumber: lineNumber(containingUTF16Location: matchRange.location)
-            ))
+            ranges.append(matchRange)
             searchLocation = max(matchRange.location + max(matchRange.length, 1), matchRange.location + 1)
         }
 
         try cancellationCheck()
-
-        return RuneLargeTextSearchResult(
-            query: normalizedQuery,
-            totalLineCount: lineCount,
-            matches: matches
-        )
+        return ranges
     }
 
     private static func buildLineIndex(

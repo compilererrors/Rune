@@ -3,9 +3,132 @@ import SwiftUI
 enum RBACCanILayoutMetrics {
     static let panelHorizontalPadding: CGFloat = 12
     static let compactPanelWidth: CGFloat = 264
+    static let optionalFieldSpacing: CGFloat = 8
+    static let apiGroupMinimumWidth: CGFloat = 150
+    static let subresourceMinimumWidth: CGFloat = 120
 
     static var compactContentWidth: CGFloat {
         compactPanelWidth - panelHorizontalPadding * 2
+    }
+}
+
+private struct RBACOptionalFieldsLayout: Layout {
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let width = proposal.width ?? horizontalMinimumWidth
+        let measurements = fieldMeasurements(width: width, subviews: subviews)
+        return CGSize(width: width, height: measurements.height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+        let measurements = fieldMeasurements(width: bounds.width, subviews: subviews)
+
+        if measurements.isHorizontal {
+            subviews[0].place(
+                at: CGPoint(x: bounds.minX, y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: measurements.apiGroupWidth,
+                    height: measurements.apiGroupSize.height
+                )
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX
+                        + measurements.apiGroupWidth
+                        + RBACCanILayoutMetrics.optionalFieldSpacing,
+                    y: bounds.minY
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: measurements.subresourceWidth,
+                    height: measurements.subresourceSize.height
+                )
+            )
+            return
+        }
+
+        subviews[0].place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: bounds.width,
+                height: measurements.apiGroupSize.height
+            )
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY
+                    + measurements.apiGroupSize.height
+                    + RBACCanILayoutMetrics.optionalFieldSpacing
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: bounds.width,
+                height: measurements.subresourceSize.height
+            )
+        )
+    }
+
+    private var horizontalMinimumWidth: CGFloat {
+        RBACCanILayoutMetrics.apiGroupMinimumWidth
+            + RBACCanILayoutMetrics.optionalFieldSpacing
+            + RBACCanILayoutMetrics.subresourceMinimumWidth
+    }
+
+    private func fieldMeasurements(width: CGFloat, subviews: Subviews) -> (
+        isHorizontal: Bool,
+        apiGroupWidth: CGFloat,
+        subresourceWidth: CGFloat,
+        apiGroupSize: CGSize,
+        subresourceSize: CGSize,
+        height: CGFloat
+    ) {
+        let isHorizontal = width >= horizontalMinimumWidth
+        if isHorizontal {
+            let extraWidth = width - horizontalMinimumWidth
+            let apiGroupWidth = RBACCanILayoutMetrics.apiGroupMinimumWidth + extraWidth / 2
+            let subresourceWidth = RBACCanILayoutMetrics.subresourceMinimumWidth + extraWidth / 2
+            let apiGroupSize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: apiGroupWidth, height: nil)
+            )
+            let subresourceSize = subviews[1].sizeThatFits(
+                ProposedViewSize(width: subresourceWidth, height: nil)
+            )
+            return (
+                true,
+                apiGroupWidth,
+                subresourceWidth,
+                apiGroupSize,
+                subresourceSize,
+                max(apiGroupSize.height, subresourceSize.height)
+            )
+        }
+
+        let fieldProposal = ProposedViewSize(width: width, height: nil)
+        let apiGroupSize = subviews[0].sizeThatFits(fieldProposal)
+        let subresourceSize = subviews[1].sizeThatFits(fieldProposal)
+        return (
+            false,
+            width,
+            width,
+            apiGroupSize,
+            subresourceSize,
+            apiGroupSize.height
+                + RBACCanILayoutMetrics.optionalFieldSpacing
+                + subresourceSize.height
+        )
     }
 }
 
@@ -95,18 +218,9 @@ struct RBACCanISimulatorPanel: View {
             }
             .rbacCanILayoutProbe(.request, enabled: onLayoutSnapshotChange != nil)
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 8) {
-                    apiGroupField
-                        .frame(minWidth: 150)
-                    subresourceField
-                        .frame(minWidth: 120)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    apiGroupField
-                    subresourceField
-                }
+            RBACOptionalFieldsLayout {
+                apiGroupField
+                subresourceField
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .rbacCanILayoutProbe(.optionalFields, enabled: onLayoutSnapshotChange != nil)

@@ -33,4 +33,46 @@ final class ResourceLogANSIFormatterTests: XCTestCase {
         XCTAssertEqual(greenColor, NSColor.systemGreen)
         XCTAssertEqual(plainColor, NSColor.labelColor)
     }
+
+    func testInspectorSearchRangesUseANSIFormattedTextOffsets() {
+        let rawText = "\u{1B}[31mERROR\u{1B}[0m needle\n"
+
+        let errorResult = ResourceLogSearchResult.makeForInspector(
+            text: rawText,
+            query: "ERROR"
+        )
+        XCTAssertEqual(errorResult.originalText, rawText)
+        XCTAssertEqual(errorResult.displayedText, "ERROR needle\n")
+        XCTAssertEqual(errorResult.textIndex.text, errorResult.displayedText)
+        XCTAssertEqual(errorResult.matchRanges, [NSRange(location: 0, length: 5)])
+
+        let needleResult = ResourceLogSearchResult.makeForInspector(
+            text: rawText,
+            textIndex: errorResult.textIndex,
+            query: "needle"
+        )
+        XCTAssertEqual(needleResult.originalText, rawText)
+        XCTAssertEqual(needleResult.displayedText, "ERROR needle\n")
+        XCTAssertEqual(needleResult.matchRanges, [NSRange(location: 6, length: 6)])
+    }
+
+    func testUnsupportedEscapeSequenceMakesProgressWithoutChangingOffsets() {
+        let text = "before\u{1B}[2Kafter\u{1B}"
+        let attributed = ResourceLogANSIFormatter.attributedString(
+            from: text,
+            font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        )
+
+        XCTAssertEqual(attributed.string, text)
+        XCTAssertEqual(ResourceLogANSIFormatter.plainText(from: text), text)
+
+        let result = ResourceLogSearchResult.makeForInspector(
+            text: text,
+            query: "after"
+        )
+        XCTAssertEqual(
+            result.matchRanges,
+            [(result.displayedText as NSString).range(of: "after")]
+        )
+    }
 }

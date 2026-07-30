@@ -27,6 +27,18 @@ enum RuneUILayoutMetrics {
     static let contentControlSpacing: CGFloat = 8
     static let contentModuleSpacing: CGFloat = 12
     static let contentSectionSpacing: CGFloat = 16
+    /// Shared inspector grid. Full sections use the regular/compact cadence,
+    /// while search, insight, and find rows share one leading accessory column.
+    static let inspectorSectionSpacing: CGFloat = 10
+    static let inspectorCompactSectionSpacing: CGFloat = 8
+    static let inspectorControlRowSpacing: CGFloat = 8
+    static let inspectorControlRowHeight: CGFloat = 30
+    static let inspectorControlContentInset: CGFloat = 10
+    static let inspectorControlChromeVerticalPadding: CGFloat = 8
+    static let inspectorControlSurfaceVerticalPadding: CGFloat = 6
+    static let inspectorControlLeadingAccessoryWidth: CGFloat = 28
+    static let inspectorControlColumnSpacing: CGFloat = 2
+    static let inspectorOverlayInset: CGFloat = 10
     /// Shared chrome immediately above resource tables.
     static let resourceListToolbarMinimumHeight: CGFloat = 30
     static let resourceListToolbarAccessibilityMinimumHeight: CGFloat = 44
@@ -57,11 +69,14 @@ enum RuneUILayoutMetrics {
     static let contentHeaderMinimumScrollableWidth: CGFloat = 640
     static let inspectorToolbarGroupSpacing: CGFloat = 8
     static let inspectorToolbarControlSpacing: CGFloat = 8
-    static let inspectorToolbarGroupHorizontalPadding: CGFloat = 10
+    static let inspectorToolbarGroupHorizontalPadding: CGFloat = inspectorControlContentInset
     static let inspectorToolbarGroupVerticalPadding: CGFloat = 8
     static let inspectorToolbarSourceGroupHeight: CGFloat = 58
     static let inspectorToolbarActionGroupHeight: CGFloat = 44
     static let inspectorToolbarControlMinHeight: CGFloat = 30
+    /// Content inset shared by inspector document surfaces (YAML, Describe, logs, and terminal output).
+    static let inspectorDocumentHorizontalInset: CGFloat = 10
+    static let inspectorDocumentVerticalInset: CGFloat = 10
     static let yamlSheetValidationListMaxHeight: CGFloat = 150
     static let iconButtonSize: CGFloat = 28
 

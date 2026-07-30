@@ -54,6 +54,7 @@ struct KubeConfigImportReviewSheet: View {
         .padding(16)
         .frame(minWidth: 520, idealWidth: 620, maxWidth: 720)
         .frame(minHeight: 360, idealHeight: 520, maxHeight: 720, alignment: .top)
+        .runePointerCursor()
         .interactiveDismissDisabled(isCommitInProgress)
     }
 }

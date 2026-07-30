@@ -88,6 +88,35 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(publishCount, 0)
     }
 
+    @MainActor
+    func testYAMLValidationAndEmptyFreshnessMutationsPublishOnlyRealChanges() {
+        let state = RuneAppState()
+        var publishCount = 0
+        let cancellable = state.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        state.clearResourceListFreshness()
+        state.setResourceYAMLValidationIssues([])
+        state.finishResourceYAMLValidation()
+        XCTAssertEqual(publishCount, 0)
+
+        let issue = YAMLValidationIssue(
+            source: .syntax,
+            severity: .error,
+            message: "Synthetic YAML error"
+        )
+        state.beginResourceYAMLValidation()
+        state.beginResourceYAMLValidation()
+        state.setResourceYAMLValidationIssues([issue])
+        state.setResourceYAMLValidationIssues([issue])
+        state.finishResourceYAMLValidation()
+        state.finishResourceYAMLValidation()
+
+        XCTAssertEqual(publishCount, 3)
+    }
+
     func testPodJSONEnrichmentIsSkippedWhenPodListAlreadyHasJSONDetails() {
         let detailedPods = [
             PodSummary(
@@ -2975,6 +3004,142 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSameContextNameSourceRotationNeverPublishesOldNamespaceScope() async throws {
+        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousPersistence = UserDefaults.standard.object(forKey: RuneSettingsKeys.persistNamespaceListCache)
+        UserDefaults.standard.runeSimpleMode = true
+        UserDefaults.standard.runePersistNamespaceListCache = true
+        defer {
+            restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode)
+            restoreUserDefaultsValue(previousPersistence, forKey: RuneSettingsKeys.persistNamespaceListCache)
+        }
+
+        let contextName = "synthetic-shared-context"
+        func fixture(namespace: String, delayed: Bool = false) -> RuneFakeK8sFixture {
+            RuneFakeK8sFixture(
+                contexts: [
+                    RuneFakeK8sCluster(
+                        contextName: contextName,
+                        defaultNamespace: namespace,
+                        namespaces: [
+                            RuneFakeK8sNamespace(
+                                name: namespace,
+                                pods: [],
+                                deployments: [],
+                                services: []
+                            )
+                        ],
+                        nodes: []
+                    )
+                ],
+                delayedResponseTargets: delayed ? ["/api/v1/namespaces": 150_000_000] : [:]
+            )
+        }
+
+        let oldServer = try await RuneFakeK8sRESTServer.start(
+            fixture: fixture(namespace: "old-scope-only"),
+            contextName: contextName
+        )
+        let newServer = try await RuneFakeK8sRESTServer.start(
+            fixture: fixture(namespace: "new-scope-only", delayed: true),
+            contextName: contextName
+        )
+        defer {
+            oldServer.stop()
+            newServer.stop()
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.namespaceSourceRotation.\(UUID().uuidString)", isDirectory: true)
+        let cacheDirectory = directory.appendingPathComponent("namespace-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suiteName = "RuneAppStateTests.namespaceSourceRotationPreferences.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let contextPreferences = UserDefaultsContextPreferencesStore(defaults: defaults)
+        contextPreferences.saveManualNamespaces(["old-scope-only"], for: contextName)
+
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try oldServer.kubeconfigYAML()
+            .write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let discoverer = MutableKubeConfigDiscoverer()
+        discoverer.urls = [kubeconfig]
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: RejectingBookmarkStore()),
+            kubeConfigDiscoverer: discoverer,
+            contextPreferences: contextPreferences,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: JSONNamespaceListPersistenceStore(directoryURL: cacheDirectory)
+        )
+
+        _ = try await viewModel.syncKubeConfigSourcesFromDiscovery(reason: "synthetic-initial")
+        try await waitUntilForRuneAppState(timeout: 10) {
+            state.selectedContext?.name == contextName
+                && state.namespaces == ["old-scope-only"]
+                && state.selectedNamespace == "old-scope-only"
+        }
+
+        var rotationStarted = false
+        var observedRotatedScopes: [(namespaces: [String], selectedNamespace: String)] = []
+        let observation = Publishers.CombineLatest3(
+            state.$selectedContext,
+            state.$namespaces,
+            state.$selectedNamespace
+        )
+        .sink { context, namespaces, selectedNamespace in
+            guard rotationStarted, context?.name == contextName else { return }
+            observedRotatedScopes.append((namespaces, selectedNamespace))
+        }
+        defer { observation.cancel() }
+
+        try newServer.kubeconfigYAML()
+            .write(to: kubeconfig, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 2)],
+            ofItemAtPath: kubeconfig.path
+        )
+        state.setResourceYAML("metadata:\n  name: synthetic-baseline\n")
+        state.updateResourceYAMLDraft("metadata:\n  name: synthetic-local-edit\n")
+        rotationStarted = true
+        let deferred = try await viewModel.syncKubeConfigSourcesFromDiscovery(
+            reason: "synthetic-source-rotation"
+        )
+
+        XCTAssertTrue(deferred)
+        XCTAssertTrue(viewModel.isKubeConfigScopeReloadPending)
+        XCTAssertFalse(viewModel.writeActionsEnabled)
+        XCTAssertEqual(state.namespaces, ["old-scope-only"])
+
+        state.revertResourceYAMLToClusterSnapshot()
+        let resumed = try await viewModel.syncKubeConfigSourcesFromDiscovery(
+            reason: "synthetic-source-rotation-resumed"
+        )
+
+        XCTAssertTrue(resumed)
+        XCTAssertFalse(viewModel.isKubeConfigScopeReloadPending)
+        try await waitUntilForRuneAppState(timeout: 10) {
+            state.selectedContext?.name == contextName
+                && state.namespaces == ["new-scope-only"]
+                && state.selectedNamespace == "new-scope-only"
+        }
+        XCTAssertFalse(
+            observedRotatedScopes.contains {
+                $0.namespaces.contains("old-scope-only")
+                    || $0.selectedNamespace == "old-scope-only"
+            },
+            "A reused context name must have an empty boundary until the new source revision is verified."
+        )
+        XCTAssertFalse(viewModel.namespaceOptions.contains("old-scope-only"))
+        XCTAssertTrue(
+            contextPreferences.loadManualNamespaces(for: contextName).isEmpty,
+            "A successful authoritative list should remove stale manual entries from an older source scope."
+        )
+    }
+
+    @MainActor
     func testDiscoverySyncRetainsConfirmedSessionImportWhenBookmarkReloadIsUnavailable() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneAppStateTests.sessionImportSync.\(UUID().uuidString)", isDirectory: true)
@@ -3383,11 +3548,17 @@ final class RuneAppStateTests: XCTestCase {
             resourceNamespace: operatorResource.namespace
         )
         viewModel.openSavedWorkspace(operatorWorkspace)
+        XCTAssertEqual(state.selectedOperatorResource, operatorResource)
+        XCTAssertEqual(viewModel.helmBrowserResourceFamily, .operatorResources)
 
         try await waitUntilForRuneAppState {
             state.selectedOperatorResource == operatorResource
                 && viewModel.helmBrowserResourceFamily == .operatorResources
         }
+        XCTAssertEqual(state.selectedOperatorResource, operatorResource)
+        XCTAssertEqual(viewModel.helmBrowserResourceFamily, .operatorResources)
+        XCTAssertEqual(state.operatorResources, [operatorResource])
+        XCTAssertNil(state.selectedHelmRelease)
 
         let releaseWorkspace = SavedWorkspaceSnapshot(
             name: "Synthetic release workspace",
@@ -3746,6 +3917,46 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(state.selectedWorkloadKind, .pod)
         XCTAssertEqual(state.selectedPod?.namespace, "frontend")
         XCTAssertEqual(state.selectedPod?.status, "CrashLoopBackOff")
+    }
+
+    @MainActor
+    func testOverviewIncidentUsesAlreadyLoadedOverviewPodWithoutWaitingForAnotherSnapshot() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "synthetic"
+        state.selectedSection = .overview
+        let pod = PodSummary(
+            name: "synthetic-api-abc123",
+            namespace: "synthetic",
+            status: "CrashLoopBackOff"
+        )
+        let event = EventSummary(
+            type: "Warning",
+            reason: "BackOff",
+            objectName: pod.name,
+            message: "Back-off restarting container",
+            lastTimestamp: "2026-05-05T10:03:00Z",
+            involvedKind: "Pod",
+            involvedNamespace: pod.namespace
+        )
+        state.setPods([])
+        state.setOverviewSnapshot(
+            pods: [pod],
+            deploymentsCount: 0,
+            servicesCount: 0,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 0,
+            events: [event]
+        )
+        let viewModel = RuneAppViewModel(state: state)
+        let incident = try XCTUnwrap(viewModel.overviewIncidentTimelineItems.first)
+
+        viewModel.openOverviewSignal(incident)
+
+        XCTAssertEqual(state.selectedSection, .workloads)
+        XCTAssertEqual(state.selectedWorkloadKind, .pod)
+        XCTAssertEqual(state.selectedPod, pod)
     }
 
     @MainActor
@@ -5650,6 +5861,13 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(items.contains { $0.title == ":deploy <name>" && $0.subtitle == "Deployments" })
         XCTAssertTrue(items.contains { $0.title == ":svc / :service <name>" && $0.subtitle == "Services" })
         XCTAssertTrue(items.contains { $0.title == ":ns <namespace>" && $0.subtitle == "Switch namespace" })
+        XCTAssertTrue(items.contains { $0.id == "help:logs" && $0.title == ":logs / :log / :l" })
+        XCTAssertTrue(items.contains { $0.id == "help:save-view" && $0.title == ":save-view / :sv" })
+        XCTAssertTrue(items.contains { $0.id == "help:save-folder" && $0.title == ":save-folder / :sf" })
+        XCTAssertTrue(items.contains { $0.id == "help:save-open" && $0.title == ":save-open / :save-and-open / :so" })
+        XCTAssertTrue(items.contains { $0.id == "help:save-logs" && $0.title == ":save-logs / :sl" })
+        XCTAssertTrue(items.contains { $0.id == "help:export-logs" && $0.title == ":export-logs / :el" })
+        XCTAssertTrue(items.contains { $0.id == "help:save-and-open-logs" && $0.title == ":save-and-open-logs / :sol" })
     }
 
     @MainActor
@@ -6391,6 +6609,61 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testHelmAndRolloutConfiguredExportsUseTextWorkflow() {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let release = HelmReleaseSummary(
+            name: "synthetic-release",
+            namespace: "synthetic",
+            revision: 2,
+            updated: "now",
+            status: "deployed",
+            chart: "synthetic-1.0.0",
+            appVersion: "1.0.0"
+        )
+        state.setSelectedHelmRelease(release)
+        state.setHelmValues("replicas: 2\n")
+        state.setHelmManifest("kind: Deployment\n")
+        state.setHelmHistory([
+            HelmReleaseRevision(
+                revision: 2,
+                updated: "now",
+                status: "deployed",
+                chart: release.chart,
+                appVersion: release.appVersion,
+                description: "Synthetic upgrade"
+            )
+        ])
+        state.setSelectedDeployment(
+            DeploymentSummary(
+                name: "synthetic-api",
+                namespace: "synthetic",
+                readyReplicas: 2,
+                desiredReplicas: 2
+            )
+        )
+        state.setDeploymentRolloutHistory("REVISION\tCHANGE-CAUSE\n2\tSynthetic upgrade\n")
+
+        viewModel.saveCurrentHelmValuesToExportFolder(openAfterSave: false)
+        viewModel.saveCurrentHelmManifestToExportFolder(openAfterSave: true)
+        viewModel.saveCurrentHelmHistoryToExportFolder(openAfterSave: false)
+        viewModel.saveCurrentRolloutHistoryToExportFolder(openAfterSave: true)
+
+        XCTAssertEqual(configuredExporter.saves.count, 4)
+        XCTAssertTrue(configuredExporter.saves.allSatisfy { $0.kind == .plainText })
+        XCTAssertEqual(configuredExporter.saves.map { $0.openAfterSave }, [false, true, false, true])
+        XCTAssertTrue(configuredExporter.saves[0].suggestedName.contains("-values-"))
+        XCTAssertTrue(configuredExporter.saves[1].suggestedName.contains("-manifest-"))
+        XCTAssertTrue(configuredExporter.saves[2].suggestedName.contains("-history-"))
+        XCTAssertTrue(configuredExporter.saves[3].suggestedName.contains("-rollout-history-"))
+        XCTAssertEqual(String(decoding: configuredExporter.saves[0].data, as: UTF8.self), "replicas: 2\n")
+        XCTAssertEqual(String(decoding: configuredExporter.saves[1].data, as: UTF8.self), "kind: Deployment\n")
+        XCTAssertTrue(String(decoding: configuredExporter.saves[2].data, as: UTF8.self).contains("Synthetic upgrade"))
+        XCTAssertTrue(String(decoding: configuredExporter.saves[3].data, as: UTF8.self).contains("Synthetic upgrade"))
+    }
+
+    @MainActor
     func testVisibleLogsZipConfiguredExportUsesArchiveWorkflow() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
@@ -6477,6 +6750,140 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.requestApplySelectedResourceYAML()
 
         XCTAssertNotNil(viewModel.pendingWriteAction)
+    }
+
+    @MainActor
+    func testApplyYAMLRejectsChangesThatTargetAnotherResource() {
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
+        defer {
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic")
+        state.selectedNamespace = "test-space"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setSelectedConfigMap(ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings",
+            namespace: "test-space",
+            primaryText: "1 key",
+            secondaryText: "ConfigMap"
+        ))
+
+        let baseline = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: settings
+          namespace: test-space
+        data:
+          mode: baseline
+        """
+        let changedTargets = [
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: other-settings
+              namespace: test-space
+            data:
+              mode: edited
+            """,
+            """
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: settings
+              namespace: test-space
+            stringData:
+              mode: edited
+            """,
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              namespace: other-space
+            data:
+              mode: edited
+            """
+        ]
+
+        for changedTarget in changedTargets {
+            state.clearError()
+            state.setResourceYAML(baseline)
+            state.updateResourceYAMLDraft(changedTarget)
+
+            viewModel.requestApplySelectedResourceYAML()
+
+            XCTAssertNil(viewModel.pendingWriteAction)
+            XCTAssertTrue(
+                state.lastError?.contains(
+                    "Keep kind, metadata.name, and metadata.namespace unchanged."
+                ) == true
+            )
+        }
+    }
+
+    @MainActor
+    func testApplyYAMLAcceptsMatchingExplicitTargetIdentity() {
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
+        defer {
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic")
+        state.selectedNamespace = "test-space"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setSelectedConfigMap(ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings",
+            namespace: "test-space",
+            primaryText: "1 key",
+            secondaryText: "ConfigMap"
+        ))
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              namespace: test-space
+            data:
+              mode: baseline
+            """
+        )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              namespace: test-space
+            data:
+              mode: edited
+            """
+        )
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertEqual(
+            viewModel.pendingWriteAction,
+            .apply(
+                kind: .configMap,
+                name: "settings",
+                yaml: state.resourceYAML,
+                baseline: state.resourceYAMLBaseline
+            )
+        )
     }
 
     @MainActor
@@ -6665,6 +7072,65 @@ final class RuneAppStateTests: XCTestCase {
         viewModel.requestApplySelectedResourceYAML()
 
         XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertEqual(state.lastError, "Invalid input: Fix YAML errors before applying.")
+    }
+
+    @MainActor
+    func testApplyYAMLImmediatelyRechecksTheCurrentDraftForLocalErrors() {
+        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
+        defer {
+            restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        }
+
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.selectedContext = KubeContext(name: "synthetic")
+        state.selectedNamespace = "test-space"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        state.setSelectedConfigMap(ClusterResourceSummary(
+            kind: .configMap,
+            name: "settings",
+            namespace: "test-space",
+            primaryText: "1 key",
+            secondaryText: "ConfigMap"
+        ))
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              namespace: test-space
+            data:
+              mode: baseline
+            """
+        )
+        state.updateResourceYAMLDraft(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+              namespace: test-space
+            data:
+            \tBROKEN: value
+            """
+        )
+
+        XCTAssertTrue(
+            state.resourceYAMLValidationIssues.isEmpty,
+            "This exercises Apply before the deferred validation publisher has run."
+        )
+
+        viewModel.requestApplySelectedResourceYAML()
+
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertTrue(state.resourceYAMLValidationIssues.contains {
+            $0.severity == .error
+                && $0.message == "Tabs are not allowed in YAML indentation."
+        })
         XCTAssertEqual(state.lastError, "Invalid input: Fix YAML errors before applying.")
     }
 
@@ -6931,6 +7397,59 @@ final class RuneAppStateTests: XCTestCase {
         state.undoResourceYAMLEdit()
 
         XCTAssertFalse(state.resourceYAML.contains("labels:"))
+    }
+
+    @MainActor
+    func testResourceYAMLUndoRestoresPresentationWithMatchingTextEntry() {
+        let state = RuneAppState()
+        let firstPresentation = ResourceYAMLEditorPresentation(
+            selections: [ResourceYAMLEditorSelection(location: 2, length: 0)],
+            viewportX: 120,
+            viewportY: 40,
+            hadKeyboardFocus: true
+        )
+        let secondPresentation = ResourceYAMLEditorPresentation(
+            selections: [ResourceYAMLEditorSelection(location: 5, length: 3)],
+            viewportX: 260,
+            viewportY: 90,
+            hadKeyboardFocus: false
+        )
+
+        state.setResourceYAML("first")
+        state.updateResourceYAMLDraft(
+            "second",
+            undoPresentation: firstPresentation
+        )
+        state.updateResourceYAMLDraft(
+            "third",
+            undoPresentation: secondPresentation
+        )
+
+        state.undoResourceYAMLEdit()
+
+        XCTAssertEqual(state.resourceYAML, "second")
+        XCTAssertEqual(state.resourceYAMLUndoSnapshot, "first")
+        XCTAssertEqual(
+            state.resourceYAMLEditorRestorationRequest?.presentation,
+            secondPresentation
+        )
+        let firstSequence = state.resourceYAMLEditorRestorationRequest?.sequence
+
+        state.undoResourceYAMLEdit()
+
+        XCTAssertEqual(state.resourceYAML, "first")
+        XCTAssertNil(state.resourceYAMLUndoSnapshot)
+        XCTAssertEqual(
+            state.resourceYAMLEditorRestorationRequest?.presentation,
+            firstPresentation
+        )
+        XCTAssertNotEqual(
+            state.resourceYAMLEditorRestorationRequest?.sequence,
+            firstSequence
+        )
+
+        state.updateResourceYAMLDraft("new edit")
+        XCTAssertNil(state.resourceYAMLEditorRestorationRequest)
     }
 
     @MainActor
@@ -7946,6 +8465,62 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(state.selectedContext?.name, "synthetic-target")
         XCTAssertEqual(state.selectedNamespace, "namespace-blue")
+    }
+
+    @MainActor
+    func testContextSwitchNeverPublishesOrPersistsUnverifiedLeavingNamespace() async throws {
+        let state = RuneAppState()
+        let resourceStore = ResourceStore()
+        let suiteName = "RuneAppStateTests.contextNamespaceIsolation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = UserDefaultsContextPreferencesStore(defaults: defaults)
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            store: resourceStore,
+            contextPreferences: preferences,
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let source = KubeContext(name: "synthetic-source")
+        let target = KubeContext(name: "synthetic-target")
+        state.setContexts([source, target])
+        state.selectedContext = source
+        state.selectedNamespace = "source-only"
+        state.setNamespaces(["source-only"])
+
+        var observedTargetScopes: [(namespaces: [String], selectedNamespace: String)] = []
+        let observation = Publishers.CombineLatest3(
+            state.$selectedContext,
+            state.$namespaces,
+            state.$selectedNamespace
+        )
+        .sink { context, namespaces, selectedNamespace in
+            guard context?.name == target.name else { return }
+            observedTargetScopes.append((namespaces, selectedNamespace))
+        }
+        defer { observation.cancel() }
+
+        viewModel.setContext(target)
+
+        XCTAssertEqual(state.selectedContext, target)
+        XCTAssertTrue(state.namespaces.isEmpty)
+        XCTAssertTrue(state.selectedNamespace.isEmpty)
+        XCTAssertFalse(viewModel.namespaceOptions.contains("source-only"))
+        XCTAssertFalse(
+            observedTargetScopes.contains {
+                $0.namespaces.contains("source-only") || $0.selectedNamespace == "source-only"
+            },
+            "No observable target-context state may contain a namespace owned only by the leaving context."
+        )
+
+        try await waitUntilForRuneAppState {
+            state.isManualNamespaceMode
+        }
+
+        XCTAssertNil(preferences.loadPreferredNamespace(for: target.name))
+        XCTAssertTrue(preferences.loadManualNamespaces(for: target.name).isEmpty)
+        XCTAssertFalse(viewModel.namespaceOptions.contains("source-only"))
     }
 
     @MainActor
@@ -9564,25 +10139,115 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
-    func testCommandPalettePodLogsAliasSavesCurrentLogs() throws {
+    func testCommandPaletteWorkspaceCommandAliasesPublishTypedRequests() throws {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        let cases: [(queries: [String], id: String, command: WorkspaceCommand)] = [
+            ([":logs", ":log", ":l", "logs"], "cmd:workspace:open-logs", .openLogs),
+            ([":save-view", ":sv", "save-view"], "cmd:workspace:save-current-detail", .saveCurrentDetail),
+            ([":save-folder", ":sf", "save-folder"], "cmd:workspace:save-current-detail-to-export-folder", .saveCurrentDetailToExportFolder),
+            ([":save-open", ":save-and-open", ":so", "save-open", "save-and-open"], "cmd:workspace:save-and-open-current-detail", .saveAndOpenCurrentDetail)
+        ]
+
+        for entry in cases {
+            var resolvedIDs: Set<String> = []
+            for query in entry.queries {
+                let item = try XCTUnwrap(viewModel.commandPaletteItems(query: query).first)
+                resolvedIDs.insert(item.id)
+                guard case let .workspaceCommand(command) = item.action else {
+                    return XCTFail("Expected workspace command for \(query)")
+                }
+                XCTAssertEqual(command, entry.command)
+
+                let previousRequestID = viewModel.workspaceCommandRequest?.id
+                state.isCommandPalettePresented = true
+                viewModel.executeCommandPaletteItem(item)
+
+                XCTAssertEqual(viewModel.workspaceCommandRequest?.command, entry.command)
+                XCTAssertNotEqual(viewModel.workspaceCommandRequest?.id, previousRequestID)
+                XCTAssertFalse(state.isCommandPalettePresented)
+            }
+            XCTAssertEqual(resolvedIDs, [entry.id])
+        }
+
+        let shortBareAliases = [
+            ("l", "cmd:workspace:open-logs"),
+            ("sf", "cmd:workspace:save-current-detail-to-export-folder"),
+            ("so", "cmd:workspace:save-and-open-current-detail"),
+            ("el", "cmd:logs:save-to-export-folder"),
+            ("sol", "cmd:logs:save-and-open")
+        ]
+        for (query, commandID) in shortBareAliases {
+            XCTAssertNotEqual(viewModel.commandPaletteItems(query: query).map(\.id), [commandID])
+        }
+    }
+
+    @MainActor
+    func testCommandPaletteLogExportAliasesUseDistinctDestinations() throws {
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            exporter: exporter,
+            configuredExporter: configuredExporter
+        )
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .pod
         state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
         state.setPodLogs("ready\n")
 
-        let items = viewModel.commandPaletteItems(query: ":po logs")
-        XCTAssertEqual(items.first?.title, "Save Logs")
+        let cases: [(queries: [String], id: String, action: LogExportAction)] = [
+            ([":save-logs", ":sl", "save-logs"], "cmd:logs:save-as", .saveAs),
+            ([":export-logs", ":el", "export-logs"], "cmd:logs:save-to-export-folder", .saveToExportFolder),
+            ([":save-and-open-logs", ":sol", "save-and-open-logs"], "cmd:logs:save-and-open", .saveAndOpen)
+        ]
+        for entry in cases {
+            var resolvedIDs: Set<String> = []
+            for query in entry.queries {
+                let item = try XCTUnwrap(viewModel.commandPaletteItems(query: query).first)
+                resolvedIDs.insert(item.id)
+                guard case let .logExport(action) = item.action else {
+                    return XCTFail("Expected log export command for \(query)")
+                }
+                XCTAssertEqual(action, entry.action)
+            }
+            XCTAssertEqual(resolvedIDs, [entry.id])
+        }
 
-        viewModel.executeCommandPaletteQuery(":po logs")
+        viewModel.executeCommandPaletteQuery(":sl")
+        viewModel.executeCommandPaletteQuery(":el")
+        viewModel.executeCommandPaletteQuery(":sol")
 
         XCTAssertEqual(exporter.saves.count, 1)
         XCTAssertEqual(exporter.saves.first?.allowedFileTypes, ["log", "txt"])
         XCTAssertTrue(exporter.saves.first?.suggestedName.contains("pod-api-0-logs") == true)
         XCTAssertEqual(String(data: try XCTUnwrap(exporter.saves.first?.data), encoding: .utf8), "ready\n")
+        XCTAssertEqual(configuredExporter.saves.count, 2)
+        XCTAssertEqual(configuredExporter.saves.map { $0.openAfterSave }, [false, true])
+        XCTAssertTrue(configuredExporter.saves.allSatisfy { $0.allowedFileTypes == ["log", "txt"] })
+    }
+
+    @MainActor
+    func testCommandPalettePodNamedLogsIsNotCapturedByLogExportAlias() throws {
+        let state = RuneAppState()
+        state.selectedNamespace = "default"
+        let pod = PodSummary(name: "logs", namespace: "default", status: "Running")
+        state.setPods([pod])
+        let viewModel = RuneAppViewModel(state: state)
+
+        let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":po logs").first)
+
+        XCTAssertEqual(item.id, "cmd:pod:default/logs")
+        guard case let .pod(resolvedPod) = item.action else {
+            return XCTFail("Expected a pod command")
+        }
+        XCTAssertEqual(resolvedPod, pod)
+
+        viewModel.executeCommandPaletteItem(item)
+
+        XCTAssertEqual(state.selectedPod, pod)
     }
 
     @MainActor

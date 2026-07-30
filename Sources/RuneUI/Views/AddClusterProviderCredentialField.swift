@@ -129,11 +129,13 @@ struct AddClusterProviderCredentialTextInput: View {
             AddClusterProviderCredentialField(field: field) {
                 SecureField("", text: $text)
                     .textFieldStyle(.roundedBorder)
+                    .runeTextInputCursor()
             }
         } else {
             AddClusterProviderCredentialField(field: field) {
                 TextField("", text: $text)
                     .textFieldStyle(.roundedBorder)
+                    .runeTextInputCursor()
             }
         }
     }

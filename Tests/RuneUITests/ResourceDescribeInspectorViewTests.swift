@@ -83,12 +83,292 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             length: source.length - NSMaxRange(firstRange)
         ))
 
-        let firstBackground = textView.textStorage?.attribute(.backgroundColor, at: firstRange.location, effectiveRange: nil) as? NSColor
-        let secondBackground = textView.textStorage?.attribute(.backgroundColor, at: secondRange.location, effectiveRange: nil) as? NSColor
+        let firstBackground = textView.layoutManager?.temporaryAttribute(
+            .backgroundColor,
+            atCharacterIndex: firstRange.location,
+            effectiveRange: nil
+        ) as? NSColor
+        let secondBackground = textView.layoutManager?.temporaryAttribute(
+            .backgroundColor,
+            atCharacterIndex: secondRange.location,
+            effectiveRange: nil
+        ) as? NSColor
 
         XCTAssertNotNil(firstBackground)
         XCTAssertNotNil(secondBackground)
         XCTAssertNotEqual(firstBackground, secondBackground, "The active find match should use a stronger highlight than passive matches.")
+    }
+
+    func testEditingAfterFindNavigationKeepsCaretAndHorizontalViewport() async throws {
+        var source = "needle: " + String(repeating: "long-value-", count: 80)
+        let binding = Binding(
+            get: { source },
+            set: { source = $0 }
+        )
+        let initialMatch = (source as NSString).range(of: "needle")
+        let navigationRevision = 7
+        let host = NSHostingController(
+            rootView: AppKitManifestTextView(
+                text: binding,
+                isEditable: true,
+                contentStyle: .yaml,
+                searchQuery: "needle",
+                searchMatchCase: false,
+                selectedSearchMatchIndex: 0,
+                searchMatchRanges: [initialMatch],
+                searchNavigationRevision: navigationRevision
+            )
+            .frame(width: 340, height: 180)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(findTextScrollView(in: host.view))
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        let insertionLocation = (source as NSString).length
+        let insertionRange = NSRange(location: insertionLocation, length: 0)
+        textView.setSelectedRange(insertionRange)
+        window.makeFirstResponder(textView)
+        textView.scrollRangeToVisible(insertionRange)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try await settle(window: window)
+
+        XCTAssertGreaterThan(
+            scrollView.contentView.bounds.origin.x,
+            0,
+            "The long-line caret should require a horizontal viewport offset before editing."
+        )
+
+        textView.insertText("Z", replacementRange: insertionRange)
+        let expectedCaret = NSRange(location: insertionLocation + 1, length: 0)
+        let updatedMatch = (source as NSString).range(of: "needle")
+        host.rootView = AppKitManifestTextView(
+            text: binding,
+            isEditable: true,
+            contentStyle: .yaml,
+            searchQuery: "needle",
+            searchMatchCase: false,
+            selectedSearchMatchIndex: 0,
+            searchMatchRanges: [updatedMatch],
+            searchNavigationRevision: navigationRevision
+        )
+        .frame(width: 340, height: 180)
+
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            textView.selectedRange(),
+            expectedCaret,
+            "Refreshing highlights after a keystroke must not restore the old find selection."
+        )
+        XCTAssertGreaterThan(
+            scrollView.contentView.bounds.origin.x,
+            0,
+            "Refreshing highlights after a keystroke must not jump a long-line editor back to the leading edge."
+        )
+
+        host.rootView = AppKitManifestTextView(
+            text: binding,
+            isEditable: true,
+            contentStyle: .yaml,
+            searchQuery: "needle",
+            searchMatchCase: false,
+            selectedSearchMatchIndex: 0,
+            searchMatchRanges: [updatedMatch],
+            searchNavigationRevision: navigationRevision + 1
+        )
+        .frame(width: 340, height: 180)
+
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            textView.selectedRange(),
+            updatedMatch,
+            "An explicit find navigation revision must still reselect and focus the requested match."
+        )
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.x,
+            0,
+            accuracy: 1,
+            "Explicitly navigating back to a leading-edge match should center that match."
+        )
+    }
+
+    func testAsyncFindRefreshAfterEditingDoesNotCreateNavigationIntent() async throws {
+        let model = EditableInspectorFindModel(
+            text: "needle: " + String(repeating: "long-value-", count: 80)
+        )
+        let host = NSHostingController(
+            rootView: EditableInspectorFindHarness(model: model)
+                .frame(width: 340, height: 180)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(findTextScrollView(in: host.view))
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        let insertionLocation = (model.text as NSString).length
+        let insertionRange = NSRange(location: insertionLocation, length: 0)
+        textView.setSelectedRange(insertionRange)
+        window.makeFirstResponder(textView)
+        textView.scrollRangeToVisible(insertionRange)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try await settle(window: window)
+
+        textView.insertText("Z", replacementRange: insertionRange)
+        let expectedCaret = NSRange(location: insertionLocation + 1, length: 0)
+        try await settle(window: window)
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            textView.selectedRange(),
+            expectedCaret,
+            "Publishing fresh asynchronous match ranges after an edit must only refresh highlights."
+        )
+        XCTAssertGreaterThan(
+            scrollView.contentView.bounds.origin.x,
+            0,
+            "An asynchronous match refresh must preserve horizontal caret following."
+        )
+    }
+
+    func testEditingNoMatchIntoMatchDoesNotStealCaretOrViewport() async throws {
+        let model = EditableInspectorFindModel(
+            text: "prefix: " + String(repeating: "long-value-", count: 80),
+            query: "appears-later"
+        )
+        let host = NSHostingController(
+            rootView: EditableInspectorFindHarness(model: model)
+                .frame(width: 340, height: 180)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(findTextScrollView(in: host.view))
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        let insertionLocation = (model.text as NSString).length
+        let insertionRange = NSRange(location: insertionLocation, length: 0)
+        textView.setSelectedRange(insertionRange)
+        window.makeFirstResponder(textView)
+        textView.scrollRangeToVisible(insertionRange)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        let insertedText = " appears-later"
+        textView.insertText(insertedText, replacementRange: insertionRange)
+        let expectedCaret = NSRange(
+            location: insertionLocation + (insertedText as NSString).length,
+            length: 0
+        )
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            textView.selectedRange(),
+            expectedCaret,
+            "A text refresh that creates the first match is not an explicit find-navigation request."
+        )
+        XCTAssertGreaterThan(
+            scrollView.contentView.bounds.origin.x,
+            0,
+            "Creating a match while editing a long line must preserve the caret's horizontal viewport."
+        )
+    }
+
+    func testFindHighlightsStayDistinctAcrossBuiltInThemes() async throws {
+        let source = "first api\nsecond api\n"
+
+        for theme in RuneAppearanceTheme.allCases {
+            let host = NSHostingController(
+                rootView: AppKitManifestTextView(
+                    text: .constant(source),
+                    isEditable: false,
+                    contentStyle: .plainText,
+                    searchQuery: "api",
+                    searchMatchCase: false,
+                    selectedSearchMatchIndex: 1
+                )
+                .frame(width: 420, height: 180)
+                .runeAppearanceTheme(theme.resolvedTheme)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 420, height: 180),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+
+            try await settle(window: window)
+            let textView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+            let nsSource = source as NSString
+            let passiveRange = nsSource.range(of: "api")
+            let activeRange = nsSource.range(
+                of: "api",
+                options: [],
+                range: NSRange(
+                    location: NSMaxRange(passiveRange),
+                    length: nsSource.length - NSMaxRange(passiveRange)
+                )
+            )
+            let passiveBackground = textView.layoutManager?.temporaryAttribute(
+                .backgroundColor,
+                atCharacterIndex: passiveRange.location,
+                effectiveRange: nil
+            ) as? NSColor
+            let activeBackground = textView.layoutManager?.temporaryAttribute(
+                .backgroundColor,
+                atCharacterIndex: activeRange.location,
+                effectiveRange: nil
+            ) as? NSColor
+            let passiveUnderline = textView.layoutManager?.temporaryAttribute(
+                .underlineStyle,
+                atCharacterIndex: passiveRange.location,
+                effectiveRange: nil
+            ) as? Int
+            let activeUnderline = textView.layoutManager?.temporaryAttribute(
+                .underlineStyle,
+                atCharacterIndex: activeRange.location,
+                effectiveRange: nil
+            ) as? Int
+
+            XCTAssertNotNil(passiveBackground, "\(theme.title) needs a visible passive find fill.")
+            XCTAssertNotNil(activeBackground, "\(theme.title) needs a visible active find fill.")
+            XCTAssertNotEqual(
+                passiveBackground,
+                activeBackground,
+                "\(theme.title) must visually separate the active match from other matches."
+            )
+            XCTAssertEqual(passiveUnderline, NSUnderlineStyle.single.rawValue)
+            XCTAssertEqual(activeUnderline, NSUnderlineStyle.thick.rawValue)
+        }
     }
 
     func testDescribePaneDoesNotPlaceFooterBelowScrollableTextSurface() throws {
@@ -130,7 +410,9 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(findSource.contains("private func commitJump()"))
         XCTAssertTrue(findSource.contains("Button(\"Go\", action: commitJump)"))
         XCTAssertTrue(appKitManifestSource.contains("func applySearchHighlights"))
-        XCTAssertTrue(appKitManifestSource.contains("scrollRangeToVisible(index.ranges[activeIndex])"))
+        XCTAssertTrue(appKitManifestSource.contains("precomputedRanges"))
+        XCTAssertTrue(appKitManifestSource.contains("centerSearchRange("))
+        XCTAssertTrue(appKitManifestSource.contains("addTemporaryAttributes"))
     }
 
     func testUnsavedEditsIndicatorUsesReservedSlotToAvoidLayoutJumps() throws {
@@ -267,7 +549,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertEqual(yamlSource.occurrences(of: "ManifestYAMLActionMenus("), 2)
         XCTAssertTrue(presentationSource.contains("Label(draftTitle, systemImage: \"clock.arrow.circlepath\")"))
         XCTAssertTrue(presentationSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
-        XCTAssertTrue(presentationSource.contains("Button(\"Undo Draft Edit\", action: onUndoEdit)"))
+        XCTAssertFalse(presentationSource.contains("Button(\"Undo Draft Edit\", action: onUndoEdit)"))
         XCTAssertTrue(presentationSource.contains("Button(\"Revert Draft\", action: onRevert)"))
         XCTAssertTrue(presentationSource.contains("Label(fileTitle, systemImage: \"doc\")"))
         XCTAssertTrue(presentationSource.contains("Button(\"Import YAML…\", action: onImport)"))
@@ -275,6 +557,358 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(presentationSource.contains("Button(\"Save YAML to Export Folder\", action: onExportToExportFolder)"))
         XCTAssertTrue(presentationSource.contains("Button(\"Save YAML and Open\", action: onExportAndOpen)"))
         XCTAssertFalse(presentationSource.contains("Re-apply Snapshot"))
+    }
+
+    func testYAMLEditorsExposeDirectUndoWithOneActiveCommandShortcut() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let appKitSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
+        let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLInspectorPane",
+            to: "struct ManifestUnsavedEditsChip"
+        ))
+        let yamlSheetSource = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLEditorSheetView",
+            to: "private func navigateToIssue"
+        ))
+        let openSheetSource = try XCTUnwrap(rootSource.slice(
+            from: "private func openYAMLEditorSheet()",
+            to: "private func yamlManifestEditorSheet()"
+        ))
+
+        XCTAssertEqual(yamlSource.occurrences(of: "ManifestEditorUndoButton("), 2)
+        XCTAssertTrue(yamlPaneSource.contains("if isInlineEditing {\n                    ManifestEditorUndoButton("))
+        XCTAssertTrue(yamlSheetSource.contains("ManifestEditorUndoButton("))
+        XCTAssertTrue(presentationSource.contains("Label(\"Undo\", systemImage: \"arrow.uturn.backward\")"))
+        XCTAssertTrue(presentationSource.contains(".keyboardShortcut(\"z\", modifiers: [.command])"))
+        XCTAssertTrue(presentationSource.contains(".disabled(!canUndo)"))
+        XCTAssertTrue(presentationSource.contains("Button(\"Revert Draft\", action: onRevert)"))
+        XCTAssertFalse(presentationSource.contains("Button(\"Undo Draft Edit\""))
+        XCTAssertEqual(yamlSource.occurrences(of: "onUndoCommand: onUndoEdit"), 2)
+        XCTAssertTrue(appKitSource.contains("if let onUndoCommand, shouldHandleUndoCommand(event)"))
+        XCTAssertTrue(appKitSource.contains(
+            "let disallowedModifiers: NSEvent.ModifierFlags = [.shift, .option, .control, .function]"
+        ))
+        XCTAssertTrue(openSheetSource.contains(
+            "yamlManifestIsEditing = false\n        isYAMLEditorSheetPresented = true"
+        ))
+    }
+
+    func testManifestEditorUndoButtonRoutesCommandZToDraftUndoAction() async throws {
+        var undoCount = 0
+        let host = NSHostingController(
+            rootView: ManifestEditorUndoButton(
+                canUndo: true,
+                onUndo: { undoCount += 1 }
+            )
+            .frame(width: 180, height: 80)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 180, height: 80),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let commandZ = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "z",
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
+        ))
+        NSApp.sendEvent(commandZ)
+        try await settle(window: window)
+
+        XCTAssertEqual(undoCount, 1)
+    }
+
+    func testManifestEditorCommandZPrefersDraftUndoOverFocusedTextViewUndo() async throws {
+        var yamlText = "kind: ConfigMap\n"
+        var draftUndoCount = 0
+        let textBinding = Binding(
+            get: { yamlText },
+            set: { yamlText = $0 }
+        )
+        let host = NSHostingController(
+            rootView: VStack {
+                ManifestEditorUndoButton(
+                    canUndo: true,
+                    onUndo: { draftUndoCount += 1 }
+                )
+                AppKitManifestTextView(
+                    text: textBinding,
+                    isEditable: true,
+                    contentStyle: .yaml,
+                    onUndoCommand: { draftUndoCount += 1 }
+                )
+            }
+            .frame(width: 420, height: 240)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let textView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
+        let insertionRange = NSRange(location: (textView.string as NSString).length, length: 0)
+        window.makeFirstResponder(textView)
+        textView.insertText("metadata: {}\n", replacementRange: insertionRange)
+        let editedText = textView.string
+
+        XCTAssertTrue(window.firstResponder === textView)
+        XCTAssertFalse(
+            textView.undoManager?.canUndo == true,
+            "State-backed YAML undo must not retain a second conflicting native history."
+        )
+        XCTAssertEqual(yamlText, editedText)
+
+        let commandZ = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "z",
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
+        ))
+        NSApp.sendEvent(commandZ)
+        try await settle(window: window)
+
+        XCTAssertEqual(draftUndoCount, 1)
+        XCTAssertEqual(textView.string, editedText)
+        XCTAssertFalse(
+            textView.undoManager?.canUndo == true,
+            "Command-Z must use only the state-backed YAML history."
+        )
+
+        let commandShiftZ = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "Z",
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
+        ))
+        NSApp.sendEvent(commandShiftZ)
+        try await settle(window: window)
+
+        XCTAssertEqual(draftUndoCount, 1, "Command-Shift-Z must remain available to the native responder chain.")
+    }
+
+    func testManifestEditorCommandZRestoresCaretAndHorizontalViewport() async throws {
+        let originalText = "prefix: " + String(repeating: "long-value-", count: 90)
+        let state = RuneAppState()
+        state.setResourceYAML(originalText)
+        let host = NSHostingController(
+            rootView: ManifestUndoRestorationHarness(state: state)
+                .frame(width: 340, height: 180)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(findTextScrollView(in: host.view))
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        let insertionLocation = (originalText as NSString).length - 24
+        let preEditSelection = NSRange(location: insertionLocation, length: 0)
+        textView.setSelectedRange(preEditSelection)
+        window.makeFirstResponder(textView)
+        textView.scrollRangeToVisible(preEditSelection)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try await settle(window: window)
+
+        let preEditOrigin = scrollView.contentView.bounds.origin
+        XCTAssertGreaterThan(preEditOrigin.x, 0)
+
+        textView.insertText("X", replacementRange: preEditSelection)
+        try await settle(window: window)
+        XCTAssertEqual(
+            textView.selectedRange(),
+            NSRange(location: insertionLocation + 1, length: 0)
+        )
+
+        let commandZ = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "z",
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
+        ))
+        NSApp.sendEvent(commandZ)
+        try await settle(window: window)
+
+        XCTAssertEqual(state.resourceYAML, originalText)
+        XCTAssertEqual(textView.string, originalText)
+        XCTAssertEqual(
+            textView.selectedRange(),
+            preEditSelection,
+            "Draft undo must restore the insertion point from before the edit."
+        )
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.x,
+            preEditOrigin.x,
+            accuracy: 1,
+            "Draft undo must restore the long-line horizontal viewport."
+        )
+    }
+
+    func testReadOnlyManifestIgnoresCommandZ() async throws {
+        var undoCount = 0
+        let source = "kind: ConfigMap\n"
+        let host = NSHostingController(
+            rootView: AppKitManifestTextView(
+                text: .constant(source),
+                isEditable: false,
+                contentStyle: .yaml,
+                onUndoCommand: { undoCount += 1 }
+            )
+            .frame(width: 340, height: 180)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+        let textView = try XCTUnwrap(
+            findTextScrollView(in: host.view)?.documentView as? NSTextView
+        )
+        window.makeFirstResponder(textView)
+        let commandZ = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "z",
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
+        ))
+        NSApp.sendEvent(commandZ)
+        try await settle(window: window)
+
+        XCTAssertEqual(undoCount, 0)
+        XCTAssertEqual(textView.string, source)
+    }
+
+    func testToolbarUndoRestoresPresentationAfterEditorRemount() async throws {
+        let originalText = (0..<180)
+            .map { line in
+                line == 140
+                    ? "target: " + String(repeating: "long-value-", count: 100)
+                    : "line-\(line): synthetic"
+            }
+            .joined(separator: "\n")
+        let state = RuneAppState()
+        state.setResourceYAML(originalText)
+        let mount = ManifestUndoMountModel()
+        let host = NSHostingController(
+            rootView: ManifestUndoLifecycleHarness(state: state, mount: mount)
+                .frame(width: 360, height: 220)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+
+        let originalTextView = try XCTUnwrap(
+            findTextScrollView(in: host.view)?.documentView as? NSTextView
+        )
+        let targetRange = (originalText as NSString).range(of: "target: ")
+        let insertionLocation = targetRange.location + targetRange.length + 700
+        let preEditSelection = NSRange(location: insertionLocation, length: 0)
+        originalTextView.setSelectedRange(preEditSelection)
+        window.makeFirstResponder(originalTextView)
+        originalTextView.scrollRangeToVisible(preEditSelection)
+        let originalScrollView = try XCTUnwrap(originalTextView.enclosingScrollView)
+        originalScrollView.reflectScrolledClipView(originalScrollView.contentView)
+        try await settle(window: window)
+        let preEditOrigin = originalScrollView.contentView.bounds.origin
+
+        XCTAssertGreaterThan(preEditOrigin.x, 0)
+        XCTAssertGreaterThan(preEditOrigin.y, 0)
+
+        originalTextView.insertText("X", replacementRange: preEditSelection)
+        try await settle(window: window)
+        XCTAssertTrue(state.canUndoResourceYAMLEdit)
+
+        mount.editorID = UUID()
+        try await settle(window: window)
+        let remountedTextView = try XCTUnwrap(
+            findTextScrollView(in: host.view)?.documentView as? NSTextView
+        )
+        XCTAssertFalse(remountedTextView === originalTextView)
+
+        state.undoResourceYAMLEdit()
+        try await settle(window: window)
+
+        let remountedScrollView = try XCTUnwrap(remountedTextView.enclosingScrollView)
+        XCTAssertEqual(remountedTextView.string, originalText)
+        XCTAssertEqual(remountedTextView.selectedRange(), preEditSelection)
+        XCTAssertEqual(
+            remountedScrollView.contentView.bounds.origin.x,
+            preEditOrigin.x,
+            accuracy: 1
+        )
+        XCTAssertEqual(
+            remountedScrollView.contentView.bounds.origin.y,
+            preEditOrigin.y,
+            accuracy: 1
+        )
+        XCTAssertTrue(window.firstResponder === remountedTextView)
     }
 
     func testInlineSheetAndDescribeShareManifestActionToolbarConstruction() throws {
@@ -285,6 +919,50 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertEqual(describeSource.occurrences(of: "ManifestActionToolbar("), 1)
         XCTAssertFalse(yamlSource.contains("ScrollView(.horizontal"))
         XCTAssertFalse(describeSource.contains("ScrollView(.horizontal"))
+    }
+
+    func testServerDryRunControlExistsOnlyInFullYAMLEditorSheet() throws {
+        let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let quickEditPane = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLInspectorPane",
+            to: "struct ManifestUnsavedEditsChip"
+        ))
+        let fullEditorSheet = try XCTUnwrap(yamlSource.slice(
+            from: "struct ResourceYAMLEditorSheetView",
+            to: "private func navigateToIssue"
+        ))
+        let fullEditorWiring = try XCTUnwrap(rootSource.slice(
+            from: "private func yamlManifestEditorSheet()",
+            to: "private var yamlBlock"
+        ))
+        let quickEditWiring = try XCTUnwrap(rootSource.slice(
+            from: "private var yamlBlock",
+            to: "/// One pane at a time"
+        ))
+
+        XCTAssertTrue(fullEditorSheet.contains("let onDryRun: () -> Void"))
+        XCTAssertTrue(fullEditorSheet.contains("Label(\"Dry Run\", systemImage: \"checkmark.shield\")"))
+        XCTAssertTrue(fullEditorSheet.contains(".disabled(!canDryRun || isRunningDryRun)"))
+        XCTAssertTrue(fullEditorSheet.contains(
+            ".accessibilityIdentifier(\"resource-yaml-server-dry-run\")"
+        ))
+        XCTAssertTrue(fullEditorSheet.contains("statusText: dryRunStatus"))
+        XCTAssertTrue(fullEditorSheet.contains(
+            "Dry Run sends this draft to Kubernetes for validation but never applies it."
+        ))
+        XCTAssertTrue(fullEditorWiring.contains(
+            "canDryRun: viewModel.canDryRunSelectedResourceYAML"
+        ))
+        XCTAssertTrue(fullEditorWiring.contains(
+            "onDryRun: { viewModel.requestDryRunSelectedResourceYAML() }"
+        ))
+
+        XCTAssertFalse(quickEditPane.contains("onDryRun"))
+        XCTAssertFalse(quickEditPane.contains("resource-yaml-server-dry-run"))
+        XCTAssertFalse(quickEditPane.contains("Label(\"Dry Run\""))
+        XCTAssertFalse(quickEditWiring.contains("requestDryRunSelectedResourceYAML"))
+        XCTAssertFalse(quickEditWiring.contains("resourceYAMLDryRunStatus"))
     }
 
     func testManifestDocumentSurfacesUseTypedOverlaysInsteadOfStateMessagesAsText() throws {
@@ -625,6 +1303,55 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(scrollFrame.maxY, hostBounds.maxY + 1, "Describe text surface should not render above its inspector")
     }
 
+    func testLargeDescribeSearchMovesNextResultIntoVirtualizedViewport() async throws {
+        let lineCount = 1_400
+        let payload = String(repeating: " synthetic-field", count: 15)
+        let text = (0..<lineCount)
+            .map { index in
+                let marker = index == 15 || index == 1_180 ? " needle" : ""
+                return "Field-\(index): value\(marker)\(payload)"
+            }
+            .joined(separator: "\n")
+        XCTAssertGreaterThan(text.utf8.count, 250_000)
+
+        let model = LargeInspectorFindModel(text: text)
+        let host = NSHostingController(
+            rootView: LargeInspectorFindHarness(model: model)
+                .frame(width: 720, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        try await settle(window: window)
+        try await settle(window: window)
+        model.selectedMatchIndex = 1
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(
+            findScrollViews(in: host.view).max {
+                ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+            }
+        )
+        let documentHeight = try XCTUnwrap(scrollView.documentView?.bounds.height)
+        let estimatedRowHeight = documentHeight / CGFloat(lineCount)
+        let targetMidY = CGFloat(1_180) * estimatedRowHeight + estimatedRowHeight / 2
+        let visibleMidY = scrollView.contentView.bounds.midY
+
+        XCTAssertGreaterThan(scrollView.contentView.bounds.minY, documentHeight * 0.6)
+        XCTAssertLessThan(
+            (targetMidY - visibleMidY).magnitude,
+            max(estimatedRowHeight * 5, scrollView.contentView.bounds.height * 0.22)
+        )
+    }
+
     private func makeDescribeHost(describeText: String) -> (NSHostingController<some View>, NSWindow) {
         let host = NSHostingController(
             rootView: ResourceDescribeInspectorPane(
@@ -681,6 +1408,17 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         }
 
         return nil
+    }
+
+    private func findScrollViews(in view: NSView) -> [NSScrollView] {
+        var matches: [NSScrollView] = []
+        if let scrollView = view as? NSScrollView {
+            matches.append(scrollView)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: findScrollViews(in: subview))
+        }
+        return matches
     }
 
     private func containsScrollView(in view: NSView) -> Bool {
@@ -786,6 +1524,146 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitManifestTextView.swift").path
+    }
+}
+
+@MainActor
+private final class LargeInspectorFindModel: ObservableObject {
+    let text: String
+    @Published var query = "needle"
+    @Published var matchCase = false
+    @Published var selectedMatchIndex = 0
+    @Published var isPresented = true
+
+    init(text: String) {
+        self.text = text
+    }
+}
+
+private struct LargeInspectorFindHarness: View {
+    @ObservedObject var model: LargeInspectorFindModel
+
+    var body: some View {
+        FindableInspectorSurface(
+            text: model.text,
+            placeholder: "Find in describe",
+            query: $model.query,
+            matchCase: $model.matchCase,
+            selectedMatchIndex: $model.selectedMatchIndex,
+            isFindPresented: $model.isPresented
+        ) { searchIndex, searchNavigationRevision in
+            DescribeTextSurface(
+                text: model.text,
+                minHeight: 280,
+                resetID: "large-describe-search",
+                searchQuery: model.query,
+                searchMatchCase: model.matchCase,
+                selectedSearchMatchIndex: model.selectedMatchIndex,
+                searchIndex: searchIndex,
+                searchNavigationRevision: searchNavigationRevision
+            )
+        }
+    }
+}
+
+@MainActor
+private final class EditableInspectorFindModel: ObservableObject {
+    @Published var text: String
+    @Published var query: String
+    @Published var matchCase = false
+    @Published var selectedMatchIndex = 0
+    @Published var isPresented = true
+
+    init(text: String, query: String = "needle") {
+        self.text = text
+        self.query = query
+    }
+}
+
+private struct EditableInspectorFindHarness: View {
+    @ObservedObject var model: EditableInspectorFindModel
+
+    var body: some View {
+        FindableInspectorSurface(
+            text: model.text,
+            placeholder: "Find in YAML",
+            query: $model.query,
+            matchCase: $model.matchCase,
+            selectedMatchIndex: $model.selectedMatchIndex,
+            isFindPresented: $model.isPresented
+        ) { searchIndex, searchNavigationRevision in
+            AppKitManifestTextView(
+                text: $model.text,
+                isEditable: true,
+                contentStyle: .yaml,
+                searchQuery: model.query,
+                searchMatchCase: model.matchCase,
+                selectedSearchMatchIndex: model.selectedMatchIndex,
+                searchMatchRanges: searchIndex?.ranges ?? [],
+                searchNavigationRevision: searchNavigationRevision
+            )
+        }
+    }
+}
+
+private struct ManifestUndoRestorationHarness: View {
+    @ObservedObject var state: RuneAppState
+
+    var body: some View {
+        let searchRange = (state.resourceYAML as NSString).range(of: "prefix")
+        AppKitManifestTextView(
+            text: Binding(
+                get: { state.resourceYAML },
+                set: { state.updateResourceYAMLDraft($0) }
+            ),
+            isEditable: true,
+            contentStyle: .yaml,
+            showsLineNumbers: true,
+            searchQuery: "prefix",
+            searchMatchCase: false,
+            selectedSearchMatchIndex: 0,
+            searchMatchRanges: searchRange.location == NSNotFound ? [] : [searchRange],
+            searchNavigationRevision: 1,
+            editorRestorationRequest: state.resourceYAMLEditorRestorationRequest,
+            onEditorEdit: { yaml, presentation in
+                state.updateResourceYAMLDraft(
+                    yaml,
+                    undoPresentation: presentation
+                )
+            },
+            onUndoCommand: state.undoResourceYAMLEdit
+        )
+    }
+}
+
+@MainActor
+private final class ManifestUndoMountModel: ObservableObject {
+    @Published var editorID = UUID()
+}
+
+private struct ManifestUndoLifecycleHarness: View {
+    @ObservedObject var state: RuneAppState
+    @ObservedObject var mount: ManifestUndoMountModel
+
+    var body: some View {
+        AppKitManifestTextView(
+            text: Binding(
+                get: { state.resourceYAML },
+                set: { state.updateResourceYAMLDraft($0) }
+            ),
+            isEditable: true,
+            contentStyle: .yaml,
+            showsLineNumbers: true,
+            editorRestorationRequest: state.resourceYAMLEditorRestorationRequest,
+            onEditorEdit: { yaml, presentation in
+                state.updateResourceYAMLDraft(
+                    yaml,
+                    undoPresentation: presentation
+                )
+            },
+            onUndoCommand: state.undoResourceYAMLEdit
+        )
+        .id(mount.editorID)
     }
 }
 

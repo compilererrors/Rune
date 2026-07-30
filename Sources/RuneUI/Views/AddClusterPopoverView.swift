@@ -100,6 +100,7 @@ struct AddClusterPopoverView: View {
             .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
         }
         .onAppear(perform: onRefresh)
+        .runePointerCursor()
     }
 
     private var header: some View {
@@ -181,6 +182,7 @@ struct AddClusterPopoverView: View {
                 ) {
                     TextField("Example: development", text: $manualContextName)
                         .textFieldStyle(.roundedBorder)
+                        .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
                     title: "Server URL",
@@ -189,6 +191,7 @@ struct AddClusterPopoverView: View {
                 ) {
                     TextField("https://cluster.example.invalid", text: $manualServerURL)
                         .textFieldStyle(.roundedBorder)
+                        .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
                     title: "Namespace",
@@ -197,6 +200,7 @@ struct AddClusterPopoverView: View {
                 ) {
                     TextField("Optional namespace", text: $manualNamespace)
                         .textFieldStyle(.roundedBorder)
+                        .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
                     title: "Bearer token",
@@ -208,6 +212,7 @@ struct AddClusterPopoverView: View {
                         .accessibilityLabel("Bearer token")
                         .accessibilityHint("Required field")
                         .accessibilityIdentifier("rune.add-cluster.manual-field.bearer-token")
+                        .runeTextInputCursor()
                 }
 
                 Button(action: onImportManualToken) {

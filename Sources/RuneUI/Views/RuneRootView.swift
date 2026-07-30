@@ -76,6 +76,7 @@ private enum RuneRootPaneWidthKind: Hashable {
 
 private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case overview
+    case authDoctor
     case workloadPodOverview
     case workloadPodLogs
     case workloadPodExec
@@ -89,6 +90,7 @@ private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case workloadDeploymentRollout
     case workloadDeploymentYAMLReadOnly
     case workloadDeploymentYAMLQuickEdit
+    case workloadDeploymentYAMLValidation
     case workloadDeploymentDescribe
     case networkingServiceOverview
     case networkingServiceUnifiedLogs
@@ -104,6 +106,7 @@ private enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case storagePVCYAML
     case eventsDetail
     case rbacRole
+    case rbacCanI
     case terminal
     case terminalLogs
 
@@ -167,6 +170,22 @@ private enum RuneRootLayoutDebug {
     static let liveScenarioInteractionAcknowledgementDirectory =
         ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_INTERACTION_ACK_DIR"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let liveScenarioSteps: [RuneRootLiveDebugScenarioStep] = {
+        guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO_STEPS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
+            return RuneRootLiveDebugScenarioStep.allCases
+        }
+        let requestedStepNames = Set(
+            rawValue
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        return RuneRootLiveDebugScenarioStep.allCases.filter {
+            requestedStepNames.contains($0.rawValue)
+        }
+    }()
     static let initialDetailWidth: CGFloat? = {
         guard let rawValue = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_DETAIL_WIDTH"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1284,6 +1303,10 @@ public struct RuneRootView: View {
         .onChange(of: terminalInspectorTab) { _, _ in
             syncSavedWorkspaceInspectorState()
         }
+        .onChange(of: viewModel.workspaceCommandRequest) { _, request in
+            guard let request else { return }
+            handleWorkspaceCommand(request.command)
+        }
         .onChange(of: yamlManifestIsEditing) { _, _ in
             syncSavedWorkspaceInspectorState()
         }
@@ -1464,6 +1487,18 @@ public struct RuneRootView: View {
         guard let browserTab = selectedHelmInspectorMode.browserTab else { return }
         helmBrowserTab = browserTab
         viewModel.setHelmBrowserResourceFamily(browserTab.resourceListFamily)
+    }
+
+    private var effectiveHelmBrowserTab: HelmBrowserTab {
+        if viewModel.state.selectedOperatorResource != nil {
+            return .operatorResources
+        }
+        if viewModel.state.selectedHelmRelease != nil {
+            return .releases
+        }
+        return viewModel.helmBrowserResourceFamily == .operatorResources
+            ? .operatorResources
+            : .releases
     }
 
     private func syncSavedWorkspaceInspectorState() {
@@ -1749,6 +1784,7 @@ public struct RuneRootView: View {
                     } label: {
                         Image(systemName: "command")
                     }
+                    .accessibilityIdentifier("rune.command-palette.open")
                     .help("Command Palette")
                     .keyboardShortcut("k", modifiers: .command)
 
@@ -1827,6 +1863,7 @@ public struct RuneRootView: View {
 
             TextField("namespace", text: $manualNamespaceInput)
                 .textFieldStyle(.roundedBorder)
+                .runeTextInputCursor()
 
             RuneDialogActionBar {
                 Button {
@@ -1850,6 +1887,7 @@ public struct RuneRootView: View {
         }
         .padding(RuneUILayoutMetrics.dialogContentPadding)
         .frame(width: RuneUILayoutMetrics.compactDialogWidth)
+        .runePointerCursor()
     }
 
     private func startLiveDebugScenarioIfNeeded() {
@@ -1872,7 +1910,7 @@ public struct RuneRootView: View {
 
         await waitForLiveScenarioReady()
 
-        for step in RuneRootLiveDebugScenarioStep.allCases {
+        for step in RuneRootLayoutDebug.liveScenarioSteps {
             await performLiveDebugScenarioStep(step)
         }
 
@@ -1989,8 +2027,24 @@ public struct RuneRootView: View {
 
     private func isLiveDebugScenarioStepSettled(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
         switch step {
-        case .workloadPodLogs, .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs, .terminalLogs:
+        case .authDoctor:
+            return !viewModel.state.isRunningAuthDoctor
+                && !viewModel.state.authDoctorChecks.isEmpty
+        case .workloadPodLogs, .workloadDeploymentUnifiedLogs, .networkingServiceUnifiedLogs:
             return !viewModel.state.isLoading && !viewModel.state.isLoadingLogs
+        case .terminalLogs:
+            return !viewModel.state.isLoading
+                && !viewModel.state.isLoadingLogs
+                && viewModel.state.terminalSession?.status == .connected
+        case .workloadDeploymentYAMLValidation:
+            return !viewModel.state.isLoadingResourceDetails
+                && !viewModel.state.isValidatingResourceYAML
+                && !viewModel.state.resourceYAMLBaseline.isEmpty
+                && viewModel.state.resourceDetailScope?.kind == KubeResourceKind.deployment.rawValue
+        case .rbacCanI:
+            return !viewModel.state.isLoadingResourceDetails
+                && !viewModel.isRunningRBACCanI
+                && viewModel.rbacCanIResult != nil
         case .workloadPodYAMLReadOnly,
              .workloadPodYAMLQuickEdit,
              .workloadPodYAMLEditorSheet,
@@ -2056,6 +2110,14 @@ public struct RuneRootView: View {
         switch step {
         case .overview:
             viewModel.setSection(.overview)
+            return true
+        case .authDoctor:
+            viewModel.setSection(.overview)
+            isAuthDoctorPanelExpanded = true
+            if viewModel.state.authDoctorChecks.isEmpty,
+               !viewModel.state.isRunningAuthDoctor {
+                viewModel.runAuthDoctor()
+            }
             return true
         case .workloadPodOverview:
             guard let pod = viewModel.visiblePods.first else { return false }
@@ -2174,6 +2236,33 @@ public struct RuneRootView: View {
             deploymentInspectorTab = .yaml
             yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
             return true
+        case .workloadDeploymentYAMLValidation:
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.deployment)
+            guard let deployment = viewModel.state.selectedDeployment
+                    ?? viewModel.visibleDeployments.first else {
+                return false
+            }
+            if viewModel.state.selectedDeployment?.id != deployment.id {
+                viewModel.selectDeployment(deployment)
+            }
+            deploymentInspectorTab = .yaml
+            yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
+            let expectedScope = ResourceDetailScope(
+                contextName: viewModel.state.selectedContext?.name ?? "",
+                namespace: deployment.namespace,
+                kind: .deployment,
+                name: deployment.name
+            )
+            guard viewModel.state.resourceDetailScope == expectedScope,
+                  !viewModel.state.isLoadingResourceDetails,
+                  !viewModel.state.resourceYAMLBaseline.isEmpty else {
+                if !viewModel.state.isLoadingResourceDetails {
+                    viewModel.selectDeployment(deployment)
+                }
+                return false
+            }
+            return true
         case .workloadDeploymentDescribe:
             guard viewModel.state.selectedDeployment != nil || viewModel.visibleDeployments.first != nil else { return false }
             if viewModel.state.selectedDeployment == nil, let deployment = viewModel.visibleDeployments.first {
@@ -2185,8 +2274,9 @@ public struct RuneRootView: View {
             yamlManifestIsEditing = false
             return true
         case .networkingServiceOverview:
-            guard let service = viewModel.visibleServices.first else { return false }
             viewModel.setSection(.networking)
+            viewModel.setWorkloadKind(.service)
+            guard let service = viewModel.visibleServices.first else { return false }
             viewModel.selectService(service)
             serviceInspectorTab = .overview
             yamlManifestIsEditing = false
@@ -2304,6 +2394,25 @@ public struct RuneRootView: View {
             genericResourceManifestTab = .describe
             yamlManifestIsEditing = false
             return true
+        case .rbacCanI:
+            viewModel.setSection(.rbac)
+            viewModel.setWorkloadKind(.role)
+            guard let resource = viewModel.state.selectedRBACResource
+                    ?? viewModel.visibleRBACResources.first else {
+                return false
+            }
+            viewModel.selectRBACResource(resource)
+            genericResourceManifestTab = .overview
+            yamlManifestIsEditing = false
+            viewModel.useRBACCanIPreset(
+                verb: "get",
+                resource: "pods",
+                apiGroup: nil,
+                subresource: "log",
+                scope: .namespace
+            )
+            viewModel.runRBACCanISimulator()
+            return true
         case .terminal:
             viewModel.setSection(.terminal)
             terminalInspectorTab = .commands
@@ -2315,7 +2424,24 @@ public struct RuneRootView: View {
             yamlManifestIsEditing = false
             guard let pod = terminalLogActivePod ?? terminalInitialLogPod else { return false }
             ensureTerminalLogTabs(for: pod)
+            let additionalPods = viewModel.state.pods
+                .filter {
+                    $0.id != pod.id
+                        && $0.status.localizedCaseInsensitiveCompare("Running") == .orderedSame
+                }
+                .prefix(2)
+            for additionalPod in additionalPods
+            where !terminalLogTabState.tabs.contains(where: { $0.podID == additionalPod.id }) {
+                terminalLogTabState.add(preferredPod: additionalPod)
+            }
+            if let primaryTabID = terminalLogTabState.tabs.first(where: { $0.podID == pod.id })?.id {
+                _ = terminalLogTabState.select(id: primaryTabID, availablePods: viewModel.state.pods)
+            }
             viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+            let shellPods = [pod] + Array(additionalPods.prefix(1))
+            for shellPod in shellPods {
+                viewModel.startTerminalSession(for: shellPod)
+            }
             return true
         }
     }
@@ -2883,6 +3009,7 @@ public struct RuneRootView: View {
         }
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
         .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
+        .runePointerCursor()
         .interactiveDismissDisabled(viewModel.isRunningNativeCloudClusterImport)
         .task(id: "\(provider.rawValue)-\(viewModel.isConnectingNativeKubernetesAuth)") {
             guard presentation.requiresCompatibleImportedContext else { return }
@@ -3702,7 +3829,7 @@ public struct RuneRootView: View {
         case .events:
             return "Filter events"
         case .helm:
-            return helmBrowserTab == .releases ? "Filter releases" : "Filter operator resources"
+            return effectiveHelmBrowserTab == .releases ? "Filter releases" : "Filter operator resources"
         default:
             return "Filter \(viewModel.state.selectedWorkloadKind.localizedTitle(appString))"
         }
@@ -3772,7 +3899,7 @@ public struct RuneRootView: View {
 
     private var helmBrowserPicker: some View {
         let selection = Binding<HelmBrowserTab>(
-            get: { helmBrowserTab },
+            get: { effectiveHelmBrowserTab },
             set: { tab in
                 helmBrowserTab = tab
                 viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)
@@ -3879,7 +4006,7 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private var helmResourceListToolbarActions: some View {
-        switch helmBrowserTab {
+        switch effectiveHelmBrowserTab {
         case .releases:
             helmNamespaceScopeMenu(compact: false)
         case .operatorResources:
@@ -4174,6 +4301,7 @@ public struct RuneRootView: View {
         }
         .padding(16)
         .frame(width: 430, height: 340)
+        .runePointerCursor()
     }
 
     private var overviewCardModules: [OverviewModule] {
@@ -4645,7 +4773,7 @@ public struct RuneRootView: View {
 
     private var helmPane: some View {
         Group {
-            switch helmBrowserTab {
+            switch effectiveHelmBrowserTab {
             case .releases:
                 helmReleaseBrowser
             case .operatorResources:
@@ -6163,7 +6291,11 @@ public struct RuneRootView: View {
             isValidating: viewModel.state.isValidatingResourceYAML,
             canUndoEdit: viewModel.state.canUndoResourceYAMLEdit,
             canReapplySnapshot: viewModel.canReapplyResourceYAMLBaseline,
+            canDryRun: viewModel.canDryRunSelectedResourceYAML,
+            isRunningDryRun: viewModel.isRunningResourceYAMLDryRun,
+            dryRunStatus: viewModel.resourceYAMLDryRunStatus,
             onApply: { viewModel.requestApplySelectedResourceYAML() },
+            onDryRun: { viewModel.requestDryRunSelectedResourceYAML() },
             onReapplySnapshot: { viewModel.requestReapplyResourceYAMLBaseline() },
             onUndoEdit: { viewModel.undoResourceYAMLEdit() },
             onRevert: { viewModel.revertResourceYAMLDraft() },
@@ -6172,7 +6304,14 @@ public struct RuneRootView: View {
             onExportToExportFolder: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true) },
             onClose: { isYAMLEditorSheetPresented = false },
-            documentState: yamlManifestDocumentState
+            documentState: yamlManifestDocumentState,
+            editorRestorationRequest: viewModel.state.resourceYAMLEditorRestorationRequest,
+            onEditorEdit: { yaml, presentation in
+                viewModel.updateResourceYAMLDraft(
+                    yaml,
+                    editorPresentation: presentation
+                )
+            }
         )
     }
 
@@ -6203,7 +6342,14 @@ public struct RuneRootView: View {
             onExportToExportFolder: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true) },
             readOnlyResetID: "yaml:\(manifestResourceReference):\(viewModel.state.selectedSection.rawValue):\(viewModel.state.selectedWorkloadKind.kubernetesResourceName)",
-            documentState: yamlManifestDocumentState
+            documentState: yamlManifestDocumentState,
+            editorRestorationRequest: viewModel.state.resourceYAMLEditorRestorationRequest,
+            onEditorEdit: { yaml, presentation in
+                viewModel.updateResourceYAMLDraft(
+                    yaml,
+                    editorPresentation: presentation
+                )
+            }
         )
     }
 
@@ -6920,7 +7066,7 @@ public struct RuneRootView: View {
         case .events:
             return (viewModel.visibleEvents.count, viewModel.state.events.count)
         case .helm:
-            switch helmBrowserTab {
+            switch effectiveHelmBrowserTab {
             case .releases:
                 return (viewModel.visibleHelmReleases.count, viewModel.state.helmReleases.count)
             case .operatorResources:
@@ -7292,7 +7438,7 @@ public struct RuneRootView: View {
                 viewModel.selectEvent(next)
             }
         case .helm:
-            switch helmBrowserTab {
+            switch effectiveHelmBrowserTab {
             case .releases:
                 if let next = steppedItem(
                     items: viewModel.visibleHelmReleases,
@@ -7338,7 +7484,7 @@ public struct RuneRootView: View {
     private func moveContentKindIfNeeded(_ direction: MoveCommandDirection) -> Bool {
         guard direction == .left || direction == .right else { return false }
         if viewModel.state.selectedSection == .helm {
-            let nextTab = advancedTab(current: helmBrowserTab, direction: direction)
+            let nextTab = advancedTab(current: effectiveHelmBrowserTab, direction: direction)
             helmBrowserTab = nextTab
             viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)
             return true
@@ -7568,6 +7714,10 @@ public struct RuneRootView: View {
             return openLogsInspectorForSelection()
         case .saveLogs:
             return saveCurrentDetailFromKeyBinding()
+        case .saveToExportFolder:
+            return saveCurrentDetailToExportFolder(openAfterSave: false)
+        case .saveAndOpen:
+            return saveCurrentDetailToExportFolder(openAfterSave: true)
         case .shell:
             return openShellOrScaleInspectorForSelection()
         case .edit:
@@ -7624,6 +7774,7 @@ public struct RuneRootView: View {
         }
 
         yamlManifestIsEditing = false
+        viewModel.isDetailPaneVisible = true
         keyboardPaneFocus = .detail
         return true
     }
@@ -7662,6 +7813,7 @@ public struct RuneRootView: View {
         }
 
         yamlManifestIsEditing = false
+        viewModel.isDetailPaneVisible = true
         keyboardPaneFocus = .detail
         return true
     }
@@ -7694,11 +7846,19 @@ public struct RuneRootView: View {
         case .networking:
             guard viewModel.state.selectedWorkloadKind == .service, viewModel.state.selectedService != nil else { return false }
             serviceInspectorTab = .unifiedLogs
-        case .overview, .config, .storage, .rbac, .events, .helm, .terminal:
+        case .terminal:
+            guard terminalLogActivePod != nil || terminalInitialLogPod != nil else { return false }
+            let wasShowingLogs = terminalInspectorTab == .logs
+            terminalInspectorTab = .logs
+            if wasShowingLogs {
+                refreshTerminalInspectorSelectionIfNeeded()
+            }
+        case .overview, .config, .storage, .rbac, .events, .helm:
             return false
         }
 
         yamlManifestIsEditing = false
+        viewModel.isDetailPaneVisible = true
         keyboardPaneFocus = .detail
         return true
     }
@@ -7806,7 +7966,167 @@ public struct RuneRootView: View {
             case .none:
                 return false
             }
-        case .overview, .events, .terminal:
+        case .terminal:
+            if keyboardPaneFocus == .content {
+                viewModel.saveActiveTerminalTranscript()
+                return true
+            }
+            switch terminalInspectorTab {
+            case .logs:
+                guard terminalLogActivePod != nil else { return false }
+                viewModel.saveCurrentLogs()
+            case .yaml:
+                guard terminalInspectorPod != nil else { return false }
+                viewModel.saveCurrentResourceYAML()
+            case .commands:
+                return false
+            }
+        case .overview, .events:
+            return false
+        }
+        return true
+    }
+
+    private func handleWorkspaceCommand(_ command: WorkspaceCommand) {
+        switch command {
+        case .openLogs:
+            _ = openLogsInspectorForSelection()
+        case .saveCurrentDetail:
+            ensureWorkspaceSaveFocus()
+            _ = saveCurrentDetailFromKeyBinding()
+        case .saveCurrentDetailToExportFolder:
+            ensureWorkspaceSaveFocus()
+            _ = saveCurrentDetailToExportFolder(openAfterSave: false)
+        case .saveAndOpenCurrentDetail:
+            ensureWorkspaceSaveFocus()
+            _ = saveCurrentDetailToExportFolder(openAfterSave: true)
+        }
+    }
+
+    private func ensureWorkspaceSaveFocus() {
+        guard keyboardPaneFocus != .content, keyboardPaneFocus != .detail else { return }
+        keyboardPaneFocus = .detail
+    }
+
+    private func saveCurrentDetailToExportFolder(openAfterSave: Bool) -> Bool {
+        guard keyboardPaneFocus == .content || keyboardPaneFocus == .detail else { return false }
+
+        switch viewModel.state.selectedSection {
+        case .workloads:
+            switch viewModel.state.selectedWorkloadKind {
+            case .pod:
+                guard viewModel.state.selectedPod != nil else { return false }
+                switch podInspectorTab {
+                case .logs:
+                    viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview, .exec, .portForward:
+                    return false
+                }
+            case .deployment:
+                guard viewModel.state.selectedDeployment != nil else { return false }
+                switch deploymentInspectorTab {
+                case .unifiedLogs:
+                    viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)
+                case .rollout:
+                    viewModel.saveCurrentRolloutHistoryToExportFolder(openAfterSave: openAfterSave)
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview:
+                    return false
+                }
+            default:
+                guard hasGenericManifestSelection else { return false }
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview:
+                    return false
+                }
+            }
+        case .networking:
+            switch viewModel.state.selectedWorkloadKind {
+            case .service:
+                guard viewModel.state.selectedService != nil else { return false }
+                switch serviceInspectorTab {
+                case .unifiedLogs:
+                    viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview, .portForward:
+                    return false
+                }
+            default:
+                guard hasGenericManifestSelection else { return false }
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview:
+                    return false
+                }
+            }
+        case .config, .storage, .rbac:
+            guard hasGenericManifestSelection else { return false }
+            switch genericResourceManifestTab {
+            case .describe:
+                viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+            case .yaml:
+                viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+            case .overview:
+                return false
+            }
+        case .helm:
+            switch selectedHelmInspectorMode {
+            case .operatorResource:
+                switch genericResourceManifestTab {
+                case .describe:
+                    viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)
+                case .yaml:
+                    viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+                case .overview:
+                    return false
+                }
+            case .release:
+                switch helmInspectorTab {
+                case .values:
+                    viewModel.saveCurrentHelmValuesToExportFolder(openAfterSave: openAfterSave)
+                case .manifest:
+                    viewModel.saveCurrentHelmManifestToExportFolder(openAfterSave: openAfterSave)
+                case .history:
+                    viewModel.saveCurrentHelmHistoryToExportFolder(openAfterSave: openAfterSave)
+                case .overview:
+                    return false
+                }
+            case .none:
+                return false
+            }
+        case .terminal:
+            if keyboardPaneFocus == .content {
+                viewModel.saveActiveTerminalTranscriptToExportFolder(openAfterSave: openAfterSave)
+                return true
+            }
+            switch terminalInspectorTab {
+            case .logs:
+                guard terminalLogActivePod != nil else { return false }
+                viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)
+            case .yaml:
+                guard terminalInspectorPod != nil else { return false }
+                viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)
+            case .commands:
+                return false
+            }
+        case .overview, .events:
             return false
         }
         return true
@@ -8699,7 +9019,7 @@ public struct RuneRootView: View {
         case .events:
             return .events
         case .helm:
-            return helmBrowserTab == .operatorResources ? .operatorResources : .helmReleases
+            return effectiveHelmBrowserTab == .operatorResources ? .operatorResources : .helmReleases
         case .terminal:
             return .pods
         }

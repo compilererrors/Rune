@@ -8,11 +8,19 @@ enum ResourceLogANSIFormatter {
         var index = text.startIndex
 
         while index < text.endIndex {
-            if text[index] == "\u{1B}",
-               let parsed = parseSGRSequence(in: text, from: index)
-            {
-                attributes = applying(parsed.codes, to: attributes, font: font)
-                index = parsed.endIndex
+            if text[index] == "\u{1B}" {
+                if let parsed = parseSGRSequence(in: text, from: index) {
+                    attributes = applying(parsed.codes, to: attributes, font: font)
+                    index = parsed.endIndex
+                    continue
+                }
+
+                let nextIndex = text.index(after: index)
+                output.append(NSAttributedString(
+                    string: String(text[index..<nextIndex]),
+                    attributes: attributes
+                ))
+                index = nextIndex
                 continue
             }
 
@@ -28,7 +36,10 @@ enum ResourceLogANSIFormatter {
     }
 
     static func plainText(from text: String) -> String {
+        guard text.contains("\u{1B}") else { return text }
+
         var output = ""
+        output.reserveCapacity(text.utf8.count)
         var index = text.startIndex
         while index < text.endIndex {
             if text[index] == "\u{1B}",

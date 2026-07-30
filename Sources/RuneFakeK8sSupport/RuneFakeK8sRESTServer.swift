@@ -1,6 +1,16 @@
 import Foundation
 import Network
 
+public struct RuneFakeK8sRecordedRequest: Equatable, Sendable {
+    public let requestLine: String
+    public let body: String?
+
+    public init(requestLine: String, body: String?) {
+        self.requestLine = requestLine
+        self.body = body
+    }
+}
+
 public final class RuneFakeK8sRESTServer: @unchecked Sendable {
     public let port: UInt16
 
@@ -84,6 +94,10 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
     }
 
     public func requestLines() -> [String] {
+        requestRecorder.snapshot().map(\.requestLine)
+    }
+
+    public func requests() -> [RuneFakeK8sRecordedRequest] {
         requestRecorder.snapshot()
     }
 
@@ -103,25 +117,25 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
 
 private final class RuneFakeK8sRequestRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var lines: [String] = []
+    private var requests: [RuneFakeK8sRecordedRequest] = []
 
-    func append(_ line: String) {
+    func append(requestLine: String, body: String?) {
         lock.lock()
-        lines.append(line)
+        requests.append(RuneFakeK8sRecordedRequest(requestLine: requestLine, body: body))
         lock.unlock()
     }
 
-    func snapshot() -> [String] {
+    func snapshot() -> [RuneFakeK8sRecordedRequest] {
         lock.lock()
-        let value = lines
+        let value = requests
         lock.unlock()
         return value
     }
 
     func count(target: String) -> Int {
         lock.lock()
-        let value = lines.filter { line in
-            line.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) == target
+        let value = requests.filter { request in
+            request.requestLine.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) == target
         }.count
         lock.unlock()
         return value
@@ -129,7 +143,7 @@ private final class RuneFakeK8sRequestRecorder: @unchecked Sendable {
 
     func removeAll() {
         lock.lock()
-        lines.removeAll(keepingCapacity: true)
+        requests.removeAll(keepingCapacity: true)
         lock.unlock()
     }
 }
@@ -222,36 +236,68 @@ private final class ServerBox: @unchecked Sendable {
 
     func receive(connection: NWConnection) {
         connection.start(queue: DispatchQueue(label: "rune.fake-k8s.rest-connection"))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [fixture, contextName, requestRecorder] data, _, _, _ in
+        receive(connection: connection, accumulated: Data())
+    }
+
+    private func receive(connection: NWConnection, accumulated: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else {
+                connection.cancel()
+                return
+            }
+            var requestData = accumulated
+            if let data {
+                requestData.append(data)
+            }
+
+            let headerSeparator = Data("\r\n\r\n".utf8)
             guard
-                let data,
-                let request = String(data: data, encoding: .utf8),
-                let line = request.split(separator: "\r\n", maxSplits: 1).first
+                let separatorRange = requestData.range(of: headerSeparator),
+                let header = String(data: requestData[..<separatorRange.lowerBound], encoding: .utf8)
+            else {
+                if error != nil || isComplete {
+                    connection.cancel()
+                } else {
+                    receive(connection: connection, accumulated: requestData)
+                }
+                return
+            }
+
+            let bodyStart = separatorRange.upperBound
+            let expectedBodyLength = Self.contentLength(in: header)
+            let expectedRequestLength = bodyStart + expectedBodyLength
+            guard requestData.count >= expectedRequestLength else {
+                if error != nil || isComplete {
+                    connection.cancel()
+                } else {
+                    receive(connection: connection, accumulated: requestData)
+                }
+                return
+            }
+
+            guard
+                let line = header.split(separator: "\r\n", maxSplits: 1).first,
+                let body = String(
+                    data: requestData[bodyStart..<expectedRequestLength],
+                    encoding: .utf8
+                )
             else {
                 connection.cancel()
                 return
             }
-            requestRecorder.append(String(line))
-            let expectedBodyLength = Self.contentLength(in: request)
-            let currentBody = Self.body(in: request)
 
-            if expectedBodyLength > currentBody.utf8.count {
-                connection.receive(
-                    minimumIncompleteLength: expectedBodyLength - currentBody.utf8.count,
-                    maximumLength: max(1, expectedBodyLength - currentBody.utf8.count)
-                ) { moreData, _, _, _ in
-                    let more = moreData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let body = Self.body(in: request + more)
-                    let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
-                        .route(requestLine: String(line), body: body.isEmpty ? nil : body)
-                    connection.sendHTTP(response, delayNanoseconds: Self.responseDelayNanoseconds(for: String(line), fixture: fixture))
-                }
-            } else {
-                let body = Self.body(in: request)
-                let response = RuneFakeK8sRouter(fixture: fixture, contextName: contextName, requestRecorder: requestRecorder)
-                    .route(requestLine: String(line), body: body.isEmpty ? nil : body)
-                connection.sendHTTP(response, delayNanoseconds: Self.responseDelayNanoseconds(for: String(line), fixture: fixture))
-            }
+            let requestLine = String(line)
+            let recordedBody = body.isEmpty ? nil : body
+            requestRecorder.append(requestLine: requestLine, body: recordedBody)
+            let response = RuneFakeK8sRouter(
+                fixture: fixture,
+                contextName: contextName,
+                requestRecorder: requestRecorder
+            ).route(requestLine: requestLine, body: recordedBody)
+            connection.sendHTTP(
+                response,
+                delayNanoseconds: Self.responseDelayNanoseconds(for: requestLine, fixture: fixture)
+            )
         }
     }
 
@@ -271,9 +317,6 @@ private final class ServerBox: @unchecked Sendable {
             .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
     }
 
-    private static func body(in request: String) -> String {
-        request.components(separatedBy: "\r\n\r\n").dropFirst().joined(separator: "\r\n\r\n")
-    }
 }
 
 private extension String {
@@ -309,6 +352,14 @@ private struct RuneFakeK8sRouter {
         }
         let pathParts = components.path.split(separator: "/").map(String.init)
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        if method == "PATCH",
+           query["fieldManager"] == "rune",
+           query["force"] == "true",
+           body != nil,
+           components.path.hasPrefix("/api") {
+            return .json(status: 200, object: ["status": "applied"])
+        }
 
         if components.path == "/" || components.path == "/healthz" {
             return .json(status: 200, object: ["status": "ok"])
@@ -398,6 +449,12 @@ private struct RuneFakeK8sRouter {
                     items: cluster.nodes.map(nodeObject),
                     query: query
                 ))
+            }
+
+            if pathParts.count == 4,
+               Array(pathParts[0...2]) == ["api", "v1", "nodes"],
+               let node = cluster.nodes.first(where: { $0.name == pathParts[3] }) {
+                return .json(status: 200, object: nodeObject(node))
             }
 
             if pathParts == ["apis", "batch", "v1", "cronjobs"] {

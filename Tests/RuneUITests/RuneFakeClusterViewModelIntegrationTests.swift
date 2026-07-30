@@ -329,6 +329,16 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         let context = try XCTUnwrap(harness.state.selectedContext)
         harness.store.clearContext(context)
         harness.state.setPods([])
+        harness.state.setOverviewSnapshot(
+            pods: [],
+            deploymentsCount: 0,
+            servicesCount: 0,
+            ingressesCount: 0,
+            configMapsCount: 0,
+            cronJobsCount: 0,
+            nodesCount: 0,
+            events: []
+        )
         harness.state.resourceSearchQuery = event.reason
         harness.server.resetRequestLines()
 

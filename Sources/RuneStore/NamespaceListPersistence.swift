@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - Ordering
@@ -26,27 +27,29 @@ public enum NamespaceListOrdering {
 // MARK: - Persistence
 
 public protocol NamespaceListPersisting: Sendable {
-    func load(contextName: String) -> [String]?
-    func save(names: [String], contextName: String)
+    func load(contextName: String, scopeIdentity: String) -> [String]?
+    func save(names: [String], contextName: String, scopeIdentity: String)
 }
 
 /// Test / CI stub.
 public struct NoopNamespaceListPersistenceStore: NamespaceListPersisting {
     public init() {}
 
-    public func load(contextName: String) -> [String]? { nil }
+    public func load(contextName: String, scopeIdentity: String) -> [String]? { nil }
 
-    public func save(names: [String], contextName: String) {}
+    public func save(names: [String], contextName: String, scopeIdentity: String) {}
 }
 
 /// One JSON file per context under `~/Library/Application Support/Rune/namespace-lists/`.
 public struct JSONNamespaceListPersistenceStore: NamespaceListPersisting {
     private struct FilePayload: Codable {
         let schemaVersion: Int
+        let contextName: String
+        let scopeIdentity: String
         let namespaces: [String]
     }
 
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
 
     private let directoryURL: URL
 
@@ -63,16 +66,22 @@ public struct JSONNamespaceListPersistenceStore: NamespaceListPersisting {
         return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rune-namespace-lists", isDirectory: true)
     }
 
-    public func load(contextName: String) -> [String]? {
+    public func load(contextName: String, scopeIdentity: String) -> [String]? {
         let url = fileURL(for: contextName)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard let payload = try? JSONDecoder().decode(FilePayload.self, from: data) else { return nil }
+        guard payload.schemaVersion == Self.schemaVersion,
+              payload.contextName == contextName,
+              payload.scopeIdentity == scopeIdentity
+        else {
+            return nil
+        }
         let names = payload.namespaces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         return names.isEmpty ? nil : names
     }
 
-    public func save(names: [String], contextName: String) {
+    public func save(names: [String], contextName: String, scopeIdentity: String) {
         var seen = Set<String>()
         var ordered: [String] = []
         for raw in names {
@@ -85,7 +94,12 @@ public struct JSONNamespaceListPersistenceStore: NamespaceListPersisting {
         let url = fileURL(for: contextName)
         do {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            let payload = FilePayload(schemaVersion: Self.schemaVersion, namespaces: ordered)
+            let payload = FilePayload(
+                schemaVersion: Self.schemaVersion,
+                contextName: contextName,
+                scopeIdentity: scopeIdentity,
+                namespaces: ordered
+            )
             let data = try JSONEncoder().encode(payload)
             try data.write(to: url, options: [.atomic])
         } catch {
@@ -94,20 +108,12 @@ public struct JSONNamespaceListPersistenceStore: NamespaceListPersisting {
     }
 
     private func fileURL(for contextName: String) -> URL {
-        directoryURL.appendingPathComponent("\(Self.sanitizedFileName(for: contextName)).json")
+        directoryURL.appendingPathComponent("v2-\(Self.contextNameDigest(contextName)).json")
     }
 
-    private static func sanitizedFileName(for contextName: String) -> String {
-        let trimmed = contextName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "unknown-context" }
-        let safe = trimmed
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        if safe.count <= 200 { return safe }
-        var hash: UInt64 = 5381
-        for byte in safe.utf8 {
-            hash = ((hash << 5) &+ hash) &+ UInt64(byte)
-        }
-        return "ctx-\(hash)-\(safe.prefix(80))"
+    private static func contextNameDigest(_ contextName: String) -> String {
+        SHA256.hash(data: Data(contextName.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }

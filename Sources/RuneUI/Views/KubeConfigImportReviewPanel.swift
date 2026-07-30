@@ -253,18 +253,52 @@ struct KubeConfigImportReviewPanel: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             HStack(spacing: 6) {
-                                TextField("Alias", text: metadataAliasBinding(for: context, metadata: metadata))
+                                KubeConfigImportMetadataDraftField(
+                                    "Alias",
+                                    value: metadata.alias ?? "",
+                                    canonicalize: KubeConfigImportMetadataDraft.canonicalText
+                                ) { value in
+                                    updateMetadata(for: context, metadata: metadata, alias: value)
+                                }
                                     .textFieldStyle(.roundedBorder)
-                                TextField("Group", text: metadataGroupBinding(for: context, metadata: metadata))
+                                KubeConfigImportMetadataDraftField(
+                                    "Group",
+                                    value: metadata.group ?? "",
+                                    canonicalize: KubeConfigImportMetadataDraft.canonicalText
+                                ) { value in
+                                    updateMetadata(for: context, metadata: metadata, group: value)
+                                }
                                     .textFieldStyle(.roundedBorder)
                             }
                             HStack(spacing: 6) {
-                                TextField("Color key", text: metadataColorBinding(for: context, metadata: metadata))
+                                KubeConfigImportMetadataDraftField(
+                                    "Color key",
+                                    value: metadata.colorKey ?? "",
+                                    canonicalize: KubeConfigImportMetadataDraft.canonicalText
+                                ) { value in
+                                    updateMetadata(for: context, metadata: metadata, colorKey: value)
+                                }
                                     .textFieldStyle(.roundedBorder)
-                                TextField("Icon", text: metadataIconBinding(for: context, metadata: metadata))
+                                KubeConfigImportMetadataDraftField(
+                                    "Icon",
+                                    value: metadata.iconName ?? "",
+                                    canonicalize: KubeConfigImportMetadataDraft.canonicalText
+                                ) { value in
+                                    updateMetadata(for: context, metadata: metadata, iconName: value)
+                                }
                                     .textFieldStyle(.roundedBorder)
                             }
-                            TextField("Tags", text: metadataTagsBinding(for: context, metadata: metadata))
+                            KubeConfigImportMetadataDraftField(
+                                "Tags",
+                                value: metadata.tags.joined(separator: ", "),
+                                canonicalize: KubeConfigImportMetadataDraft.canonicalTagsText
+                            ) { value in
+                                updateMetadata(
+                                    for: context,
+                                    metadata: metadata,
+                                    tags: KubeConfigImportMetadataDraft.tags(from: value)
+                                )
+                            }
                                 .textFieldStyle(.roundedBorder)
                         }
                     }
@@ -478,55 +512,6 @@ struct KubeConfigImportReviewPanel: View {
             : RuneSemanticColorRole.warning.color(in: runeThemePalette)
     }
 
-    private func metadataAliasBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
-        Binding(
-            get: { metadata.alias ?? "" },
-            set: { value in
-                updateMetadata(for: context, metadata: metadata, alias: value)
-            }
-        )
-    }
-
-    private func metadataColorBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
-        Binding(
-            get: { metadata.colorKey ?? "" },
-            set: { value in
-                updateMetadata(for: context, metadata: metadata, colorKey: value)
-            }
-        )
-    }
-
-    private func metadataIconBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
-        Binding(
-            get: { metadata.iconName ?? "" },
-            set: { value in
-                updateMetadata(for: context, metadata: metadata, iconName: value)
-            }
-        )
-    }
-
-    private func metadataTagsBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
-        Binding(
-            get: { metadata.tags.joined(separator: ", ") },
-            set: { value in
-                updateMetadata(
-                    for: context,
-                    metadata: metadata,
-                    tags: value.split(separator: ",").map(String.init)
-                )
-            }
-        )
-    }
-
-    private func metadataGroupBinding(for context: KubeConfigImportContextPreview, metadata: ContextDisplayMetadata) -> Binding<String> {
-        Binding(
-            get: { metadata.group ?? "" },
-            set: { value in
-                updateMetadata(for: context, metadata: metadata, group: value)
-            }
-        )
-    }
-
     private func updateMetadata(
         for context: KubeConfigImportContextPreview,
         metadata: ContextDisplayMetadata,
@@ -546,6 +531,78 @@ struct KubeConfigImportReviewPanel: View {
                 group: group ?? metadata.group
             )
         )
+    }
+}
+
+enum KubeConfigImportMetadataDraft {
+    static func canonicalText(_ value: String) -> String {
+        ContextDisplayMetadata(alias: value).alias ?? ""
+    }
+
+    static func tags(from value: String) -> [String] {
+        value.components(separatedBy: ",")
+    }
+
+    static func canonicalTagsText(_ value: String) -> String {
+        ContextDisplayMetadata(tags: tags(from: value))
+            .tags
+            .joined(separator: ", ")
+    }
+}
+
+struct KubeConfigImportMetadataDraftField: View {
+    private let title: String
+    private let value: String
+    private let canonicalize: (String) -> String
+    private let onChange: (String) -> Void
+    @State private var draftText: String
+    @FocusState private var isFocused: Bool
+
+    init(
+        _ title: String,
+        value: String,
+        canonicalize: @escaping (String) -> String,
+        onChange: @escaping (String) -> Void
+    ) {
+        self.title = title
+        self.value = value
+        self.canonicalize = canonicalize
+        self.onChange = onChange
+        _draftText = State(initialValue: value)
+    }
+
+    var body: some View {
+        TextField(
+            title,
+            text: Binding(
+                get: { draftText },
+                set: { newValue in
+                    draftText = newValue
+                    onChange(newValue)
+                }
+            )
+        )
+        .runeTextInputCursor()
+        .focused($isFocused)
+        .onSubmit(commitDraft)
+        .onChange(of: isFocused) { wasFocused, isFocused in
+            guard wasFocused, !isFocused else { return }
+            commitDraft()
+        }
+        .onChange(of: value) { _, newValue in
+            guard !isFocused, draftText != newValue else { return }
+            draftText = newValue
+        }
+    }
+
+    private func commitDraft() {
+        let canonicalValue = canonicalize(draftText)
+        if draftText != canonicalValue {
+            draftText = canonicalValue
+        }
+        if value != canonicalValue {
+            onChange(canonicalValue)
+        }
     }
 }
 

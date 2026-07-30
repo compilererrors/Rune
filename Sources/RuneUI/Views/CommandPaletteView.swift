@@ -13,6 +13,8 @@ enum CommandPalettePresentation {
         CommandPalettePrefixShortcut(queryPrefix: ":po", title: "Pods"),
         CommandPalettePrefixShortcut(queryPrefix: ":deploy", title: "Deployments"),
         CommandPalettePrefixShortcut(queryPrefix: ":svc", title: "Services"),
+        CommandPalettePrefixShortcut(queryPrefix: ":logs", title: "Open Logs"),
+        CommandPalettePrefixShortcut(queryPrefix: ":so", title: "Save & Open"),
         CommandPalettePrefixShortcut(queryPrefix: ":ns", title: "Namespaces")
     ]
 
@@ -101,7 +103,9 @@ struct CommandPaletteView: View {
                     .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 TextField("Search commands and resources", text: $query)
                     .textFieldStyle(.plain)
+                    .accessibilityIdentifier("rune.command-palette.input")
                     .focused($focusedTarget, equals: .input)
+                    .runeTextInputCursor()
                     .onMoveCommand { direction in
                         handleMoveCommand(direction: direction, items: items)
                     }
@@ -228,6 +232,7 @@ struct CommandPaletteView: View {
             maxHeight: RuneUILayoutMetrics.commandPaletteMaxHeight
         )
         .background(runeThemePalette?.content.opacity(0.98) ?? Color(nsColor: .windowBackgroundColor).opacity(0.82))
+        .runePointerCursor()
         .onAppear {
             activationGate.reset()
             let prefill = viewModel.consumeCommandPalettePrefillQuery()
@@ -340,6 +345,7 @@ struct CommandPaletteView: View {
         }
         .padding(14)
         .frame(minWidth: 320, idealWidth: 380, maxWidth: 440)
+        .runePointerCursor()
         .onAppear {
             focusedTarget = nil
             DispatchQueue.main.async {

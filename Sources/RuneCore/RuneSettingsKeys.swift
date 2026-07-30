@@ -38,6 +38,8 @@ public enum RuneSettingsKeys {
     public static let skipClusterOnTabNavigationFromSections = "rune.settings.keybindings.skipClusterOnTabNavigationFromSections"
     public static let keyBindingLogs = "rune.settings.keybindings.logs"
     public static let keyBindingSaveLogs = "rune.settings.keybindings.saveLogs"
+    public static let keyBindingSaveToExportFolder = "rune.settings.keybindings.saveToExportFolder"
+    public static let keyBindingSaveAndOpen = "rune.settings.keybindings.saveAndOpen"
     public static let keyBindingShell = "rune.settings.keybindings.shell"
     public static let keyBindingEdit = "rune.settings.keybindings.edit"
     public static let keyBindingYAML = "rune.settings.keybindings.yaml"
@@ -154,6 +156,8 @@ public enum RuneSettingsKeys {
             skipClusterOnTabNavigationFromSections: false,
             keyBindingLogs: RuneKeyBindingAction.logs.defaultShortcut.storageValue,
             keyBindingSaveLogs: RuneKeyBindingAction.saveLogs.defaultShortcut.storageValue,
+            keyBindingSaveToExportFolder: RuneKeyBindingAction.saveToExportFolder.defaultShortcut.storageValue,
+            keyBindingSaveAndOpen: RuneKeyBindingAction.saveAndOpen.defaultShortcut.storageValue,
             keyBindingShell: RuneKeyBindingAction.shell.defaultShortcut.storageValue,
             keyBindingEdit: RuneKeyBindingAction.edit.defaultShortcut.storageValue,
             keyBindingYAML: RuneKeyBindingAction.yaml.defaultShortcut.storageValue,

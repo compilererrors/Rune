@@ -129,6 +129,57 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRBACFieldsKeepActiveEditorAcrossResponsiveLayoutChanges() async throws {
+        for placeholder in ["Verb", "API group"] {
+            let model = SyntheticRBACResizeModel()
+            let host = NSHostingController(
+                rootView: SyntheticRBACResizeHarness(model: model)
+                    .frame(width: 700, height: 420, alignment: .topLeading)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 700, height: 420),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer {
+                window.orderOut(nil)
+                window.contentViewController = nil
+            }
+
+            try await settle(window: window)
+            let originalField = try XCTUnwrap(
+                editableTextFields(in: host.view).first { $0.placeholderString == placeholder }
+            )
+            window.makeFirstResponder(originalField)
+            try await settle(window: window)
+            let originalEditor = try XCTUnwrap(originalField.currentEditor() as? NSTextView)
+            originalEditor.setSelectedRange(NSRange(location: 2, length: 0))
+
+            model.width = RBACCanILayoutMetrics.compactPanelWidth
+            try await settle(window: window)
+
+            let compactField = try XCTUnwrap(
+                editableTextFields(in: host.view).first { $0.placeholderString == placeholder }
+            )
+            XCTAssertTrue(compactField === originalField, "\(placeholder) field identity changed")
+            XCTAssertTrue(
+                compactField.currentEditor() === originalEditor,
+                "\(placeholder) field editor changed"
+            )
+            XCTAssertTrue(window.firstResponder === originalEditor, "\(placeholder) lost focus")
+            XCTAssertEqual(
+                originalEditor.selectedRange(),
+                NSRange(location: 2, length: 0),
+                "\(placeholder) caret moved"
+            )
+        }
+    }
+
     func testStandaloneAdoptersUseAdaptiveGroupsAndResponsiveEndpoints() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -151,7 +202,7 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
         XCTAssertTrue(rbac.contains("RuneAdaptiveToolbar(\"RBAC access review request\")"))
         XCTAssertTrue(portForward.contains("RuneAdaptiveToolbar(\"Port-forward controls\")"))
         XCTAssertTrue(portForward.contains("PortForwardEndpointFields("))
-        XCTAssertTrue(portForwardControls.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(portForwardControls.contains("PortForwardEndpointLayout"))
         XCTAssertFalse(portForwardControls.contains("ScrollView(.horizontal"))
     }
 
@@ -215,6 +266,26 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
     }
 
     @MainActor
+    private func editableTextFields(in view: NSView) -> [NSTextField] {
+        var fields: [NSTextField] = []
+        if let textField = view as? NSTextField, textField.isEditable {
+            fields.append(textField)
+        }
+        for subview in view.subviews {
+            fields.append(contentsOf: editableTextFields(in: subview))
+        }
+        return fields
+    }
+
+    @MainActor
+    private func settle(window: NSWindow) async throws {
+        for _ in 0..<6 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    @MainActor
     private func settle(
         _ host: NSView,
         until condition: () -> Bool
@@ -224,5 +295,25 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
             if condition() { return }
             RunLoop.main.run(until: Date().addingTimeInterval(0.005))
         }
+    }
+}
+
+@MainActor
+private final class SyntheticRBACResizeModel: ObservableObject {
+    @Published var width: CGFloat = 700
+    let viewModel: RuneAppViewModel
+
+    init() {
+        viewModel = RuneAppViewModel(state: RuneAppState())
+        viewModel.rbacCanIApiGroup = "apps"
+    }
+}
+
+private struct SyntheticRBACResizeHarness: View {
+    @ObservedObject var model: SyntheticRBACResizeModel
+
+    var body: some View {
+        RBACCanISimulatorPanel(viewModel: model.viewModel)
+            .frame(width: model.width)
     }
 }

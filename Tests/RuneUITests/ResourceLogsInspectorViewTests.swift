@@ -20,7 +20,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("enum ResourceLogsPresentationStyle"))
         XCTAssertTrue(source.contains("case terminalCompact"))
         XCTAssertTrue(source.contains("private var terminalCompactBody: some View"))
-        XCTAssertTrue(source.contains("presentationStyle == .terminalCompact ? 8 : 10"))
+        XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorCompactSectionSpacing"))
+        XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorSectionSpacing"))
         XCTAssertTrue(source.contains("LogToolbarGroup"))
         XCTAssertTrue(source.contains("LogToolbarGroup(role: .source)"))
         XCTAssertTrue(source.contains("LogToolbarGroup(spacing: 6)"))
@@ -446,7 +447,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(searchBarSource.contains("prompt: Text(placeholder)"))
         XCTAssertTrue(source.contains("@State private var searchTask: Task<Void, Never>?"))
         XCTAssertTrue(source.contains("querySearchDebounceNanoseconds: UInt64 = 25_000_000"))
-        XCTAssertTrue(source.contains("streamedTextSearchDebounceNanoseconds: UInt64 = 80_000_000"))
+        XCTAssertTrue(source.contains("streamedTextSearchDebounceNanoseconds: UInt64 = 0"))
         XCTAssertTrue(source.contains("streamedTextSummaryDebounceNanoseconds: UInt64 = 120_000_000"))
         XCTAssertTrue(source.contains("actor ResourceLogsLatestWorkLane<Output: Sendable>"))
         XCTAssertTrue(source.contains("Task.detached(priority: priority)"))
@@ -470,9 +471,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("@FocusState private var isSearchFocused"))
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
         XCTAssertTrue(source.contains("RuneMatchCaseButton(isSelected: $matchCase, help: matchCaseHelp)"))
-        XCTAssertTrue(source.contains("let renderSearchResult = searchResult.originalText == logText ? searchResult : nil"))
+        XCTAssertTrue(source.contains("searchResult.isRenderableSnapshot(for: logText)"))
         XCTAssertTrue(source.contains("renderSearchResult: renderSearchResult"))
         XCTAssertTrue(source.contains("navigationSearchResult: activeSearchResult"))
+        XCTAssertTrue(source.contains("onSearchNavigate:"))
+        XCTAssertTrue(searchBarSource.contains("onNavigate()"))
         XCTAssertTrue(source.contains("private func scheduleStructuredSummary(for text: String, debounced: Bool)"))
         XCTAssertFalse(source.contains(".task(id: \"\\(simpleMode):\\(logText)\")"))
     }
@@ -783,6 +786,76 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             try await settle(window: window)
             XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == text }.only) === originalTextView)
         }
+    }
+
+    @MainActor
+    func testLogSearchNavigationCentersActiveMatchAndCanRefocusSameResult() async throws {
+        let text = (0..<420)
+            .map { index in
+                if index == 30 || index == 360 {
+                    return "line-\(index) level=error marker=needle"
+                }
+                return "line-\(index) level=info"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "needle")
+        let model = ResourceLogRenderStabilityModel(text: text, renderResult: result)
+        model.navigationResult = result
+        model.navigationSequence = 1
+        let host = NSHostingController(
+            rootView: ResourceLogRenderStabilityHarness(model: model)
+                .frame(width: 720, height: 360)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 360),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        let textView = try XCTUnwrap(findTextViews(in: host.view).first { $0.string == text })
+        let scrollView = try XCTUnwrap(textView.enclosingScrollView)
+
+        model.selectedMatchIndex = 1
+        model.navigationSequence &+= 1
+        try await settle(window: window)
+
+        XCTAssertEqual(textView.selectedRange(), result.matchRanges[1])
+        assertRangeIsCentered(result.matchRanges[1], in: textView, scrollView: scrollView)
+
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertLessThan(scrollView.contentView.bounds.midY, textView.bounds.midY)
+
+        model.navigationSequence &+= 1
+        try await settle(window: window)
+
+        XCTAssertEqual(textView.selectedRange(), result.matchRanges[1])
+        assertRangeIsCentered(result.matchRanges[1], in: textView, scrollView: scrollView)
+
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let appendedText = text + "\nline-421 level=info"
+        let appendedResult = ResourceLogSearchResult.makeForInspector(
+            text: appendedText,
+            query: "needle"
+        )
+        model.text = appendedText
+        model.renderResult = appendedResult
+        model.navigationResult = appendedResult
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            0,
+            accuracy: 1,
+            "Publishing append-only search ranges without a new navigation sequence must preserve manual scroll."
+        )
     }
 
     @MainActor
@@ -1266,6 +1339,66 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             sharedSource.contains("matchScrollTargetID"),
             "Virtualized log search must use a per-navigation scroll identity so “Next match” still scrolls when the line number is unchanged."
         )
+        XCTAssertTrue(sharedSource.contains("searchMatchRanges"))
+        XCTAssertTrue(sharedSource.contains("highlightedText"))
+        XCTAssertTrue(sharedSource.contains("findHighlightColor"))
+        XCTAssertTrue(sharedSource.contains("easeOut(duration: 0.12)"))
+    }
+
+    @MainActor
+    func testLargeLogSearchNavigationCentersDeepMatch() async throws {
+        let lineCount = 1_400
+        let payload = String(repeating: " synthetic-payload", count: 14)
+        let text = (0..<lineCount)
+            .map { index in
+                let marker = index == 20 || index == 1_200 ? " marker=needle" : ""
+                return "line-\(index)\(marker)\(payload)"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "needle")
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertEqual(result.matchLineNumbers, [21, 1_201])
+
+        let model = ResourceLogRenderStabilityModel(text: text, renderResult: result)
+        model.navigationResult = result
+        model.navigationSequence = 1
+        let host = NSHostingController(
+            rootView: ResourceLogRenderStabilityHarness(model: model)
+                .frame(width: 760, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        model.selectedMatchIndex = 1
+        model.navigationSequence &+= 1
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try await settle(window: window)
+
+        let scrollView = try XCTUnwrap(
+            findScrollViews(in: host.view).max {
+                ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+            }
+        )
+        let documentHeight = try XCTUnwrap(scrollView.documentView?.bounds.height)
+        let estimatedRowHeight = documentHeight / CGFloat(lineCount)
+        let targetMidY = CGFloat(1_200) * estimatedRowHeight + estimatedRowHeight / 2
+        let visibleMidY = scrollView.contentView.bounds.midY
+
+        XCTAssertGreaterThan(scrollView.contentView.bounds.minY, documentHeight * 0.6)
+        XCTAssertLessThan(
+            (targetMidY - visibleMidY).magnitude,
+            max(estimatedRowHeight * 5, scrollView.contentView.bounds.height * 0.22),
+            "The virtualized renderer should place a deep active match near the viewport center."
+        )
     }
 
     /// Regression guard for pod logs that look like long single-line Spring-style rows: the inspector must not stop
@@ -1548,6 +1681,40 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     @MainActor
+    private func assertRangeIsCentered(
+        _ range: NSRange,
+        in textView: NSTextView,
+        scrollView: NSScrollView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            return XCTFail("Missing text layout infrastructure.", file: file, line: line)
+        }
+        layoutManager.ensureLayout(forCharacterRange: range)
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: range,
+            actualCharacterRange: nil
+        )
+        var targetRect = layoutManager.boundingRect(
+            forGlyphRange: glyphRange,
+            in: textContainer
+        )
+        targetRect.origin.x += textView.textContainerOrigin.x
+        targetRect.origin.y += textView.textContainerOrigin.y
+        let visibleBounds = scrollView.contentView.bounds
+
+        XCTAssertLessThan(
+            abs(targetRect.midY - visibleBounds.midY),
+            visibleBounds.height * 0.28,
+            "The active search match should settle near the viewport center.",
+            file: file,
+            line: line
+        )
+    }
+
+    @MainActor
     private func findScrollViews(in view: NSView) -> [NSScrollView] {
         var matches: [NSScrollView] = []
         if let scrollView = view as? NSScrollView {
@@ -1827,6 +1994,7 @@ private final class ResourceLogRenderStabilityModel: ObservableObject {
     @Published var text: String
     @Published var renderResult: ResourceLogSearchResult?
     @Published var navigationResult: ResourceLogSearchResult?
+    @Published var selectedMatchIndex = 0
     @Published var navigationSequence = 0
 
     init(text: String, renderResult: ResourceLogSearchResult?) {
@@ -1846,7 +2014,7 @@ private struct ResourceLogRenderStabilityHarness: View {
             logText: model.text,
             renderSearchResult: model.renderResult,
             navigationSearchResult: model.navigationResult,
-            selectedSearchMatchIndex: 0,
+            selectedSearchMatchIndex: model.selectedMatchIndex,
             searchNavigationSequence: model.navigationSequence,
             emptyTitle: "No output",
             emptyMessage: "No synthetic output.",

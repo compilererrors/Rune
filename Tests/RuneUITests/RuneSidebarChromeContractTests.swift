@@ -1276,6 +1276,21 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeKubeConfigImportIntegrationTests/testAddClusterImportPublishesAndActivatesBothDockerComposeContexts"))
         XCTAssertTrue(source.contains("swift test --disable-sandbox --filter RuneDockerComposeViewModelIntegrationTests"))
         XCTAssertTrue(source.contains("can_bind_loopback_socket"))
+        XCTAssertTrue(source.contains("K3S_IMAGE=\"${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}\""))
+        XCTAssertTrue(source.contains("docker_compose_server_version"))
+        XCTAssertTrue(source.contains("assert_docker_server_versions"))
+        XCTAssertTrue(source.contains("read_server_git_version fake-orbit-mesh"))
+        XCTAssertTrue(source.contains("read_server_git_version fake-lattice-spark"))
+        XCTAssertTrue(source.contains("docker_compose_wait_fixture_ready"))
+        XCTAssertTrue(source.contains("wait_for_docker_fixture_readiness"))
+        XCTAssertTrue(source.contains("rollout status deployment/local-path-provisioner --timeout=180s"))
+        XCTAssertTrue(source.contains("wait --for=condition=Ready pod/alpha-log-matrix --timeout=180s"))
+        XCTAssertTrue(source.contains("rollout status statefulset/orbit-vault --timeout=180s"))
+        XCTAssertTrue(source.contains("rollout status statefulset/delta-vault-core --timeout=180s"))
+        XCTAssertTrue(source.contains("logs pod/alpha-previous-log-probe -c crasher --previous"))
+        XCTAssertTrue(source.contains("Previous-log probe is readable."))
+        XCTAssertTrue(source.contains("\"observedServerVersions\""))
+        XCTAssertTrue(source.contains("Test Case .* skipped"))
         XCTAssertTrue(source.contains("Skipped because this environment cannot bind local loopback sockets."))
         XCTAssertTrue(source.contains("return \"$exit_code\""))
         XCTAssertTrue(source.contains("DOCKER_READY=1"))
@@ -1302,7 +1317,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("if [[ \"$SKIP_DOCKER\" == \"1\" ]]"))
         XCTAssertTrue(source.contains("Skipped because RUNE_SKIP_DOCKER_FAKE_K8S defaults to 1."))
         XCTAssertTrue(source.contains("RERUN_COMMAND=\"RUNE_SKIP_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh\""))
-        XCTAssertTrue(source.contains("RERUN_COMMAND=\"RUNE_SKIP_DOCKER_FAKE_K8S=0 RUNE_RESET_DOCKER_FAKE_K8S=$RERUN_RESET_DOCKER scripts/run-local-k8s-integration-report.sh\""))
+        XCTAssertTrue(source.contains("RERUN_COMMAND=\"RUNE_K3S_IMAGE=$K3S_IMAGE_SHELL RUNE_SKIP_DOCKER_FAKE_K8S=0 RUNE_RESET_DOCKER_FAKE_K8S=$RERUN_RESET_DOCKER scripts/run-local-k8s-integration-report.sh\""))
         XCTAssertTrue(source.contains("$RERUN_COMMAND"))
         XCTAssertTrue(source.contains("safe_docker_kubeconfig_check"))
         XCTAssertTrue(source.contains("grep -q 'name: fake-orbit-mesh'"))
@@ -1312,6 +1327,35 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(readme.contains("The default report run exercises the script and REST fake-cluster suites without starting Docker Compose."))
         XCTAssertTrue(readme.contains("RUNE_SKIP_DOCKER_FAKE_K8S=0 RUNE_RESET_DOCKER_FAKE_K8S=1 scripts/run-local-k8s-integration-report.sh"))
         XCTAssertFalse(readme.contains("resets only the local `rune-fake-k8s` Docker Compose project by default"))
+    }
+
+    func testLocalK8sVersionMatrixRunsSameSuiteAtMaintainedBoundaries() throws {
+        let matrix = try String(contentsOfFile: localK8sVersionMatrixScriptPath, encoding: .utf8)
+        let reportRunner = try String(contentsOfFile: localK8sIntegrationReportScriptPath, encoding: .utf8)
+        let compose = try String(contentsOfFile: dockerComposeFilePath, encoding: .utf8)
+        let readme = try String(contentsOfFile: dockerComposeReadmePath, encoding: .utf8)
+        let imageInterpolation = "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
+
+        XCTAssertEqual(compose.components(separatedBy: imageInterpolation).count - 1, 4)
+        XCTAssertFalse(compose.contains("rancher/k3s:v1.28.5-k3s1"))
+
+        XCTAssertTrue(matrix.contains("MINIMUM_K3S_IMAGE=\"${RUNE_MINIMUM_K3S_IMAGE:-rancher/k3s:v1.34.9-k3s1}\""))
+        XCTAssertTrue(matrix.contains("MINIMUM_KUBERNETES_VERSION=\"${RUNE_MINIMUM_KUBERNETES_VERSION:-v1.34.9}\""))
+        XCTAssertTrue(matrix.contains("CURRENT_K3S_IMAGE=\"${RUNE_CURRENT_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}\""))
+        XCTAssertTrue(matrix.contains("CURRENT_KUBERNETES_VERSION=\"${RUNE_CURRENT_KUBERNETES_VERSION:-v1.36.2}\""))
+        XCTAssertTrue(matrix.contains("run_lane minimum \"$MINIMUM_K3S_IMAGE\" \"$MINIMUM_KUBERNETES_VERSION\""))
+        XCTAssertTrue(matrix.contains("run_lane current \"$CURRENT_K3S_IMAGE\" \"$CURRENT_KUBERNETES_VERSION\""))
+        XCTAssertTrue(matrix.contains("RUNE_RESET_DOCKER_FAKE_K8S=1"))
+        XCTAssertTrue(matrix.contains("\"$REPORT_RUNNER\""))
+        XCTAssertTrue(matrix.contains("cleanup_stack"))
+        XCTAssertTrue(matrix.contains("must use an exact pinned K3s image, not latest/stable."))
+
+        XCTAssertTrue(reportRunner.contains("RUNE_EXPECTED_KUBERNETES_VERSION"))
+        XCTAssertTrue(reportRunner.contains("\"${ORBIT_SERVER_VERSION%%+*}\" == \"$EXPECTED_KUBERNETES_VERSION\""))
+        XCTAssertTrue(reportRunner.contains("\"${LATTICE_SERVER_VERSION%%+*}\" == \"$EXPECTED_KUBERNETES_VERSION\""))
+        XCTAssertTrue(readme.contains("Minimum maintained baseline: K3s `v1.34.9-k3s1`, Kubernetes `v1.34.9`"))
+        XCTAssertTrue(readme.contains("Current baseline: K3s `v1.36.2-k3s1`, Kubernetes `v1.36.2`"))
+        XCTAssertTrue(readme.contains("scripts/run-local-k8s-version-matrix.sh"))
     }
 
     func testDockerComposeLogMatrixPodEmitsFastDeterministicLogs() throws {
@@ -1353,10 +1397,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(source.contains("RuneIconButton(\"Find in terminal\", systemImage: \"magnifyingglass\")"))
         XCTAssertTrue(source.contains("NSColor.systemYellow.withAlphaComponent"))
         XCTAssertTrue(source.contains("textView.scrollRangeToVisible(activeRange)"))
-        XCTAssertTrue(source.contains("TerminalSearchCursorModifier"))
-        XCTAssertTrue(source.contains(".terminalSearchCursor(.arrow)"))
-        XCTAssertFalse(source.contains(".terminalSearchCursor(.iBeam)"))
-        XCTAssertTrue(source.contains("cursor.push()"))
+        XCTAssertTrue(source.contains(".runeTextInputCursor()"))
+        XCTAssertFalse(source.contains("TerminalSearchCursorModifier"))
+        XCTAssertFalse(source.contains(".terminalSearchCursor("))
     }
 
     func testTerminalTranscriptSupportsNativeClipboardAndContextMenu() throws {
@@ -2947,8 +2990,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(importReviewPanelSource.contains(".accessibilityLabel(\"Saving kubeconfig import\")"))
         XCTAssertTrue(importReviewPanelSource.contains("doc.text.magnifyingglass"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Import metadata\")"))
-        XCTAssertTrue(importReviewPanelSource.contains("TextField(\"Alias\""))
-        XCTAssertTrue(importReviewPanelSource.contains("TextField(\"Tags\""))
+        XCTAssertEqual(
+            importReviewPanelSource.components(separatedBy: "KubeConfigImportMetadataDraftField(").count - 1,
+            5
+        )
+        for title in ["Alias", "Group", "Color key", "Icon", "Tags"] {
+            XCTAssertTrue(importReviewPanelSource.contains("\"\(title)\","))
+        }
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Full review\")"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Contexts"))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Issues"))
@@ -3547,7 +3595,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("@State private var helmBrowserTab: HelmBrowserTab = .releases"))
         XCTAssertTrue(rootViewSource.contains("RuneSegmentedPickerInScroll("))
         XCTAssertFalse(rootViewSource.contains("RuneAdaptiveSegmentedPicker("))
-        XCTAssertTrue(rootViewSource.contains("get: { helmBrowserTab }"))
+        XCTAssertTrue(rootViewSource.contains("private var effectiveHelmBrowserTab: HelmBrowserTab"))
+        XCTAssertTrue(rootViewSource.contains("if viewModel.state.selectedOperatorResource != nil"))
+        XCTAssertTrue(rootViewSource.contains("get: { effectiveHelmBrowserTab }"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
         XCTAssertTrue(rootViewSource.contains("case .releases:"))
         XCTAssertTrue(rootViewSource.contains("helmReleaseBrowser"))
@@ -3974,7 +4024,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(arrowGuardBlock.contains("event.keyCode == 123 || event.keyCode == 124"))
         XCTAssertTrue(arrowGuardBlock.contains("keyboardPaneFocus == .detail || (keyboardPaneFocus == .content && viewModel.state.selectedSection != .terminal)"))
         XCTAssertTrue(arrowGuardBlock.contains("[.command, .option, .control, .shift, .function]"))
-        XCTAssertTrue(rootViewSource.contains("let nextTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(rootViewSource.contains("let nextTab = advancedTab(current: effectiveHelmBrowserTab, direction: direction)"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)"))
         XCTAssertTrue(detailMoveBlock.contains("case .operatorResource:"))
         XCTAssertTrue(detailMoveBlock.contains("genericResourceManifestTab = advancedTab(current: genericResourceManifestTab, direction: direction)"))
@@ -4014,7 +4064,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: rootViewSource
         )
 
-        XCTAssertTrue(moveSelectionBlock.contains("switch helmBrowserTab"))
+        XCTAssertTrue(moveSelectionBlock.contains("switch effectiveHelmBrowserTab"))
         XCTAssertTrue(moveSelectionBlock.contains("case .releases:"))
         XCTAssertTrue(moveSelectionBlock.contains("items: viewModel.visibleHelmReleases"))
         XCTAssertTrue(moveSelectionBlock.contains("case .operatorResources:"))
@@ -4030,7 +4080,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: rootViewSource
         )
 
-        XCTAssertTrue(moveKindBlock.contains("let nextTab = advancedTab(current: helmBrowserTab, direction: direction)"))
+        XCTAssertTrue(moveKindBlock.contains("let nextTab = advancedTab(current: effectiveHelmBrowserTab, direction: direction)"))
         XCTAssertTrue(moveKindBlock.contains("helmBrowserTab = nextTab"))
         XCTAssertTrue(moveKindBlock.contains("viewModel.setHelmBrowserResourceFamily(nextTab.resourceListFamily)"))
     }
@@ -4068,6 +4118,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(keyBindingsSource.contains("case edit"))
         XCTAssertTrue(keyBindingsSource.contains("case delete"))
         XCTAssertTrue(keyBindingsSource.contains("case saveLogs"))
+        XCTAssertTrue(keyBindingsSource.contains("case saveToExportFolder"))
+        XCTAssertTrue(keyBindingsSource.contains("case saveAndOpen"))
         XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \":\", requiresShift: false)"))
         XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \"/\", requiresShift: false)"))
         XCTAssertTrue(keyBindingsSource.contains("RuneKeyboardShortcut(key: \"e\", requiresShift: false)"))
@@ -4078,6 +4130,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("return focusResourceFilterFromKeyBinding()"))
         XCTAssertTrue(rootViewSource.contains("return openYAMLEditorForSelection()"))
         XCTAssertTrue(rootViewSource.contains("return saveCurrentDetailFromKeyBinding()"))
+        XCTAssertTrue(rootViewSource.contains("return saveCurrentDetailToExportFolder(openAfterSave: false)"))
+        XCTAssertTrue(rootViewSource.contains("return saveCurrentDetailToExportFolder(openAfterSave: true)"))
+        XCTAssertTrue(rootViewSource.contains(".onChange(of: viewModel.workspaceCommandRequest)"))
+        XCTAssertTrue(rootViewSource.contains("handleWorkspaceCommand(request.command)"))
         XCTAssertTrue(rootViewSource.contains("return deleteSelectionFromKeyBinding()"))
     }
 
@@ -4104,6 +4160,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmValues()"))
         XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmManifest()"))
         XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmHistory()"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentResourceDescribeToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentRolloutHistoryToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmValuesToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmManifestToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveCurrentHelmHistoryToExportFolder(openAfterSave: openAfterSave)"))
+        XCTAssertTrue(saveBlock.contains("viewModel.saveActiveTerminalTranscriptToExportFolder(openAfterSave: openAfterSave)"))
     }
 
     func testAppCommandsExposeHistoryArrowShortcuts() throws {
@@ -4790,6 +4854,24 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot.appendingPathComponent("scripts/run-local-k8s-integration-report.sh").path
+    }
+
+    private var localK8sVersionMatrixScriptPath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("scripts/run-local-k8s-version-matrix.sh").path
+    }
+
+    private var dockerComposeFilePath: String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("docker-compose/docker-compose.fake-k8s.yml").path
     }
 
     private var dockerComposeReadmePath: String {

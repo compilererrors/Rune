@@ -171,6 +171,7 @@ struct FavoritePodPicker: View {
             }
         }
         .frame(width: max(width, 280))
+        .runePointerCursor()
     }
 
     private func podRow(_ pod: PodSummary) -> some View {

@@ -1,3 +1,4 @@
+import AppKit
 import RuneSharedCore
 import SwiftUI
 
@@ -77,16 +78,28 @@ public struct RuneLargeTextSurface: View {
     private let placeholder: String
     private let scrollTargetLine: Int?
     private let scrollTargetRevision: Int?
+    private let scrollsOnTargetLineChange: Bool
+    private let searchMatchRanges: [NSRange]
+    private let selectedSearchMatchIndex: Int
+    private let horizontalContentInset: CGFloat
+    private let verticalContentInset: CGFloat
     private let showsLineNumbers: Bool
     private let fontSize: CGFloat
     private let onNearBottomChange: (Bool) -> Void
     @State private var verticalOffset: CGFloat = 0
+    @State private var pendingSearchScrollTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     public init(
         text: String,
         placeholder: String = "No output",
         scrollTargetLine: Int? = nil,
         scrollTargetRevision: Int? = nil,
+        scrollsOnTargetLineChange: Bool = true,
+        searchMatchRanges: [NSRange] = [],
+        selectedSearchMatchIndex: Int = 0,
+        horizontalContentInset: CGFloat = 10,
+        verticalContentInset: CGFloat = 8,
         showsLineNumbers: Bool = true,
         fontSize: CGFloat = 12,
         onNearBottomChange: @escaping (Bool) -> Void = { _ in }
@@ -95,6 +108,11 @@ public struct RuneLargeTextSurface: View {
         self.placeholder = placeholder
         self.scrollTargetLine = scrollTargetLine
         self.scrollTargetRevision = scrollTargetRevision
+        self.scrollsOnTargetLineChange = scrollsOnTargetLineChange
+        self.searchMatchRanges = searchMatchRanges
+        self.selectedSearchMatchIndex = selectedSearchMatchIndex
+        self.horizontalContentInset = horizontalContentInset
+        self.verticalContentInset = verticalContentInset
         self.showsLineNumbers = showsLineNumbers
         self.fontSize = fontSize
         self.onNearBottomChange = onNearBottomChange
@@ -105,6 +123,11 @@ public struct RuneLargeTextSurface: View {
         placeholder: String = "No output",
         scrollTargetLine: Int? = nil,
         scrollTargetRevision: Int? = nil,
+        scrollsOnTargetLineChange: Bool = true,
+        searchMatchRanges: [NSRange] = [],
+        selectedSearchMatchIndex: Int = 0,
+        horizontalContentInset: CGFloat = 10,
+        verticalContentInset: CGFloat = 8,
         showsLineNumbers: Bool = true,
         fontSize: CGFloat = 12,
         onNearBottomChange: @escaping (Bool) -> Void = { _ in }
@@ -113,6 +136,11 @@ public struct RuneLargeTextSurface: View {
         self.placeholder = placeholder
         self.scrollTargetLine = scrollTargetLine
         self.scrollTargetRevision = scrollTargetRevision
+        self.scrollsOnTargetLineChange = scrollsOnTargetLineChange
+        self.searchMatchRanges = searchMatchRanges
+        self.selectedSearchMatchIndex = selectedSearchMatchIndex
+        self.horizontalContentInset = horizontalContentInset
+        self.verticalContentInset = verticalContentInset
         self.showsLineNumbers = showsLineNumbers
         self.fontSize = fontSize
         self.onNearBottomChange = onNearBottomChange
@@ -128,7 +156,8 @@ public struct RuneLargeTextSurface: View {
                             .font(.system(size: fontSize, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(10)
+                            .padding(.horizontal, horizontalContentInset)
+                            .padding(.vertical, verticalContentInset)
                     } else {
                         sparseContent(viewportHeight: viewportHeight)
                     }
@@ -152,13 +181,18 @@ public struct RuneLargeTextSurface: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             .onAppear {
-                scrollToActiveSearchTarget(proxy: proxy)
+                scheduleScrollToActiveSearchTarget(proxy: proxy)
             }
             .onChange(of: scrollTargetLine) { _, _ in
-                scrollToActiveSearchTarget(proxy: proxy)
+                if scrollsOnTargetLineChange {
+                    scheduleScrollToActiveSearchTarget(proxy: proxy)
+                }
             }
             .onChange(of: scrollTargetRevision) { _, _ in
-                scrollToActiveSearchTarget(proxy: proxy)
+                scheduleScrollToActiveSearchTarget(proxy: proxy)
+            }
+            .onDisappear {
+                pendingSearchScrollTask?.cancel()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -181,7 +215,7 @@ public struct RuneLargeTextSurface: View {
     }
 
     private var verticalPadding: CGFloat {
-        8
+        max(0, verticalContentInset)
     }
 
     private var lineNumberColumnWidth: CGFloat {
@@ -206,27 +240,31 @@ public struct RuneLargeTextSurface: View {
             .frame(width: 1, height: 1)
 
             if let targetLine {
-                Color.clear
-                    .frame(width: 1, height: 1)
-                    .offset(y: yOffset(for: targetLine))
-                    .id(matchScrollTargetID(for: targetLine))
+                scrollAnchor(
+                    y: yOffset(for: targetLine),
+                    contentHeight: CGFloat(contentHeight),
+                    id: matchScrollTargetID(for: targetLine)
+                )
             }
 
             if index.lineCount > 0, targetLine != index.lineCount {
-                Color.clear
-                    .frame(width: 1, height: 1)
-                    .offset(y: yOffset(for: index.lineCount))
-                    .id(bottomScrollTargetID(for: index.lineCount))
+                scrollAnchor(
+                    y: yOffset(for: index.lineCount),
+                    contentHeight: CGFloat(contentHeight),
+                    id: bottomScrollTargetID(for: index.lineCount)
+                )
             }
 
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(visible.lines, id: \.number) { line in
                     RuneLargeTextLineRow(
                         line: line,
+                        searchMatches: searchMatches(in: line),
                         showsLineNumbers: showsLineNumbers,
                         fontSize: fontSize,
                         lineNumberWidth: lineNumberColumnWidth,
-                        isTargetLine: line.number == targetLine
+                        horizontalContentInset: horizontalContentInset,
+                        isActiveSearchLine: line.number == targetLine && activeSearchRange != nil
                     )
                     .frame(height: rowHeight, alignment: .topLeading)
                 }
@@ -235,6 +273,18 @@ public struct RuneLargeTextSurface: View {
             .offset(y: yOffset(for: visible.startLine))
         }
         .frame(minWidth: 1, minHeight: CGFloat(contentHeight), alignment: .topLeading)
+    }
+
+    private func scrollAnchor(y: CGFloat, contentHeight: CGFloat, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear
+                .frame(width: 1, height: max(0, y))
+            Color.clear
+                .frame(width: 1, height: 1)
+                .id(id)
+            Spacer(minLength: 0)
+        }
+        .frame(width: 1, height: contentHeight, alignment: .topLeading)
     }
 
     private func visibleViewport(viewportHeight: CGFloat) -> RuneLargeTextViewport {
@@ -266,9 +316,65 @@ public struct RuneLargeTextSurface: View {
         return maxOffset - verticalOffset < rowHeight * 2
     }
 
-    private func scrollToActiveSearchTarget(proxy: ScrollViewProxy) {
+    private var activeSearchRange: NSRange? {
+        guard !searchMatchRanges.isEmpty else { return nil }
+        let activeIndex = min(max(selectedSearchMatchIndex, 0), searchMatchRanges.count - 1)
+        return searchMatchRanges[activeIndex]
+    }
+
+    private func searchMatches(in line: RuneLargeTextLine) -> [RuneLargeTextLineSearchMatch] {
+        guard !searchMatchRanges.isEmpty, line.contentRange.length > 0 else { return [] }
+
+        let lineStart = line.contentRange.location
+        let lineEnd = NSMaxRange(line.contentRange)
+        var lower = 0
+        var upper = searchMatchRanges.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if NSMaxRange(searchMatchRanges[middle]) <= lineStart {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        let activeIndex = min(max(selectedSearchMatchIndex, 0), searchMatchRanges.count - 1)
+        var index = lower
+        var matches: [RuneLargeTextLineSearchMatch] = []
+        while index < searchMatchRanges.count {
+            let match = searchMatchRanges[index]
+            guard match.location < lineEnd else { break }
+            let intersection = NSIntersectionRange(match, line.contentRange)
+            if intersection.length > 0 {
+                matches.append(RuneLargeTextLineSearchMatch(
+                    range: NSRange(
+                        location: intersection.location - lineStart,
+                        length: intersection.length
+                    ),
+                    isActive: index == activeIndex
+                ))
+            }
+            index += 1
+        }
+        return matches
+    }
+
+    private func scheduleScrollToActiveSearchTarget(proxy: ScrollViewProxy) {
+        pendingSearchScrollTask?.cancel()
         guard let line = scrollTargetLine, line > 0, line <= index.lineCount else { return }
-        proxy.scrollTo(matchScrollTargetID(for: line), anchor: .center)
+        let targetID = matchScrollTargetID(for: line)
+        let shouldAnimate = activeSearchRange != nil && !accessibilityReduceMotion
+        pendingSearchScrollTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            if shouldAnimate {
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(targetID, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(targetID, anchor: .center)
+            }
+        }
     }
 
     private func clampScrollIfNeeded(proxy: ScrollViewProxy, viewportHeight: CGFloat) {
@@ -292,12 +398,20 @@ public struct RuneLargeTextSurface: View {
     }
 }
 
+private struct RuneLargeTextLineSearchMatch {
+    let range: NSRange
+    let isActive: Bool
+}
+
 private struct RuneLargeTextLineRow: View {
     let line: RuneLargeTextLine
+    let searchMatches: [RuneLargeTextLineSearchMatch]
     let showsLineNumbers: Bool
     let fontSize: CGFloat
     let lineNumberWidth: CGFloat
-    let isTargetLine: Bool
+    let horizontalContentInset: CGFloat
+    let isActiveSearchLine: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -309,15 +423,61 @@ private struct RuneLargeTextLineRow: View {
                     .textSelection(.disabled)
             }
 
-            Text(line.text.isEmpty ? " " : line.text)
+            Text(highlightedText)
                 .font(.system(size: fontSize, weight: .regular, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, max(0, horizontalContentInset))
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(isTargetLine ? Color.accentColor.opacity(0.16) : Color.clear)
+        .background {
+            if isActiveSearchLine {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.20 : 0.14))
+            }
+        }
+        .overlay {
+            if isActiveSearchLine {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.86), lineWidth: 1)
+            }
+        }
+    }
+
+    private var highlightedText: AttributedString {
+        let source = line.text.isEmpty ? " " : line.text
+        var attributed = AttributedString(source)
+        guard !line.text.isEmpty else { return attributed }
+
+        for match in searchMatches {
+            guard let stringRange = Range(match.range, in: line.text),
+                  let lower = AttributedString.Index(stringRange.lowerBound, within: attributed),
+                  let upper = AttributedString.Index(stringRange.upperBound, within: attributed)
+            else {
+                continue
+            }
+
+            let range = lower..<upper
+            if match.isActive {
+                attributed[range].backgroundColor = Color.accentColor.opacity(
+                    colorScheme == .dark ? 0.64 : 0.42
+                )
+                attributed[range].underlineStyle = Text.LineStyle(
+                    pattern: .solid,
+                    color: Color.accentColor
+                )
+            } else {
+                attributed[range].backgroundColor = Color(nsColor: .findHighlightColor).opacity(
+                    colorScheme == .dark ? 0.52 : 0.62
+                )
+                attributed[range].underlineStyle = Text.LineStyle(
+                    pattern: .solid,
+                    color: Color(nsColor: .systemOrange)
+                )
+            }
+        }
+        return attributed
     }
 }
 

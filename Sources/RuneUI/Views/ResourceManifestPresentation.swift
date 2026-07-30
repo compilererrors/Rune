@@ -124,15 +124,29 @@ struct ManifestActionToolbar<PrimaryActions: View, SecondaryActions: View>: View
     }
 }
 
+struct ManifestEditorUndoButton: View {
+    let canUndo: Bool
+    let onUndo: () -> Void
+
+    var body: some View {
+        Button(action: onUndo) {
+            Label("Undo", systemImage: "arrow.uturn.backward")
+        }
+        .buttonStyle(.bordered)
+        .disabled(!canUndo)
+        .help(canUndo ? "Undo the last local YAML edit (⌘Z)." : "No local YAML edit to undo.")
+        .keyboardShortcut("z", modifiers: [.command])
+        .accessibilityIdentifier("manifest-editor-undo")
+    }
+}
+
 struct ManifestYAMLActionMenus: View {
     let draftTitle: String
     let fileTitle: String
     let yamlTextIsEmpty: Bool
     let hasUnsavedEdits: Bool
-    let canUndoEdit: Bool
     let canReapplySnapshot: Bool
     let onReapplySnapshot: () -> Void
-    let onUndoEdit: () -> Void
     let onRevert: () -> Void
     let onImport: () -> Void
     let onExport: () -> Void
@@ -146,10 +160,6 @@ struct ManifestYAMLActionMenus: View {
                 .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
 
             Divider()
-
-            Button("Undo Draft Edit", action: onUndoEdit)
-                .disabled(!canUndoEdit)
-                .help("Restore the previous local YAML draft.")
 
             Button("Revert Draft", action: onRevert)
                 .disabled(!hasUnsavedEdits)
@@ -197,6 +207,7 @@ struct ManifestToolbarScrollRow<Content: View>: View {
         }
         .runeInterfaceFont(relativeSize: -1, weight: .medium)
         .controlSize(usesRegularControls ? .regular : .small)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var usesRegularControls: Bool {
@@ -221,7 +232,7 @@ enum ManifestToolbarGroupRole {
     var verticalPadding: CGFloat {
         switch self {
         case .action:
-            return 6
+            return RuneUILayoutMetrics.inspectorControlSurfaceVerticalPadding
         case .source:
             return RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding
         }

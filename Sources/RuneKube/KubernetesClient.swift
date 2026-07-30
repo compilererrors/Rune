@@ -2620,18 +2620,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
-        if isLikelyTransportValidationOutput(trimmed) {
-            return [
-                YAMLValidationIssue(
-                    source: .transport,
-                    severity: .warning,
-                    message: normalizeValidationMessage(trimmed)
-                )
-            ]
-        }
-
         var issues = parseLineScopedValidationIssues(from: trimmed, yaml: yaml)
-        issues.append(contentsOf: parseKubernetesValidationIssues(from: trimmed))
+        issues.append(contentsOf: parseKubernetesValidationIssues(from: trimmed, yaml: yaml))
 
         if !issues.isEmpty {
             return deduplicatedValidationIssues(issues)
@@ -2642,6 +2632,16 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 YAMLValidationIssue(
                     source: .kubernetes,
                     severity: .error,
+                    message: normalizeValidationMessage(trimmed)
+                )
+            ]
+        }
+
+        if isLikelyTransportValidationOutput(trimmed) {
+            return [
+                YAMLValidationIssue(
+                    source: .transport,
+                    severity: .warning,
                     message: normalizeValidationMessage(trimmed)
                 )
             ]
@@ -2679,7 +2679,14 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
     }
 
-    private static func parseKubernetesValidationIssues(from output: String) -> [YAMLValidationIssue] {
+    private static func parseKubernetesValidationIssues(
+        from output: String,
+        yaml: String
+    ) -> [YAMLValidationIssue] {
+        if let typedPatchIssue = parseTypedPatchValidationIssue(from: output, yaml: yaml) {
+            return [typedPatchIssue]
+        }
+
         let pattern = #"ValidationError\(([^)]+)\):\s*([^;\n\]]+)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         let nsOutput = output as NSString
@@ -2710,6 +2717,74 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
 
         return []
+    }
+
+    private static func parseTypedPatchValidationIssue(
+        from output: String,
+        yaml: String
+    ) -> YAMLValidationIssue? {
+        let pattern = #"\.([A-Za-z0-9_.\-\[\]]+):\s*expected numeric \(int or float\),\s*got\s+[A-Za-z0-9_-]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+
+        let nsOutput = output as NSString
+        guard let match = regex.firstMatch(
+            in: output,
+            range: NSRange(location: 0, length: nsOutput.length)
+        ), match.numberOfRanges >= 2 else {
+            return nil
+        }
+
+        let fieldPath = nsOutput.substring(with: match.range(at: 1))
+        let location = validationLocation(forFieldPath: fieldPath, in: yaml)
+        return YAMLValidationIssue(
+            source: .kubernetes,
+            severity: .error,
+            message: "`\(fieldPath)` must be a number. Fix or remove the field before applying.",
+            line: location?.line,
+            column: location?.column,
+            range: location?.range
+        )
+    }
+
+    private static func validationLocation(
+        forFieldPath fieldPath: String,
+        in yaml: String
+    ) -> (line: Int, column: Int, range: YAMLValidationRange?)? {
+        guard let key = fieldPath.split(separator: ".").last.map(String.init),
+              !key.isEmpty
+        else {
+            return nil
+        }
+
+        let pattern = #"^([ \t]*)"# + NSRegularExpression.escapedPattern(for: key) + #"\s*:"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let lines = yaml.split(
+            omittingEmptySubsequences: false,
+            whereSeparator: \.isNewline
+        ).map(String.init)
+        for (index, line) in lines.enumerated() {
+            let nsLine = line as NSString
+            guard let match = regex.firstMatch(
+                in: line,
+                range: NSRange(location: 0, length: nsLine.length)
+            ) else {
+                continue
+            }
+
+            let lineNumber = index + 1
+            return (
+                line: lineNumber,
+                column: match.range(at: 1).length + 1,
+                range: validationRange(in: yaml, line: lineNumber)
+            )
+        }
+
+        return nil
     }
 
     private static func validationRange(in yaml: String, line: Int) -> YAMLValidationRange? {
@@ -2790,7 +2865,12 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
     private static func isLikelyTransportValidationOutput(_ output: String) -> Bool {
         let lowered = output.lowercased()
-        return lowered.contains("unable to connect to the server")
+        let isServerFailureStatus = lowered.range(
+            of: #"\bhttp\s+5\d\d\b"#,
+            options: .regularExpression
+        ) != nil
+        return isServerFailureStatus
+            || lowered.contains("unable to connect to the server")
             || lowered.contains("timed out")
             || lowered.contains("connection refused")
             || lowered.contains("i/o timeout")

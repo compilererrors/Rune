@@ -42,11 +42,15 @@ struct InspectorReadOnlyTextView: View {
     var largeTextIndex: RuneLargeTextIndex?
     var largeTextScrollTargetLine: Int?
     var largeTextScrollTargetRevision: Int?
-    var largeTextShowsLineNumbers = true
+    var largeTextScrollsOnTargetLineChange = true
+    var largeTextShowsLineNumbers = false
     var showsLineNumbers = false
     var searchQuery = ""
     var searchMatchCase = false
     var selectedSearchMatchIndex = 0
+    var searchIndex: InspectorFindIndex?
+    var searchMatchRanges: [NSRange]?
+    var searchNavigationRevision = 0
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var appFontSize = RuneSettingsKeys.terminalFontSizeDefault
 
     private var shouldUseLargeTextSurface: Bool {
@@ -54,23 +58,41 @@ struct InspectorReadOnlyTextView: View {
     }
 
     var body: some View {
+        let resolvedSearchRanges = searchMatchRanges ?? searchIndex?.ranges
+        let searchTargetLine = searchIndex?.matchLineNumber(selectedIndex: selectedSearchMatchIndex)
+        let resolvedLargeTextIndex = largeTextIndex ?? searchIndex?.textIndex
+
         Group {
             if shouldUseLargeTextSurface {
-                if let largeTextIndex {
+                if let resolvedLargeTextIndex {
                     RuneLargeTextSurface(
-                        index: largeTextIndex,
+                        index: resolvedLargeTextIndex,
                         placeholder: "No output",
-                        scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
-                        scrollTargetRevision: largeTextScrollTargetRevision ?? navigationRequest?.sequence,
+                        scrollTargetLine: largeTextScrollTargetLine ?? searchTargetLine ?? navigationRequest?.line,
+                        scrollTargetRevision: largeTextScrollTargetRevision
+                            ?? (searchTargetLine == nil ? navigationRequest?.sequence : searchNavigationRevision),
+                        scrollsOnTargetLineChange: largeTextScrollsOnTargetLineChange,
+                        searchMatchRanges: resolvedSearchRanges ?? [],
+                        selectedSearchMatchIndex: selectedSearchMatchIndex,
+                        horizontalContentInset: RuneUILayoutMetrics.inspectorDocumentHorizontalInset,
+                        verticalContentInset: RuneUILayoutMetrics.inspectorDocumentVerticalInset,
                         showsLineNumbers: largeTextShowsLineNumbers,
                         fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
                     )
+                } else if searchMatchRanges != nil {
+                    ProgressView("Preparing text…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
                     RuneLargeTextSurface(
                         text: text,
                         placeholder: "No output",
                         scrollTargetLine: largeTextScrollTargetLine ?? navigationRequest?.line,
                         scrollTargetRevision: largeTextScrollTargetRevision ?? navigationRequest?.sequence,
+                        scrollsOnTargetLineChange: largeTextScrollsOnTargetLineChange,
+                        searchMatchRanges: resolvedSearchRanges ?? [],
+                        selectedSearchMatchIndex: selectedSearchMatchIndex,
+                        horizontalContentInset: RuneUILayoutMetrics.inspectorDocumentHorizontalInset,
+                        verticalContentInset: RuneUILayoutMetrics.inspectorDocumentVerticalInset,
                         showsLineNumbers: largeTextShowsLineNumbers,
                         fontSize: CGFloat(RuneSettingsKeys.clampedTerminalFontSize(appFontSize))
                     )
@@ -86,7 +108,9 @@ struct InspectorReadOnlyTextView: View {
                     showsLineNumbers: showsLineNumbers,
                     searchQuery: searchQuery,
                     searchMatchCase: searchMatchCase,
-                    selectedSearchMatchIndex: selectedSearchMatchIndex
+                    selectedSearchMatchIndex: selectedSearchMatchIndex,
+                    searchMatchRanges: resolvedSearchRanges,
+                    searchNavigationRevision: searchNavigationRevision
                 )
             }
         }
@@ -126,11 +150,18 @@ struct InspectorPlainTextScrollSurface: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(
-                            minWidth: max(0, proxy.size.width - 20),
-                            minHeight: max(0, proxy.size.height - 20),
+                            minWidth: max(
+                                0,
+                                proxy.size.width - RuneUILayoutMetrics.inspectorDocumentHorizontalInset * 2
+                            ),
+                            minHeight: max(
+                                0,
+                                proxy.size.height - RuneUILayoutMetrics.inspectorDocumentVerticalInset * 2
+                            ),
                             alignment: .topLeading
                         )
-                        .padding(10)
+                        .padding(.horizontal, RuneUILayoutMetrics.inspectorDocumentHorizontalInset)
+                        .padding(.vertical, RuneUILayoutMetrics.inspectorDocumentVerticalInset)
                 }
                 .id("\(resetID):\(text.count)")
             }

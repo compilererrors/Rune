@@ -1479,7 +1479,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testStableLogInspectorToolbarLayoutBenchmarkKPI() {
-        let widths: [CGFloat] = [420, 520, 720, 960]
+        let widths: [CGFloat] = [320, 420, 520, 720, 960]
         let searchSummary = ResourceLogSearchResult.make(
             text: (0..<300)
                 .map { index in
@@ -1541,13 +1541,13 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             maximumSingleStackDelta,
             "KPI: log inspector controls may use one deliberate compact stack but must not cascade into extra rows. Measured heights: \(heights)."
         )
-        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
-        XCTAssertLessThanOrEqual(abs(heights[2] - heights[3]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[1] - heights[2]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[3] - heights[4]), 1)
     }
 
     @MainActor
     func testTerminalPodOnlyLogToolbarLayoutBenchmarkKPI() {
-        let widths: [CGFloat] = [420, 520, 720, 960]
+        let widths: [CGFloat] = [320, 420, 520, 720, 960]
         let pods = (0..<12).map { index in
             PodSummary(
                 name: "api-\(String(format: "%02d", index))",
@@ -1612,8 +1612,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             RuneUILayoutMetrics.iconButtonSize + 12 + RuneAdaptiveToolbarMetrics.rowSpacing,
             "KPI: terminal log controls may use one deliberate compact stack but must not cascade into extra rows. Measured heights: \(heights)."
         )
-        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
-        XCTAssertLessThanOrEqual(abs(heights[2] - heights[3]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[1] - heights[2]), 1)
+        XCTAssertLessThanOrEqual(abs(heights[3] - heights[4]), 1)
     }
 
     @MainActor
@@ -1702,7 +1702,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testManifestInspectorToolbarLayoutBenchmarkKPI() {
-        let widths: [CGFloat] = [360, 480, 640, 820]
+        let widths: [CGFloat] = [320, 360, 480, 640, 820]
         let measuredController = makeManifestToolbarController(width: widths[0])
         measuredController.view.layoutSubtreeIfNeeded()
 
@@ -1769,6 +1769,249 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         XCTAssertTrue(analysis.validationIssues.isEmpty)
         XCTAssertLessThan(seconds(elapsed), 0.75)
+    }
+
+    @MainActor
+    func testYAMLEditorLocalValidationBoundaryBenchmarkKPI() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        state.selectedContext = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        state.selectedNamespace = "synthetic-zone"
+        state.selectedSection = .config
+        state.selectedWorkloadKind = .configMap
+        let resource = ClusterResourceSummary(
+            kind: .configMap,
+            name: "synthetic-editor-settings",
+            namespace: "synthetic-zone",
+            primaryText: "Synthetic benchmark settings",
+            secondaryText: ""
+        )
+        state.setConfigMaps([resource])
+        state.setSelectedConfigMap(resource)
+        state.setResourceYAML(
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: synthetic-editor-settings
+              namespace: synthetic-zone
+            data:
+              MODE: baseline
+            """
+        )
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: KubernetesClient(),
+            store: ResourceStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let payload = (0..<600)
+            .map { "  key-\($0): value-\($0)" }
+            .joined(separator: "\n")
+        let drafts = (0..<100).map { revision in
+            """
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: synthetic-editor-settings
+              namespace: synthetic-zone
+            data:
+              MODE: revision-\(revision)
+            \(payload)
+            """
+        }
+        let finalDraft = drafts.last! + "\n\tBROKEN: value"
+
+        server.resetRequestLines()
+        let started = ContinuousClock.now
+        for draft in drafts {
+            state.updateResourceYAMLDraft(draft)
+        }
+        state.updateResourceYAMLDraft(finalDraft)
+        try await waitUntil {
+            state.resourceYAMLValidationIssues.contains {
+                $0.message == "Tabs are not allowed in YAML indentation."
+            }
+        }
+        let elapsed = started.duration(to: .now)
+
+        #if DEBUG
+        let maximumSeconds = 0.35
+        #else
+        let maximumSeconds = 0.18
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumSeconds,
+            "KPI: a 100-edit YAML burst must coalesce into responsive local validation."
+        )
+        XCTAssertTrue(
+            server.requestLines().isEmpty,
+            "KPI boundary: local YAML editing must produce zero Kubernetes requests."
+        )
+        XCTAssertNil(viewModel.resourceYAMLDryRunStatus)
+    }
+
+    @MainActor
+    func testExplicitYAMLServerDryRunBenchmarkKPI() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            kubeClient: KubernetesClient(),
+            store: ResourceStore(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        try await viewModel.reloadContexts()
+        viewModel.setNamespace("bravo-zone")
+        viewModel.setSection(.config)
+        viewModel.setWorkloadKind(.configMap)
+        try await waitUntil {
+            state.selectedNamespace == "bravo-zone"
+                && state.configMaps.contains { $0.name == "bravo-spoke-settings" }
+                && !state.isLoading
+        }
+        let resource = try XCTUnwrap(
+            state.configMaps.first { $0.name == "bravo-spoke-settings" }
+        )
+        viewModel.selectConfigMap(resource)
+        try await waitUntil {
+            state.resourceDetailScope == ResourceDetailScope(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                namespace: "bravo-zone",
+                kind: .configMap,
+                name: "bravo-spoke-settings"
+            )
+                && !state.isLoadingResourceDetails
+                && state.resourceYAML.contains("bravo-spoke-settings")
+        }
+
+        let draft = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: bravo-spoke-settings
+          namespace: bravo-zone
+        data:
+          MODE: "explicit-dry-run-benchmark"
+        """
+        state.updateResourceYAMLDraft(draft)
+
+        viewModel.requestDryRunSelectedResourceYAML()
+        try await waitUntil {
+            viewModel.resourceYAMLDryRunStatus == "Dry run passed. Nothing was applied."
+        }
+        server.resetRequestLines()
+
+        let started = ContinuousClock.now
+        for _ in 0..<10 {
+            viewModel.requestDryRunSelectedResourceYAML()
+            try await waitUntil {
+                viewModel.resourceYAMLDryRunStatus == "Dry run passed. Nothing was applied."
+                    && !viewModel.isRunningResourceYAMLDryRun
+            }
+        }
+        let elapsed = started.duration(to: .now)
+        let requests = server.requests()
+        let dryRunRequests = requests.filter {
+            $0.requestLine.contains("PATCH ")
+                && $0.requestLine.contains("fieldManager=rune")
+                && $0.requestLine.contains("dryRun=All")
+        }
+        let applyRequests = requests.filter {
+            $0.requestLine.contains("PATCH ")
+                && $0.requestLine.contains("fieldManager=rune")
+                && !$0.requestLine.contains("dryRun=All")
+        }
+
+        #if DEBUG
+        let maximumSeconds = 0.60
+        #else
+        let maximumSeconds = 0.30
+        #endif
+        XCTAssertLessThan(
+            seconds(elapsed),
+            maximumSeconds,
+            "KPI: ten explicit YAML server dry-runs should complete within the interactive budget."
+        )
+        XCTAssertEqual(dryRunRequests.count, 10)
+        XCTAssertTrue(dryRunRequests.allSatisfy { $0.body == draft })
+        XCTAssertTrue(applyRequests.isEmpty)
+        XCTAssertNil(viewModel.pendingWriteAction)
+        XCTAssertTrue(state.writeAuditLog.isEmpty)
+    }
+
+    func testKubernetesYAMLValidationErrorParsingBenchmarkKPI() throws {
+        let yaml = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: synthetic-benchmark-workload
+          namespace: synthetic-benchmark-zone
+          generation: not-a-number
+        spec:
+          containers: []
+        """
+        let statusBody = """
+        {
+          "kind": "Status",
+          "apiVersion": "v1",
+          "status": "Failure",
+          "message": "failed to create typed patch object (synthetic-benchmark-zone/synthetic-benchmark-workload; /v1, Kind=Pod): .metadata.generation: expected numeric (int or float), got string",
+          "reason": "InternalError",
+          "code": 500
+        }
+        """
+        var finalIssues: [YAMLValidationIssue] = []
+        let elapsed = minimumElapsedSeconds {
+            for _ in 0..<500 {
+                let formatted = KubernetesRESTErrorMessageFormatter.httpErrorMessage(
+                    statusCode: 500,
+                    responseBody: statusBody
+                )
+                let output = KubernetesRESTErrorMessageFormatter.appendingRetryAdvice(
+                    to: formatted,
+                    method: "PATCH",
+                    decision: KubernetesRequestRetryPolicy.classifyHTTPStatus(500)
+                )
+                finalIssues = KubernetesClient.parseValidationIssues(
+                    from: output,
+                    yaml: yaml
+                )
+            }
+        }
+        let issue = try XCTUnwrap(finalIssues.first)
+
+        #if DEBUG
+        let maximumSeconds = 0.40
+        #else
+        let maximumSeconds = 0.18
+        #endif
+        XCTAssertLessThan(
+            elapsed,
+            maximumSeconds,
+            "KPI: 500 Kubernetes validation errors should project into editor issues within budget."
+        )
+        XCTAssertEqual(finalIssues.count, 1)
+        XCTAssertEqual(issue.source, .kubernetes)
+        XCTAssertEqual(issue.line, 6)
+        XCTAssertEqual(issue.column, 3)
+        XCTAssertEqual(
+            issue.message,
+            "`metadata.generation` must be a number. Fix or remove the field before applying."
+        )
+        XCTAssertFalse(issue.message.contains("safe to retry"))
     }
 
     func testYAMLPlainKubernetesValueHighlightingBenchmarkKPI() {

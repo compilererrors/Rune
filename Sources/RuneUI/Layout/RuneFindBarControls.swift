@@ -30,8 +30,8 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
             secondary
         }
         .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
+        .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -39,6 +39,7 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
         }
         .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 5)
         .contentShape(Rectangle())
+        .runePointerCursor()
     }
 }
 

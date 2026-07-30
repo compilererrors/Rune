@@ -100,6 +100,39 @@ struct RuneSurfaceBackground: View {
     }
 }
 
+/// One shared leading column for compact inspector controls. Search fields,
+/// summaries, and similar rows keep their main content aligned even when the
+/// leading symbols have different intrinsic sizes.
+struct RuneInspectorControlGridRow<LeadingAccessory: View, Content: View>: View {
+    @ViewBuilder let leadingAccessory: LeadingAccessory
+    @ViewBuilder let content: Content
+
+    init(
+        @ViewBuilder leadingAccessory: () -> LeadingAccessory,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.leadingAccessory = leadingAccessory()
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorControlColumnSpacing) {
+            leadingAccessory
+                .frame(
+                    width: RuneUILayoutMetrics.inspectorControlLeadingAccessoryWidth,
+                    height: RuneUILayoutMetrics.inspectorControlLeadingAccessoryWidth,
+                    alignment: .center
+                )
+
+            content
+        }
+        .frame(
+            minHeight: RuneUILayoutMetrics.inspectorControlRowHeight,
+            alignment: .leading
+        )
+    }
+}
+
 struct RuneChip<Content: View>: View {
     let horizontalPadding: CGFloat
     let verticalPadding: CGFloat
@@ -376,6 +409,133 @@ struct RuneBulkSelectionBar<Actions: View>: View {
 /// One stable control band shared by every resource list. The primary control
 /// keeps enough width for filtering while secondary controls own their compact
 /// overflow behavior, avoiding per-resource wrapping and table-position jumps.
+private struct RuneResourceListToolbarLayout: Layout {
+    let minimumHeight: CGFloat
+
+    private var inlineMinimumWidth: CGFloat {
+        RuneUILayoutMetrics.resourceFilterControlsMaximumWidth
+            + RuneUILayoutMetrics.contentControlSpacing
+            + RuneUILayoutMetrics.resourceListActionsRailMinimumWidth
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let width = proposal.width ?? inlineMinimumWidth
+        let measurements = toolbarMeasurements(width: width, subviews: subviews)
+        return CGSize(width: width, height: measurements.height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+        let measurements = toolbarMeasurements(width: bounds.width, subviews: subviews)
+
+        if measurements.isInline {
+            subviews[0].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + (measurements.height - measurements.primarySize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: measurements.primaryWidth,
+                    height: measurements.primarySize.height
+                )
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX
+                        + measurements.primaryWidth
+                        + RuneUILayoutMetrics.contentControlSpacing,
+                    y: bounds.minY + (measurements.height - measurements.actionsSize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: measurements.actionsWidth,
+                    height: measurements.actionsSize.height
+                )
+            )
+            return
+        }
+
+        subviews[0].place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: bounds.width,
+                height: measurements.primarySize.height
+            )
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY
+                    + measurements.primarySize.height
+                    + RuneUILayoutMetrics.resourceListCompactRowSpacing
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: bounds.width,
+                height: measurements.actionsSize.height
+            )
+        )
+    }
+
+    private func toolbarMeasurements(width: CGFloat, subviews: Subviews) -> (
+        isInline: Bool,
+        primaryWidth: CGFloat,
+        actionsWidth: CGFloat,
+        primarySize: CGSize,
+        actionsSize: CGSize,
+        height: CGFloat
+    ) {
+        let isInline = width >= inlineMinimumWidth
+        if isInline {
+            let primaryWidth = RuneUILayoutMetrics.resourceFilterControlsMaximumWidth
+            let actionsWidth = max(
+                RuneUILayoutMetrics.resourceListActionsRailMinimumWidth,
+                width - primaryWidth - RuneUILayoutMetrics.contentControlSpacing
+            )
+            let primarySize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: primaryWidth, height: nil)
+            )
+            let actionsSize = subviews[1].sizeThatFits(
+                ProposedViewSize(width: actionsWidth, height: nil)
+            )
+            return (
+                true,
+                primaryWidth,
+                actionsWidth,
+                primarySize,
+                actionsSize,
+                max(minimumHeight, max(primarySize.height, actionsSize.height))
+            )
+        }
+
+        let compactProposal = ProposedViewSize(width: width, height: nil)
+        let primarySize = subviews[0].sizeThatFits(compactProposal)
+        let actionsSize = subviews[1].sizeThatFits(compactProposal)
+        return (
+            false,
+            width,
+            width,
+            primarySize,
+            actionsSize,
+            primarySize.height
+                + RuneUILayoutMetrics.resourceListCompactRowSpacing
+                + max(minimumHeight, actionsSize.height)
+        )
+    }
+}
+
 struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
     let accessibilityLabel: String
     @ViewBuilder let primary: Primary
@@ -394,9 +554,9 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            inlineLayout
-            compactLayout
+        RuneResourceListToolbarLayout(minimumHeight: minimumHeight) {
+            primary
+            actionsRail
         }
         .runeInterfaceFont(relativeSize: -1, weight: .medium)
         .controlSize(usesRegularControls ? .regular : .small)
@@ -408,38 +568,6 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("resource-list-toolbar")
-    }
-
-    private var inlineLayout: some View {
-        HStack(alignment: .center, spacing: RuneUILayoutMetrics.contentControlSpacing) {
-            primary
-                .frame(
-                    width: RuneUILayoutMetrics.resourceFilterControlsMaximumWidth,
-                    alignment: .leading
-                )
-
-            actionsRail
-                .frame(
-                    minWidth: RuneUILayoutMetrics.resourceListActionsRailMinimumWidth,
-                    maxWidth: .infinity,
-                    minHeight: minimumHeight,
-                    alignment: .leading
-                )
-        }
-        .frame(minHeight: minimumHeight)
-    }
-
-    private var compactLayout: some View {
-        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.resourceListCompactRowSpacing) {
-            primary
-                .frame(maxWidth: .infinity, alignment: .leading)
-            actionsRail
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: minimumHeight,
-                    alignment: .leading
-                )
-        }
     }
 
     /// `EmptyView` deliberately has no layout footprint. Keep a transparent,

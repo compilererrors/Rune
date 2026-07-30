@@ -2,7 +2,7 @@ name: rune-fake-k8s
 
 services:
   orbit-k3s:
-    image: rancher/k3s:v1.28.5-k3s1
+    image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-orbit-k3s
     privileged: true
     cgroup: host
@@ -84,7 +84,7 @@ services:
       K3S_TOKEN: rune-fake-orbit-token
 
   orbit-seed:
-    image: rancher/k3s:v1.28.5-k3s1
+    image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-orbit-seed
     depends_on:
       - orbit-k3s
@@ -111,7 +111,7 @@ services:
           touch /output/orbit-seeded.ok
 
   lattice-k3s:
-    image: rancher/k3s:v1.28.5-k3s1
+    image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-lattice-k3s
     privileged: true
     cgroup: host
@@ -193,7 +193,7 @@ services:
       K3S_TOKEN: rune-fake-lattice-token
 
   lattice-seed:
-    image: rancher/k3s:v1.28.5-k3s1
+    image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-lattice-seed
     depends_on:
       - lattice-k3s

@@ -80,6 +80,49 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertEqual(result.matches.last?.lineNumber, 59_996)
     }
 
+    func testSearchRangesReturnsSortedUTF16RangesAndMatchesFullSearch() {
+        let text = "😀 error\nok\nERROR two\nerror three"
+        let index = RuneLargeTextIndex(text: text)
+
+        let ranges = index.searchRanges(query: " error ")
+        let result = index.search(query: " error ")
+
+        XCTAssertEqual(ranges, [
+            NSRange(location: 3, length: 5),
+            NSRange(location: 12, length: 5),
+            NSRange(location: 22, length: 5),
+        ])
+        XCTAssertEqual(result.matches.map(\.range), ranges)
+        XCTAssertEqual(result.matches.map(\.lineNumber), [1, 3, 4])
+    }
+
+    func testLargeTextRangeSearchCancelsCooperatively() {
+        enum SyntheticCancellation: Error {
+            case requested
+        }
+
+        let text = (0..<40_000)
+            .map { "line-\($0) status=error" }
+            .joined(separator: "\n")
+        let index = RuneLargeTextIndex(text: text)
+        var cancellationChecks = 0
+
+        XCTAssertThrowsError(
+            try index.searchRanges(
+                query: "status=error",
+                cancellationCheck: {
+                    cancellationChecks += 1
+                    if cancellationChecks == 12 {
+                        throw SyntheticCancellation.requested
+                    }
+                }
+            )
+        ) { error in
+            XCTAssertTrue(error is SyntheticCancellation)
+        }
+        XCTAssertEqual(cancellationChecks, 12)
+    }
+
     func testLargeTextIndexBuildCancelsCooperatively() {
         enum SyntheticCancellation: Error {
             case requested

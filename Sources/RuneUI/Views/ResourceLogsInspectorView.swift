@@ -14,7 +14,7 @@ struct ResourceLogsLayoutMetrics {
     static let terminalCompactOutputMinimumHeight: CGFloat = 210
     static let sourcePickerWidth: CGFloat = 180
     static let podPickerWidth: CGFloat = 240
-    static let searchChromeHeight: CGFloat = 30
+    static let searchChromeHeight: CGFloat = RuneUILayoutMetrics.inspectorControlRowHeight
     static let searchChromeMinimumWidth: CGFloat = 220
     static let searchChromeIdealWidth: CGFloat = 420
     static let searchChromeMaximumWidth: CGFloat = 460
@@ -22,9 +22,9 @@ struct ResourceLogsLayoutMetrics {
     static let searchFieldIdealWidth: CGFloat = 200
     static let searchMatchStatusWidth: CGFloat = 68
     static let compactSearchMatchStatusWidth: CGFloat = 52
-    static let insightsRowHeight: CGFloat = 28
+    static let insightsRowHeight: CGFloat = RuneUILayoutMetrics.inspectorControlRowHeight
     static let querySearchDebounceNanoseconds: UInt64 = 25_000_000
-    static let streamedTextSearchDebounceNanoseconds: UInt64 = 80_000_000
+    static let streamedTextSearchDebounceNanoseconds: UInt64 = 0
     static let streamedTextSummaryDebounceNanoseconds: UInt64 = 120_000_000
 
     static func outputMinimumHeight(for presentationStyle: ResourceLogsPresentationStyle) -> CGFloat {
@@ -90,7 +90,7 @@ struct ResourceLogsToolbar: View {
     }
 
     private var regularBody: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorControlRowSpacing) {
             LogToolbarScrollRow {
                 primaryControls
             }
@@ -104,7 +104,7 @@ struct ResourceLogsToolbar: View {
     }
 
     private var terminalCompactBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorCompactSectionSpacing) {
             LogToolbarScrollRow {
                 primaryControls
             }
@@ -412,7 +412,7 @@ private enum LogToolbarGroupRole {
         case .source:
             return RuneUILayoutMetrics.inspectorToolbarGroupVerticalPadding
         case .action:
-            return 6
+            return RuneUILayoutMetrics.inspectorControlSurfaceVerticalPadding
         }
     }
 }
@@ -455,6 +455,7 @@ private struct LogToolbarScrollRow<Content: View>: View {
             }
             .fixedSize(horizontal: true, vertical: false)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -784,28 +785,33 @@ struct ResourceStructuredLogSummaryPanel: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(height: ResourceLogsLayoutMetrics.insightsRowHeight, alignment: .leading)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: ResourceLogsLayoutMetrics.insightsRowHeight,
+                maxHeight: ResourceLogsLayoutMetrics.insightsRowHeight,
+                alignment: .leading
+            )
         }
     }
 
     private var summaryHeader: some View {
-        HStack(alignment: .center, spacing: 8) {
+        RuneInspectorControlGridRow {
             Image(systemName: summary.isStructured ? "curlybraces" : "text.line.first.and.arrowtriangle.forward")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
-                .frame(width: 14)
+        } content: {
+            HStack(alignment: .center, spacing: 8) {
+                Text(summary.isStructured ? "Structured logs" : "Repeated lines")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
 
-            Text(summary.isStructured ? "Structured logs" : "Repeated lines")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
-
-            Text(summarySubtitle)
-                .font(.caption)
-                .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                Text(summarySubtitle)
+                    .font(.caption)
+                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
-        .frame(height: ResourceLogsLayoutMetrics.insightsRowHeight)
         .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -964,9 +970,10 @@ struct ResourceLogsExplorePanel: View {
     let matchCaseHelp: String
     let onSearchFieldSample: (ResourceStructuredLogField, String) -> Void
     let onSearchDuplicate: (ResourceDuplicateLogLine) -> Void
+    var onSearchNavigate: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorControlRowSpacing) {
             ResourceLogsSearchBar(
                 query: $searchQuery,
                 matchCase: $searchMatchCase,
@@ -975,7 +982,8 @@ struct ResourceLogsExplorePanel: View {
                 searchSummary: searchResult,
                 placeholder: placeholder,
                 findHelp: findHelp,
-                matchCaseHelp: matchCaseHelp
+                matchCaseHelp: matchCaseHelp,
+                onNavigate: onSearchNavigate
             )
 
             if showsInsights && (structuredSummary.isStructured || !structuredSummary.duplicateLines.isEmpty) {
@@ -987,8 +995,9 @@ struct ResourceLogsExplorePanel: View {
                 )
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
+        .padding(.vertical, RuneUILayoutMetrics.inspectorControlSurfaceVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RuneSurfaceBackground(kind: .inset))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Log search and insights")
@@ -1064,20 +1073,27 @@ private struct ResourceLogsInspectorPaneCore: View {
     @State private var searchFocusRequestID = 0
     @State private var searchResult = ResourceLogSearchResult.make(text: "", query: "")
     @State private var searchTask: Task<Void, Never>?
-    @State private var searchWorkLane = ResourceLogsLatestWorkLane<ResourceLogSearchResult>()
+    @State private var searchLifecycleGeneration = 0
+    @State private var searchWorkLane =
+        RuneSingleFlightLatestPendingWorkLane<ResourceLogSearchResult>()
+    @State private var isInitialSearchNavigationPending = false
     @State private var structuredLogSummary = ResourceStructuredLogAnalyzer.analyze(text: "")
     @State private var structuredSummaryTask: Task<Void, Never>?
     @State private var structuredSummaryWorkLane = ResourceLogsLatestWorkLane<ResourceStructuredLogSummary>()
 
     var body: some View {
-        let activeSearchResult = searchResult.isCurrent(
-            text: logText,
+        let activeSearchResult = searchResult.isSearchNavigableSnapshot(
+            for: logText,
             query: searchQuery,
             matchCase: searchMatchCase
         ) ? searchResult : nil
-        let renderSearchResult = searchResult.originalText == logText ? searchResult : nil
+        let renderSearchResult = searchResult.isRenderableSnapshot(for: logText)
+            ? searchResult
+            : nil
         let resolvedSearchMatchIndex = activeSearchResult?.clampedMatchIndex(selectedSearchMatchIndex) ?? 0
-        let paneSpacing: CGFloat = presentationStyle == .terminalCompact ? 8 : 10
+        let paneSpacing: CGFloat = presentationStyle == .terminalCompact
+            ? RuneUILayoutMetrics.inspectorCompactSectionSpacing
+            : RuneUILayoutMetrics.inspectorSectionSpacing
 
         VStack(alignment: .leading, spacing: paneSpacing) {
             ResourceLogsToolbar(
@@ -1116,6 +1132,7 @@ private struct ResourceLogsInspectorPaneCore: View {
                 interfaceLanguageRaw: interfaceLanguageRaw
             )
             .id(interfaceLanguageRaw)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             ResourceLogsExplorePanel(
                 searchQuery: $searchQuery,
@@ -1134,8 +1151,12 @@ private struct ResourceLogsInspectorPaneCore: View {
                 },
                 onSearchDuplicate: { duplicate in
                     applyLogSearchQuery(duplicate.fingerprint)
+                },
+                onSearchNavigate: {
+                    searchNavigationSequence &+= 1
                 }
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             ResourceLogsOutputSurface(
                 isLoadingLogs: isLoadingLogs,
@@ -1153,10 +1174,12 @@ private struct ResourceLogsInspectorPaneCore: View {
                 onReload: actions.onReload,
                 presentationStyle: presentationStyle
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onChange(of: searchQuery) { _, _ in
             selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
+            isInitialSearchNavigationPending =
+                !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             scheduleSearch(
                 for: logText,
                 debounceNanoseconds: ResourceLogsLayoutMetrics.querySearchDebounceNanoseconds
@@ -1164,7 +1187,8 @@ private struct ResourceLogsInspectorPaneCore: View {
         }
         .onChange(of: searchMatchCase) { _, _ in
             selectedSearchMatchIndex = 0
-            searchNavigationSequence += 1
+            isInitialSearchNavigationPending =
+                !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             scheduleSearch(
                 for: logText,
                 debounceNanoseconds: ResourceLogsLayoutMetrics.querySearchDebounceNanoseconds
@@ -1181,10 +1205,13 @@ private struct ResourceLogsInspectorPaneCore: View {
             scheduleStructuredSummary(for: logText, debounced: false)
         }
         .onAppear {
+            isInitialSearchNavigationPending =
+                !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             scheduleSearch(for: logText, debounceNanoseconds: 0)
             scheduleStructuredSummary(for: logText, debounced: false)
         }
         .onDisappear {
+            searchLifecycleGeneration &+= 1
             searchTask?.cancel()
             structuredSummaryTask?.cancel()
             Task {
@@ -1227,14 +1254,21 @@ private struct ResourceLogsInspectorPaneCore: View {
         searchTask?.cancel()
         let requestedQuery = searchQuery
         let requestedMatchCase = searchMatchCase
+        let lifecycleGeneration = searchLifecycleGeneration
         let reusableTextIndex = searchResult.originalText == text ? searchResult.textIndex : nil
-        searchTask = Task { @MainActor in
+        let task = Task { @MainActor in
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  searchLifecycleGeneration == lifecycleGeneration else {
+                return
+            }
+            if debounceNanoseconds > 0 {
+                searchTask = nil
+            }
 
-            guard let result = try? await searchWorkLane.run(
+            guard let result = await searchWorkLane.submit(
                 priority: .userInitiated,
                 operation: {
                     try ResourceLogSearchResult.makeForInspector(
@@ -1247,14 +1281,20 @@ private struct ResourceLogsInspectorPaneCore: View {
                 }
             ) else { return }
 
-            guard !Task.isCancelled,
-                  logText == text,
+            guard searchLifecycleGeneration == lifecycleGeneration,
                   searchQuery == requestedQuery,
                   searchMatchCase == requestedMatchCase else {
                 return
             }
             searchResult = result
             selectedSearchMatchIndex = result.clampedMatchIndex(selectedSearchMatchIndex)
+            if isInitialSearchNavigationPending {
+                isInitialSearchNavigationPending = false
+                searchNavigationSequence &+= 1
+            }
+        }
+        if debounceNanoseconds > 0 {
+            searchTask = task
         }
     }
 
@@ -1450,23 +1490,17 @@ struct ResourceLogsOutputSurface: View {
                     ResourceLogsLoadingPlaceholder()
                 } else if let errorMessage {
                     ResourceLogsErrorView(message: errorMessage, onReload: onReload)
-                } else if logText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                } else if logText.allSatisfy(\.isWhitespace) {
                     ResourceLogsEmptyPlaceholder(title: emptyTitle, message: emptyMessage)
                 } else {
                     let outputResetID = "\(readOnlyResetID):logs"
-                    let navigationRequest = navigationSearchResult?.navigationRequest(
-                        selectedIndex: selectedSearchMatchIndex,
-                        sequence: searchNavigationSequence
-                    )
-                    let usesLargeTextSurface = renderSearchResult.map {
-                        ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: $0)
-                    } ?? ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: logText)
+                    let usesLargeTextSurface =
+                        ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: logText)
                     InspectorReadOnlyTextView(
                         text: logText,
                         resetID: outputResetID,
                         resetScrollOnExternalChange: false,
                         contentStyle: .ansiLogs,
-                        navigationRequest: usesLargeTextSurface ? nil : navigationRequest,
                         usesLargeTextSurface: usesLargeTextSurface,
                         allowsAutomaticLargeTextSurface: false,
                         largeTextIndex: renderSearchResult?.textIndex,
@@ -1475,7 +1509,13 @@ struct ResourceLogsOutputSurface: View {
                             selectedIndex: selectedSearchMatchIndex,
                             sequence: searchNavigationSequence
                         ),
-                        largeTextShowsLineNumbers: false
+                        largeTextScrollsOnTargetLineChange: false,
+                        largeTextShowsLineNumbers: false,
+                        searchQuery: navigationSearchResult?.query ?? "",
+                        searchMatchCase: navigationSearchResult?.matchCase ?? false,
+                        selectedSearchMatchIndex: selectedSearchMatchIndex,
+                        searchMatchRanges: navigationSearchResult?.matchRanges ?? [],
+                        searchNavigationRevision: searchNavigationSequence
                     )
                 }
             }
@@ -1530,6 +1570,7 @@ struct ResourceLogsSearchBar: View {
     let placeholder: String
     let findHelp: String
     let matchCaseHelp: String
+    var onNavigate: () -> Void = {}
     @State private var isJumpPopoverPresented = false
     @State private var jumpText = ""
     @State private var jumpMatchCount = 0
@@ -1537,18 +1578,19 @@ struct ResourceLogsSearchBar: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(spacing: 2) {
+        RuneInspectorControlGridRow {
             RuneIconButton(findHelp, systemImage: "magnifyingglass") {
                 isSearchFocused = true
             }
             .keyboardShortcut("f", modifiers: [.command])
-
-            TextField(
-                "",
-                text: $query,
-                prompt: Text(placeholder)
-                    .foregroundStyle(runeThemePalette?.mutedText ?? Color.secondary)
-            )
+        } content: {
+            HStack(spacing: 2) {
+                TextField(
+                    "",
+                    text: $query,
+                    prompt: Text(placeholder)
+                        .foregroundStyle(runeThemePalette?.mutedText ?? Color.secondary)
+                )
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
@@ -1563,16 +1605,16 @@ struct ResourceLogsSearchBar: View {
                 .accessibilityLabel(placeholder)
                 .accessibilityIdentifier("resource-log-search-input")
                 .onSubmit {
-                    if let searchSummary {
-                        selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
-                    }
+                    selectNextMatch()
                 }
+                .runeTextInputCursor()
 
-            ViewThatFits(in: .horizontal) {
-                regularSearchAccessories
-                compactSearchAccessories
+                ViewThatFits(in: .horizontal) {
+                    regularSearchAccessories
+                    compactSearchAccessories
+                }
+                .layoutPriority(2)
             }
-            .layoutPriority(2)
         }
         .frame(
             minWidth: ResourceLogsLayoutMetrics.searchChromeMinimumWidth,
@@ -1582,8 +1624,8 @@ struct ResourceLogsSearchBar: View {
             maxHeight: ResourceLogsLayoutMetrics.searchChromeHeight,
             alignment: .leading
         )
-        .padding(.horizontal, 4)
         .background(RuneSurfaceBackground(kind: .editor))
+        .runePointerCursor()
         .onChange(of: focusRequestID) { _, _ in
             isSearchFocused = true
         }
@@ -1731,11 +1773,13 @@ struct ResourceLogsSearchBar: View {
     private func selectPreviousMatch() {
         guard let searchSummary else { return }
         selectedMatchIndex = searchSummary.previousMatchIndex(from: selectedMatchIndex)
+        onNavigate()
     }
 
     private func selectNextMatch() {
         guard let searchSummary else { return }
         selectedMatchIndex = searchSummary.nextMatchIndex(from: selectedMatchIndex)
+        onNavigate()
     }
 
     private var normalizedQuery: String {
@@ -1787,6 +1831,7 @@ struct ResourceLogsSearchBar: View {
                     .onSubmit {
                         commitJump(matchCount: matchCount)
                     }
+                    .runeTextInputCursor()
 
                 Text("of \(matchCount)")
                     .font(.caption.weight(.medium))
@@ -1804,12 +1849,14 @@ struct ResourceLogsSearchBar: View {
         }
         .padding(12)
         .frame(width: 180)
+        .runePointerCursor()
     }
 
     private func commitJump(matchCount: Int) {
         guard matchCount > 0 else { return }
         let requestedMatch = Int(jumpText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
         selectedMatchIndex = min(max(requestedMatch, 1), matchCount) - 1
+        onNavigate()
         isJumpPopoverPresented = false
     }
 
@@ -1823,8 +1870,11 @@ struct ResourceLogSearchResult: Equatable, Sendable {
     let totalLineCount: Int
     let matchingLineCount: Int
     let matchRanges: [NSRange]
-    let matchLineNumbers: [Int]
     let textIndex: RuneLargeTextIndex
+
+    var matchLineNumbers: [Int] {
+        matchRanges.map { textIndex.lineNumber(containingUTF16Location: $0.location) }
+    }
 
     var isFiltering: Bool {
         !query.isEmpty
@@ -1844,6 +1894,21 @@ struct ResourceLogSearchResult: Equatable, Sendable {
 
     func isCurrent(text: String, query: String, matchCase: Bool) -> Bool {
         originalText == text
+            && self.query == query.trimmingCharacters(in: .whitespacesAndNewlines)
+            && self.matchCase == matchCase
+    }
+
+    func isRenderableSnapshot(for text: String) -> Bool {
+        originalText == text
+            || (!originalText.isEmpty && text.hasPrefix(originalText))
+    }
+
+    func isSearchNavigableSnapshot(
+        for text: String,
+        query: String,
+        matchCase: Bool
+    ) -> Bool {
+        isRenderableSnapshot(for: text)
             && self.query == query.trimmingCharacters(in: .whitespacesAndNewlines)
             && self.matchCase == matchCase
     }
@@ -1888,52 +1953,55 @@ struct ResourceLogSearchResult: Equatable, Sendable {
         matchCase: Bool,
         cancellationCheck: () throws -> Void
     ) rethrows -> ResourceLogSearchResult {
+        try make(
+            originalText: textIndex.text,
+            textIndex: textIndex,
+            query: query,
+            matchCase: matchCase,
+            cancellationCheck: cancellationCheck
+        )
+    }
+
+    private static func make(
+        originalText: String,
+        textIndex: RuneLargeTextIndex,
+        query: String,
+        matchCase: Bool,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> ResourceLogSearchResult {
         try cancellationCheck()
-        let text = textIndex.text
+        let displayedText = textIndex.text
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedQuery.isEmpty else {
             return ResourceLogSearchResult(
-                originalText: text,
-                displayedText: text,
+                originalText: originalText,
+                displayedText: displayedText,
                 query: "",
                 matchCase: matchCase,
                 totalLineCount: textIndex.lineCount,
                 matchingLineCount: textIndex.lineCount,
                 matchRanges: [],
-                matchLineNumbers: [],
                 textIndex: textIndex
             )
         }
 
         let options: NSString.CompareOptions = matchCase ? [] : [.caseInsensitive, .diacriticInsensitive]
-        let searchResult = try textIndex.search(
+        let matchRanges = try textIndex.searchRanges(
             query: trimmedQuery,
             options: options,
             cancellationCheck: cancellationCheck
         )
-        var matchRanges: [NSRange] = []
-        var matchLineNumbers: [Int] = []
-        matchRanges.reserveCapacity(searchResult.matches.count)
-        matchLineNumbers.reserveCapacity(searchResult.matches.count)
-        for (index, match) in searchResult.matches.enumerated() {
-            if index.isMultiple(of: 1_024) {
-                try cancellationCheck()
-            }
-            matchRanges.append(match.range)
-            matchLineNumbers.append(match.lineNumber)
-        }
         try cancellationCheck()
 
         return ResourceLogSearchResult(
-            originalText: text,
-            displayedText: text,
+            originalText: originalText,
+            displayedText: displayedText,
             query: trimmedQuery,
             matchCase: matchCase,
-            totalLineCount: searchResult.totalLineCount,
-            matchingLineCount: searchResult.matchingLineCount,
+            totalLineCount: textIndex.lineCount,
+            matchingLineCount: matchRanges.count,
             matchRanges: matchRanges,
-            matchLineNumbers: matchLineNumbers,
             textIndex: textIndex
         )
     }
@@ -1954,8 +2022,9 @@ struct ResourceLogSearchResult: Equatable, Sendable {
     }
 
     func matchLineNumber(selectedIndex: Int) -> Int? {
-        guard !matchLineNumbers.isEmpty else { return nil }
-        return matchLineNumbers[clampedMatchIndex(selectedIndex)]
+        guard !matchRanges.isEmpty else { return nil }
+        let range = matchRanges[clampedMatchIndex(selectedIndex)]
+        return textIndex.lineNumber(containingUTF16Location: range.location)
     }
 
     func navigationRequest(selectedIndex: Int, sequence: Int) -> YAMLTextNavigationRequest? {
@@ -1971,7 +2040,6 @@ struct ResourceLogSearchResult: Equatable, Sendable {
     }
 
     func largeTextNavigationRevision(selectedIndex: Int, sequence: Int) -> Int? {
-        guard !matchRanges.isEmpty else { return nil }
         return sequence &* 1_000_003 &+ clampedMatchIndex(selectedIndex)
     }
 
@@ -1999,8 +2067,10 @@ struct ResourceLogSearchResult: Equatable, Sendable {
     ) rethrows -> ResourceLogSearchResult {
         try cancellationCheck()
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let textIndex, textIndex.text == text {
+        let displayedText = ResourceLogANSIFormatter.plainText(from: text)
+        if let textIndex, textIndex.text == displayedText {
             return try make(
+                originalText: text,
                 textIndex: textIndex,
                 query: trimmedQuery,
                 matchCase: matchCase,
@@ -2008,10 +2078,11 @@ struct ResourceLogSearchResult: Equatable, Sendable {
             )
         }
         let textIndex = try RuneLargeTextIndex(
-            text: text,
+            text: displayedText,
             cancellationCheck: cancellationCheck
         )
         return try make(
+            originalText: text,
             textIndex: textIndex,
             query: trimmedQuery,
             matchCase: matchCase,

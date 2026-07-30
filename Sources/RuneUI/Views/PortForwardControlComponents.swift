@@ -12,6 +12,170 @@ enum PortForwardControlLayoutMetrics {
     static let accessibilityCompactMinimumHeight: CGFloat = 126
 }
 
+struct PortForwardEndpointLayout: Layout {
+    let compactMinimumHeight: CGFloat
+
+    private var spacing: CGFloat {
+        PortForwardControlLayoutMetrics.spacing
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 4 else { return .zero }
+        let width = resolvedWidth(for: proposal, subviews: subviews)
+        if usesWideLayout(width: width, subviews: subviews) {
+            return CGSize(
+                width: width,
+                height: wideMeasurements(subviews: subviews).height
+            )
+        }
+
+        let compact = compactMeasurements(width: width, subviews: subviews)
+        return CGSize(
+            width: width,
+            height: max(compactMinimumHeight, compact.firstRowHeight + spacing + compact.addressSize.height)
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 4 else { return }
+        if usesWideLayout(width: bounds.width, subviews: subviews) {
+            placeWideSubviews(in: bounds, subviews: subviews)
+        } else {
+            placeCompactSubviews(in: bounds, subviews: subviews)
+        }
+    }
+
+    private func resolvedWidth(for proposal: ProposedViewSize, subviews: Subviews) -> CGFloat {
+        proposal.width ?? wideMinimumWidth(subviews: subviews)
+    }
+
+    private func usesWideLayout(width: CGFloat, subviews: Subviews) -> Bool {
+        width >= wideMinimumWidth(subviews: subviews)
+    }
+
+    private func wideMinimumWidth(subviews: Subviews) -> CGFloat {
+        PortForwardControlLayoutMetrics.widePortFieldWidth * 2
+            + PortForwardControlLayoutMetrics.wideAddressFieldWidth
+            + subviews[1].sizeThatFits(.unspecified).width
+            + spacing * 3
+    }
+
+    private func wideMeasurements(subviews: Subviews) -> (
+        sizes: [CGSize],
+        height: CGFloat
+    ) {
+        let widths = [
+            PortForwardControlLayoutMetrics.widePortFieldWidth,
+            subviews[1].sizeThatFits(.unspecified).width,
+            PortForwardControlLayoutMetrics.widePortFieldWidth,
+            PortForwardControlLayoutMetrics.wideAddressFieldWidth
+        ]
+        let sizes = zip(subviews, widths).map { subview, width in
+            subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        }
+        return (sizes, sizes.map(\.height).max() ?? 0)
+    }
+
+    private func compactMeasurements(width: CGFloat, subviews: Subviews) -> (
+        portWidth: CGFloat,
+        directionSize: CGSize,
+        localSize: CGSize,
+        remoteSize: CGSize,
+        addressSize: CGSize,
+        firstRowHeight: CGFloat
+    ) {
+        let directionSize = subviews[1].sizeThatFits(.unspecified)
+        let portWidth = max(0, (width - directionSize.width - spacing * 2) / 2)
+        let portProposal = ProposedViewSize(width: portWidth, height: nil)
+        let localSize = subviews[0].sizeThatFits(portProposal)
+        let remoteSize = subviews[2].sizeThatFits(portProposal)
+        let addressSize = subviews[3].sizeThatFits(
+            ProposedViewSize(width: width, height: nil)
+        )
+        return (
+            portWidth,
+            directionSize,
+            localSize,
+            remoteSize,
+            addressSize,
+            max(localSize.height, max(directionSize.height, remoteSize.height))
+        )
+    }
+
+    private func placeWideSubviews(in bounds: CGRect, subviews: Subviews) {
+        let measurements = wideMeasurements(subviews: subviews)
+        var x = bounds.minX
+        for (subview, size) in zip(subviews, measurements.sizes) {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY + measurements.height - size.height),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+            x += size.width + spacing
+        }
+    }
+
+    private func placeCompactSubviews(in bounds: CGRect, subviews: Subviews) {
+        let measurements = compactMeasurements(width: bounds.width, subviews: subviews)
+        let firstRowBottom = bounds.minY + measurements.firstRowHeight
+
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: firstRowBottom - measurements.localSize.height),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: measurements.portWidth,
+                height: measurements.localSize.height
+            )
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.minX + measurements.portWidth + spacing,
+                y: firstRowBottom - measurements.directionSize.height
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: measurements.directionSize.width,
+                height: measurements.directionSize.height
+            )
+        )
+        subviews[2].place(
+            at: CGPoint(
+                x: bounds.minX
+                    + measurements.portWidth
+                    + spacing
+                    + measurements.directionSize.width
+                    + spacing,
+                y: firstRowBottom - measurements.remoteSize.height
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: measurements.portWidth,
+                height: measurements.remoteSize.height
+            )
+        )
+        subviews[3].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY + measurements.firstRowHeight + spacing
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: bounds.width,
+                height: measurements.addressSize.height
+            )
+        )
+    }
+}
+
 /// The shared endpoint form used by terminal and resource inspectors. Its
 /// compact fallback keeps every field visible instead of relying on a hidden
 /// horizontal scroller.
@@ -22,47 +186,16 @@ struct PortForwardEndpointFields: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            wideFields
-            compactFields
+        PortForwardEndpointLayout(compactMinimumHeight: compactMinimumHeight) {
+            endpointField("Local port", placeholder: "Local", text: $localPort)
+            directionIndicator
+            endpointField("Remote port", placeholder: "Remote", text: $remotePort)
+            endpointField("Address", placeholder: "Address", text: $address)
         }
         .controlSize(dynamicTypeSize.isAccessibilitySize ? .large : .regular)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Port-forward endpoint")
-    }
-
-    private var wideFields: some View {
-        HStack(alignment: .bottom, spacing: PortForwardControlLayoutMetrics.spacing) {
-            endpointField("Local port", placeholder: "Local", text: $localPort)
-                .frame(width: PortForwardControlLayoutMetrics.widePortFieldWidth)
-            directionIndicator
-            endpointField("Remote port", placeholder: "Remote", text: $remotePort)
-                .frame(width: PortForwardControlLayoutMetrics.widePortFieldWidth)
-            endpointField("Address", placeholder: "Address", text: $address)
-                .frame(width: PortForwardControlLayoutMetrics.wideAddressFieldWidth)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var compactFields: some View {
-        VStack(alignment: .leading, spacing: PortForwardControlLayoutMetrics.spacing) {
-            HStack(alignment: .bottom, spacing: PortForwardControlLayoutMetrics.spacing) {
-                endpointField("Local port", placeholder: "Local", text: $localPort)
-                    .frame(maxWidth: .infinity)
-                directionIndicator
-                endpointField("Remote port", placeholder: "Remote", text: $remotePort)
-                    .frame(maxWidth: .infinity)
-            }
-
-            endpointField("Address", placeholder: "Address", text: $address)
-                .frame(maxWidth: .infinity)
-        }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: compactMinimumHeight,
-            alignment: .leading
-        )
     }
 
     private func endpointField(

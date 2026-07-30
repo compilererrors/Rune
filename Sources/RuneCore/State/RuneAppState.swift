@@ -31,8 +31,58 @@ public enum RuneResourceSelectionChannel: Hashable, Sendable {
     case operatorResource
 }
 
+public struct ResourceYAMLEditorSelection: Equatable, Sendable {
+    public let location: Int
+    public let length: Int
+
+    public init(location: Int, length: Int) {
+        self.location = location
+        self.length = length
+    }
+}
+
+public struct ResourceYAMLEditorPresentation: Equatable, Sendable {
+    public let selections: [ResourceYAMLEditorSelection]
+    public let viewportX: Double
+    public let viewportY: Double
+    public let hadKeyboardFocus: Bool
+
+    public init(
+        selections: [ResourceYAMLEditorSelection],
+        viewportX: Double,
+        viewportY: Double,
+        hadKeyboardFocus: Bool
+    ) {
+        self.selections = selections
+        self.viewportX = viewportX
+        self.viewportY = viewportY
+        self.hadKeyboardFocus = hadKeyboardFocus
+    }
+}
+
+public struct ResourceYAMLEditorRestorationRequest: Equatable, Sendable {
+    public let sequence: UInt64
+    public let yaml: String
+    public let presentation: ResourceYAMLEditorPresentation
+
+    public init(
+        sequence: UInt64,
+        yaml: String,
+        presentation: ResourceYAMLEditorPresentation
+    ) {
+        self.sequence = sequence
+        self.yaml = yaml
+        self.presentation = presentation
+    }
+}
+
 @MainActor
 public final class RuneAppState: ObservableObject {
+    private struct ResourceYAMLUndoEntry {
+        let yaml: String
+        let editorPresentation: ResourceYAMLEditorPresentation?
+    }
+
     private let maxSessionLogCacheCharacters = 1_000_000
     private var maxSessionLogCacheEntries: Int {
         UserDefaults.standard.runeSessionLogCacheEntryLimit
@@ -308,8 +358,14 @@ public final class RuneAppState: ObservableObject {
     /// to reject server responses that started before a newer user edit.
     public private(set) var resourceYAMLDraftRevision: UInt64 = 0
     @Published public private(set) var resourceYAMLUndoSnapshot: String?
-    private var resourceYAMLUndoStack: [String] = []
+    @Published public private(set) var resourceYAMLEditorRestorationRequest:
+        ResourceYAMLEditorRestorationRequest?
+    private var resourceYAMLUndoStack: [ResourceYAMLUndoEntry] = []
+    private var resourceYAMLEditorRestorationSequence: UInt64 = 0
     @Published public private(set) var resourceYAMLValidationIssues: [YAMLValidationIssue] = []
+    /// Advances whenever a validation producer publishes a result. Queued local
+    /// validation uses this to avoid replacing a newer result for the same draft.
+    public private(set) var resourceYAMLValidationGeneration: UInt64 = 0
     @Published public private(set) var isValidatingResourceYAML = false
     /// Read-only describe output Rune fetched for the selected resource (not user-editable).
     @Published public private(set) var resourceDescribe: String = ""
@@ -441,6 +497,7 @@ public final class RuneAppState: ObservableObject {
     }
 
     public func clearResourceListFreshness() {
+        guard !resourceListFreshness.isEmpty else { return }
         resourceListFreshness = [:]
     }
 
@@ -1093,9 +1150,16 @@ public final class RuneAppState: ObservableObject {
     }
 
     /// Updates the in-memory YAML (user edits or import). Does not change the cluster baseline until the next fetch or successful apply + reload.
-    public func updateResourceYAMLDraft(_ yaml: String) {
+    public func updateResourceYAMLDraft(
+        _ yaml: String,
+        undoPresentation: ResourceYAMLEditorPresentation? = nil
+    ) {
         guard yaml != resourceYAML else { return }
-        pushResourceYAMLUndoSnapshotIfNeeded(for: yaml)
+        resourceYAMLEditorRestorationRequest = nil
+        pushResourceYAMLUndoSnapshotIfNeeded(
+            for: yaml,
+            editorPresentation: undoPresentation
+        )
         resourceYAML = yaml
         advanceResourceYAMLDraftRevision()
         resourceYAMLValidationIssues = []
@@ -1105,6 +1169,7 @@ public final class RuneAppState: ObservableObject {
     /// Discards local edits and restores the last loaded cluster YAML.
     public func revertResourceYAMLToClusterSnapshot() {
         guard resourceYAMLBaseline != resourceYAML else { return }
+        resourceYAMLEditorRestorationRequest = nil
         pushResourceYAMLUndoSnapshotIfNeeded(for: resourceYAMLBaseline)
         resourceYAML = resourceYAMLBaseline
         advanceResourceYAMLDraftRevision()
@@ -1118,9 +1183,19 @@ public final class RuneAppState: ObservableObject {
 
     public func undoResourceYAMLEdit() {
         guard let previous = resourceYAMLUndoStack.popLast() else { return }
-        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
-        resourceYAML = previous
+        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last?.yaml
+        resourceYAML = previous.yaml
         advanceResourceYAMLDraftRevision()
+        if let presentation = previous.editorPresentation {
+            resourceYAMLEditorRestorationSequence &+= 1
+            resourceYAMLEditorRestorationRequest = ResourceYAMLEditorRestorationRequest(
+                sequence: resourceYAMLEditorRestorationSequence,
+                yaml: previous.yaml,
+                presentation: presentation
+            )
+        } else {
+            resourceYAMLEditorRestorationRequest = nil
+        }
         resourceYAMLValidationIssues = []
         isValidatingResourceYAML = false
     }
@@ -1129,29 +1204,40 @@ public final class RuneAppState: ObservableObject {
         resourceYAMLDraftRevision &+= 1
     }
 
-    private func pushResourceYAMLUndoSnapshotIfNeeded(for nextYAML: String) {
+    private func pushResourceYAMLUndoSnapshotIfNeeded(
+        for nextYAML: String,
+        editorPresentation: ResourceYAMLEditorPresentation? = nil
+    ) {
         guard nextYAML != resourceYAML else { return }
-        resourceYAMLUndoStack.append(resourceYAML)
+        resourceYAMLUndoStack.append(ResourceYAMLUndoEntry(
+            yaml: resourceYAML,
+            editorPresentation: editorPresentation
+        ))
         if resourceYAMLUndoStack.count > maxResourceYAMLUndoSnapshots {
             resourceYAMLUndoStack.removeFirst(resourceYAMLUndoStack.count - maxResourceYAMLUndoSnapshots)
         }
-        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last
+        resourceYAMLUndoSnapshot = resourceYAMLUndoStack.last?.yaml
     }
 
     private func clearResourceYAMLUndoHistory() {
         resourceYAMLUndoStack = []
         resourceYAMLUndoSnapshot = nil
+        resourceYAMLEditorRestorationRequest = nil
     }
 
     public func beginResourceYAMLValidation() {
+        guard !isValidatingResourceYAML else { return }
         isValidatingResourceYAML = true
     }
 
     public func setResourceYAMLValidationIssues(_ issues: [YAMLValidationIssue]) {
+        resourceYAMLValidationGeneration &+= 1
+        guard resourceYAMLValidationIssues != issues else { return }
         resourceYAMLValidationIssues = issues
     }
 
     public func finishResourceYAMLValidation() {
+        guard isValidatingResourceYAML else { return }
         isValidatingResourceYAML = false
     }
 

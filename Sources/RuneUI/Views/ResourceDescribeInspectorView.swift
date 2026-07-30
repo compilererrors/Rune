@@ -88,7 +88,7 @@ struct ResourceDescribeInspectorPane: View {
                 matchCase: $findMatchCase,
                 selectedMatchIndex: $selectedFindMatchIndex,
                 isFindPresented: $isFindPresented
-            ) {
+            ) { searchIndex, searchNavigationRevision in
                 ManifestDocumentSurface(state: documentState) {
                     DescribeTextSurface(
                         text: presentedDescribeText,
@@ -96,7 +96,9 @@ struct ResourceDescribeInspectorPane: View {
                         resetID: readOnlyResetID,
                         searchQuery: findQuery,
                         searchMatchCase: findMatchCase,
-                        selectedSearchMatchIndex: selectedFindMatchIndex
+                        selectedSearchMatchIndex: selectedFindMatchIndex,
+                        searchIndex: searchIndex,
+                        searchNavigationRevision: searchNavigationRevision
                     )
                 }
             }

@@ -40,6 +40,13 @@ The selected set covers:
 
 - REST metrics recording, retention churn, grouping, and privacy-safe debug
   highlights.
+- YAML editor validation under a 100-edit burst. The budget is 350 ms in debug
+  and 180 ms in release, with exactly zero Kubernetes requests.
+- Ten explicit Kubernetes server dry-runs. The budget is 600 ms in debug and
+  300 ms in release, with ten dry-run PATCH requests and zero apply requests.
+- Projection of 500 synthetic Kubernetes validation failures into concise,
+  line-scoped editor issues. The budget is 400 ms in debug and 180 ms in
+  release.
 - Native cloud-import diagnostic projection, admission, and end-to-end review
   binding, including the headless AKS/GKE parity flow. The parity KPI budget is
   1.2 seconds in debug and 0.6 seconds in release.

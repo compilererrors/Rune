@@ -39,6 +39,7 @@ private struct SettingsHelpButton: View {
                 .foregroundStyle(.primary)
                 .frame(width: 280, alignment: .leading)
                 .padding(10)
+                .runePointerCursor()
         }
         .accessibilityHint(text)
     }
@@ -1846,9 +1847,11 @@ public struct RunePreferencesView: View {
     }
 
     private func conflictingAction(for action: RuneKeyBindingAction) -> RuneKeyBindingAction? {
-        let currentShortcut = shortcut(for: action)
+        let currentShortcuts = Set([shortcut(for: action)] + action.alternateShortcuts)
         return RuneKeyBindingAction.allCases.first {
-            $0 != action && shortcut(for: $0) == currentShortcut
+            guard $0 != action else { return false }
+            let candidateShortcuts = Set([shortcut(for: $0)] + $0.alternateShortcuts)
+            return !currentShortcuts.isDisjoint(with: candidateShortcuts)
         }
     }
 
