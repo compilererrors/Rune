@@ -779,7 +779,9 @@ private final class PlainManifestTextView: NSTextView {
         }
 
         guard navigationRevision != lastSearchNavigationRevision else { return }
-        setSelectedRange(activeRange)
+        if !isEditable {
+            setSelectedRange(activeRange)
+        }
         guard enclosingScrollView != nil else { return }
         lastSearchNavigationRevision = navigationRevision
         centerSearchRange(

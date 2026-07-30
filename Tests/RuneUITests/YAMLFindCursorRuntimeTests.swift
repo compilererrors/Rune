@@ -5,6 +5,162 @@ import XCTest
 
 @MainActor
 final class YAMLFindCursorRuntimeTests: XCTestCase {
+    func testNextMatchClickPreservesSearchAndDocumentCarets() async throws {
+        let model = YAMLFindCursorRuntimeModel()
+        model.text = """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: first
+          labels:
+            name: second
+        """
+        model.query = "name"
+        model.isFindPresented = true
+
+        let host = NSHostingController(
+            rootView: YAMLFindCursorRuntimeHarness(model: model)
+                .frame(width: 700, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 420),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+
+        try await settle(window: window)
+        let scope = try XCTUnwrap(cursorScopes(in: host.view).first)
+        let documentEditor = try XCTUnwrap(
+            findManifestTextView(in: host.view),
+            "Expected the editable YAML NSTextView."
+        )
+        let searchField = try XCTUnwrap(
+            nativeTextFields(in: host.view).first,
+            "Expected the native search text field."
+        )
+
+        XCTAssertTrue(window.makeFirstResponder(searchField))
+        searchField.selectText(nil)
+        let searchFieldEditor = try XCTUnwrap(searchField.currentEditor() as? NSTextView)
+        let searchCaret = NSRange(location: 2, length: 0)
+        let documentCaret = NSRange(location: 5, length: 0)
+        searchFieldEditor.setSelectedRange(searchCaret)
+        documentEditor.setSelectedRange(documentCaret)
+        XCTAssertTrue(window.firstResponder === searchFieldEditor)
+        XCTAssertFalse(window.firstResponder === documentEditor)
+
+        let nextPoint = nextMatchButtonCenter(in: scope)
+        XCTAssertEqual(scope.cursorIntent(at: nextPoint), .pointer)
+
+        try click(nextPoint, in: scope, window: window)
+        try await settle(window: window)
+
+        XCTAssertEqual(model.selectedMatchIndex, 1, "The click must execute Next-match navigation.")
+        XCTAssertEqual(
+            documentEditor.selectedRange(),
+            documentCaret,
+            "Find navigation must scroll/highlight without moving the editable document caret."
+        )
+        XCTAssertTrue(
+            searchField.currentEditor() === searchFieldEditor,
+            "Next must not replace the native search field editor."
+        )
+        XCTAssertTrue(
+            window.firstResponder === searchFieldEditor,
+            "Next must leave keyboard focus and the insertion caret in the search field."
+        )
+        XCTAssertEqual(
+            searchFieldEditor.selectedRange(),
+            searchCaret,
+            "Next must not move the search field caret."
+        )
+        XCTAssertFalse(window.firstResponder === documentEditor)
+    }
+
+    func testStationaryPointerOverFindNavigationRestoresArrowAfterMouseUp() async throws {
+        let model = YAMLFindCursorRuntimeModel()
+        model.query = "name"
+        model.isFindPresented = true
+
+        let host = NSHostingController(
+            rootView: YAMLFindCursorRuntimeHarness(model: model)
+                .frame(width: 700, height: 420)
+        )
+        let window = YAMLFindCursorTestWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 420),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        let originalPointerLocation = CGEvent(source: nil)?.location
+        defer {
+            if let originalPointerLocation {
+                CGWarpMouseCursorPosition(originalPointerLocation)
+            }
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+
+        try await settle(window: window)
+        let scope = try XCTUnwrap(cursorScopes(in: host.view).first)
+        let nextPoint = nextMatchButtonCenter(in: scope)
+        XCTAssertEqual(scope.cursorIntent(at: nextPoint), .pointer)
+        let nextScreenPoint = try quartzScreenPoint(
+            for: nextPoint,
+            in: scope,
+            window: window
+        )
+        XCTAssertEqual(CGWarpMouseCursorPosition(nextScreenPoint), .success)
+        let actualPointer = scope.convert(
+            window.mouseLocationOutsideOfEventStream,
+            from: nil
+        )
+        XCTAssertEqual(actualPointer.x, nextPoint.x, accuracy: 1)
+        XCTAssertEqual(actualPointer.y, nextPoint.y, accuracy: 1)
+
+        // Reproduce the stale editable-text I-beam that can win during the
+        // same mouse-up transaction while the pointer stays over Next.
+        NSCursor.iBeam.set()
+        let mouseUp = try mouseEvent(
+            type: .leftMouseUp,
+            at: nextPoint,
+            in: scope,
+            window: window
+        )
+        NSApp.postEvent(mouseUp, atStart: true)
+        let deliveredMouseUp = try XCTUnwrap(NSApp.nextEvent(
+            matching: .leftMouseUp,
+            until: Date().addingTimeInterval(1),
+            inMode: .default,
+            dequeue: true
+        ))
+        NSApp.sendEvent(deliveredMouseUp)
+        try await settle(window: window)
+
+        let settledPointer = scope.convert(
+            window.mouseLocationOutsideOfEventStream,
+            from: nil
+        )
+        XCTAssertEqual(settledPointer.x, nextPoint.x, accuracy: 1)
+        XCTAssertEqual(settledPointer.y, nextPoint.y, accuracy: 1)
+        XCTAssertEqual(scope.cursorIntent(at: settledPointer), .pointer)
+        XCTAssertTrue(
+            NSCursor.current === NSCursor.arrow,
+            "A stationary pointer over Next must remain an arrow after mouse-up without another mouse-move."
+        )
+    }
+
     func testOpeningFindOverEditableYAMLRoutesPointerAndTextCursorsAtRuntime() async throws {
         let model = YAMLFindCursorRuntimeModel()
         let host = NSHostingController(
@@ -208,6 +364,94 @@ final class YAMLFindCursorRuntimeTests: XCTestCase {
         return result
     }
 
+    private func nextMatchButtonCenter(in scope: RuneCursorScopeView) -> NSPoint {
+        let trailingInset = RuneUILayoutMetrics.inspectorOverlayInset
+            + RuneUILayoutMetrics.inspectorControlContentInset
+        let trailingButtonCount = CGFloat(2)
+        let distanceFromTrailingEdge = RuneUILayoutMetrics.iconButtonSize / 2
+            + trailingButtonCount * (
+                RuneUILayoutMetrics.iconButtonSize
+                    + RuneAdaptiveToolbarMetrics.groupSpacing
+            )
+        return NSPoint(
+            x: scope.bounds.maxX - trailingInset - distanceFromTrailingEdge,
+            y: scope.bounds.midY
+        )
+    }
+
+    private func click(
+        _ point: NSPoint,
+        in scope: RuneCursorScopeView,
+        window: NSWindow
+    ) throws {
+        let windowPoint = scope.convert(point, to: nil)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 0
+        ))
+        NSApp.sendEvent(down)
+        NSApp.sendEvent(up)
+    }
+
+    private func quartzScreenPoint(
+        for point: NSPoint,
+        in scope: RuneCursorScopeView,
+        window: NSWindow
+    ) throws -> CGPoint {
+        let appKitPoint = window.convertPoint(
+            toScreen: scope.convert(point, to: nil)
+        )
+        let screen = try XCTUnwrap(window.screen)
+        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+        let screenNumber = try XCTUnwrap(
+            screen.deviceDescription[screenNumberKey] as? NSNumber
+        )
+        let displayBounds = CGDisplayBounds(
+            CGDirectDisplayID(screenNumber.uint32Value)
+        )
+        return CGPoint(
+            x: displayBounds.minX + appKitPoint.x - screen.frame.minX,
+            y: displayBounds.minY + screen.frame.maxY - appKitPoint.y
+        )
+    }
+
+    private func mouseEvent(
+        type: NSEvent.EventType,
+        at point: NSPoint,
+        in scope: RuneCursorScopeView,
+        window: NSWindow
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+            with: type,
+            location: scope.convert(point, to: nil),
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        ))
+    }
+
     private func findManifestTextView(in root: NSView) -> NSTextView? {
         if let textView = root as? NSTextView,
            textView.string.contains("apiVersion: v1") {
@@ -239,6 +483,10 @@ final class YAMLFindCursorRuntimeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
+}
+
+private final class YAMLFindCursorTestWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
 }
 
 @MainActor

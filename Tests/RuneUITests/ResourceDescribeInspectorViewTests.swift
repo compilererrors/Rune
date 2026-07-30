@@ -192,8 +192,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
         XCTAssertEqual(
             textView.selectedRange(),
-            updatedMatch,
-            "An explicit find navigation revision must still reselect and focus the requested match."
+            expectedCaret,
+            "Find navigation must not replace the editable document caret while centering the active match."
         )
         XCTAssertEqual(
             scrollView.contentView.bounds.origin.x,

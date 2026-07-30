@@ -124,6 +124,10 @@ private struct RuneCursorScopeRepresentable: NSViewRepresentable {
             regions: regions
         )
     }
+
+    static func dismantleNSView(_ view: RuneCursorScopeView, coordinator _: ()) {
+        view.prepareForDismantling()
+    }
 }
 
 final class RuneCursorRectView: NSView {
@@ -186,6 +190,8 @@ final class RuneCursorRectView: NSView {
 
 final class RuneCursorScopeView: NSView {
     private var cursorTrackingArea: NSTrackingArea?
+    private var cursorEventMonitor: Any?
+    private var cursorRefreshScheduled = false
     private var defaultIntent: RuneCursorIntent
     private var regions: [RuneResolvedCursorRegion]
 
@@ -210,12 +216,10 @@ final class RuneCursorScopeView: NSView {
         defaultIntent: RuneCursorIntent,
         regions: [RuneResolvedCursorRegion]
     ) {
-        guard self.defaultIntent != defaultIntent || self.regions != regions else {
-            return
-        }
         self.defaultIntent = defaultIntent
         self.regions = regions
         updateCursorIfPointerIsInside()
+        scheduleCursorRefresh()
     }
 
     override func updateTrackingAreas() {
@@ -271,7 +275,13 @@ final class RuneCursorScopeView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil {
+            removeCursorEventMonitor()
+        } else {
+            installCursorEventMonitorIfNeeded()
+        }
         updateCursorIfPointerIsInside()
+        scheduleCursorRefresh()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -279,6 +289,7 @@ final class RuneCursorScopeView: NSView {
         super.setFrameSize(newSize)
         if sizeChanged {
             updateCursorIfPointerIsInside()
+            scheduleCursorRefresh()
         }
     }
 
@@ -289,12 +300,56 @@ final class RuneCursorScopeView: NSView {
     private func updateCursor(for event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         cursorIntent(at: point)?.cursor.set()
+        scheduleCursorRefresh()
     }
 
     private func updateCursorIfPointerIsInside() {
         guard let window, window.isKeyWindow else { return }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
         cursorIntent(at: point)?.cursor.set()
+    }
+
+    private func installCursorEventMonitorIfNeeded() {
+        guard cursorEventMonitor == nil else { return }
+        cursorEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .cursorUpdate, .leftMouseUp, .rightMouseUp, .otherMouseUp]
+        ) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window || event.windowNumber == window.windowNumber
+            else {
+                return event
+            }
+            let point = self.convert(event.locationInWindow, from: nil)
+            guard self.cursorIntent(at: point) != nil else { return event }
+            self.scheduleCursorRefresh()
+            return event
+        }
+    }
+
+    private func scheduleCursorRefresh() {
+        guard !cursorRefreshScheduled else { return }
+        cursorRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.cursorRefreshScheduled = false
+            self.updateCursorIfPointerIsInside()
+        }
+    }
+
+    fileprivate func prepareForDismantling() {
+        removeCursorEventMonitor()
+    }
+
+    private func removeCursorEventMonitor() {
+        if let cursorEventMonitor {
+            NSEvent.removeMonitor(cursorEventMonitor)
+            self.cursorEventMonitor = nil
+        }
+    }
+
+    isolated deinit {
+        removeCursorEventMonitor()
     }
 
     private func disjointExplicitRegions(
