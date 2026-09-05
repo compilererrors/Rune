@@ -13,7 +13,7 @@ struct ResourceLogsLayoutMetrics {
     static let regularOutputMinimumHeight: CGFloat = 280
     static let terminalCompactOutputMinimumHeight: CGFloat = 210
     static let sourcePickerWidth: CGFloat = 180
-    static let podPickerWidth: CGFloat = 240
+    static let podPickerWidth: CGFloat = 280
     static let searchChromeHeight: CGFloat = RuneUILayoutMetrics.inspectorControlRowHeight
     static let searchChromeMinimumWidth: CGFloat = 220
     static let searchChromeIdealWidth: CGFloat = 420
@@ -144,7 +144,7 @@ struct ResourceLogsToolbar: View {
                     FavoritePodPicker(
                         title: t(.pod),
                         pods: podOptions,
-                        width: 240,
+                        width: ResourceLogsLayoutMetrics.podPickerWidth,
                         rowTitle: { $0.name },
                         rowDetail: { "\($0.namespace) - \($0.status)" },
                         isFavoritePod: isFavoritePod,
@@ -379,7 +379,9 @@ private extension View {
             .fixedSize(horizontal: true, vertical: false)
     }
 
-    func logToolbarIconButtonFrame(width: CGFloat = 32) -> some View {
+    func logToolbarIconButtonFrame(
+        width: CGFloat = RuneUILayoutMetrics.borderedIconButtonWidth
+    ) -> some View {
         runeInterfaceFont(relativeSize: -1, weight: .semibold)
             .labelStyle(.iconOnly)
             .frame(
@@ -626,7 +628,9 @@ struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
                 ? trackedOptions
                 : displayedOptions
             guard actionOptions.indices.contains(index) else { return }
-            let value = actionOptions[index].value
+            let option = actionOptions[index]
+            setSelectedOptionHelp(option.title, on: sender)
+            let value = option.value
             pendingUserSelection = value
             parent.selection = value
         }
@@ -670,10 +674,17 @@ struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
                 $0.value == protectedSelection
             }) {
                 popup.selectItem(at: selectedIndex)
+                setSelectedOptionHelp(projection.options[selectedIndex].title, on: popup)
             } else {
                 popup.select(nil)
+                setSelectedOptionHelp(nil, on: popup)
             }
             popup.isEnabled = !projection.options.isEmpty
+        }
+
+        private func setSelectedOptionHelp(_ text: String?, on popup: NSPopUpButton) {
+            popup.toolTip = text
+            popup.setAccessibilityHelp(text)
         }
     }
 }
@@ -734,15 +745,20 @@ private struct LogToolbarSourceSummary: View {
                 .lineLimit(1)
                 .tracking(0.3)
 
-            Label(values.joined(separator: ", "), systemImage: "square.stack.3d.forward.dottedline")
+            Label(joinedValues, systemImage: "square.stack.3d.forward.dottedline")
                 .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help("\(title): \(joinedValues)")
         }
         .frame(width: 240, alignment: .leading)
         .fixedSize(horizontal: true, vertical: false)
-        .accessibilityLabel("\(title): \(values.joined(separator: ", "))")
+        .accessibilityLabel("\(title): \(joinedValues)")
+    }
+
+    private var joinedValues: String {
+        values.joined(separator: ", ")
     }
 }
 
@@ -1526,38 +1542,15 @@ struct ResourceLogsOutputSurface: View {
 
 enum ResourceLogsDeferredRenderingPolicy {
     static let deferredOutputThreshold = 250_000
-    static let deferredLineCountThreshold = 1_000
 
     static func shouldDeferOutputMount(for result: ResourceLogSearchResult) -> Bool {
         result.displayedText.utf8.count > deferredOutputThreshold
-            && result.textIndex.lineCount >= deferredLineCountThreshold
     }
 
-    /// Matches the indexed policy while a fresh index is pending, so streaming text
-    /// cannot bounce between AppKit and the virtualized renderer.
+    /// Matches the indexed policy while a fresh index is pending, including payloads
+    /// made up of relatively few very wide lines.
     static func shouldDeferOutputMount(for text: String) -> Bool {
-        guard text.utf8.count > deferredOutputThreshold, !text.isEmpty else { return false }
-
-        var lineCount = 1
-        var previousWasCarriageReturn = false
-        for byte in text.utf8 {
-            switch byte {
-            case 13:
-                lineCount += 1
-                previousWasCarriageReturn = true
-            case 10:
-                if !previousWasCarriageReturn {
-                    lineCount += 1
-                }
-                previousWasCarriageReturn = false
-            default:
-                previousWasCarriageReturn = false
-            }
-            if lineCount >= deferredLineCountThreshold {
-                return true
-            }
-        }
-        return false
+        text.utf8.count > deferredOutputThreshold
     }
 }
 
@@ -2067,6 +2060,15 @@ struct ResourceLogSearchResult: Equatable, Sendable {
     ) rethrows -> ResourceLogSearchResult {
         try cancellationCheck()
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let textIndex, textIndex.text == text {
+            return try make(
+                originalText: text,
+                textIndex: textIndex,
+                query: trimmedQuery,
+                matchCase: matchCase,
+                cancellationCheck: cancellationCheck
+            )
+        }
         let displayedText = ResourceLogANSIFormatter.plainText(from: text)
         if let textIndex, textIndex.text == displayedText {
             return try make(

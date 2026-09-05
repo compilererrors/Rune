@@ -1032,8 +1032,8 @@ public final class RuneAppState: ObservableObject {
         lastLogUpdatedAt = loadedAt
     }
 
-    /// Replaces the cached pod log session for this resource (no merge with prior fetches). Used when tail mode
-    /// is off so changing the time window / line preset does not concatenate snapshots into one giant buffer.
+    /// Replaces the cached pod log snapshot for this resource (no merge with prior fetches). Kubernetes polling
+    /// returns the complete selected window, so both manual refresh and live tail use replacement semantics.
     public func replacePodLogRead(
         _ logs: String,
         contextName: String,
@@ -1053,7 +1053,9 @@ public final class RuneAppState: ObservableObject {
         )
         let bounded = boundedSessionLogCache(segment)
         updateSessionLogCache(key: key, value: bounded)
-        podLogs = bounded
+        // Keep the active snapshot complete. Only the warm, per-resource cache is bounded;
+        // otherwise wide JSON lines can make an "All logs" read look like a ~200-line tail.
+        podLogs = segment
         lastLogFetchError = nil
         lastLogUpdatedAt = loadedAt
     }
@@ -1093,7 +1095,7 @@ public final class RuneAppState: ObservableObject {
         lastLogUpdatedAt = loadedAt
     }
 
-    /// Same as `replacePodLogRead` but for unified service/deployment log streams.
+    /// Same as `replacePodLogRead` but for unified service/deployment polling snapshots.
     public func replaceUnifiedServiceLogRead(
         _ logs: String,
         pods: [String],
@@ -1115,7 +1117,7 @@ public final class RuneAppState: ObservableObject {
         )
         let bounded = boundedSessionLogCache(segment)
         updateSessionLogCache(key: key, value: bounded)
-        unifiedServiceLogs = bounded
+        unifiedServiceLogs = segment
         unifiedServiceLogPods = pods
         lastLogFetchError = nil
         lastLogUpdatedAt = loadedAt
@@ -1402,6 +1404,32 @@ public final class RuneAppState: ObservableObject {
             session.transcript + text,
             maxLines: UserDefaults.standard.runeTerminalScrollbackLineLimit
         )
+        session = PodTerminalSession(
+            id: session.id,
+            contextName: session.contextName,
+            namespace: session.namespace,
+            podName: session.podName,
+            containerName: session.containerName,
+            shell: session.shell,
+            transcript: transcript,
+            status: session.status,
+            lastExitCode: session.lastExitCode,
+            lastDiagnostic: session.lastDiagnostic
+        )
+        terminalSessions[index] = session
+        if activeTerminalSessionID == id {
+            terminalSession = session
+        }
+    }
+
+    public func replaceTerminalSessionTranscript(id: String, text: String) {
+        guard let index = terminalSessions.firstIndex(where: { $0.id == id }) else { return }
+        var session = terminalSessions[index]
+        let transcript = TerminalScrollbackRetention.retainingRecentLines(
+            text,
+            maxLines: UserDefaults.standard.runeTerminalScrollbackLineLimit
+        )
+        guard session.transcript != transcript else { return }
         session = PodTerminalSession(
             id: session.id,
             contextName: session.contextName,

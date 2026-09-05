@@ -5,6 +5,46 @@ import XCTest
 @testable import RuneKube
 
 final class RuneFakeK8sRESTServerTests: XCTestCase {
+    func testResourceWatchStreamsEventsAndUsesExactNamespaceScope() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let client = KubernetesClient(commandTimeout: 2)
+
+        let stream = try await client.watchResourceChanges(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone",
+            kind: .pod,
+            resourceVersion: "synthetic-1",
+            timeoutSeconds: 30
+        )
+        var events: [KubernetesResourceWatchEvent] = []
+        for try await event in stream {
+            events.append(event)
+        }
+
+        XCTAssertEqual(events.map(\.type), [.modified, .bookmark])
+        XCTAssertEqual(events.map(\.resourceVersion), ["synthetic-2", "synthetic-3"])
+        XCTAssertTrue(server.requestLines().contains { line in
+            line.contains("GET /api/v1/namespaces/alpha-zone/pods?")
+                && line.contains("watch=1")
+                && line.contains("allowWatchBookmarks=true")
+                && line.contains("resourceVersion=synthetic-1")
+                && line.contains("resourceVersionMatch=NotOlderThan")
+        })
+    }
+
+    func testRESTResponseDecodingPreservesValidLogsAroundMalformedUTF8() {
+        let data = Data([0x61, 0x6C, 0x70, 0x68, 0x61, 0x0A, 0xFF, 0x0A, 0x6F, 0x6D, 0x65, 0x67, 0x61])
+
+        XCTAssertEqual(
+            KubernetesRESTClient.decodeResponseBody(data),
+            "alpha\n\u{FFFD}\nomega"
+        )
+    }
+
     func testSelfSubjectAccessReviewRequestBodyIncludesAPIGroupWhenPresent() throws {
         let body = try KubernetesRESTClient.selfSubjectAccessReviewRequestBody(
             namespace: "synthetic",
@@ -144,6 +184,96 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             previous: false
         )
         XCTAssertTrue(logs.contains("synthetic REST fake log"))
+    }
+
+    func testPodLogWindowSettingsReachRESTAPIWithoutImplicitRecentTail() async throws {
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let client = KubernetesClient(commandTimeout: 2)
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        let absoluteDate = Date(timeIntervalSince1970: 0)
+        let scenarios: [(name: String, filter: LogTimeFilter, expectedWindowQuery: [String: String])] = [
+            ("all logs", .all, [:]),
+            (
+                "custom lines",
+                RuneCustomLogPresetConfig(
+                    mode: .lines,
+                    lines: 731,
+                    timeValue: 1,
+                    timeUnit: .minutes
+                ).filter,
+                ["tailLines": "731"]
+            ),
+            (
+                "custom minutes",
+                RuneCustomLogPresetConfig(
+                    mode: .time,
+                    lines: 1,
+                    timeValue: 9,
+                    timeUnit: .minutes
+                ).filter,
+                ["sinceSeconds": "540"]
+            ),
+            (
+                "custom hours",
+                RuneCustomLogPresetConfig(
+                    mode: .time,
+                    lines: 1,
+                    timeValue: 6,
+                    timeUnit: .hours
+                ).filter,
+                ["sinceSeconds": "21600"]
+            ),
+            (
+                "custom days",
+                RuneCustomLogPresetConfig(
+                    mode: .time,
+                    lines: 1,
+                    timeValue: 2,
+                    timeUnit: .days
+                ).filter,
+                ["sinceSeconds": "172800"]
+            ),
+            (
+                "absolute time",
+                .since(absoluteDate),
+                ["sinceTime": ISO8601DateFormatter().string(from: absoluteDate)]
+            ),
+            (
+                "overflow-safe time",
+                .lastDays(Int.max),
+                ["sinceSeconds": String(Int.max)]
+            )
+        ]
+
+        for scenario in scenarios {
+            server.resetRequestLines()
+            _ = try await client.podLogs(
+                from: sources,
+                context: context,
+                namespace: "alpha-zone",
+                podName: "orbit-lens-6f58d7d89b-hx9q2",
+                container: "lens",
+                filter: scenario.filter,
+                previous: false
+            )
+
+            let requestLine = try XCTUnwrap(
+                server.requestLines().last { $0.contains("/pods/orbit-lens-6f58d7d89b-hx9q2/log") },
+                scenario.name
+            )
+            let query = try requestQueryItems(requestLine)
+            XCTAssertEqual(query["container"], "lens", scenario.name)
+            XCTAssertEqual(
+                query.filter { ["tailLines", "sinceSeconds", "sinceTime"].contains($0.key) },
+                scenario.expectedWindowQuery,
+                scenario.name
+            )
+        }
     }
 
     func testResourceYAMLRequestMatrixRoutesScopesAndPreservesLargeUnicodePayloads() async throws {
@@ -556,6 +686,140 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         } catch {
             XCTAssertFalse(error is CancellationError)
         }
+    }
+
+    func testUnifiedLogsFetchEveryMatchingPodAcrossPhasesWithoutAnEightPodCap() async throws {
+        let podCount = 10
+        let pods = (0..<podCount).map { index in
+            RuneFakeK8sPod(
+                name: "synthetic-worker-\(String(format: "%02d", index))",
+                deploymentName: "synthetic-worker",
+                phase: index == 8 ? "Succeeded" : (index == 9 ? "Failed" : "Running"),
+                restarts: 0,
+                cpu: "1m",
+                memory: "1Mi",
+                podIP: nil,
+                nodeName: "synthetic-node",
+                labels: ["app": "synthetic-worker"],
+                containers: ["worker"]
+            )
+        }
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                defaultNamespace: "synthetic-zone",
+                namespaces: [
+                    RuneFakeK8sNamespace(
+                        name: "synthetic-zone",
+                        pods: pods,
+                        deployments: [],
+                        services: [
+                            RuneFakeK8sService(
+                                name: "synthetic-worker",
+                                selector: ["app": "synthetic-worker"],
+                                clusterIP: "10.96.0.1"
+                            )
+                        ]
+                    )
+                ],
+                nodes: []
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let logs = try await KubernetesClient(commandTimeout: 2).unifiedLogsForService(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "synthetic-zone",
+            service: ServiceSummary(
+                name: "synthetic-worker",
+                namespace: "synthetic-zone",
+                type: "ClusterIP",
+                clusterIP: "10.96.0.1",
+                selector: ["app": "synthetic-worker"]
+            ),
+            filter: .all,
+            previous: false
+        )
+
+        XCTAssertEqual(Set(logs.podNames), Set(pods.map(\.name)))
+        XCTAssertEqual(logs.podNames.count, podCount)
+        for pod in pods {
+            XCTAssertTrue(logs.mergedText.contains("[\(pod.name)]"))
+        }
+        XCTAssertEqual(
+            server.requestLines().filter { $0.contains("/pods/") && $0.contains("/log") }.count,
+            podCount
+        )
+    }
+
+    func testUnifiedLogsKeepSuccessfulPodsAndNameEachFailedPod() async throws {
+        let successfulPodName = "synthetic-worker-ok"
+        let failingPodName = "synthetic-worker-failed"
+        let pods = [successfulPodName, failingPodName].map { name in
+            RuneFakeK8sPod(
+                name: name,
+                deploymentName: "synthetic-worker",
+                phase: "Running",
+                restarts: 0,
+                cpu: "1m",
+                memory: "1Mi",
+                podIP: nil,
+                nodeName: "synthetic-node",
+                labels: ["app": "synthetic-worker"],
+                containers: ["worker"]
+            )
+        }
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                defaultNamespace: "synthetic-zone",
+                namespaces: [
+                    RuneFakeK8sNamespace(
+                        name: "synthetic-zone",
+                        pods: pods,
+                        deployments: [],
+                        services: [
+                            RuneFakeK8sService(
+                                name: "synthetic-worker",
+                                selector: ["app": "synthetic-worker"],
+                                clusterIP: "10.96.0.1"
+                            )
+                        ],
+                        failingLogPodNames: [failingPodName]
+                    )
+                ],
+                nodes: []
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+
+        let logs = try await KubernetesClient(commandTimeout: 2).unifiedLogsForService(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "synthetic-zone",
+            service: ServiceSummary(
+                name: "synthetic-worker",
+                namespace: "synthetic-zone",
+                type: "ClusterIP",
+                clusterIP: "10.96.0.1",
+                selector: ["app": "synthetic-worker"]
+            ),
+            filter: .all,
+            previous: false
+        )
+
+        XCTAssertEqual(Set(logs.podNames), Set([successfulPodName, failingPodName]))
+        XCTAssertTrue(logs.mergedText.contains("[\(successfulPodName)]"))
+        XCTAssertTrue(
+            logs.mergedText.contains("[\(failingPodName)] ⚠ Logs unavailable for pod \(failingPodName):")
+        )
     }
 
     func testRESTFakeCanForcePodLogEndpointFailure() async throws {
@@ -1217,6 +1481,21 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
             .appendingPathComponent("rune-rest-fake-kubeconfig-\(UUID().uuidString).yaml")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private func requestQueryItems(_ requestLine: String) throws -> [String: String] {
+        let fields = requestLine.split(separator: " ")
+        guard fields.count >= 2,
+              let components = URLComponents(string: "http://127.0.0.1\(fields[1])")
+        else {
+            throw RuneError.parseError(message: "Synthetic request line did not contain a valid request target")
+        }
+        return Dictionary(
+            components.queryItems?.compactMap { item in
+                item.value.map { (item.name, $0) }
+            } ?? [],
+            uniquingKeysWith: { _, latest in latest }
+        )
     }
 }
 

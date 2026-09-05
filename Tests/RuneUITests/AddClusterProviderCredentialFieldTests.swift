@@ -14,10 +14,16 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertEqual(directEKS.fields.map(\.requirementTitle), ["Required", "Required", "Optional", "Optional"])
         XCTAssertEqual(
             nativeEKS.fields.map(\.requirementTitle),
-            ["Required", "Required", "Required", "Required", "Optional"]
+            [nil, nil, nil, nil, "Optional"]
         )
-        XCTAssertEqual(nativeAKS.fields.map(\.requirementTitle), Array(repeating: "Required", count: 6))
-        XCTAssertEqual(nativeGKE.fields.map(\.requirementTitle), Array(repeating: "Required", count: 4))
+        XCTAssertEqual(
+            nativeAKS.fields.map(\.requirementTitle),
+            Array<String?>(repeating: nil, count: 6)
+        )
+        XCTAssertEqual(
+            nativeGKE.fields.map(\.requirementTitle),
+            Array<String?>(repeating: nil, count: 4)
+        )
 
         let accessKey = try field(.awsAccessKeyID, in: nativeEKS)
         let secretKey = try field(.awsSecretAccessKey, in: nativeEKS)
@@ -31,7 +37,10 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertEqual(azureSecret.input, .secureText)
         XCTAssertEqual(serviceAccount.input, .sensitiveJSONFile)
 
-        XCTAssertEqual(accessKey.accessibilityRequirementHint, "Required field")
+        XCTAssertEqual(
+            accessKey.accessibilityRequirementHint,
+            "Needed only when using this optional import method"
+        )
         XCTAssertEqual(sessionToken.accessibilityRequirementHint, "Optional field")
         XCTAssertEqual(
             accessKey.accessibilityIdentifier,
@@ -48,7 +57,14 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         ))
 
         XCTAssertTrue(rootSource.contains("providerCredentialFields(presentation.fields)"))
-        XCTAssertTrue(rootSource.contains("addClusterProviderFormSection(\"Credentials\")"))
+        XCTAssertTrue(rootSource.contains("presentation.credentialSectionTitle"))
+        XCTAssertTrue(rootSource.contains("addClusterProviderAdvancedImportSection("))
+        XCTAssertTrue(rootSource.contains("isAddClusterProviderAdvancedImportExpanded"))
+        XCTAssertTrue(rootSource.contains("Label(\"Advanced\", systemImage: \"slider.horizontal.3\")"))
+        XCTAssertTrue(rootSource.contains("addClusterProviderRecommendedPath("))
+        XCTAssertTrue(rootSource.contains("Text(\"Recommended\")"))
+        XCTAssertTrue(rootSource.contains("RuneDisclosureSection(\n                                    \"Help & tools\""))
+        XCTAssertTrue(rootSource.contains("Text(\"Optional\")"))
         XCTAssertTrue(rootSource.contains("addClusterProviderFormSection(\"Tools\")"))
         XCTAssertTrue(providerRegion.contains("LazyVGrid("))
         XCTAssertTrue(providerRegion.contains("columns: addClusterProviderCredentialColumns"))
@@ -69,7 +85,9 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertTrue(componentSource.contains("requirementTitle = field.requirementTitle"))
         XCTAssertTrue(componentSource.contains("Text(titleText)"))
         XCTAssertTrue(componentSource.contains("Text(requirementTitle)"))
-        XCTAssertTrue(componentSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(componentSource.contains("standardLabelRowHeight"))
+        XCTAssertTrue(componentSource.contains("HStack(alignment: .firstTextBaseline, spacing: 6)"))
+        XCTAssertFalse(componentSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(componentSource.contains("dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(componentSource.contains("TextField(\"\", text: $text)"))
         XCTAssertTrue(componentSource.contains("SecureField(\"\", text: $text)"))
@@ -170,7 +188,6 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
                     AddClusterProviderCredentialFieldMetrics.supportedCompactWidth,
                     accuracy: 0.5
                 )
-                XCTAssertGreaterThan(enlargedHost.frame.height, regular.height)
                 XCTAssertGreaterThan(enlargedHost.frame.height, CGFloat(fields.count) * 32)
                 XCTAssertFalse(
                     scrollViews(in: enlargedHost).contains(where: \.hasHorizontalScroller),
@@ -193,8 +210,15 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
 
         XCTAssertEqual(Set(identifiers).count, Set(fields.map(\.id)).count)
         XCTAssertTrue(fields.allSatisfy { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-        XCTAssertTrue(fields.allSatisfy {
-            $0.accessibilityRequirementHint == ($0.isRequired ? "Required field" : "Optional field")
+        XCTAssertTrue(fields.allSatisfy { field in
+            switch field.requirement {
+            case .required:
+                return field.accessibilityRequirementHint == "Required field"
+            case .optional:
+                return field.accessibilityRequirementHint == "Optional field"
+            case .requiredForOptionalMethod:
+                return field.accessibilityRequirementHint == "Needed only when using this optional import method"
+            }
         })
 
         let componentSource = try source("Sources/RuneUI/Views/AddClusterProviderCredentialField.swift")

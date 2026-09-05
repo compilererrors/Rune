@@ -265,6 +265,100 @@ final class KubernetesRESTClient: @unchecked Sendable {
         ).body
     }
 
+    func watchCollection(
+        environment: [String: String],
+        contextName: String,
+        resource: String,
+        namespace: String?,
+        resourceVersion: String?,
+        timeoutSeconds: Int
+    ) async throws -> AsyncThrowingStream<KubernetesResourceWatchEvent, Error> {
+        let resolved = try await resolvedContext(environment: environment, contextName: contextName)
+        let basePath: String?
+        if let namespace {
+            basePath = KubernetesRESTPath.namespacedCollectionPath(
+                namespace: namespace,
+                resource: resource
+            )
+        } else {
+            basePath = KubernetesRESTPath.collectionPath(resource: resource, namespace: nil)
+        }
+        guard let basePath else {
+            throw RuneError.invalidInput(message: "REST watch path is missing for resource \(resource)")
+        }
+
+        var components = URLComponents()
+        components.path = basePath
+        components.queryItems = [
+            URLQueryItem(name: "watch", value: "1"),
+            URLQueryItem(name: "allowWatchBookmarks", value: "true"),
+            URLQueryItem(name: "timeoutSeconds", value: String(min(max(timeoutSeconds, 30), 600)))
+        ] + (resourceVersion.map {
+            [
+                URLQueryItem(name: "resourceVersion", value: $0),
+                URLQueryItem(name: "resourceVersionMatch", value: "NotOlderThan")
+            ]
+        } ?? [])
+        let apiPath = components.percentEncodedPath
+            + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
+        guard let url = URL(string: apiPath, relativeTo: resolved.serverURL)?.absoluteURL else {
+            throw RuneError.invalidInput(message: "Invalid Kubernetes watch path.")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = TimeInterval(min(max(timeoutSeconds, 30), 600) + 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch resolved.authentication {
+        case let .bearer(token):
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        case let .basic(username, password):
+            let encoded = Data("\(username):\(password)".utf8).base64EncodedString()
+            request.setValue("Basic \(encoded)", forHTTPHeaderField: "Authorization")
+        case .none:
+            break
+        }
+
+        let finalRequest = request
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                let restSession = self.makeSession(for: resolved)
+                defer { restSession.session.invalidateAndCancel() }
+                do {
+                    let (bytes, response) = try await restSession.session.bytes(for: finalRequest)
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          (200..<300).contains(httpResponse.statusCode) else {
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        throw RuneError.commandFailed(
+                            command: "kubernetes REST watch",
+                            message: "Kubernetes watch failed with HTTP status \(status)."
+                        )
+                    }
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                        let event = try KubernetesResourceWatchEvent.decode(line: line)
+                        if event.type == .error {
+                            throw RuneError.commandFailed(
+                                command: "kubernetes REST watch",
+                                message: event.errorMessage ?? "Kubernetes watch reported an error."
+                            )
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
+        }
+    }
+
     func customCollection(
         environment: [String: String],
         contextName: String,
@@ -402,25 +496,14 @@ final class KubernetesRESTClient: @unchecked Sendable {
     ) async throws -> String {
         let query = filter.resolvedLogQuery(profile: profile)
         var items: [URLQueryItem] = []
-        switch filter {
-        case .all:
-            if let tailLines = query.tailLines {
-                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
-            }
-        case let .tailLines(lines):
-            items.append(URLQueryItem(name: "tailLines", value: String(max(1, lines))))
-        case .lastMinutes, .lastHours, .lastDays:
-            if let since = query.since {
-                items.append(URLQueryItem(name: "sinceSeconds", value: String(max(1, parseDurationSeconds(from: since)))))
-            }
-            if let tailLines = query.tailLines {
-                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
-            }
-        case let .since(date):
-            items.append(URLQueryItem(name: "sinceTime", value: ISO8601DateFormatter().string(from: date)))
-            if let tailLines = query.tailLines {
-                items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
-            }
+        if let sinceSeconds = query.sinceSeconds {
+            items.append(URLQueryItem(name: "sinceSeconds", value: String(sinceSeconds)))
+        }
+        if let sinceTime = query.sinceTime {
+            items.append(URLQueryItem(name: "sinceTime", value: ISO8601DateFormatter().string(from: sinceTime)))
+        }
+        if let tailLines = query.tailLines {
+            items.append(URLQueryItem(name: "tailLines", value: String(tailLines)))
         }
         if let container = container?.trimmingCharacters(in: .whitespacesAndNewlines), !container.isEmpty {
             items.append(URLQueryItem(name: "container", value: container))
@@ -1529,7 +1612,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 throw RuneError.commandFailed(command: "kubernetes REST \(method) \(apiPath)", message: "Missing HTTP response")
             }
 
-            let responseBody = String(data: data, encoding: .utf8) ?? ""
+            let responseBody = Self.decodeResponseBody(data)
             VerboseKubeTrace.append(
                 "k8s.request",
                 "response method=\(method) context=<redacted-context> path=\(apiPath) status=\(http.statusCode)"
@@ -1646,6 +1729,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
             ),
             scope: metricsScope
         )
+    }
+
+    /// Kubernetes log responses are arbitrary process output and can contain malformed UTF-8.
+    /// Lossy decoding preserves every valid portion instead of dropping the complete response.
+    static func decodeResponseBody(_ data: Data) -> String {
+        String(decoding: data, as: UTF8.self)
     }
 
     private func requestCancellationReason(_ error: Error) -> String? {
@@ -2495,17 +2584,6 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return formatter.date(from: raw)
     }
 
-    private func parseDurationSeconds(from token: String) -> Int {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard let unit = trimmed.last else { return 0 }
-        let value = Int(trimmed.dropLast()) ?? 0
-        switch unit {
-        case "s": return value
-        case "m": return value * 60
-        case "h": return value * 3600
-        default: return 0
-        }
-    }
 }
 
 enum BoundedExpiringLRUCacheLookup<Value> {

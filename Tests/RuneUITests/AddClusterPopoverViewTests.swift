@@ -139,7 +139,7 @@ final class AddClusterPopoverViewTests: XCTestCase {
             to: "private func sectionLabel"
         ))
 
-        XCTAssertTrue(providerRegion.contains("sectionLabel(\"Providers & local tools\")"))
+        XCTAssertTrue(providerRegion.contains("sectionLabel(\"Cloud providers & local clusters\")"))
         XCTAssertTrue(providerRegion.contains("ForEach(AddClusterProviderIdentifier.allCases)"))
         XCTAssertEqual(AddClusterProviderIdentifier.allCases.count, 4)
         XCTAssertFalse(source.contains("sectionLabel(\"Provider Login\")"))

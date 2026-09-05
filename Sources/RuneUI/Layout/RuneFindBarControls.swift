@@ -4,6 +4,136 @@ enum RuneFindBarMetrics {
     static let supportedInspectorWidth: CGFloat = 320
     static let minimumSearchFieldWidth: CGFloat = 160
     static let idealSearchFieldWidth: CGFloat = 240
+    static let primaryMinimumWidth: CGFloat =
+        RuneUILayoutMetrics.inspectorControlLeadingAccessoryWidth
+        + RuneUILayoutMetrics.inspectorControlColumnSpacing
+        + minimumSearchFieldWidth
+    static let actionSpacing: CGFloat = RuneAdaptiveToolbarMetrics.groupSpacing
+    static let rowSpacing: CGFloat = RuneAdaptiveToolbarMetrics.rowSpacing
+}
+
+/// Keeps the fixed-size navigation rail trailing while allowing the search
+/// field to use its supported minimum width before the bar grows to two rows.
+private struct RuneFindBarActionRailLayout: Layout {
+    let minimumRowHeight: CGFloat
+    let forcesStackedLayout: Bool
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+
+        let secondarySize = subviews[1].sizeThatFits(.unspecified)
+        let inlineMinimumWidth = RuneFindBarMetrics.primaryMinimumWidth
+            + RuneFindBarMetrics.actionSpacing
+            + secondarySize.width
+        let width = proposal.width ?? inlineMinimumWidth
+
+        if !forcesStackedLayout, width >= inlineMinimumWidth {
+            let primaryWidth = width
+                - RuneFindBarMetrics.actionSpacing
+                - secondarySize.width
+            let primarySize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: primaryWidth, height: nil)
+            )
+            return CGSize(
+                width: width,
+                height: max(minimumRowHeight, primarySize.height, secondarySize.height)
+            )
+        }
+
+        let primarySize = subviews[0].sizeThatFits(
+            ProposedViewSize(width: width, height: nil)
+        )
+        let fittedSecondarySize = subviews[1].sizeThatFits(
+            ProposedViewSize(width: width, height: nil)
+        )
+        return CGSize(
+            width: width,
+            height: max(minimumRowHeight, primarySize.height)
+                + RuneFindBarMetrics.rowSpacing
+                + max(minimumRowHeight, fittedSecondarySize.height)
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+
+        let secondarySize = subviews[1].sizeThatFits(.unspecified)
+        let inlineMinimumWidth = RuneFindBarMetrics.primaryMinimumWidth
+            + RuneFindBarMetrics.actionSpacing
+            + secondarySize.width
+
+        if !forcesStackedLayout, bounds.width >= inlineMinimumWidth {
+            let primaryWidth = bounds.width
+                - RuneFindBarMetrics.actionSpacing
+                - secondarySize.width
+            let primarySize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: primaryWidth, height: nil)
+            )
+            let rowHeight = max(minimumRowHeight, primarySize.height, secondarySize.height)
+
+            subviews[0].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + (rowHeight - primarySize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: primaryWidth, height: primarySize.height)
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.maxX,
+                    y: bounds.minY + (rowHeight - secondarySize.height) / 2
+                ),
+                anchor: .topTrailing,
+                proposal: ProposedViewSize(
+                    width: secondarySize.width,
+                    height: secondarySize.height
+                )
+            )
+            return
+        }
+
+        let primarySize = subviews[0].sizeThatFits(
+            ProposedViewSize(width: bounds.width, height: nil)
+        )
+        let fittedSecondarySize = subviews[1].sizeThatFits(
+            ProposedViewSize(width: bounds.width, height: nil)
+        )
+        let primaryRowHeight = max(minimumRowHeight, primarySize.height)
+        let secondaryRowHeight = max(minimumRowHeight, fittedSecondarySize.height)
+
+        subviews[0].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY + (primaryRowHeight - primarySize.height) / 2
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: primarySize.height)
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY
+                    + primaryRowHeight
+                    + RuneFindBarMetrics.rowSpacing
+                    + (secondaryRowHeight - fittedSecondarySize.height) / 2
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: fittedSecondarySize.width,
+                height: fittedSecondarySize.height
+            )
+        )
+    }
 }
 
 /// Shared find-bar chrome. Indexing and navigation remain owned by each
@@ -12,6 +142,7 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
     let accessibilityLabel: String
     @ViewBuilder let primary: Primary
     @ViewBuilder let secondary: Secondary
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(
         _ accessibilityLabel: String,
@@ -24,11 +155,16 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
     }
 
     var body: some View {
-        RuneAdaptiveToolbar(accessibilityLabel) {
+        RuneFindBarActionRailLayout(
+            minimumRowHeight: minimumRowHeight,
+            forcesStackedLayout: dynamicTypeSize.isAccessibilitySize
+        ) {
             primary
-        } secondary: {
             secondary
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
         .controlSize(.small)
         .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
         .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
@@ -40,6 +176,12 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
         .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 5)
         .contentShape(Rectangle())
         .runePointerCursor()
+    }
+
+    private var minimumRowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? RuneAdaptiveToolbarMetrics.accessibilityMinimumRowHeight
+            : RuneAdaptiveToolbarMetrics.minimumRowHeight
     }
 }
 

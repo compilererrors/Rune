@@ -163,8 +163,26 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         XCTAssertEqual(missingKubeconfig.classification, "No kubeconfig discovered")
         XCTAssertEqual(missingKubeconfig.documentationTitle, "GKE Login Docs")
         XCTAssertEqual(unavailable.title, "Provider CLI unavailable")
-        XCTAssertEqual(unavailable.classification, "App Store build")
-        XCTAssertTrue(unavailable.nextAction.contains("direct download build"))
+        XCTAssertEqual(unavailable.classification, "CLI unavailable")
+        XCTAssertTrue(unavailable.nextAction.contains("optional credentials"))
+    }
+
+    func testCloudImportDiagnosticExplainsMissingProviderCLI() {
+        for provider in [CloudKubeConfigProvider.aks, .eks, .gke] {
+            let diagnostic = AddClusterCloudImportWorkflow.diagnostic(
+                for: CloudKubeConfigImportError.commandFailed(
+                    command: "synthetic command",
+                    exitCode: 127,
+                    message: "Required provider CLI not found: synthetic"
+                ),
+                provider: provider
+            )
+
+            XCTAssertEqual(diagnostic.title, "Provider CLI not installed")
+            XCTAssertEqual(diagnostic.classification, "CLI not found")
+            XCTAssertTrue(diagnostic.nextAction.contains("Help & tools"))
+            XCTAssertFalse(diagnostic.message.contains("synthetic"))
+        }
     }
 
     func testCloudImportDiagnosticClassifiesAKSAuthorizationFailures() {
@@ -183,6 +201,63 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
         XCTAssertEqual(diagnostic.nextAction, "Ask for AKS Cluster User access on this cluster, then retry import.")
         XCTAssertFalse(diagnostic.message.contains("00000000"))
         XCTAssertFalse(diagnostic.nextAction.contains("synthetic-cluster"))
+    }
+
+    func testCloudImportDiagnosticClassifiesExpiredAzureSignInWithoutLeakingProviderMetadata() {
+        let sensitiveTenant = "00000000-0000-0000-0000-000000000000"
+        let diagnostic = AddClusterCloudImportWorkflow.diagnostic(
+            for: CloudKubeConfigImportError.commandFailed(
+                command: "az aks get-credentials --resource-group synthetic-group --name synthetic-cluster",
+                exitCode: 1,
+                message: "AADSTS50173: The provided grant has expired; a fresh auth token is needed. Run az login --tenant \(sensitiveTenant)."
+            ),
+            provider: .aks
+        )
+
+        XCTAssertEqual(diagnostic.title, "Azure sign-in expired")
+        XCTAssertEqual(diagnostic.classification, "Sign-in required")
+        XCTAssertEqual(diagnostic.recoveryAction, .signInToAzure)
+        XCTAssertTrue(diagnostic.nextAction.contains("retry this AKS import automatically"))
+        XCTAssertFalse(diagnostic.message.contains(sensitiveTenant))
+        XCTAssertFalse(diagnostic.nextAction.contains(sensitiveTenant))
+    }
+
+    func testCloudImportDiagnosticClassifiesEKSAndGKEFailuresPrecisely() {
+        let eksAuth = cliDiagnostic(.eks, output: "ExpiredToken: The security token included in the request is expired")
+        let eksPermission = cliDiagnostic(.eks, output: "AccessDeniedException: not authorized to perform eks:DescribeCluster")
+        let eksMissing = cliDiagnostic(.eks, output: "ResourceNotFoundException: No cluster found")
+        let gkeAuth = cliDiagnostic(.gke, output: "invalid_grant: reauthentication is needed")
+        let gkePermission = cliDiagnostic(.gke, output: "PERMISSION_DENIED: required 'container.clusters.get' permission")
+        let gkeMissing = cliDiagnostic(.gke, output: "NOT_FOUND: cluster not found")
+
+        XCTAssertEqual(eksAuth.classification, "Authentication failed")
+        XCTAssertEqual(eksPermission.title, "EKS permission denied")
+        XCTAssertEqual(eksMissing.classification, "Cluster not found")
+        XCTAssertEqual(gkeAuth.title, "Google authentication failed")
+        XCTAssertEqual(gkePermission.title, "GKE permission denied")
+        XCTAssertEqual(gkeMissing.classification, "Cluster not found")
+        XCTAssertTrue([eksAuth, eksPermission, eksMissing, gkeAuth, gkePermission, gkeMissing].allSatisfy {
+            !$0.message.localizedCaseInsensitiveContains("synthetic-sensitive")
+        })
+    }
+
+    func testSheetOwnedDiagnosticsCoverSignInAndBlockedReviewWithoutRawErrors() {
+        let signIn = AddClusterCloudImportWorkflow.azureSignInDiagnostic(
+            for: AzureCLISignInError.timedOut(timeoutSeconds: 600)
+        )
+        let blocked = AddClusterCloudImportWorkflow.blockedReviewDiagnostic(
+            for: .gke,
+            failure: AddClusterImportReviewFailure(
+                message: "Kubeconfig is missing current-context.",
+                checks: []
+            )
+        )
+
+        XCTAssertEqual(signIn.title, "Azure sign-in timed out")
+        XCTAssertEqual(signIn.recoveryAction, .signInToAzure)
+        XCTAssertEqual(blocked.title, "Kubeconfig was rejected")
+        XCTAssertEqual(blocked.classification, "Import review failed")
+        XCTAssertTrue(blocked.message.contains("current-context"))
     }
 
     func testCloudImportDiagnosticUsesSafeCommandShapeWithoutRawProviderOutput() {
@@ -393,6 +468,20 @@ final class AddClusterCloudImportWorkflowTests: XCTestCase {
 
     private func review(issues: [KubeConfigImportIssue]) -> KubeConfigImportReview {
         KubeConfigImportReview(contexts: [], issues: issues, redactedPreview: "")
+    }
+
+    private func cliDiagnostic(
+        _ provider: CloudKubeConfigProvider,
+        output: String
+    ) -> AddClusterCloudImportDiagnostic {
+        AddClusterCloudImportWorkflow.diagnostic(
+            for: CloudKubeConfigImportError.commandFailed(
+                command: "synthetic command",
+                exitCode: 1,
+                message: output
+            ),
+            provider: provider
+        )
     }
 
     private func issue(

@@ -33,6 +33,28 @@ struct TerminalShellPodSelectionPolicy {
     static func hasShellSession(for pod: PodSummary, in sessions: [PodTerminalSession]) -> Bool {
         sessions.contains { $0.namespace == pod.namespace && $0.podName == pod.name && $0.containerName == nil }
     }
+
+    static func preferredSessionIDForHandoff(
+        pod: PodSummary,
+        sessions: [PodTerminalSession],
+        contextName: String?,
+        preferredContainer: String?
+    ) -> String? {
+        guard let contextName else { return nil }
+        let candidates = sessions.filter {
+            $0.contextName == contextName
+                && $0.namespace == pod.namespace
+                && $0.podName == pod.name
+        }
+        let container = preferredContainer?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let container, !container.isEmpty,
+           let exact = candidates.first(where: { $0.containerName == container }) {
+            return exact.id
+        }
+        return candidates.first(where: { $0.containerName == nil })?.id
+            ?? candidates.first?.id
+    }
 }
 
 struct ResourceTerminalWorkspaceView: View {
@@ -74,6 +96,7 @@ struct ResourceTerminalWorkspaceView: View {
     let onSaveAllTerminalTranscriptsAndOpen: () -> Void
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
+    var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
 
@@ -174,7 +197,8 @@ struct ResourceTerminalWorkspaceView: View {
                         onSaveAllTranscriptsToExportFolder: onSaveAllTerminalTranscriptsToExportFolder,
                         onSaveAllTranscriptsAndOpen: onSaveAllTerminalTranscriptsAndOpen,
                         isFavoritePod: isFavoritePod,
-                        onToggleFavoritePod: onToggleFavoritePod
+                        onToggleFavoritePod: onToggleFavoritePod,
+                        onOpenSelectedPodLogs: onOpenSelectedPodLogs
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -287,7 +311,7 @@ struct ResourceTerminalCommonCommandRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.bordered)
-            .help("Insert into terminal prompt")
+            .help("Insert into terminal prompt: \(command)")
             .accessibilityLabel("Insert \(command) into terminal prompt")
 
             Button(action: copyCommand) {

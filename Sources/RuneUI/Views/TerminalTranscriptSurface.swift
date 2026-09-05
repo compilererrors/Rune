@@ -10,6 +10,7 @@ struct TerminalTranscriptSurface: View {
     let resetID: String
     let fontSize: CGFloat
     var onPasteText: (String) -> Void = { _ in }
+    var onInputSequence: (String) -> Void = { _ in }
     var onResizeGrid: (Int, Int) -> Void = { _, _ in }
     @State private var isSearchVisible = false
     @State private var searchQuery = ""
@@ -102,7 +103,8 @@ struct TerminalTranscriptSurface: View {
                         selectedSearchMatchIndex: resolvedSearchMatchIndex,
                         searchNavigationRevision: searchNavigationRevision,
                         reduceMotion: accessibilityReduceMotion,
-                        onPasteText: onPasteText
+                        onPasteText: onPasteText,
+                        onInputSequence: onInputSequence
                     )
                 }
             }
@@ -567,6 +569,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
     let searchNavigationRevision: Int
     let reduceMotion: Bool
     let onPasteText: (String) -> Void
+    let onInputSequence: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -587,6 +590,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
         let textView = TerminalTranscriptInteractionTextView(frame: .zero)
         textView.onPasteText = onPasteText
+        textView.onInputSequence = onInputSequence
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -635,6 +639,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         if let terminalTextView = textView as? TerminalTranscriptInteractionTextView {
             terminalTextView.onPasteText = onPasteText
+            terminalTextView.onInputSequence = onInputSequence
         }
         updateFontIfNeeded(in: textView, coordinator: context.coordinator)
 
@@ -874,9 +879,42 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
 private final class TerminalTranscriptInteractionTextView: NSTextView {
     var onPasteText: ((String) -> Void)?
+    var onInputSequence: ((String) -> Void)?
 
     override var acceptsFirstResponder: Bool {
         true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let sequence = Self.terminalInputSequence(for: event) else {
+            super.keyDown(with: event)
+            return
+        }
+        onInputSequence?(sequence)
+    }
+
+    static func terminalInputSequence(for event: NSEvent) -> String? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers.contains(.command) || modifiers.contains(.option) {
+            return nil
+        }
+        switch event.keyCode {
+        case 36, 76: return "\r"
+        case 48: return "\t"
+        case 51: return "\u{007F}"
+        case 53: return "\u{001B}"
+        case 115: return "\u{001B}[H"
+        case 116: return "\u{001B}[5~"
+        case 117: return "\u{001B}[3~"
+        case 119: return "\u{001B}[F"
+        case 121: return "\u{001B}[6~"
+        case 123: return "\u{001B}[D"
+        case 124: return "\u{001B}[C"
+        case 125: return "\u{001B}[B"
+        case 126: return "\u{001B}[A"
+        default:
+            return event.characters?.isEmpty == false ? event.characters : nil
+        }
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

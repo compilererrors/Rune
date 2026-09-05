@@ -144,7 +144,7 @@ struct ResourceRelationshipLinkButton: View {
         .accessibilityLabel(title)
         .accessibilityValue(subtitle)
         .accessibilityHint("Opens the related resource in the inspector")
-        .help("Open \(title)")
+        .help("Open \(title) — \(subtitle)")
     }
 }
 

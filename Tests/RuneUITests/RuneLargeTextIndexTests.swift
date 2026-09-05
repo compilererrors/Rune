@@ -14,6 +14,21 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertEqual(index.line(number: 4)?.text, "")
     }
 
+    func testANSIFormattingAndMixedLineEndingsKeepSearchRangesOnVisibleLines() {
+        let raw = "\u{1B}[31merror one\u{1B}[0m\r\nok\rother error\n"
+        let result = ResourceLogSearchResult.makeForInspector(text: raw, query: "error")
+
+        XCTAssertEqual(result.displayedText, "error one\r\nok\rother error\n")
+        XCTAssertEqual(result.textIndex.lineCount, 4)
+        XCTAssertEqual(result.matchLineNumbers, [1, 3])
+        XCTAssertEqual(result.textIndex.viewport(startLine: 1, lineLimit: 4).lines.map(\.text), [
+            "error one",
+            "ok",
+            "other error",
+            "",
+        ])
+    }
+
     func testMockKeyValueConfigDumpIndexesEveryLogicalLine() {
         let lineCount = 500
         let text = (0..<lineCount)
@@ -62,6 +77,24 @@ final class RuneLargeTextIndexTests: XCTestCase {
         XCTAssertFalse(viewport.lines.isEmpty, "Existing log lines must still render when a reused large text surface has a stale scroll offset.")
         XCTAssertGreaterThanOrEqual(viewport.lines.count, 30)
         XCTAssertEqual(layout.scrollTargetLineForClampedOffset(staleOffsetPastContent), 4_356)
+    }
+
+    func testLargeTextRenderWindowOffsetAdvancesInCoarseLineStrides() {
+        let layout = RuneLargeTextViewportLayout(
+            lineCount: 10_000,
+            rowHeight: 18,
+            verticalPadding: 8,
+            viewportHeight: 620
+        )
+
+        XCTAssertEqual(layout.renderWindowOffset(verticalOffset: 0, strideInLines: 8), 0)
+        XCTAssertEqual(layout.renderWindowOffset(verticalOffset: 143, strideInLines: 8), 0)
+        XCTAssertEqual(layout.renderWindowOffset(verticalOffset: 144, strideInLines: 8), 144)
+        XCTAssertEqual(layout.renderWindowOffset(verticalOffset: 287, strideInLines: 8), 144)
+        XCTAssertLessThanOrEqual(
+            layout.renderWindowOffset(verticalOffset: layout.contentHeight * 2, strideInLines: 8),
+            layout.maxVerticalOffset
+        )
     }
 
     func testSearchFindsEveryMatchWithoutFilteringOrCapping() {

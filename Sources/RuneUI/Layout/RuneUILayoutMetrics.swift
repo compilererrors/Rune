@@ -79,6 +79,7 @@ enum RuneUILayoutMetrics {
     static let inspectorDocumentVerticalInset: CGFloat = 10
     static let yamlSheetValidationListMaxHeight: CGFloat = 150
     static let iconButtonSize: CGFloat = 28
+    static let borderedIconButtonWidth: CGFloat = 32
 
     // Modal sheets and custom dialogs. Native alerts, confirmation dialogs and
     // open/save panels keep the system-provided macOS metrics.
@@ -99,6 +100,7 @@ enum RuneUILayoutMetrics {
     static let commandPaletteMinHeight: CGFloat = 420
     static let commandPaletteIdealHeight: CGFloat = 520
     static let commandPaletteMaxHeight: CGFloat = 600
+    static let providerDialogBodyCompactHeight: CGFloat = 172
     static let providerDialogBodyMinHeight: CGFloat = 220
     static let providerDialogBodyIdealHeight: CGFloat = 300
     static let providerDialogBodyMaxHeight: CGFloat = 430

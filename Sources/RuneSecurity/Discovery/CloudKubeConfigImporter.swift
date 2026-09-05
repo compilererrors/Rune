@@ -109,12 +109,65 @@ public enum CloudKubeConfigImportError: Error, LocalizedError, Sendable, Equatab
             return "\(name) is required."
         case .externalCommandsUnavailable(let message):
             return message
-        case .commandFailed(_, let exitCode, _):
+        case .commandFailed(_, let exitCode, let message):
+            // Keep the low-level error projection cheap and sanitized. Add Cluster's
+            // sheet-owned diagnostic performs the broader provider classification.
+            if message.contains("AADSTS50173") || message.contains("aadsts50173") {
+                return "Azure CLI sign-in expired. Sign in again, then retry the cluster import."
+            }
             return "Cloud import command failed with exit code \(exitCode). Check provider login, required fields, and provider CLI access, then run Auth Doctor again."
         case .commandTimedOut(_, let timeoutSeconds, _):
             return "Cloud import command timed out after \(timeoutSeconds) seconds. Check provider login, network access, and provider CLI access, then run Auth Doctor again."
         case .noKubeconfigDiscovered:
             return "Cloud import command completed, but Rune could not find a kubeconfig to review. Refresh contexts after confirming the provider CLI wrote kubeconfig."
+        }
+    }
+}
+
+public enum AzureCLISignInError: Error, LocalizedError, Sendable, Equatable {
+    case failed(exitCode: Int32)
+    case timedOut(timeoutSeconds: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .failed:
+            return "Azure sign-in did not complete. Retry sign-in and finish the browser prompt."
+        case let .timedOut(timeoutSeconds):
+            return "Azure sign-in timed out after \(timeoutSeconds) seconds. Retry and finish the browser prompt."
+        }
+    }
+}
+
+public protocol AzureCLISignInRunning: Sendable {
+    func signIn() async throws
+}
+
+/// Runs an explicit browser-backed Azure CLI sign-in. Output is intentionally not
+/// surfaced because Azure may print account and tenant metadata after authentication.
+public struct AzureCLISignInRunner: AzureCLISignInRunning {
+    private let runner: CloudKubeConfigCommandRunning
+    private let timeout: TimeInterval
+
+    public init(
+        runner: CloudKubeConfigCommandRunning = ProcessCloudKubeConfigCommandRunner(),
+        timeout: TimeInterval = 600
+    ) {
+        self.runner = runner
+        self.timeout = timeout
+    }
+
+    public func signIn() async throws {
+        let command = CloudKubeConfigCommandPreview(
+            executable: "az",
+            arguments: ["login", "--only-show-errors", "--output", "none"],
+            displayCommand: "az login --only-show-errors --output none"
+        )
+        let result = try await runner.run(command, timeout: timeout)
+        if result.timedOut {
+            throw AzureCLISignInError.timedOut(timeoutSeconds: Int(timeout.rounded(.up)))
+        }
+        guard result.exitCode == 0 else {
+            throw AzureCLISignInError.failed(exitCode: result.exitCode)
         }
     }
 }

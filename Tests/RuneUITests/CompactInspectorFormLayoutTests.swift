@@ -18,7 +18,56 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testTerminalSelectorRowsStackAtInspectorMinimumWithoutHidingActions() {
+    func testTerminalActionClustersRenderWithEqualChromeAndSharedSpacing() {
+        let start = renderedActionSize(
+            title: "Start",
+            systemImage: "play.fill",
+            density: .regular,
+            isProminent: true
+        )
+        let copy = renderedActionSize(
+            title: "Copy kubectl",
+            systemImage: "doc.on.doc",
+            density: .regular
+        )
+        let expand = renderedActionSize(
+            title: "Expand",
+            systemImage: "chevron.down",
+            density: .regular
+        )
+        let disconnect = renderedActionSize(
+            title: "Disconnect",
+            systemImage: "stop.fill",
+            density: .compact
+        )
+        let clear = renderedActionSize(
+            title: "Clear",
+            systemImage: "xmark.circle",
+            density: .compact
+        )
+
+        for size in [start, copy, expand] {
+            XCTAssertEqual(size.width, TerminalActionLayoutMetrics.buttonWidth, accuracy: 0.5)
+            XCTAssertEqual(size.height, TerminalActionLayoutMetrics.regularMinimumHeight, accuracy: 0.5)
+        }
+        for size in [disconnect, clear] {
+            XCTAssertEqual(size.width, TerminalActionLayoutMetrics.buttonWidth, accuracy: 0.5)
+            XCTAssertEqual(size.height, TerminalActionLayoutMetrics.compactMinimumHeight, accuracy: 0.5)
+        }
+        XCTAssertEqual(start, copy)
+        XCTAssertEqual(copy, expand)
+        XCTAssertEqual(disconnect, clear)
+        XCTAssertLessThan(disconnect.height, start.height)
+        XCTAssertEqual(
+            disconnect.height,
+            RuneUILayoutMetrics.iconButtonSize,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(TerminalActionLayoutMetrics.spacing, 8)
+    }
+
+    @MainActor
+    func testTerminalSelectorRowsStackAtInspectorMinimumWithoutHidingActions() throws {
         let pod = PodSummary(
             name: "synthetic-api-0",
             namespace: "sample",
@@ -48,16 +97,93 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
             sessionRow(pod: pod),
             width: TerminalPodControlLayoutMetrics.supportedInspectorWidth
         )
+        let sessionAccessibilityCompact = fittingSize(
+            sessionRow(pod: pod)
+                .dynamicTypeSize(.accessibility3),
+            width: TerminalPodControlLayoutMetrics.supportedInspectorWidth
+        )
+        let sessionBelowCompactInlineBreakpoint = fittingSize(sessionRow(pod: pod), width: 559)
+        let sessionAtCompactInlineBreakpoint = fittingSize(sessionRow(pod: pod), width: 560)
+        let sessionIntermediate = fittingSize(sessionRow(pod: pod), width: 560)
+        let sessionBelowWideInlineBreakpoint = fittingSize(sessionRow(pod: pod), width: 733)
+        let sessionAtWideInlineBreakpoint = fittingSize(sessionRow(pod: pod), width: 734)
         let sessionWide = fittingSize(sessionRow(pod: pod), width: 760)
 
         XCTAssertEqual(selectorCompact.width, TerminalPodControlLayoutMetrics.supportedInspectorWidth, accuracy: 0.5)
         XCTAssertGreaterThan(selectorCompact.height, selectorWide.height)
         XCTAssertEqual(sessionCompact.width, TerminalPodControlLayoutMetrics.supportedInspectorWidth, accuracy: 0.5)
+        XCTAssertEqual(
+            sessionAccessibilityCompact.width,
+            TerminalPodControlLayoutMetrics.supportedInspectorWidth,
+            accuracy: 0.5
+        )
+        XCTAssertGreaterThan(sessionAccessibilityCompact.height, sessionCompact.height)
         XCTAssertGreaterThan(sessionCompact.height, sessionWide.height)
+        XCTAssertGreaterThan(
+            sessionBelowCompactInlineBreakpoint.height,
+            sessionAtCompactInlineBreakpoint.height
+        )
+        XCTAssertGreaterThan(sessionCompact.height, sessionIntermediate.height)
+        XCTAssertGreaterThan(sessionIntermediate.height, sessionWide.height)
+        XCTAssertGreaterThan(
+            sessionBelowWideInlineBreakpoint.height,
+            sessionAtWideInlineBreakpoint.height
+        )
+        XCTAssertEqual(sessionWide.height, selectorWide.height, accuracy: 0.5)
+        XCTAssertEqual(
+            sessionWide.height,
+            TerminalPodControlLayoutMetrics.minimumRowHeight + 16,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            TerminalPodControlLayoutMetrics.wideInlineMinimumWidth(
+                actionWidth: (TerminalActionLayoutMetrics.buttonWidth * 2)
+                    + TerminalActionLayoutMetrics.spacing
+            ),
+            714,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            TerminalPodControlLayoutMetrics.compactInlineMinimumWidth(
+                actionWidth: (TerminalActionLayoutMetrics.buttonWidth * 2)
+                    + TerminalActionLayoutMetrics.spacing
+            ),
+            540,
+            accuracy: 0.5
+        )
         XCTAssertLessThanOrEqual(
             TerminalPodControlLayoutMetrics.compactPickerWidth + 20,
             TerminalPodControlLayoutMetrics.supportedInspectorWidth
         )
+
+        let accessibilityConnect = renderedActionSize(
+            title: "Connect",
+            systemImage: "bolt.horizontal",
+            density: .compact,
+            dynamicTypeSize: .accessibility3
+        )
+        let accessibilityClear = renderedActionSize(
+            title: "Clear",
+            systemImage: "xmark.circle",
+            density: .compact,
+            dynamicTypeSize: .accessibility3
+        )
+        XCTAssertLessThanOrEqual(
+            accessibilityConnect.width
+                + TerminalActionLayoutMetrics.spacing
+                + accessibilityClear.width,
+            TerminalPodControlLayoutMetrics.supportedInspectorWidth - 20
+        )
+
+        try writeArtifact(sessionRow(pod: pod), width: 320, name: "terminal-session-compact")
+        try writeArtifact(
+            sessionRow(pod: pod)
+                .dynamicTypeSize(.accessibility3),
+            width: 320,
+            name: "terminal-session-accessibility"
+        )
+        try writeArtifact(sessionRow(pod: pod), width: 560, name: "terminal-session-intermediate")
+        try writeArtifact(sessionRow(pod: pod), width: 760, name: "terminal-session-wide")
     }
 
     @MainActor
@@ -239,6 +365,35 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
     }
 
     @MainActor
+    private func renderedActionSize(
+        title: String,
+        systemImage: String,
+        density: TerminalActionControlDensity,
+        isProminent: Bool = false,
+        dynamicTypeSize: DynamicTypeSize = .large
+    ) -> CGSize {
+        let label = TerminalActionButtonLabel(
+            title,
+            systemImage: systemImage,
+            density: density
+        )
+        if isProminent {
+            return NSHostingView(
+                rootView: Button(action: {}) { label }
+                    .buttonStyle(.borderedProminent)
+                    .terminalActionControl(density)
+                    .dynamicTypeSize(dynamicTypeSize)
+            ).fittingSize
+        }
+        return NSHostingView(
+            rootView: Button(action: {}) { label }
+                .buttonStyle(.bordered)
+                .terminalActionControl(density)
+                .dynamicTypeSize(dynamicTypeSize)
+        ).fittingSize
+    }
+
+    @MainActor
     private func terminalSearchBar(index: TerminalTranscriptSearchIndex) -> some View {
         TerminalTranscriptSearchBar(
             searchIndex: index,
@@ -293,6 +448,33 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
         let host = NSHostingView(rootView: content.frame(width: width))
         host.layoutSubtreeIfNeeded()
         return host.fittingSize
+    }
+
+    @MainActor
+    private func writeArtifact<Content: View>(
+        _ content: Content,
+        width: CGFloat,
+        name: String
+    ) throws {
+        guard let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] else {
+            return
+        }
+
+        let host = NSHostingView(
+            rootView: content
+                .frame(width: width)
+                .environment(\.colorScheme, .dark)
+        )
+        host.layoutSubtreeIfNeeded()
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        host.layoutSubtreeIfNeeded()
+
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try png.write(to: directory.appendingPathComponent("\(name).png"))
     }
 
     private func source(_ relativePath: String) throws -> String {

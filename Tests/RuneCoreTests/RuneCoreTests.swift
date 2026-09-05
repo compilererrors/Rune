@@ -2,6 +2,63 @@ import XCTest
 @testable import RuneCore
 
 final class RuneCoreTests: XCTestCase {
+    func testTerminalScreenEmulatorAppliesCursorAddressingAcrossChunks() {
+        var emulator = TerminalScreenEmulator(columns: 20, rows: 6)
+
+        emulator.feed("one\r\ntwo\r\nthree")
+        emulator.feed("\u{001B}[2A\u{001B}[")
+        emulator.feed("1GONE\u{001B}[2B\u{001B}[6DTHREE")
+
+        XCTAssertEqual(emulator.renderedText, "ONE\ntwo\nTHREE")
+    }
+
+    func testTerminalScreenEmulatorRestoresPrimaryAfterAlternateScreenTUI() {
+        var emulator = TerminalScreenEmulator(columns: 20, rows: 4)
+
+        emulator.feed("shell prompt\r\n")
+        emulator.feed("\u{001B}[?1049hmenu\r\nitem")
+        XCTAssertEqual(emulator.renderedText, "menu\nitem")
+
+        emulator.feed("\u{001B}[2J\u{001B}[Hupdated")
+        XCTAssertEqual(emulator.renderedText, "updated")
+
+        emulator.feed("\u{001B}[?1049l")
+        XCTAssertEqual(emulator.renderedText, "shell prompt\n")
+    }
+
+    func testTerminalScreenEmulatorSupportsEraseInsertAndDeleteCommands() {
+        var emulator = TerminalScreenEmulator(columns: 20, rows: 4)
+
+        emulator.feed("abcXYZ\u{001B}[3D\u{001B}[3Pdef")
+        XCTAssertEqual(emulator.renderedText, "abcdef")
+
+        emulator.feed("\r\u{001B}[3C\u{001B}[2@12")
+        XCTAssertEqual(emulator.renderedText, "abc12def")
+
+        emulator.feed("\r\u{001B}[2Kready")
+        XCTAssertEqual(emulator.renderedText, "ready")
+    }
+
+    func testTerminalScreenEmulatorCarriesAndSuppressesDeviceControlStrings() {
+        var emulator = TerminalScreenEmulator(columns: 20, rows: 4)
+
+        emulator.feed("before\u{001B}Pprivate payload")
+        XCTAssertEqual(emulator.renderedText, "before")
+        emulator.feed(" continued\u{001B}\\after")
+
+        XCTAssertEqual(emulator.renderedText, "beforeafter")
+    }
+
+    func testTerminalScreenEmulatorBoundsScrollbackRetention() {
+        var emulator = TerminalScreenEmulator(columns: 20, rows: 2, maxScrollbackLines: 3)
+
+        emulator.feed((0..<10).map { "line-\($0)" }.joined(separator: "\r\n"))
+
+        XCTAssertFalse(emulator.renderedText.contains("line-0"))
+        XCTAssertTrue(emulator.renderedText.contains("line-9"))
+        XCTAssertLessThanOrEqual(emulator.renderedText.split(separator: "\n").count, 5)
+    }
+
     func testExternalCommandPolicyReadsDistributionFromInfoDictionary() {
         XCTAssertEqual(
             RuneExternalCommandPolicy.distribution(
@@ -427,18 +484,21 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, powerUserUndoLimit)
     }
 
-    func testTerminalWorkspacePersistenceSettingDefaultsOffAndPersists() {
-        let suiteName = "RuneCoreTests.terminalWorkspacePersistence.\(UUID().uuidString)"
+    func testLastAppStatePersistenceSettingDefaultsOnAndKeepsLegacyAlias() {
+        let suiteName = "RuneCoreTests.lastAppStatePersistence.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        XCTAssertTrue(defaults.runeSaveLastAppState)
+        XCTAssertTrue(defaults.runePersistTerminalWorkspaceState)
+
+        defaults.runeSaveLastAppState = false
+        XCTAssertFalse(defaults.runeSaveLastAppState)
         XCTAssertFalse(defaults.runePersistTerminalWorkspaceState)
 
         defaults.runePersistTerminalWorkspaceState = true
+        XCTAssertTrue(defaults.runeSaveLastAppState)
         XCTAssertTrue(defaults.runePersistTerminalWorkspaceState)
-
-        defaults.runePersistTerminalWorkspaceState = false
-        XCTAssertFalse(defaults.runePersistTerminalWorkspaceState)
     }
 
     func testAppearanceRecentThemesRecordDedupeAndTrim() {

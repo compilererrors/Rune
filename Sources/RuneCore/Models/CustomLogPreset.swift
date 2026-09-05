@@ -80,13 +80,34 @@ public struct RuneCustomLogPresetConfig: Equatable, Sendable {
         self.timeUnit = timeUnit
     }
 
+    public static func defaultValue(for slot: RuneCustomLogPresetSlot) -> Self {
+        switch slot {
+        case .one:
+            return Self(
+                mode: .lines,
+                lines: 5_000,
+                timeValue: 15,
+                timeUnit: .minutes
+            )
+        case .two:
+            return Self(
+                mode: .time,
+                lines: 99_999,
+                timeValue: 6,
+                timeUnit: .hours
+            )
+        }
+    }
+
+    /// Matches the Settings text fields: blank, non-decimal, or overflowing values resolve to one.
+    public static func normalizedPositiveInteger(_ rawValue: String) -> Int {
+        max(1, Int(rawValue) ?? 1)
+    }
+
     public var filter: LogTimeFilter {
         switch mode {
         case .lines:
-            if lines >= 99_999 {
-                return .all
-            }
-            return .tailLines(max(1, lines))
+            return .tailLines(lines)
         case .time:
             return timeUnit.makeFilter(amount: timeValue)
         }
@@ -95,9 +116,6 @@ public struct RuneCustomLogPresetConfig: Equatable, Sendable {
     public func title(slot: RuneCustomLogPresetSlot) -> String {
         switch mode {
         case .lines:
-            if lines >= 99_999 {
-                return "Custom \(slot.ordinal) (Since beginning)"
-            }
             return "Custom \(slot.ordinal) (\(lines) lines)"
         case .time:
             return "Custom \(slot.ordinal) (Last \(timeUnit.shortTitle(amount: timeValue)))"

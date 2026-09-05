@@ -14,9 +14,9 @@ struct ResourceListFreshnessBadge: View {
                 palette: runeThemePalette
             ),
             foregroundColor: .primary,
+            helpText: freshness.message,
             accessibilityLabel: "Resource list status: \(ResourceListFreshnessPresentation.text(for: freshness.status))"
         )
-        .help(freshness.message)
     }
 }
 

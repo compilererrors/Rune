@@ -51,11 +51,21 @@ enum AddClusterProviderFieldInput: Sendable, Equatable {
     }
 }
 
+enum AddClusterProviderFieldRequirement: Sendable, Equatable {
+    case required
+    case optional
+    case requiredForOptionalMethod
+}
+
 struct AddClusterProviderField: Sendable, Equatable, Identifiable {
     let id: AddClusterProviderFieldIdentifier
     let title: String
-    let isRequired: Bool
+    let requirement: AddClusterProviderFieldRequirement
     let input: AddClusterProviderFieldInput
+
+    var isRequired: Bool {
+        requirement == .required
+    }
 
     init(
         _ id: AddClusterProviderFieldIdentifier,
@@ -65,7 +75,19 @@ struct AddClusterProviderField: Sendable, Equatable, Identifiable {
     ) {
         self.id = id
         self.title = title
-        self.isRequired = isRequired
+        requirement = isRequired ? .required : .optional
+        self.input = input
+    }
+
+    init(
+        _ id: AddClusterProviderFieldIdentifier,
+        title: String,
+        requirement: AddClusterProviderFieldRequirement,
+        input: AddClusterProviderFieldInput = .text
+    ) {
+        self.id = id
+        self.title = title
+        self.requirement = requirement
         self.input = input
     }
 }
@@ -140,6 +162,46 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
         primaryAction.id.isCLIOnly || utilityActions.contains { $0.id.isCLIOnly }
     }
 
+    var credentialSectionTitle: String {
+        guard executionMode == .nativeOnly else { return "Credentials" }
+        switch provider {
+        case .aks:
+            return "Service principal"
+        case .eks:
+            return "Access keys"
+        case .gke:
+            return "Service account"
+        case .local:
+            return "Credentials"
+        }
+    }
+
+    var credentialSectionDescription: String {
+        guard executionMode == .nativeOnly else { return "" }
+        switch provider {
+        case .aks:
+            return "For unattended Azure access. Complete these fields only when using this optional method; the secret is stored only in Keychain."
+        case .eks:
+            return "For IAM user access without AWS CLI. The session token is needed only for temporary credentials; secrets are stored only in Keychain."
+        case .gke:
+            return "For non-interactive Google Cloud access. Enter the cluster details, then choose a service-account JSON document stored only in Keychain."
+        case .local:
+            return ""
+        }
+    }
+
+    var compactSubtitle: String {
+        if provider == .local {
+            return "Local kubeconfig"
+        }
+        switch executionMode {
+        case .externalCLI:
+            return "Automatic CLI setup"
+        case .nativeOnly:
+            return "Kubeconfig + auth"
+        }
+    }
+
     func primaryAction(hasCompatibleImportedContext: Bool) -> AddClusterProviderAction {
         guard executionMode == .nativeOnly,
               requiresCompatibleImportedContext,
@@ -212,16 +274,16 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
 
         switch provider {
         case .aks:
-            subtitle = "Azure CLI"
-            note = "Runs Azure CLI locally, validates the resulting kubeconfig, and refreshes contexts."
+            subtitle = "Azure CLI · automatic kubeconfig"
+            note = "Uses your signed-in Azure CLI. Rune creates, validates, and opens the kubeconfig for review automatically."
             fields = [
                 AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
                 AddClusterProviderField(.resourceGroup, title: "Resource group", isRequired: true),
                 AddClusterProviderField(.subscription, title: "Subscription ID or name", isRequired: false)
             ]
         case .eks:
-            subtitle = "AWS CLI"
-            note = "Runs AWS CLI locally, validates the resulting kubeconfig, and refreshes contexts."
+            subtitle = "AWS CLI · automatic kubeconfig"
+            note = "Uses your configured AWS CLI profile. Rune creates, validates, and opens the kubeconfig for review automatically."
             fields = [
                 AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
                 AddClusterProviderField(.region, title: "Region", isRequired: true),
@@ -229,8 +291,8 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
                 AddClusterProviderField(.roleARN, title: "Role ARN", isRequired: false)
             ]
         case .gke:
-            subtitle = "Google Cloud CLI"
-            note = "Runs Google Cloud CLI locally, validates the resulting kubeconfig, and refreshes contexts."
+            subtitle = "Google Cloud CLI · automatic kubeconfig"
+            note = "Uses your signed-in Google Cloud CLI. Rune creates, validates, and opens the kubeconfig for review automatically."
             fields = [
                 AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
                 AddClusterProviderField(.location, title: "Location, region or zone", isRequired: true),
@@ -251,11 +313,11 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
             fields: fields,
             primaryAction: AddClusterProviderAction(
                 .runExternalCLI,
-                title: "Run",
+                title: "Add cluster",
                 systemImage: "icloud.and.arrow.down"
             ),
             utilityActions: [
-                AddClusterProviderAction(.importKubeconfig, title: "Import…", systemImage: "doc.badge.plus"),
+                AddClusterProviderAction(.importKubeconfig, title: "Import file…", systemImage: "doc.badge.plus"),
                 AddClusterProviderAction(.copyExternalCommand, title: "Copy", systemImage: "doc.on.doc"),
                 AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
                 AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
@@ -276,79 +338,109 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
 
         switch provider {
         case .aks:
-            subtitle = "Native Azure Public Cloud import"
-            note = "Fetches cluster access from Azure Public Cloud, builds kubeconfig locally, and stores the service-principal secret only in Keychain."
+            subtitle = "Kubeconfig and optional cloud access"
+            note = "Start with kubeconfig. Service-principal credentials are needed only if you choose the optional native method below."
             fields = [
-                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
-                AddClusterProviderField(.resourceGroup, title: "Resource group", isRequired: true),
-                AddClusterProviderField(.subscription, title: "Subscription ID", isRequired: true),
-                AddClusterProviderField(.azureTenantID, title: "Tenant ID", isRequired: true),
-                AddClusterProviderField(.azureClientID, title: "Service-principal client ID", isRequired: true),
+                AddClusterProviderField(.clusterName, title: "Cluster name", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.resourceGroup, title: "Resource group", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.subscription, title: "Subscription ID", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.azureTenantID, title: "Tenant ID", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.azureClientID, title: "Client ID", requirement: .requiredForOptionalMethod),
                 AddClusterProviderField(
                     .azureClientSecret,
-                    title: "Service-principal secret",
-                    isRequired: true,
+                    title: "Client secret",
+                    requirement: .requiredForOptionalMethod,
                     input: .secureText
                 )
             ]
             primaryAction = AddClusterProviderAction(
-                .runNativeImport,
-                title: "Import & Connect",
-                systemImage: "icloud.and.arrow.down"
+                .importKubeconfig,
+                title: "Import kubeconfig…",
+                systemImage: "doc.badge.plus"
             )
         case .eks:
-            subtitle = "Native AWS import"
-            note = "Fetches the EKS endpoint and certificate directly from AWS and stores credential material only in Keychain."
+            subtitle = "Kubeconfig and optional cloud access"
+            note = "Start with kubeconfig. AWS access keys are needed only if you choose the optional native method below."
             fields = [
-                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
-                AddClusterProviderField(.region, title: "Region", isRequired: true),
-                AddClusterProviderField(.awsAccessKeyID, title: "AWS access key ID", isRequired: true),
+                AddClusterProviderField(.clusterName, title: "Cluster name", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.region, title: "Region", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.awsAccessKeyID, title: "Access key ID", requirement: .requiredForOptionalMethod),
                 AddClusterProviderField(
                     .awsSecretAccessKey,
-                    title: "AWS secret access key",
-                    isRequired: true,
+                    title: "Secret access key",
+                    requirement: .requiredForOptionalMethod,
                     input: .secureText
                 ),
                 AddClusterProviderField(
                     .awsSessionToken,
-                    title: "AWS session token",
+                    title: "Session token",
                     isRequired: false,
                     input: .secureText
                 )
             ]
             primaryAction = AddClusterProviderAction(
-                .runNativeImport,
-                title: "Import & Connect",
-                systemImage: "icloud.and.arrow.down"
+                .importKubeconfig,
+                title: "Import kubeconfig…",
+                systemImage: "doc.badge.plus"
             )
         case .gke:
-            subtitle = "Native Google Cloud import"
-            note = "Fetches cluster access from Google Cloud and stores the selected service-account document only in Keychain."
+            subtitle = "Kubeconfig and optional cloud access"
+            note = "Start with kubeconfig. A Google service account is needed only if you choose the optional native method below."
             fields = [
-                AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
-                AddClusterProviderField(.location, title: "Location, region or zone", isRequired: true),
-                AddClusterProviderField(.projectID, title: "Project ID", isRequired: true),
+                AddClusterProviderField(.clusterName, title: "Cluster name", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.location, title: "Location, region or zone", requirement: .requiredForOptionalMethod),
+                AddClusterProviderField(.projectID, title: "Project ID", requirement: .requiredForOptionalMethod),
                 AddClusterProviderField(
                     .googleServiceAccountJSON,
-                    title: "Google service-account JSON",
-                    isRequired: true,
+                    title: "Credentials JSON",
+                    requirement: .requiredForOptionalMethod,
                     input: .sensitiveJSONFile
                 )
             ]
             primaryAction = AddClusterProviderAction(
-                .chooseServiceAccountJSON,
-                title: "Choose JSON & Import…",
-                systemImage: "icloud.and.arrow.down"
+                .importKubeconfig,
+                title: "Import kubeconfig…",
+                systemImage: "doc.badge.plus"
             )
         case .local:
             return localPresentation(mode: .nativeOnly)
         }
 
-        let utilityActions = [
-            AddClusterProviderAction(.importKubeconfig, title: "Import…", systemImage: "doc.badge.plus"),
-            AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
-            AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
-        ]
+        let utilityActions: [AddClusterProviderAction]
+        switch provider {
+        case .aks:
+            utilityActions = [
+                AddClusterProviderAction(
+                    .runNativeImport,
+                    title: "Import with service principal",
+                    systemImage: "key.fill"
+                ),
+                AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
+                AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
+            ]
+        case .eks:
+            utilityActions = [
+                AddClusterProviderAction(
+                    .runNativeImport,
+                    title: "Import with access keys",
+                    systemImage: "key.fill"
+                ),
+                AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
+                AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
+            ]
+        case .gke:
+            utilityActions = [
+                AddClusterProviderAction(
+                    .chooseServiceAccountJSON,
+                    title: "Import with service account…",
+                    systemImage: "key.fill"
+                ),
+                AddClusterProviderAction(.refreshContexts, title: "Refresh", systemImage: "arrow.clockwise"),
+                AddClusterProviderAction(.runAuthDoctor, title: "Doctor", systemImage: "stethoscope")
+            ]
+        case .local:
+            utilityActions = []
+        }
         return AddClusterProviderPresentation(
             provider: provider,
             executionMode: .nativeOnly,
@@ -413,6 +505,15 @@ extension AddClusterProviderIdentifier {
         case .eks: return "EKS"
         case .gke: return "GKE"
         case .local: return "Local"
+        }
+    }
+
+    var cloudCLIName: String? {
+        switch self {
+        case .aks: return "Azure CLI"
+        case .eks: return "AWS CLI"
+        case .gke: return "Google Cloud CLI"
+        case .local: return nil
         }
     }
 

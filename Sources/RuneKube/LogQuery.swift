@@ -7,24 +7,26 @@ public enum LogQueryProfile: Sendable {
 }
 
 struct ResolvedLogQuery: Equatable, Sendable {
-    let since: String?
-    let usesSinceTime: Bool
+    let sinceSeconds: Int?
+    let sinceTime: Date?
     let tailLines: Int?
 }
 
 extension LogTimeFilter {
-    func resolvedLogQuery(profile: LogQueryProfile) -> ResolvedLogQuery {
+    func resolvedLogQuery(profile _: LogQueryProfile) -> ResolvedLogQuery {
         switch self {
         case .all:
-            return ResolvedLogQuery(since: nil, usesSinceTime: false, tailLines: nil)
+            return ResolvedLogQuery(sinceSeconds: nil, sinceTime: nil, tailLines: nil)
         case let .tailLines(lines):
-            return ResolvedLogQuery(since: nil, usesSinceTime: false, tailLines: max(1, lines))
-        case .lastMinutes, .lastHours, .lastDays, .since:
+            return ResolvedLogQuery(sinceSeconds: nil, sinceTime: nil, tailLines: max(1, lines))
+        case .lastMinutes, .lastHours, .lastDays:
             return ResolvedLogQuery(
-                since: kubernetesSinceArgument,
-                usesSinceTime: usesSinceTime,
+                sinceSeconds: kubernetesSinceSeconds,
+                sinceTime: nil,
                 tailLines: nil
             )
+        case let .since(date):
+            return ResolvedLogQuery(sinceSeconds: nil, sinceTime: date, tailLines: nil)
         }
     }
 }

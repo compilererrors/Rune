@@ -176,7 +176,9 @@ public struct AKSNativeClusterImporter: Sendable {
     static let authorityHost = "login.microsoftonline.com"
     static let resourceManagerHost = "management.azure.com"
     static let resourceManagerScope = "https://management.azure.com/.default"
-    static let apiVersion = "2026-04-01"
+    // Keep this pinned to a published stable ARM contract. A future, unpublished
+    // version makes otherwise valid App Store imports fail at the provider edge.
+    static let apiVersion = "2026-03-01"
 
     private static let maximumTokenResponseBytes = 1_048_576
     private static let maximumClusterResponseBytes = 4_194_304

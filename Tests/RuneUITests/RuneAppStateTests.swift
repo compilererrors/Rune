@@ -2132,6 +2132,76 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     @MainActor
+    func testExpiredAzureSignInCanAuthenticateAndRetrySameImportDraft() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.azureSignInRetry.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kubeconfig = directory.appendingPathComponent("synthetic.yaml")
+        try syntheticImportKubeConfig.write(to: kubeconfig, atomically: true, encoding: .utf8)
+        let preview = CloudKubeConfigCommandPreview(
+            executable: "az",
+            arguments: ["aks", "get-credentials"],
+            displayCommand: "az aks get-credentials"
+        )
+        let review = KubeConfigImportValidator().validate(
+            raw: syntheticImportKubeConfig,
+            sourceName: kubeconfig.lastPathComponent
+        )
+        let importer = SequencedCloudKubeConfigImporter(
+            preview: preview,
+            results: [
+                .failure(.commandFailed(
+                    command: preview.displayCommand,
+                    exitCode: 1,
+                    message: "AADSTS50173: The provided grant has expired; a fresh auth token is needed."
+                )),
+                .success(CloudKubeConfigImportResult(
+                    command: preview,
+                    commandResult: .init(exitCode: 0, stdout: "", stderr: ""),
+                    discoveredURLs: [kubeconfig],
+                    reviews: [review]
+                ))
+            ]
+        )
+        let signIn = RecordingAzureCLISignInRunner()
+        let viewModel = RuneAppViewModel(
+            state: RuneAppState(),
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigImportStore: AppOwnedKubeConfigImportStore(
+                rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
+            ),
+            cloudKubeConfigImporter: importer,
+            azureCLISignInRunner: signIn,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        let request = CloudKubeConfigImportRequest(
+            provider: .aks,
+            clusterName: "synthetic-cluster",
+            resourceGroup: "synthetic-group"
+        )
+
+        viewModel.runCloudKubeConfigImport(request)
+        try await waitUntilForRuneAppState {
+            viewModel.cloudKubeConfigImportDiagnostic?.recoveryAction == .signInToAzure
+                && !viewModel.isRunningCloudKubeConfigImport
+        }
+
+        viewModel.signInToAzureAndRetry(request)
+        try await waitUntilForRuneAppState {
+            viewModel.isKubeConfigImportConfirmationPending
+                && !viewModel.isSigningInToAzure
+                && !viewModel.isRunningCloudKubeConfigImport
+        }
+
+        XCTAssertEqual(signIn.callCount, 1)
+        XCTAssertEqual(importer.importCallCount, 2)
+        XCTAssertNil(viewModel.state.lastError)
+    }
+
+    @MainActor
     func testMockedAddClusterCloudImportLoadsFakeClusterForEveryRunnableProvider() async throws {
         let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
@@ -2423,7 +2493,8 @@ final class RuneAppStateTests: XCTestCase {
 
         try await waitUntilForRuneAppState {
             viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
-                && state.lastError?.contains("Cloud import command failed") == true
+                && viewModel.cloudKubeConfigImportDiagnostic != nil
+                && !viewModel.isRunningCloudKubeConfigImport
         }
 
         XCTAssertTrue(state.kubeConfigSources.isEmpty)
@@ -2438,6 +2509,8 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(state.lastError?.contains(preview.displayCommand) == true)
         XCTAssertFalse(state.activeNotice?.message.contains("synthetic login required") == true)
         XCTAssertFalse(state.activeNotice?.message.contains(preview.displayCommand) == true)
+        XCTAssertNil(state.activeNotice)
+        XCTAssertNil(state.lastError)
     }
 
     @MainActor
@@ -2561,7 +2634,7 @@ final class RuneAppStateTests: XCTestCase {
         try await waitUntilForRuneAppState {
             viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
                 && !viewModel.isRunningCloudKubeConfigImport
-                && state.lastError?.contains("Kubeconfig is missing current-context.") == true
+                && viewModel.cloudKubeConfigImportDiagnostic?.title == "Kubeconfig was rejected"
         }
 
         XCTAssertEqual(viewModel.kubeConfigImportReviews, [review])
@@ -2573,6 +2646,8 @@ final class RuneAppStateTests: XCTestCase {
                 && $0.message == "Kubeconfig is missing current-context."
         })
         XCTAssertFalse(state.authDoctorChecks.contains { $0.id == "cloud-login-eks" })
+        XCTAssertNil(state.activeNotice)
+        XCTAssertNil(state.lastError)
     }
 
     @MainActor
@@ -2619,7 +2694,7 @@ final class RuneAppStateTests: XCTestCase {
 
         try await waitUntilForRuneAppState {
             viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
-                && state.lastError?.contains("Kubeconfig is missing current-context.") == true
+                && viewModel.cloudKubeConfigImportDiagnostic?.title == "Kubeconfig was rejected"
         }
 
         XCTAssertEqual(state.kubeConfigSources, [existingSource])
@@ -2628,6 +2703,8 @@ final class RuneAppStateTests: XCTestCase {
             $0.id == "kubeconfig-import-missing-current-context"
                 && $0.status == .failed
         })
+        XCTAssertNil(state.activeNotice)
+        XCTAssertNil(state.lastError)
     }
 
     @MainActor
@@ -2879,7 +2956,7 @@ final class RuneAppStateTests: XCTestCase {
         try await waitUntilForRuneAppState {
             viewModel.cloudKubeConfigImportStatus == "Cloud import failed."
                 && !viewModel.isRunningCloudKubeConfigImport
-                && state.lastError?.contains("Cloud import command failed") == true
+                && viewModel.cloudKubeConfigImportDiagnostic != nil
         }
 
         viewModel.runCloudKubeConfigImport(request)
@@ -5601,6 +5678,66 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["prod", "alpha", "Beta"])
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["prod", "alpha", "Beta"])
+    }
+
+    @MainActor
+    func testContextRemovalConfirmationUpdatesLocalKubeconfigAndReloadsContexts() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuneAppStateTests.contextRemoval.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kubeconfig = directory.appendingPathComponent("config.yaml")
+        try """
+        apiVersion: v1
+        kind: Config
+        current-context: removable-context
+        clusters:
+        - name: removable-cluster
+          cluster:
+            server: https://removable.example.invalid
+        users:
+        - name: removable-user
+          user:
+            token: synthetic-token
+        contexts:
+        - name: removable-context
+          context:
+            cluster: removable-cluster
+            user: removable-user
+        """.write(to: kubeconfig, atomically: true, encoding: .utf8)
+
+        let state = RuneAppState()
+        let context = KubeContext(name: "removable-context")
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        state.setContexts([context])
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager(store: InMemoryBookmarkStore()),
+            kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
+            kubeConfigContextRemover: KubeConfigContextRemover(
+                backupRootDirectory: directory.appendingPathComponent("backups", isDirectory: true)
+            ),
+            kubeContextList: { _ in [] },
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.requestKubeConfigContextRemoval(context)
+        XCTAssertEqual(viewModel.pendingKubeConfigContextRemoval?.contextName, context.name)
+        XCTAssertEqual(viewModel.pendingKubeConfigContextRemoval?.removedClusterCount, 1)
+        XCTAssertEqual(viewModel.pendingKubeConfigContextRemoval?.removedUserCount, 1)
+
+        viewModel.confirmKubeConfigContextRemoval()
+        try await waitUntilForRuneAppState {
+            viewModel.pendingKubeConfigContextRemoval == nil
+                && !viewModel.isRemovingKubeConfigContext
+                && state.contexts.isEmpty
+        }
+
+        let updated = try String(contentsOf: kubeconfig, encoding: .utf8)
+        XCTAssertFalse(updated.contains("removable-context"))
+        XCTAssertFalse(updated.contains("removable-cluster"))
+        XCTAssertFalse(updated.contains("removable-user"))
     }
 
     @MainActor
@@ -12088,6 +12225,21 @@ private final class SequencedCloudKubeConfigImporter: CloudKubeConfigImporting, 
             return results.removeFirst()
         }
         return try result.get()
+    }
+}
+
+private final class RecordingAzureCLISignInRunner: AzureCLISignInRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCallCount = 0
+
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    func signIn() async throws {
+        lock.withLock {
+            storedCallCount += 1
+        }
     }
 }
 

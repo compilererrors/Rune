@@ -24,6 +24,8 @@ final class LogToolbarPopupPickerRaceTests: XCTestCase {
 
         XCTAssertEqual(popup.itemTitles, initialOptions.map(\.title))
         XCTAssertEqual(coordinator.displayedOptions.map(\.value), ["a", "b"])
+        XCTAssertEqual(popup.toolTip, "Option a")
+        XCTAssertEqual(popup.accessibilityHelp(), "Option a")
 
         // AppKit may close its menu before sending the popup's target/action.
         popup.selectItem(at: 1)
@@ -31,6 +33,8 @@ final class LogToolbarPopupPickerRaceTests: XCTestCase {
         coordinator.selectionChanged(popup)
 
         XCTAssertEqual(state.publishedValues, ["b"])
+        XCTAssertEqual(popup.toolTip, "Option b")
+        XCTAssertEqual(popup.accessibilityHelp(), "Option b")
 
         coordinator.finishDeferredProjection(on: popup)
 
@@ -50,6 +54,8 @@ final class LogToolbarPopupPickerRaceTests: XCTestCase {
         )
 
         XCTAssertEqual(selectedValue(in: popup, coordinator: coordinator), "a")
+        XCTAssertEqual(popup.toolTip, "Option a")
+        XCTAssertEqual(popup.accessibilityHelp(), "Option a")
     }
 
     func testSixtyFourRapidTrackedSelectionsAlwaysPublishAndDisplayLatestValue() throws {

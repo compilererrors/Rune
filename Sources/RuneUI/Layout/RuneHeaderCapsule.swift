@@ -42,6 +42,7 @@ struct RuneHeaderCapsule: View {
     let foregroundColor: Color?
     let fill: Color?
     let stroke: Color?
+    let helpText: String?
     let accessibilityLabel: String?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -58,6 +59,7 @@ struct RuneHeaderCapsule: View {
         foregroundColor: Color? = nil,
         fill: Color? = nil,
         stroke: Color? = nil,
+        helpText: String? = nil,
         accessibilityLabel: String? = nil
     ) {
         self.text = text
@@ -68,6 +70,7 @@ struct RuneHeaderCapsule: View {
         self.foregroundColor = foregroundColor
         self.fill = fill
         self.stroke = stroke
+        self.helpText = helpText
         self.accessibilityLabel = accessibilityLabel
     }
 
@@ -106,8 +109,13 @@ struct RuneHeaderCapsule: View {
                     .strokeBorder(stroke, lineWidth: 1)
             }
         }
+        .help(resolvedHelpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel ?? "\(role.accessibilityTitle): \(text)")
+    }
+
+    var resolvedHelpText: String {
+        helpText ?? text
     }
 
     private var verticalPadding: CGFloat {

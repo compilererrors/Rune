@@ -134,6 +134,88 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
     }
 
+    func testTerminalShellHeaderHandoffDispatchesOnceForTheVisiblePodAtCompactWidth() throws {
+        let pod = PodSummary(name: "pod-0", namespace: "default", status: "Running")
+        let session = PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo",
+            namespace: pod.namespace,
+            podName: pod.name,
+            shell: "sh",
+            transcript: "[rune] connected\n",
+            status: .connected
+        )
+        var openedPodIDs: [String] = []
+        let panel = TerminalShellPanelView(
+            session: session,
+            sessions: [session],
+            activeSessionID: session.id,
+            isComposingNewSession: false,
+            selectedPod: pod,
+            availablePods: [pod],
+            canApplyMutations: true,
+            transcriptHeight: 220,
+            selectedShellPodID: .constant(pod.id),
+            terminalInput: .constant(""),
+            onStartSession: { _, _ in },
+            onReconnectSession: { _, _, _ in },
+            onSend: {},
+            onSendControlSequence: { _ in },
+            onResizeSession: { _, _, _ in },
+            onDisconnect: {},
+            onSelectSession: { _ in },
+            onCloseSession: { _ in },
+            onComposeNewSession: {},
+            onClearTranscript: {},
+            onSaveActiveTranscript: {},
+            onSaveAllTranscripts: {},
+            onSaveActiveTranscriptToExportFolder: {},
+            onSaveActiveTranscriptAndOpen: {},
+            onSaveAllTranscriptsToExportFolder: {},
+            onSaveAllTranscriptsAndOpen: {},
+            isFavoritePod: { _ in false },
+            onToggleFavoritePod: { _ in },
+            onOpenSelectedPodLogs: { openedPodIDs.append($0.id) }
+        )
+        let host = NSHostingView(rootView: panel.frame(width: 420))
+        host.layoutSubtreeIfNeeded()
+
+        panel.openSelectedPodLogs()
+
+        XCTAssertEqual(openedPodIDs, [pod.id])
+        XCTAssertLessThanOrEqual(host.fittingSize.width, 420.5)
+        if let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] {
+            host.frame = NSRect(origin: .zero, size: host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try png.write(to: directory.appendingPathComponent("terminal-shell-header.png"))
+        }
+    }
+
+    func testTerminalPodHandoffsStayInExistingHeadersAndDoNotCoupleSelectionsAutomatically() throws {
+        let workspaceSource = try String(contentsOfFile: resourceTerminalInspectorViewPath, encoding: .utf8)
+        let shellSource = try String(contentsOfFile: terminalShellPanelViewPath, encoding: .utf8)
+        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let logsSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+
+        XCTAssertEqual(shellSource.components(separatedBy: "terminal-shell-open-pod-logs").count - 1, 1)
+        XCTAssertEqual(rootSource.components(separatedBy: "terminal-logs-use-pod-in-shell").count - 1, 1)
+        XCTAssertTrue(shellSource.contains("private var header: some View"))
+        XCTAssertTrue(shellSource.contains("openSelectedPodLogs()"))
+        XCTAssertTrue(shellSource.contains("RuneBorderedIconButton(\n                        \"Show \\(selectedPod.name) in Logs\""))
+        XCTAssertTrue(rootSource.contains("RuneBorderedIconButton(\n                        \"Use \\(pod.name) in Pod Shell\""))
+        XCTAssertTrue(workspaceSource.contains("onOpenSelectedPodLogs: onOpenSelectedPodLogs"))
+        XCTAssertTrue(rootSource.contains("onOpenSelectedPodLogs: openTerminalLogs"))
+        XCTAssertTrue(rootSource.contains("terminalLogTabState.activateOrRetarget(for: pod)"))
+        XCTAssertTrue(rootSource.contains("viewModel.isDetailPaneVisible = true"))
+        XCTAssertTrue(rootSource.contains("TerminalShellPodSelectionPolicy.preferredSessionIDForHandoff("))
+        XCTAssertFalse(logsSource.contains("terminal-logs-use-pod-in-shell"))
+    }
+
     func testTerminalPromptInputTextStaysVisibleInDarkTerminalChrome() async throws {
         let pod = PodSummary(name: "pod-0", namespace: "default", status: "Running")
         let session = PodTerminalSession(
@@ -316,6 +398,90 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertEqual(controlSequences, ["\u{3}"])
         XCTAssertEqual(terminalInput, "")
         XCTAssertEqual(promptTextView.string, "")
+    }
+
+    func testTerminalTranscriptForwardsInteractiveKeysToRunningTUI() async throws {
+        let pod = PodSummary(name: "pod-0", namespace: "default", status: "Running")
+        let session = PodTerminalSession(
+            id: "shell-a",
+            contextName: "demo",
+            namespace: "default",
+            podName: pod.name,
+            shell: "sh",
+            transcript: "interactive screen",
+            status: .connected
+        )
+        var sequences: [String] = []
+        let host = NSHostingController(
+            rootView: TerminalShellPanelView(
+                session: session,
+                sessions: [session],
+                activeSessionID: session.id,
+                isComposingNewSession: false,
+                selectedPod: pod,
+                availablePods: [pod],
+                canApplyMutations: true,
+                transcriptHeight: 260,
+                selectedShellPodID: .constant(pod.id),
+                terminalInput: .constant(""),
+                onStartSession: { _, _ in },
+                onReconnectSession: { _, _, _ in },
+                onSend: {},
+                onSendControlSequence: { sequences.append($0) },
+                onResizeSession: { _, _, _ in },
+                onDisconnect: {},
+                onSelectSession: { _ in },
+                onCloseSession: { _ in },
+                onComposeNewSession: {},
+                onClearTranscript: {},
+                onSaveActiveTranscript: {},
+                onSaveAllTranscripts: {},
+                onSaveActiveTranscriptToExportFolder: {},
+                onSaveActiveTranscriptAndOpen: {},
+                onSaveAllTranscriptsToExportFolder: {},
+                onSaveAllTranscriptsAndOpen: {},
+                isFavoritePod: { _ in false },
+                onToggleFavoritePod: { _ in }
+            )
+            .frame(width: 720, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window: window)
+        defer { window.orderOut(nil) }
+
+        guard let transcript = allTextViews(in: host.view).first(where: { !$0.isEditable && $0.isSelectable }) else {
+            XCTFail("Expected interactive terminal transcript text view.")
+            return
+        }
+        transcript.window?.makeFirstResponder(transcript)
+        transcript.keyDown(with: keyDownEvent(
+            window: window,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            keyCode: 126
+        ))
+        transcript.keyDown(with: keyDownEvent(
+            window: window,
+            characters: "x",
+            charactersIgnoringModifiers: "x",
+            keyCode: 7
+        ))
+        transcript.keyDown(with: keyDownEvent(
+            window: window,
+            modifierFlags: .control,
+            characters: "\u{3}",
+            charactersIgnoringModifiers: "c",
+            keyCode: 8
+        ))
+
+        XCTAssertEqual(sequences, ["\u{001B}[A", "x", "\u{3}"])
     }
 
     func testTerminalWorkspaceComposesIndependentPanelsInStableOrder() throws {
@@ -704,10 +870,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(tabStripSource.contains(".frame(height: 38)"))
         XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
 
-        XCTAssertTrue(sessionControlSource.contains("Label(primaryActionTitle, systemImage: primaryActionSystemImage)"))
-        XCTAssertTrue(sessionControlSource.contains(".frame(width: 112)"))
-        XCTAssertTrue(sessionControlSource.contains("Button(\"Clear\", action: onClear)"))
-        XCTAssertTrue(sessionControlSource.contains(".frame(width: 72)"))
+        XCTAssertTrue(sessionControlSource.contains("static let buttonWidth: CGFloat = 112"))
+        XCTAssertTrue(sessionControlSource.contains("static let spacing: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
+        XCTAssertTrue(sessionControlSource.contains("HStack(spacing: TerminalActionLayoutMetrics.spacing)"))
+        XCTAssertTrue(sessionControlSource.contains("TerminalActionButtonLabel(\n                    primaryActionTitle"))
+        XCTAssertTrue(sessionControlSource.contains("TerminalActionButtonLabel(\n                    \"Clear\",\n                    systemImage: \"xmark.circle\""))
+        XCTAssertEqual(sessionControlSource.components(separatedBy: ".terminalActionControl(.compact)").count - 1, 2)
+        XCTAssertFalse(sessionControlSource.contains(".frame(width: 72)"))
         XCTAssertTrue(sessionControlSource.contains("TerminalPodControlLayout("))
         XCTAssertTrue(sessionControlSource.contains("TerminalPodSelectorControl("))
         XCTAssertFalse(sessionControlSource.contains("private var favoriteButton"))
@@ -727,11 +896,13 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(workspaceSource.contains("onSaveActiveTerminalTranscriptToExportFolder"))
         XCTAssertTrue(workspaceSource.contains("onSaveAllTerminalTranscriptsToExportFolder"))
         XCTAssertTrue(podSelectorSource.contains("struct TerminalPodControlLayout"))
-        XCTAssertTrue(podSelectorSource.contains("RuneAdaptiveToolbar(accessibilityLabel)"))
+        XCTAssertTrue(podSelectorSource.contains("TerminalPodActionRailLayout("))
+        XCTAssertTrue(podSelectorSource.contains("static let wideSelectorWidth"))
+        XCTAssertTrue(podSelectorSource.contains("bounds.maxX - actionSize.width"))
         XCTAssertTrue(podSelectorSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(podSelectorSource.contains("FavoritePodPicker("))
-        XCTAssertTrue(podSelectorSource.contains("static let widePickerWidth: CGFloat = 320"))
-        XCTAssertTrue(podSelectorSource.contains("static let compactPickerWidth: CGFloat = 280"))
+        XCTAssertTrue(podSelectorSource.contains("static let widePickerWidth: CGFloat = 360"))
+        XCTAssertTrue(podSelectorSource.contains("static let compactPickerWidth: CGFloat = 300"))
         XCTAssertTrue(podSelectorSource.contains(".frame(width: 104)"))
         XCTAssertFalse(podSelectorSource.contains("private var favoriteButton"))
         XCTAssertFalse(podSelectorSource.contains("\"★ \""))
@@ -767,6 +938,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(portForwardSource.contains(".frame(height: activeSessionListHeight)"))
         XCTAssertTrue(portForwardSource.contains("PortForwardEndpointFields("))
         XCTAssertTrue(portForwardSource.contains("PortForwardPrimaryActionButton("))
+        XCTAssertTrue(portForwardSource.contains("usesUniformWidth: true"))
+        XCTAssertTrue(portForwardSource.contains("HStack(spacing: TerminalActionLayoutMetrics.spacing)"))
+        XCTAssertTrue(portForwardSource.contains("VStack(alignment: .leading, spacing: TerminalActionLayoutMetrics.spacing)"))
+        XCTAssertEqual(portForwardSource.components(separatedBy: ".terminalActionControl(.regular)").count - 1, 2)
         XCTAssertFalse(portForwardSource.contains("stopButton(session)"))
         XCTAssertTrue(portForwardSource.contains("isFavoritePod: isFavoritePod"))
         XCTAssertTrue(portForwardSource.contains("onToggleFavoritePod: onToggleFavoritePod"))
@@ -2026,8 +2201,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                switch kind"))
         XCTAssertTrue(viewModelSource.contains("} else {\n                plan.serviceAccounts = true\n                plan.rbacRoles = true"))
         XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                cancellationFamilies.insert(helmBrowserResourceFamily)"))
-        XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                    try await loadSelectedHelmBrowserResource"))
-        XCTAssertTrue(viewModelSource.contains("} else {\n                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)\n                    await loadOperatorResources(context: context, namespace: state.selectedNamespace)"))
+        XCTAssertTrue(viewModelSource.contains("if simpleMode {\n                    let requestedFamily = helmBrowserResourceFamily"))
+        XCTAssertTrue(viewModelSource.contains("if try await loadSelectedHelmBrowserResource(\n                        family: requestedFamily"))
+        XCTAssertTrue(viewModelSource.contains("} else {\n                    do {\n                        try await loadHelmReleases("))
+        XCTAssertTrue(viewModelSource.contains("if await loadOperatorResources("))
         XCTAssertTrue(viewModelSource.contains("public func refreshReplicaSetsForCurrentNamespace()"))
     }
 
@@ -2138,18 +2315,25 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("configuredExporter.save("))
     }
 
-    func testPreferencesExposeTerminalWorkspacePersistenceSetting() throws {
+    func testPreferencesExposeGeneralLastAppStatePersistenceSetting() throws {
         let preferencesSource = try String(contentsOfFile: runePreferencesViewPath, encoding: .utf8)
         let settingsSource = try String(contentsOfFile: runeSettingsKeysPath, encoding: .utf8)
         let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let viewModelSource = try String(contentsOfFile: runeAppViewModelPath, encoding: .utf8)
 
+        XCTAssertTrue(settingsSource.contains("saveLastAppState"))
+        XCTAssertTrue(settingsSource.contains("runeSaveLastAppState"))
         XCTAssertTrue(settingsSource.contains("persistTerminalWorkspaceState"))
         XCTAssertTrue(settingsSource.contains("runePersistTerminalWorkspaceState"))
-        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState)"))
-        XCTAssertTrue(preferencesSource.contains("Save terminal view state"))
-        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState)"))
+        XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.saveLastAppState)"))
+        XCTAssertTrue(preferencesSource.contains("Save last app state"))
+        XCTAssertTrue(preferencesSource.contains("Search text, log output, YAML drafts, transcripts, and commands are not saved."))
+        XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.saveLastAppState)"))
         XCTAssertTrue(rootViewSource.contains("restoreTerminalWorkspaceStateIfNeeded()"))
         XCTAssertTrue(rootViewSource.contains("persistTerminalWorkspaceStateIfNeeded()"))
+        XCTAssertFalse(rootViewSource.contains("JSONTerminalWorkspaceStateStore()"))
+        XCTAssertTrue(viewModelSource.contains("loadPersistedTerminalWorkspaceState()"))
+        XCTAssertTrue(viewModelSource.contains("persistTerminalWorkspaceState("))
     }
 
     func testTerminalLogTabsExposeFavoriteToggle() throws {
@@ -2917,7 +3101,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             rootViewSource[popoverDismissBlock.lowerBound..<providerSheetBlock.lowerBound]
                 .contains("viewModel.clearManualKubeConfigSecret()")
         )
-        XCTAssertTrue(addClusterPopoverSource.contains("Standard"))
+        XCTAssertTrue(addClusterPopoverSource.contains("Kubeconfig files"))
         XCTAssertTrue(addClusterPopoverSource.contains("discoveryStatus"))
         XCTAssertFalse(addClusterPopoverSource.contains("Auto-detect Clusters"))
         XCTAssertFalse(addClusterPopoverSource.contains("Import Options"))
@@ -2930,7 +3114,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(addClusterPopoverSource.contains("~/.kube/config"))
         XCTAssertTrue(addClusterPopoverSource.contains("Favorite imported contexts"))
         XCTAssertTrue(rootViewSource.contains("$viewModel.favoriteImportedKubeConfigContexts"))
-        XCTAssertTrue(addClusterPopoverSource.contains("sectionLabel(\"Providers & local tools\")"))
+        XCTAssertTrue(addClusterPopoverSource.contains("sectionLabel(\"Cloud providers & local clusters\")"))
         XCTAssertTrue(addClusterPopoverSource.contains("ForEach(AddClusterProviderIdentifier.allCases)"))
         XCTAssertFalse(addClusterPopoverSource.contains("sectionLabel(\"Provider Login\")"))
         XCTAssertFalse(addClusterPopoverSource.contains("sectionLabel(\"Local Tools\")"))
@@ -2979,6 +3163,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(contextSidebarRowSource.contains("displayName == rawName ? secondaryText : \"\\(rawName) • \\(secondaryText)\""))
         XCTAssertTrue(contextSidebarRowSource.contains("isManuallyMarkedProduction ? \"Unmark Production\" : \"Mark as Production\""))
         XCTAssertTrue(contextSidebarRowSource.contains("isFavorite ? \"star.fill\" : \"star\""))
+        XCTAssertTrue(contextSidebarRowSource.contains("Remove from Rune…"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.requestKubeConfigContextRemoval(context)"))
+        XCTAssertTrue(rootViewSource.contains("KubeConfigContextRemovalSheet("))
         XCTAssertTrue(importReviewPanelSource.contains("Text(\"Import Review\")"))
         XCTAssertTrue(importReviewPanelSource.contains("RuneDialogCloseButton(isConfirmationPending ? \"Cancel kubeconfig import\" : \"Clear kubeconfig import report\")"))
         XCTAssertTrue(importReviewPanelSource.contains("RuneDialogActionBar {"))
@@ -3018,7 +3205,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("--location <location>"))
         XCTAssertTrue(providerPresentationSource.contains(".refreshContexts, title: \"Refresh\""))
         XCTAssertTrue(rootViewSource.contains("viewModel.refreshKubeConfigSourcesFromDiscovery()"))
-        XCTAssertTrue(rootViewSource.contains("Text(viewModel.isRunningCloudKubeConfigImport ? \"Running\" : \"Run\")"))
+        XCTAssertTrue(rootViewSource.contains("Text(viewModel.isRunningCloudKubeConfigImport ? \"Connecting…\" : action.title)"))
         XCTAssertTrue(rootViewSource.contains("Image(systemName: \"icloud.and.arrow.down\")"))
         XCTAssertTrue(rootViewSource.contains("let canRunCredentialImport = canRunProviderCredentialImport(provider)"))
         XCTAssertTrue(rootViewSource.contains("let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)"))
@@ -3028,7 +3215,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("return \"Provider import is already running.\""))
         XCTAssertTrue(rootViewSource.contains("return \"Enter \\(missingFields) to run provider import.\""))
         XCTAssertTrue(providerPresentationSource.contains(".copyExternalCommand, title: \"Copy\""))
-        XCTAssertTrue(providerPresentationSource.contains(".importKubeconfig, title: \"Import…\""))
+        XCTAssertTrue(providerPresentationSource.contains(".importKubeconfig, title: \"Import file…\""))
         XCTAssertTrue(rootViewSource.contains("copyToPasteboard(credentialCommand)"))
         XCTAssertTrue(rootViewSource.contains("Copy the provider CLI command."))
         XCTAssertTrue(rootViewSource.contains("if !presentation.fields.isEmpty"))
@@ -3036,7 +3223,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("Refresh imported contexts and native credential status."))
         XCTAssertTrue(providerPresentationSource.contains(".runAuthDoctor, title: \"Doctor\""))
         XCTAssertTrue(rootViewSource.contains(".help(\"Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.\")"))
-        XCTAssertTrue(rootViewSource.contains("addClusterProviderFormSection(\"Credentials\")"))
+        XCTAssertTrue(rootViewSource.contains("presentation.credentialSectionTitle"))
+        XCTAssertTrue(providerPresentationSource.contains("return \"Service principal\""))
+        XCTAssertTrue(providerPresentationSource.contains("return \"Access keys\""))
+        XCTAssertTrue(providerPresentationSource.contains("return \"Service account\""))
         XCTAssertTrue(rootViewSource.contains("addClusterProviderFormSection(\"Tools\")"))
         XCTAssertTrue(rootViewSource.contains("private func addClusterProviderFormSection<Content: View>("))
         XCTAssertTrue(rootViewSource.contains("content()\n                .runeInsetCard(padding: 12)"))
@@ -3050,20 +3240,36 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(rootViewSource.contains(".frame(width: RuneAddClusterProviderActionLayout.dialogWidth)"))
         XCTAssertTrue(rootViewSource.contains(".frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)"))
-        XCTAssertTrue(rootViewSource.contains("minHeight: RuneUILayoutMetrics.providerDialogBodyMinHeight"))
-        XCTAssertTrue(rootViewSource.contains("idealHeight: RuneUILayoutMetrics.providerDialogBodyIdealHeight"))
+        XCTAssertTrue(rootViewSource.contains("let bodyMinimumHeight = presentation.executionMode == .nativeOnly"))
+        XCTAssertTrue(rootViewSource.contains("minHeight: bodyMinimumHeight"))
+        XCTAssertTrue(rootViewSource.contains("let bodyIdealHeight: CGFloat = if presentation.executionMode != .nativeOnly"))
+        XCTAssertTrue(rootViewSource.contains("idealHeight: bodyIdealHeight"))
         XCTAssertTrue(rootViewSource.contains("maxHeight: RuneUILayoutMetrics.providerDialogBodyMaxHeight"))
+        XCTAssertTrue(rootViewSource.contains(".animation(.easeInOut(duration: 0.18), value: isAddClusterProviderAdvancedImportExpanded)"))
+        XCTAssertTrue(rootViewSource.contains(".animation(.easeInOut(duration: 0.18), value: isAddClusterProviderToolsExpanded)"))
         XCTAssertTrue(rootViewSource.contains("RuneDialogActionBar {"))
         XCTAssertTrue(rootViewSource.contains("RuneDialogButtonLabel(\"Close\")"))
         XCTAssertTrue(rootViewSource.contains("providerPrimaryAction("))
         XCTAssertTrue(rootViewSource.contains("viewModel.runCloudKubeConfigImport"))
         XCTAssertTrue(rootViewSource.contains("openAddClusterProviderSheet(provider)"))
         XCTAssertTrue(rootViewSource.contains("private func openAddClusterProviderSheet(_ provider: RuneAddClusterProvider)"))
-        XCTAssertTrue(rootViewSource.contains("presentation.executionMode == .externalCLI"))
+        XCTAssertTrue(rootViewSource.contains(": .externalCLI,"))
         XCTAssertTrue(rootViewSource.contains("let diagnostic = viewModel.cloudKubeConfigImportDiagnostic"))
         XCTAssertTrue(rootViewSource.contains("if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic"))
-        XCTAssertTrue(rootViewSource.contains("addClusterCloudImportDiagnosticView(diagnostic)"))
-        XCTAssertTrue(rootViewSource.contains("private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View"))
+        XCTAssertTrue(rootViewSource.contains("addClusterCloudImportDiagnosticView(diagnostic, provider: provider)"))
+        XCTAssertTrue(rootViewSource.contains("private func addClusterCloudImportDiagnosticView("))
+        let fixedDiagnostic = try XCTUnwrap(
+            rootViewSource.range(of: "if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic")
+        )
+        let providerBodyScroll = try XCTUnwrap(
+            rootViewSource.range(of: "ScrollView {", range: fixedDiagnostic.upperBound..<rootViewSource.endIndex)
+        )
+        XCTAssertLessThan(fixedDiagnostic.lowerBound, providerBodyScroll.lowerBound)
+        XCTAssertTrue(rootViewSource.contains("rune.add-cluster.provider.diagnostic"))
+        XCTAssertTrue(rootViewSource.contains("Dismiss provider warning"))
+        XCTAssertTrue(rootViewSource.contains("exclamationmark.octagon.fill"))
+        XCTAssertTrue(rootViewSource.contains("Sign in to Azure & Retry"))
+        XCTAssertTrue(rootViewSource.contains("viewModel.signInToAzureAndRetry"))
         XCTAssertTrue(rootViewSource.contains("Text(diagnostic.operationShape)"))
         XCTAssertTrue(rootViewSource.contains("Link(destination: diagnostic.documentationURL)"))
         XCTAssertTrue(rootViewSource.contains("closeAddClusterProviderSheet(showPopover: true)"))
@@ -3071,7 +3277,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains(".help(\"Back to Add Cluster\")"))
         XCTAssertTrue(rootViewSource.contains(".keyboardShortcut(.cancelAction)"))
         XCTAssertTrue(rootViewSource.contains("private func resetAddClusterProviderSheetStateIfIdle()"))
-        XCTAssertTrue(rootViewSource.contains("guard !viewModel.isRunningCloudKubeConfigImport else { return }"))
+        XCTAssertTrue(rootViewSource.contains("guard !viewModel.isRunningCloudKubeConfigImport,\n              !viewModel.isSigningInToAzure else { return }"))
         XCTAssertTrue(rootViewSource.contains("cloudCredentialDraft = CloudCredentialDraft()"))
         XCTAssertTrue(rootViewSource.contains("viewModel.clearCloudKubeConfigImportStatus()"))
         XCTAssertTrue(rootViewSource.contains("if presentation.showsCommandDetails"))
@@ -3080,7 +3286,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(rootViewSource.contains("let primaryAction = presentation.primaryAction("))
         XCTAssertTrue(rootViewSource.contains("let utilityActions = presentation.utilityActions("))
         XCTAssertTrue(rootViewSource.contains("let visibleUtilityActions = utilityActions.filter"))
-        XCTAssertTrue(rootViewSource.contains("ForEach(visibleUtilityActions)"))
+        XCTAssertTrue(rootViewSource.contains("let advancedImportActions = optionalCredentialPresentation.utilityActions.filter"))
+        XCTAssertTrue(rootViewSource.contains("ForEach(generalUtilityActions)"))
         XCTAssertTrue(rootViewSource.contains("AddClusterNativeContextSection("))
         XCTAssertTrue(rootViewSource.contains("AddClusterNativeContextResolver.compatibleOptions("))
         XCTAssertTrue(rootViewSource.contains("viewModel.connectEKSNativeAuth("))
@@ -3121,7 +3328,6 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(viewModelSource.contains("func runCloudKubeConfigImport"))
         XCTAssertTrue(viewModelSource.contains("func clearCloudKubeConfigImportStatus()"))
         XCTAssertTrue(viewModelSource.contains("isRunningCloudKubeConfigImport"))
-        XCTAssertTrue(viewModelSource.contains("guard !isRunningCloudKubeConfigImport else { return }"))
         XCTAssertTrue(viewModelSource.contains("cloudKubeConfigImportDiagnostic"))
         XCTAssertTrue(viewModelSource.contains("AddClusterCloudImportWorkflow.diagnostic(for: error, provider: request.provider)"))
         XCTAssertTrue(viewModelSource.contains("state.clearError()"))

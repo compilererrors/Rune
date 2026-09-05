@@ -33,6 +33,29 @@ final class RuneIconButtonTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testBorderedIconButtonKeepsToolbarGeometryWithoutChangingPlainIcons() {
+        let borderedHost = NSHostingView(rootView: RuneBorderedIconButton(
+            "Open logs",
+            systemImage: "doc.text.magnifyingglass",
+            action: {}
+        ))
+
+        XCTAssertEqual(
+            borderedHost.fittingSize.width,
+            RuneUILayoutMetrics.borderedIconButtonWidth,
+            accuracy: 0.5
+        )
+        XCTAssertGreaterThanOrEqual(
+            borderedHost.fittingSize.height,
+            RuneUILayoutMetrics.inspectorToolbarControlMinHeight
+        )
+        XCTAssertLessThanOrEqual(
+            borderedHost.fittingSize.height,
+            RuneUILayoutMetrics.inspectorToolbarControlMinHeight + 1
+        )
+    }
+
     func testIconButtonOwnsHelpAccessibilityAndStateSemantics() throws {
         let source = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
 
@@ -48,6 +71,9 @@ final class RuneIconButtonTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
         XCTAssertTrue(source.contains("runeThemePalette?.mutedText"))
         XCTAssertTrue(source.contains("runeThemePalette?.secondaryText"))
+        XCTAssertTrue(source.contains("struct RuneBorderedIconButton: View"))
+        XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
+        XCTAssertTrue(source.contains("width: RuneUILayoutMetrics.borderedIconButtonWidth"))
     }
 
     func testIconButtonAdoptionStaysSelectiveAndComponentScoped() throws {

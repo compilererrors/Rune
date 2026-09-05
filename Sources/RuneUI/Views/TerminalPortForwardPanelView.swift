@@ -1,6 +1,133 @@
 import SwiftUI
 import RuneCore
 
+private enum TerminalPortForwardPanelLayoutMetrics {
+    static let headerTitleMinimumWidth: CGFloat = 120
+    static let compactPodMinimumWidth: CGFloat = 72
+    static let actionSpacing: CGFloat = RuneAdaptiveToolbarMetrics.groupSpacing
+    static let rowSpacing: CGFloat = RuneAdaptiveToolbarMetrics.rowSpacing
+}
+
+private struct TerminalPortForwardReservedActionRailLayout: Layout {
+    let primaryMinimumWidth: CGFloat
+    let minimumRowHeight: CGFloat
+    let forcesStackedLayout: Bool
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+
+        let actionSize = subviews[1].sizeThatFits(.unspecified)
+        let inlineMinimumWidth = primaryMinimumWidth
+            + TerminalPortForwardPanelLayoutMetrics.actionSpacing
+            + actionSize.width
+        let width = proposal.width ?? inlineMinimumWidth
+
+        if !forcesStackedLayout, width >= inlineMinimumWidth {
+            let primaryWidth = width
+                - TerminalPortForwardPanelLayoutMetrics.actionSpacing
+                - actionSize.width
+            let primarySize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: primaryWidth, height: nil)
+            )
+            return CGSize(
+                width: width,
+                height: max(minimumRowHeight, primarySize.height, actionSize.height)
+            )
+        }
+
+        let primarySize = subviews[0].sizeThatFits(
+            ProposedViewSize(width: width, height: nil)
+        )
+        let fittedActionSize = subviews[1].sizeThatFits(
+            ProposedViewSize(width: width, height: nil)
+        )
+        return CGSize(
+            width: width,
+            height: max(minimumRowHeight, primarySize.height)
+                + TerminalPortForwardPanelLayoutMetrics.rowSpacing
+                + max(minimumRowHeight, fittedActionSize.height)
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+
+        let actionSize = subviews[1].sizeThatFits(.unspecified)
+        let inlineMinimumWidth = primaryMinimumWidth
+            + TerminalPortForwardPanelLayoutMetrics.actionSpacing
+            + actionSize.width
+
+        if !forcesStackedLayout, bounds.width >= inlineMinimumWidth {
+            let primaryWidth = bounds.width
+                - TerminalPortForwardPanelLayoutMetrics.actionSpacing
+                - actionSize.width
+            let primarySize = subviews[0].sizeThatFits(
+                ProposedViewSize(width: primaryWidth, height: nil)
+            )
+            let rowHeight = max(minimumRowHeight, primarySize.height, actionSize.height)
+
+            subviews[0].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + (rowHeight - primarySize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: primaryWidth, height: primarySize.height)
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.maxX,
+                    y: bounds.minY + (rowHeight - actionSize.height) / 2
+                ),
+                anchor: .topTrailing,
+                proposal: ProposedViewSize(width: actionSize.width, height: actionSize.height)
+            )
+            return
+        }
+
+        let primarySize = subviews[0].sizeThatFits(
+            ProposedViewSize(width: bounds.width, height: nil)
+        )
+        let fittedActionSize = subviews[1].sizeThatFits(
+            ProposedViewSize(width: bounds.width, height: nil)
+        )
+        let primaryRowHeight = max(minimumRowHeight, primarySize.height)
+        let actionRowHeight = max(minimumRowHeight, fittedActionSize.height)
+
+        subviews[0].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY + (primaryRowHeight - primarySize.height) / 2
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: primarySize.height)
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY
+                    + primaryRowHeight
+                    + TerminalPortForwardPanelLayoutMetrics.rowSpacing
+                    + (actionRowHeight - fittedActionSize.height) / 2
+            ),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: fittedActionSize.width,
+                height: fittedActionSize.height
+            )
+        )
+    }
+}
+
 struct TerminalPortForwardPanelView: View {
     @Binding var isExpanded: Bool
     let contextName: String?
@@ -21,6 +148,7 @@ struct TerminalPortForwardPanelView: View {
     let onClearPortForward: (PortForwardSession) -> Void
     let onClearInactivePortForwards: () -> Void
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let compactStatusHeight: CGFloat = 54
     private let activeSessionListHeight: CGFloat = 128
 
@@ -61,18 +189,25 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var header: some View {
-        RuneAdaptiveToolbar("Port-forward controls") {
+        TerminalPortForwardReservedActionRailLayout(
+            primaryMinimumWidth: TerminalPortForwardPanelLayoutMetrics.headerTitleMinimumWidth,
+            minimumRowHeight: minimumActionRowHeight,
+            forcesStackedLayout: dynamicTypeSize.isAccessibilitySize
+        ) {
             titleBlock
-        } secondary: {
             headerActions
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Port-forward controls")
     }
 
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 5) {
             Label("Port Forward", systemImage: "point.3.connected.trianglepath.dotted")
                 .font(.headline)
+                .lineLimit(1)
 
             Text(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
                 .font(.footnote.weight(.semibold))
@@ -80,6 +215,7 @@ struct TerminalPortForwardPanelView: View {
                 .lineLimit(1)
                 .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var headerActions: some View {
@@ -87,13 +223,13 @@ struct TerminalPortForwardPanelView: View {
             primaryActionButton
         } utilities: {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) {
+                HStack(spacing: TerminalActionLayoutMetrics.spacing) {
                     copyDraftKubectlButton
                     expansionButton
                 }
                 .fixedSize(horizontal: true, vertical: false)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: TerminalActionLayoutMetrics.spacing) {
                     copyDraftKubectlButton
                     expansionButton
                 }
@@ -106,6 +242,7 @@ struct TerminalPortForwardPanelView: View {
             activeSession: selectedStoppableSession,
             startTitle: "Start",
             isStartDisabled: selectedPod == nil || !canApplyMutations,
+            usesUniformWidth: true,
             onStart: {
                 if let selectedPod {
                     onStartPortForward(selectedPod)
@@ -119,26 +256,33 @@ struct TerminalPortForwardPanelView: View {
         Button {
             isExpanded.toggle()
         } label: {
-            Label(
+            TerminalActionButtonLabel(
                 isExpanded ? "Minimize" : "Expand",
-                systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                systemImage: isExpanded ? "chevron.up" : "chevron.down",
+                density: .regular
             )
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
+        .terminalActionControl(.regular)
         .help(isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
+        .accessibilityIdentifier("terminal-port-forward-expand")
     }
 
     private var copyDraftKubectlButton: some View {
         Button {
             copyDraftPortForwardCommand()
         } label: {
-            Label("Copy kubectl", systemImage: "doc.on.doc")
+            TerminalActionButtonLabel(
+                "Copy kubectl",
+                systemImage: "doc.on.doc",
+                density: .regular
+            )
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
+        .terminalActionControl(.regular)
         .disabled(selectedPod == nil)
         .help("Copy kubectl port-forward command")
+        .accessibilityIdentifier("terminal-port-forward-copy-command")
     }
 
     private var expandedControls: some View {
@@ -188,17 +332,13 @@ struct TerminalPortForwardPanelView: View {
             }
 
             if let session = primarySession {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        selectedPodStatusLabel
-                        sessionUtilityButtons(session)
-                    }
-                    .fixedSize(horizontal: true, vertical: false)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        selectedPodStatusLabel
-                        sessionUtilityButtons(session)
-                    }
+                TerminalPortForwardReservedActionRailLayout(
+                    primaryMinimumWidth: TerminalPortForwardPanelLayoutMetrics.compactPodMinimumWidth,
+                    minimumRowHeight: minimumActionRowHeight,
+                    forcesStackedLayout: dynamicTypeSize.isAccessibilitySize
+                ) {
+                    selectedPodStatusLabel
+                    sessionUtilityButtons(session)
                 }
             } else {
                 selectedPodStatusLabel
@@ -223,8 +363,10 @@ struct TerminalPortForwardPanelView: View {
                     Text("+\(activeOrStartingSessions.count - 1) more")
                         .font(.caption2.weight(.semibold))
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var activeSessionList: some View {
@@ -288,15 +430,16 @@ struct TerminalPortForwardPanelView: View {
 
     private func sessionUtilityButtons(_ session: PortForwardSession) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
+            HStack(spacing: TerminalActionLayoutMetrics.spacing) {
                 sessionUtilityButtonContent(session)
             }
             .fixedSize(horizontal: true, vertical: false)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: TerminalActionLayoutMetrics.spacing) {
                 sessionUtilityButtonContent(session)
             }
         }
+        .controlSize(dynamicTypeSize.isAccessibilitySize ? .large : .regular)
         .accessibilityElement(children: .contain)
     }
 
@@ -321,7 +464,6 @@ struct TerminalPortForwardPanelView: View {
             Label("Open in Browser", systemImage: "safari")
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
     }
 
@@ -332,7 +474,6 @@ struct TerminalPortForwardPanelView: View {
             Label("Retry", systemImage: "arrow.clockwise")
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
         .help("Try this port-forward again")
     }
 
@@ -343,7 +484,6 @@ struct TerminalPortForwardPanelView: View {
             Label("Clear", systemImage: "xmark.circle")
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
         .help("Remove this inactive port-forward row")
     }
 
@@ -364,7 +504,6 @@ struct TerminalPortForwardPanelView: View {
             Label("Copy kubectl", systemImage: "doc.on.doc")
         }
         .buttonStyle(.bordered)
-        .controlSize(.regular)
         .help("Copy kubectl port-forward command")
     }
 
@@ -388,5 +527,11 @@ struct TerminalPortForwardPanelView: View {
             color: TerminalStatusStyling.color(status, palette: runeThemePalette),
             topPadding: 4
         )
+    }
+
+    private var minimumActionRowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? RuneAdaptiveToolbarMetrics.accessibilityMinimumRowHeight
+            : RuneAdaptiveToolbarMetrics.minimumRowHeight
     }
 }

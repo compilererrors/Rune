@@ -243,9 +243,25 @@ struct PortForwardPrimaryActionButton: View {
     let activeSession: PortForwardSession?
     let startTitle: String
     let isStartDisabled: Bool
+    let usesUniformWidth: Bool
     let onStart: () -> Void
     let onStop: (PortForwardSession) -> Void
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(
+        activeSession: PortForwardSession?,
+        startTitle: String,
+        isStartDisabled: Bool,
+        usesUniformWidth: Bool = false,
+        onStart: @escaping () -> Void,
+        onStop: @escaping (PortForwardSession) -> Void
+    ) {
+        self.activeSession = activeSession
+        self.startTitle = startTitle
+        self.isStartDisabled = isStartDisabled
+        self.usesUniformWidth = usesUniformWidth
+        self.onStart = onStart
+        self.onStop = onStop
+    }
 
     var primaryActionTitle: String {
         guard let activeSession else { return startTitle }
@@ -258,12 +274,15 @@ struct PortForwardPrimaryActionButton: View {
 
     var body: some View {
         Button(action: performPrimaryAction) {
-            Label(primaryActionTitle, systemImage: primaryActionSystemImage)
-                .fixedSize(horizontal: false, vertical: true)
+            TerminalActionButtonLabel(
+                primaryActionTitle,
+                systemImage: primaryActionSystemImage,
+                density: .regular,
+                usesUniformWidth: usesUniformWidth
+            )
         }
         .buttonStyle(.borderedProminent)
-        .controlSize(dynamicTypeSize.isAccessibilitySize ? .large : .regular)
-        .frame(minHeight: minimumControlHeight)
+        .terminalActionControl(.regular, usesUniformWidth: usesUniformWidth)
         .disabled(activeSession == nil && isStartDisabled)
         .help(primaryActionTitle)
         .accessibilityIdentifier("rune.port-forward.primary-action")
@@ -275,12 +294,6 @@ struct PortForwardPrimaryActionButton: View {
         } else if !isStartDisabled {
             onStart()
         }
-    }
-
-    private var minimumControlHeight: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
-            ? PortForwardControlLayoutMetrics.accessibilityMinimumControlHeight
-            : PortForwardControlLayoutMetrics.minimumControlHeight
     }
 }
 

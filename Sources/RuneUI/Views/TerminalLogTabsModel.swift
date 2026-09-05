@@ -7,8 +7,11 @@ struct TerminalPodLogTab: Identifiable, Hashable {
     var namespace: String
     var podName: String
 
-    init(pod: PodSummary, id: String = UUID().uuidString) {
-        self.id = id
+    init(pod: PodSummary, id: String? = nil) {
+        // A log tab is unique by pod within the current terminal workspace. Using
+        // the stable pod identity avoids spending most of rapid add/reconcile
+        // workflows formatting UUID strings and makes restoration deterministic.
+        self.id = id ?? "pod:\(pod.id)"
         self.podID = pod.id
         self.namespace = pod.namespace
         self.podName = pod.name
@@ -59,8 +62,9 @@ struct TerminalPodLogTabState: Equatable {
         pods: [PodSummary],
         isFavorite: (PodSummary) -> Bool
     ) -> [TerminalLogTabPresentation] {
-        tabs.map { tab in
-            let pod = pods.first { $0.id == tab.podID }
+        let podsByID = Dictionary(uniqueKeysWithValues: pods.map { ($0.id, $0) })
+        return tabs.map { tab in
+            let pod = podsByID[tab.podID]
             let title = pod?.name ?? tab.podName
             let namespace = pod?.namespace ?? tab.namespace
             return TerminalLogTabPresentation(
@@ -107,10 +111,24 @@ struct TerminalPodLogTabState: Equatable {
     }
 
     mutating func add(preferredPod: PodSummary) {
+        if let existing = tabs.first(where: { $0.podID == preferredPod.id }) {
+            activeTabID = existing.id
+            selectedPodID = preferredPod.id
+            return
+        }
         let tab = TerminalPodLogTab(pod: preferredPod)
         tabs.append(tab)
         activeTabID = tab.id
         selectedPodID = preferredPod.id
+    }
+
+    mutating func activateOrRetarget(for pod: PodSummary) {
+        if let existing = tabs.first(where: { $0.podID == pod.id }) {
+            activeTabID = existing.id
+            selectedPodID = pod.id
+            return
+        }
+        updateActive(to: pod)
     }
 
     mutating func select(id: String, availablePods: [PodSummary]) -> PodSummary? {
@@ -175,8 +193,9 @@ struct TerminalPodLogTabState: Equatable {
             return fallbackPod
         }
 
-        return pods
-            .sorted { lhs, rhs in
+        return pods.lazy
+            .filter { !openPodIDs.contains($0.id) }
+            .min { lhs, rhs in
                 let lhsFavorite = isFavorite(lhs)
                 let rhsFavorite = isFavorite(rhs)
                 if lhsFavorite != rhsFavorite {
@@ -184,7 +203,6 @@ struct TerminalPodLogTabState: Equatable {
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
-            .first { !openPodIDs.contains($0.id) }
             ?? fallbackPod
             ?? pods.first
     }

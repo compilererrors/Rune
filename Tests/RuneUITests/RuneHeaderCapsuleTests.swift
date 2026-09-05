@@ -15,6 +15,28 @@ final class RuneHeaderCapsuleTests: XCTestCase {
     }
 
     @MainActor
+    func testCapsuleHoverUsesFullTextOrRicherCallerHelp() {
+        let defaultCapsule = RuneHeaderCapsule(
+            "synthetic-context-with-a-long-distinguishing-suffix",
+            role: .context
+        )
+        let richCapsule = RuneHeaderCapsule(
+            "List: Stale",
+            role: .status,
+            helpText: "The list is stale because its last refresh failed."
+        )
+
+        XCTAssertEqual(
+            defaultCapsule.resolvedHelpText,
+            "synthetic-context-with-a-long-distinguishing-suffix"
+        )
+        XCTAssertEqual(
+            richCapsule.resolvedHelpText,
+            "The list is stale because its last refresh failed."
+        )
+    }
+
+    @MainActor
     func testDefaultCapsuleMeetsMinimumWithoutForcingExtraHeight() {
         let host = NSHostingView(rootView: RuneHeaderCapsule(
             "synthetic-context",

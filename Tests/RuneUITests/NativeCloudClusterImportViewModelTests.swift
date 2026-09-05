@@ -184,7 +184,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         )
     }
 
-    func testCancellingInFlightNativeImportNeverCreatesReviewOrFailure() async throws {
+    func testSheetCancelActionCancelsInFlightNativeImportWithoutReviewOrFailure() async throws {
         let importer = HangingNativeCloudClusterImporter()
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
@@ -203,7 +203,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         try await waitUntil { await importer.hasStarted() }
         XCTAssertTrue(viewModel.isRunningNativeCloudClusterImport)
 
-        viewModel.cancelNativeCloudClusterImport()
+        viewModel.cancelCloudKubeConfigImport()
         try await waitUntil { !viewModel.isRunningNativeCloudClusterImport }
 
         XCTAssertFalse(viewModel.isRunningCloudKubeConfigImport)
@@ -407,7 +407,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertNil(awsCall)
         XCTAssertEqual(removedBindingIDs, [])
 
-        viewModel.cancelNativeCloudClusterImport()
+        viewModel.cancelCloudKubeConfigImport()
         XCTAssertEqual(picker.cancelCount, 1)
         XCTAssertFalse(viewModel.isRunningNativeCloudClusterImport)
     }
@@ -454,8 +454,8 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertTrue(diagnostic.operationShape.contains("Amazon EKS HTTPS API"))
         XCTAssertTrue(diagnostic.nextAction.contains("EKS access"))
         XCTAssertTrue(state.authDoctorChecks.contains { $0.id == "cloud-login-eks" })
-        XCTAssertEqual(state.activeNotice?.severity, .error)
-        XCTAssertEqual(state.activeNotice?.title, "Action failed")
+        XCTAssertNil(state.activeNotice)
+        XCTAssertNil(state.lastError)
         XCTAssertFalse(viewModel.isKubeConfigImportConfirmationPending)
         XCTAssertTrue(state.kubeConfigSources.isEmpty)
         XCTAssertFalse(surfaced.contains(sensitiveValue))

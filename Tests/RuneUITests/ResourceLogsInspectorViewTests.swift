@@ -351,6 +351,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertEqual(windowFrame.height, containerFrame.height, accuracy: 0.5)
         XCTAssertEqual(windowFrame.minY, containerFrame.minY, accuracy: 0.5)
         XCTAssertEqual(ResourceLogsLayoutMetrics.sourcePickerWidth, 180)
+        XCTAssertEqual(ResourceLogsLayoutMetrics.podPickerWidth, 280)
 
         windowPopup.selectItem(at: 1)
         windowPopup.sendAction(windowPopup.action, to: windowPopup.target)
@@ -734,7 +735,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let text = Self.makeMockWidePodLogTranscript(lineCount: 150)
         let renderResult = ResourceLogSearchResult.makeForInspector(text: text, query: "")
         XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: renderResult))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: renderResult))
 
         let model = ResourceLogRenderStabilityModel(text: text, renderResult: renderResult)
         let host = NSHostingController(
@@ -753,15 +754,20 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         defer { closeTestWindow(window) }
 
         try await settle(window: window)
-        let originalRenderers = findTextViews(in: host.view).filter { $0.string == text }
-        let originalTextView = try XCTUnwrap(originalRenderers.only)
-        let originalScrollView = try XCTUnwrap(originalTextView.enclosingScrollView)
+        let originalScrollView = try XCTUnwrap(
+            findScrollViews(in: host.view).max {
+                ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+            }
+        )
         let originalDocumentView = try XCTUnwrap(originalScrollView.documentView)
 
         for query in ["m", "mo", "moc", "mock"] {
             model.navigationResult = nil
             try await settle(window: window)
-            XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == text }.only) === originalTextView)
+            XCTAssertTrue(
+                try XCTUnwrap(findScrollViews(in: host.view).first { $0 === originalScrollView })
+                    === originalScrollView
+            )
 
             let completedResult = ResourceLogSearchResult.makeForInspector(
                 text: text,
@@ -772,11 +778,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             model.renderResult = completedResult
             try await settle(window: window)
             let rendererAfterPublication = try XCTUnwrap(
-                findTextViews(in: host.view).filter { $0.string == text }.only,
-                "Completed search publication must leave exactly one log renderer."
+                findScrollViews(in: host.view).first { $0 === originalScrollView },
+                "Completed search publication must leave the virtualized scroll view mounted."
             )
-            XCTAssertTrue(rendererAfterPublication === originalTextView)
-            XCTAssertTrue(rendererAfterPublication.enclosingScrollView === originalScrollView)
+            XCTAssertTrue(rendererAfterPublication === originalScrollView)
             XCTAssertTrue(originalScrollView.documentView === originalDocumentView)
             XCTAssertEqual(originalScrollView.contentView.bounds.origin.x, scrollOriginBeforePublication.x, accuracy: 0.5)
             XCTAssertEqual(originalScrollView.contentView.bounds.origin.y, scrollOriginBeforePublication.y, accuracy: 0.5)
@@ -784,7 +789,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             model.navigationResult = completedResult
             model.navigationSequence += 1
             try await settle(window: window)
-            XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == text }.only) === originalTextView)
+            XCTAssertTrue(
+                try XCTUnwrap(findScrollViews(in: host.view).first { $0 === originalScrollView })
+                    === originalScrollView
+            )
         }
     }
 
@@ -859,13 +867,13 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     @MainActor
-    func testStreamedWideLogAppendKeepsTheSameRendererBeforeAndAfterIndexing() async throws {
+    func testStreamedWideLogAppendKeepsVirtualizedRendererPolicyBeforeAndAfterIndexing() async throws {
         let initialText = Self.makeMockWidePodLogTranscript(lineCount: 149)
         let appendedText = Self.makeMockWidePodLogTranscript(lineCount: 150)
         let initialResult = ResourceLogSearchResult.makeForInspector(text: initialText, query: "")
         let appendedResult = ResourceLogSearchResult.makeForInspector(text: appendedText, query: "")
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: initialText))
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedText))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: initialText))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedText))
         XCTAssertEqual(
             ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedText),
             ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: appendedResult)
@@ -888,19 +896,18 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         defer { closeTestWindow(window) }
 
         try await settle(window: window)
-        let originalTextView = try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == initialText }.only)
-        let originalScrollView = try XCTUnwrap(originalTextView.enclosingScrollView)
+        XCTAssertTrue(findTextViews(in: host.view).allSatisfy { $0.string != initialText })
+        XCTAssertFalse(findScrollViews(in: host.view).isEmpty)
 
         model.text = appendedText
         model.renderResult = nil
         try await settle(window: window)
-        XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == appendedText }.only) === originalTextView)
-        XCTAssertTrue(originalTextView.enclosingScrollView === originalScrollView)
+        XCTAssertTrue(findTextViews(in: host.view).allSatisfy { $0.string != appendedText })
 
         model.renderResult = appendedResult
         try await settle(window: window)
-        XCTAssertTrue(try XCTUnwrap(findTextViews(in: host.view).filter { $0.string == appendedText }.only) === originalTextView)
-        XCTAssertTrue(originalTextView.enclosingScrollView === originalScrollView)
+        XCTAssertTrue(findTextViews(in: host.view).allSatisfy { $0.string != appendedText })
+        XCTAssertFalse(findScrollViews(in: host.view).isEmpty)
     }
 
     func testLogInspectorShowsInterruptedStreamStateInsideOutputSurface() throws {
@@ -942,6 +949,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         ))
 
         XCTAssertTrue(sourceControls.contains("FavoritePodPicker("))
+        XCTAssertTrue(sourceControls.contains("width: ResourceLogsLayoutMetrics.podPickerWidth"))
         XCTAssertTrue(sourceControls.contains("rowTitle: { $0.name }"))
         XCTAssertTrue(sourceControls.contains("rowDetail: { \"\\($0.namespace) - \\($0.status)\" }"))
         XCTAssertTrue(sourceControls.contains("isFavoritePod: isFavoritePod"))
@@ -950,6 +958,20 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(sourceControls.contains(".accessibilityIdentifier(\"pod-log-favorite-picker\")"))
         XCTAssertFalse(sourceControls.contains("podPickerTitle(pod)"))
         XCTAssertFalse(sourceControls.contains("pod-log-favorite-toggle"))
+    }
+
+    func testFixedLogSourceControlsExposeFullValuesOnHover() throws {
+        let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
+        let summarySource = try XCTUnwrap(source.slice(
+            from: "private struct LogToolbarSourceSummary",
+            to: "struct ResourceStructuredLogSummaryPanel"
+        ))
+
+        XCTAssertTrue(source.contains("popup.toolTip = text"))
+        XCTAssertTrue(source.contains("popup.setAccessibilityHelp(text)"))
+        XCTAssertTrue(summarySource.contains("Label(joinedValues"))
+        XCTAssertTrue(summarySource.contains(".help(\"\\(title): \\(joinedValues)\")"))
+        XCTAssertTrue(summarySource.contains("values.joined(separator: \", \")"))
     }
 
     func testFavoritePodPickerSelectionSurvivesFavoriteSorting() {
@@ -1253,6 +1275,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
                 XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
                 XCTAssertEqual(indexed.textIndex.lineCount, lineCount)
+                XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: text))
                 XCTAssertEqual(
                     ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: text),
                     ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: indexed),
@@ -1279,7 +1302,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
     }
 
-    func testWideFewLineLogsRenderWithRegularTextSurfaceInsteadOfVirtualizedSurface() throws {
+    func testWideFewLineLogsUseVirtualizedTextSurface() throws {
         let widePayload = String(repeating: " payload=synthetic-wide-log-field", count: 140)
         let text = (0..<80)
             .map { index in "line-\(String(format: "%06d", index))\(widePayload)" }
@@ -1288,9 +1311,9 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertGreaterThan(result.displayedText.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
         XCTAssertEqual(result.textIndex.lineCount, 80)
-        XCTAssertFalse(
+        XCTAssertTrue(
             ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result),
-            "A small number of very wide log lines should not use the virtualized surface; that path can look clipped or blank because it optimizes for deep line counts."
+            "Payload size alone should move very wide logs off the expensive AppKit renderer."
         )
 
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
@@ -1397,8 +1420,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         )
     }
 
-    /// Regression guard for pod logs that look like long single-line Spring-style rows: the inspector must not stop
-    /// laying out after roughly one viewport worth of rows (~80 on common laptop heights), leaving a blank panel.
+    /// Regression guard for pod logs made up of relatively few very wide rows: the virtualized surface must size
+    /// the full vertical transcript instead of leaving a blank panel below its initial render window.
     @MainActor
     func testWideSyntheticPodLogsLayOutTranscriptTallerThanEightyLineStride() async throws {
         let lineCount = 150
@@ -1407,9 +1430,9 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
         XCTAssertEqual(result.textIndex.lineCount, lineCount)
-        XCTAssertFalse(
+        XCTAssertTrue(
             ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result),
-            "This fixture targets the non-virtualized AppKit log surface (few logical lines, very wide UTF-8)."
+            "Very wide payloads should use the virtualized renderer even below 1,000 lines."
         )
 
         let host = NSHostingController(
@@ -1450,27 +1473,15 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         try await settle(window: window)
 
-        let textViews = findTextViews(in: host.view)
-        let logTextView = try XCTUnwrap(
-            textViews.filter({ $0.string == text }).max(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }),
-            "Expected a read-only NSTextView containing the full mock transcript."
+        let documentHeight = try XCTUnwrap(
+            findScrollViews(in: host.view).compactMap { $0.documentView?.bounds.height }.max(),
+            "Expected a virtualized log scroll view."
         )
 
-        logTextView.layoutSubtreeIfNeeded()
-        guard let layoutManager = logTextView.layoutManager,
-              let textContainer = logTextView.textContainer else {
-            XCTFail("Missing layoutManager/textContainer")
-            return
-        }
-
-        layoutManager.ensureLayout(for: textContainer)
-        let usedHeight = layoutManager.usedRect(for: textContainer).height
-        let lineHeight = layoutManager.defaultLineHeight(for: logTextView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular))
-
         XCTAssertGreaterThan(
-            usedHeight,
-            lineHeight * 90,
-            "Mock transcript has \(lineCount) logical newlines; layout height must exceed a ~80-line band or the log panel looks clipped with empty space below."
+            documentHeight,
+            CGFloat(lineCount) * 14,
+            "Mock transcript has \(lineCount) logical lines; the virtual document must remain taller than an ~80-line render window."
         )
     }
 
@@ -1483,7 +1494,6 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
 
         XCTAssertGreaterThan(text.utf8.count, ResourceLogsDeferredRenderingPolicy.deferredOutputThreshold)
-        XCTAssertGreaterThanOrEqual(result.textIndex.lineCount, ResourceLogsDeferredRenderingPolicy.deferredLineCountThreshold)
         XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
 
         let host = NSHostingController(
@@ -1544,7 +1554,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             .joined(separator: "\n")
         let result = ResourceLogSearchResult.makeForInspector(text: text, query: "")
 
-        XCTAssertFalse(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
+        XCTAssertTrue(ResourceLogsDeferredRenderingPolicy.shouldDeferOutputMount(for: result))
         XCTAssertEqual(result.textIndex.lineCount, 80)
 
         let host = NSHostingController(

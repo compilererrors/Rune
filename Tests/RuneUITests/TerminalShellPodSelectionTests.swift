@@ -78,6 +78,56 @@ final class TerminalShellPodSelectionTests: XCTestCase {
         XCTAssertEqual(preferred, worker.id)
     }
 
+    func testLogHandoffPrefersMatchingContainerThenDefaultSessionForExactPodScope() {
+        let api = pod("api")
+        let defaultSession = session(id: "shell-api-default", pod: api)
+        let appSession = PodTerminalSession(
+            id: "shell-api-app",
+            contextName: "test-context",
+            namespace: api.namespace,
+            podName: api.name,
+            containerName: "app",
+            shell: "/bin/sh",
+            status: .connected
+        )
+        let otherContext = PodTerminalSession(
+            id: "shell-other-context",
+            contextName: "other-context",
+            namespace: api.namespace,
+            podName: api.name,
+            containerName: "app",
+            shell: "/bin/sh",
+            status: .connected
+        )
+
+        XCTAssertEqual(
+            TerminalShellPodSelectionPolicy.preferredSessionIDForHandoff(
+                pod: api,
+                sessions: [defaultSession, otherContext, appSession],
+                contextName: "test-context",
+                preferredContainer: " app "
+            ),
+            appSession.id
+        )
+        XCTAssertEqual(
+            TerminalShellPodSelectionPolicy.preferredSessionIDForHandoff(
+                pod: api,
+                sessions: [otherContext, appSession, defaultSession],
+                contextName: "test-context",
+                preferredContainer: "missing"
+            ),
+            defaultSession.id
+        )
+        XCTAssertNil(
+            TerminalShellPodSelectionPolicy.preferredSessionIDForHandoff(
+                pod: api,
+                sessions: [defaultSession],
+                contextName: "missing-context",
+                preferredContainer: nil
+            )
+        )
+    }
+
     func testTerminalAndRightPanelLogFavoriteTogglesShareMarkAndUnmarkState() {
         let api = pod("api")
         let worker = pod("worker")

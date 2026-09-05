@@ -203,21 +203,6 @@ struct YAMLLineNumberGutterMetrics {
     }
 }
 
-private extension NSString {
-    func lineNumber(atUTF16Offset target: Int) -> Int {
-        let boundedTarget = max(0, min(target, length))
-        var line = 1
-        var index = 0
-        while index < boundedTarget {
-            if character(at: index) == 10 {
-                line += 1
-            }
-            index += 1
-        }
-        return line
-    }
-}
-
 final class ManifestTextScrollView: NSScrollView {
     let lineNumberGutterView = YAMLLineNumberGutterOverlayView(frame: .zero)
     private weak var manifestTextView: PlainManifestTextView?
@@ -347,7 +332,7 @@ final class YAMLLineNumberGutterOverlayView: NSView {
         let nsString = textView.string as NSString
         let characterRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let lineSearchRange = nsString.lineRange(for: characterRange)
-        var lineNumber = nsString.lineNumber(atUTF16Offset: lineSearchRange.location)
+        var lineNumber = textView.lineNumber(atUTF16Offset: lineSearchRange.location)
         var labels: [(number: Int, y: CGFloat)] = []
 
         nsString.enumerateSubstrings(in: lineSearchRange, options: [.byLines, .substringNotRequired]) { _, lineRange, enclosingRange, _ in
@@ -377,6 +362,7 @@ private final class PlainManifestTextView: NSTextView {
     private struct DocumentLineMetrics {
         let lineCount: Int
         let maxLineUTF16Length: Int
+        let lineStartUTF16Offsets: [Int]
     }
 
     private struct DocumentSizeCacheKey: Equatable {
@@ -914,6 +900,24 @@ private final class PlainManifestTextView: NSTextView {
         )
     }
 
+    fileprivate func lineNumber(atUTF16Offset target: Int) -> Int {
+        let metrics = documentLineMetrics(for: string)
+        guard !metrics.lineStartUTF16Offsets.isEmpty else { return 1 }
+
+        let boundedTarget = max(0, target)
+        var lower = 0
+        var upper = metrics.lineStartUTF16Offsets.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if metrics.lineStartUTF16Offsets[middle] <= boundedTarget {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return max(1, lower)
+    }
+
     func navigateIfNeeded(_ request: YAMLTextNavigationRequest?) {
         guard let request, request != lastNavigationRequest else { return }
         lastNavigationRequest = request
@@ -1139,25 +1143,41 @@ private final class PlainManifestTextView: NSTextView {
             return cached.metrics
         }
 
-        var lineCount = source.isEmpty ? 0 : 1
+        var lineStartUTF16Offsets = source.isEmpty ? [] : [0]
         var currentLineLength = 0
         var maxLineLength = 0
+        var utf16Offset = 0
+        var previousWasCarriageReturn = false
 
         for character in source.utf16 {
             switch character {
             case 10:
+                if previousWasCarriageReturn {
+                    lineStartUTF16Offsets[lineStartUTF16Offsets.count - 1] = utf16Offset + 1
+                } else {
+                    maxLineLength = max(maxLineLength, currentLineLength)
+                    currentLineLength = 0
+                    lineStartUTF16Offsets.append(utf16Offset + 1)
+                }
+                previousWasCarriageReturn = false
+            case 13:
                 maxLineLength = max(maxLineLength, currentLineLength)
                 currentLineLength = 0
-                lineCount += 1
-            case 13:
-                continue
+                lineStartUTF16Offsets.append(utf16Offset + 1)
+                previousWasCarriageReturn = true
             default:
                 currentLineLength += 1
+                previousWasCarriageReturn = false
             }
+            utf16Offset += 1
         }
 
         maxLineLength = max(maxLineLength, currentLineLength)
-        let metrics = DocumentLineMetrics(lineCount: lineCount, maxLineUTF16Length: maxLineLength)
+        let metrics = DocumentLineMetrics(
+            lineCount: lineStartUTF16Offsets.count,
+            maxLineUTF16Length: maxLineLength,
+            lineStartUTF16Offsets: lineStartUTF16Offsets
+        )
         documentLineMetricsCache = (documentRevision, metrics)
         return metrics
     }

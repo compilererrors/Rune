@@ -7,8 +7,10 @@ public struct SavedWorkspaceInspectorState: Codable, Equatable, Sendable {
     public let deploymentTabID: String?
     public let genericManifestTabID: String?
     public let helmTabID: String?
+    public let helmBrowserTabID: String?
     public let terminalTabID: String?
     public let isYAMLInlineEditing: Bool?
+    public let showsHistoricalDeploymentReplicaSets: Bool?
 
     public init(
         podTabID: String? = nil,
@@ -16,16 +18,20 @@ public struct SavedWorkspaceInspectorState: Codable, Equatable, Sendable {
         deploymentTabID: String? = nil,
         genericManifestTabID: String? = nil,
         helmTabID: String? = nil,
+        helmBrowserTabID: String? = nil,
         terminalTabID: String? = nil,
-        isYAMLInlineEditing: Bool? = nil
+        isYAMLInlineEditing: Bool? = nil,
+        showsHistoricalDeploymentReplicaSets: Bool? = nil
     ) {
         self.podTabID = podTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.serviceTabID = serviceTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.deploymentTabID = deploymentTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.genericManifestTabID = genericManifestTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.helmTabID = helmTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.helmBrowserTabID = helmBrowserTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.terminalTabID = terminalTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.isYAMLInlineEditing = isYAMLInlineEditing
+        self.showsHistoricalDeploymentReplicaSets = showsHistoricalDeploymentReplicaSets
     }
 }
 

@@ -31,6 +31,7 @@ struct TerminalShellPanelView: View {
     let onSaveAllTranscriptsAndOpen: () -> Void
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
+    var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @Environment(\.runeThemePalette) private var runeThemePalette
     @State private var isInputFocused = false
@@ -185,6 +186,7 @@ struct TerminalShellPanelView: View {
                 resetID: "terminal:\(session?.id ?? "empty")",
                 fontSize: terminalFontSize,
                 onPasteText: pasteIntoPrompt,
+                onInputSequence: onSendControlSequence,
                 onResizeGrid: reportTerminalResize
             )
 
@@ -217,7 +219,19 @@ struct TerminalShellPanelView: View {
         HStack(alignment: .top, spacing: 10) {
             titleBlock
             Spacer(minLength: 0)
-            exportMenu
+            HStack(spacing: TerminalActionLayoutMetrics.spacing) {
+                if let selectedPod, onOpenSelectedPodLogs != nil {
+                    RuneBorderedIconButton(
+                        "Show \(selectedPod.name) in Logs",
+                        systemImage: "doc.text.magnifyingglass",
+                        help: "Show logs for \(selectedPod.namespace)/\(selectedPod.name)"
+                    ) {
+                        openSelectedPodLogs()
+                    }
+                    .accessibilityIdentifier("terminal-shell-open-pod-logs")
+                }
+                exportMenu
+            }
         }
     }
 
@@ -286,7 +300,13 @@ struct TerminalShellPanelView: View {
         }
         .menuStyle(.button)
         .controlSize(.small)
+        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
         .help("Export terminal transcripts")
+    }
+
+    func openSelectedPodLogs() {
+        guard let selectedPod, let onOpenSelectedPodLogs else { return }
+        onOpenSelectedPodLogs(selectedPod)
     }
 
     @ViewBuilder
@@ -309,6 +329,9 @@ struct TerminalShellPanelView: View {
                     .controlSize(.small)
                     .frame(width: 340, alignment: .leading)
                     .runeMinimumInteractiveTarget(alignment: .leading)
+                    .help(selectedTerminalContainerName.isEmpty
+                        ? "Default container"
+                        : selectedTerminalContainerName)
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }

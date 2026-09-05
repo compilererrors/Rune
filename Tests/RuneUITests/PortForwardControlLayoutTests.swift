@@ -25,7 +25,7 @@ final class PortForwardControlLayoutTests: XCTestCase {
     }
 
     func testExpandedPanelRendersInside320PointsWithoutHorizontalScroll() throws {
-        for dynamicTypeSize in [DynamicTypeSize.large, .accessibility3] {
+        for (index, dynamicTypeSize) in [DynamicTypeSize.large, .accessibility3].enumerated() {
             let host = renderHost(
                 panel(dynamicTypeSize: dynamicTypeSize),
                 width: PortForwardControlLayoutMetrics.supportedInspectorWidth
@@ -40,7 +40,60 @@ final class PortForwardControlLayoutTests: XCTestCase {
 
             let png = try renderedPNG(from: host)
             XCTAssertGreaterThan(png.count, 4_000)
+            if let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] {
+                let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try png.write(to: directory.appendingPathComponent("terminal-port-forward-\(index).png"))
+            }
         }
+    }
+
+    func testCollapsedPanelTruncatesLongMetadataBeforeStackingActionRails() throws {
+        let longPod = PodSummary(
+            name: "synthetic-api-component-with-a-deliberately-long-pod-name-for-truncation-0",
+            namespace: "synthetic-namespace-with-a-deliberately-long-name",
+            status: "Running"
+        )
+        let normalWidth: CGFloat = 560
+        let short = fittingSize(
+            panel(dynamicTypeSize: .large, isExpanded: false, pod: selectedPod),
+            width: normalWidth
+        )
+        let long = fittingSize(
+            panel(dynamicTypeSize: .large, isExpanded: false, pod: longPod),
+            width: normalWidth
+        )
+        let compact = fittingSize(
+            panel(dynamicTypeSize: .large, isExpanded: false, pod: longPod),
+            width: PortForwardControlLayoutMetrics.supportedInspectorWidth
+        )
+
+        XCTAssertEqual(short.height, long.height, accuracy: 0.5)
+        XCTAssertGreaterThan(compact.height, long.height)
+
+        let host = renderHost(
+            panel(dynamicTypeSize: .large, isExpanded: false, pod: longPod),
+            width: normalWidth
+        )
+        XCTAssertFalse(scrollViews(in: host).contains(where: \.hasHorizontalScroller))
+        XCTAssertGreaterThan(try renderedPNG(from: host).count, 3_000)
+    }
+
+    func testCollapsedPanelKeepsAccessibilityActionRailsStacked() {
+        let regular = fittingSize(
+            panel(dynamicTypeSize: .large, isExpanded: false, pod: selectedPod),
+            width: 560
+        )
+        let accessibility = fittingSize(
+            panel(dynamicTypeSize: .accessibility3, isExpanded: false, pod: selectedPod),
+            width: 560
+        )
+
+        XCTAssertGreaterThan(accessibility.height, regular.height)
+        XCTAssertGreaterThanOrEqual(
+            accessibility.height - regular.height,
+            RuneAdaptiveToolbarMetrics.rowSpacing
+        )
     }
 
     func testEndpointFieldsKeepActiveEditorAcrossResponsiveLayoutChange() async throws {
@@ -179,12 +232,16 @@ final class PortForwardControlLayoutTests: XCTestCase {
     }
 
     private var activeSession: PortForwardSession {
+        activeSession(for: selectedPod)
+    }
+
+    private func activeSession(for pod: PodSummary) -> PortForwardSession {
         PortForwardSession(
             id: "synthetic-port-forward",
             contextName: "synthetic-context",
-            namespace: selectedPod.namespace,
+            namespace: pod.namespace,
             targetKind: .pod,
-            targetName: selectedPod.name,
+            targetName: pod.name,
             localPort: 8080,
             remotePort: 80,
             address: "127.0.0.1",
@@ -201,15 +258,20 @@ final class PortForwardControlLayoutTests: XCTestCase {
         .dynamicTypeSize(dynamicTypeSize)
     }
 
-    private func panel(dynamicTypeSize: DynamicTypeSize) -> some View {
-        TerminalPortForwardPanelView(
-            isExpanded: .constant(true),
+    private func panel(
+        dynamicTypeSize: DynamicTypeSize,
+        isExpanded: Bool = true,
+        pod: PodSummary? = nil
+    ) -> some View {
+        let pod = pod ?? selectedPod
+        return TerminalPortForwardPanelView(
+            isExpanded: .constant(isExpanded),
             contextName: "synthetic-context",
-            selectedPod: selectedPod,
-            availablePods: [selectedPod],
-            portForwardSessions: [activeSession],
+            selectedPod: pod,
+            availablePods: [pod],
+            portForwardSessions: [activeSession(for: pod)],
             canApplyMutations: true,
-            selectedPortForwardPodID: .constant(selectedPod.id),
+            selectedPortForwardPodID: .constant(pod.id),
             localPort: .constant("8080"),
             remotePort: .constant("80"),
             address: .constant("127.0.0.1"),

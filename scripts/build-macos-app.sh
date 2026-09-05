@@ -12,9 +12,7 @@ ICON_NAME="AppIcon.icns"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-app.rune.local}"
 MARKETING_VERSION="${MARKETING_VERSION:-0.1.0}"
 BUNDLE_VERSION="${BUNDLE_VERSION:-1}"
-APP_DISTRIBUTION="${APP_DISTRIBUTION:-direct}"
 ENABLE_EXTERNAL_COMMANDS="${ENABLE_EXTERNAL_COMMANDS:-1}"
-CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:--}"
 
 case "${ENABLE_EXTERNAL_COMMANDS}" in
   1|true|TRUE|yes|YES|on|ON)
@@ -79,7 +77,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleVersion</key>
 	<string>__BUNDLE_VERSION__</string>
 	<key>RuneDistribution</key>
-	<string>__APP_DISTRIBUTION__</string>
+	<string>direct</string>
 	<key>RuneExternalCommandsEnabled</key>
 	<__ENABLE_EXTERNAL_COMMANDS__/>
 	<key>LSMinimumSystemVersion</key>
@@ -102,7 +100,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 PLIST
 
 perl -0pi \
-  -e "s/__BUNDLE_IDENTIFIER__/${BUNDLE_IDENTIFIER}/g; s/__MARKETING_VERSION__/${MARKETING_VERSION}/g; s/__BUNDLE_VERSION__/${BUNDLE_VERSION}/g; s/__APP_DISTRIBUTION__/${APP_DISTRIBUTION}/g; s/__ENABLE_EXTERNAL_COMMANDS__/${ENABLE_EXTERNAL_COMMANDS_PLIST_BOOL}/g" \
+  -e "s/__BUNDLE_IDENTIFIER__/${BUNDLE_IDENTIFIER}/g; s/__MARKETING_VERSION__/${MARKETING_VERSION}/g; s/__BUNDLE_VERSION__/${BUNDLE_VERSION}/g; s/__ENABLE_EXTERNAL_COMMANDS__/${ENABLE_EXTERNAL_COMMANDS_PLIST_BOOL}/g" \
   "${APP_BUNDLE}/Contents/Info.plist"
 
 if ! command -v codesign >/dev/null 2>&1; then
@@ -110,11 +108,7 @@ if ! command -v codesign >/dev/null 2>&1; then
   exit 1
 fi
 
-codesign_args=(--force --deep --sign "${CODE_SIGN_IDENTITY}")
-if [[ "${CODE_SIGN_IDENTITY}" == "-" ]]; then
-  codesign_args+=(--timestamp=none)
-fi
-codesign "${codesign_args[@]}" "${APP_BUNDLE}"
+codesign --force --deep --sign - --timestamp=none "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 
 echo "Byggt: ${APP_BUNDLE}"

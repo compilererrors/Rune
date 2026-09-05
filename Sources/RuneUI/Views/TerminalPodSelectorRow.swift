@@ -4,10 +4,159 @@ import RuneCore
 enum TerminalPodControlLayoutMetrics {
     static let supportedInspectorWidth: CGFloat = 320
     static let labelWidth: CGFloat = 104
-    static let widePickerWidth: CGFloat = 320
-    static let compactPickerWidth: CGFloat = 280
+    static let widePickerWidth: CGFloat = 360
+    static let compactPickerWidth: CGFloat = 300
     static let controlSpacing: CGFloat = 10
     static let compactSpacing: CGFloat = 6
+    static let actionSpacing: CGFloat = RuneAdaptiveToolbarMetrics.groupSpacing
+    static let rowSpacing: CGFloat = RuneAdaptiveToolbarMetrics.rowSpacing
+    static let minimumRowHeight: CGFloat = RuneUILayoutMetrics.iconButtonSize
+
+    static let wideSelectorWidth = labelWidth + controlSpacing + widePickerWidth
+    static let compactSelectorWidth = compactPickerWidth
+
+    static func wideInlineMinimumWidth(actionWidth: CGFloat) -> CGFloat {
+        wideSelectorWidth + actionSpacing + actionWidth
+    }
+
+    static func compactInlineMinimumWidth(actionWidth: CGFloat) -> CGFloat {
+        compactSelectorWidth + actionSpacing + actionWidth
+    }
+}
+
+private enum TerminalPodActionRailMode {
+    case wideInline
+    case compactInline
+    case stacked
+}
+
+private struct TerminalPodActionRailLayout: Layout {
+    let minimumRowHeight: CGFloat
+    let forcesStackedLayout: Bool
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+
+        let actionSize = subviews[1].sizeThatFits(.unspecified)
+        let wideInlineMinimumWidth = TerminalPodControlLayoutMetrics.wideInlineMinimumWidth(
+            actionWidth: actionSize.width
+        )
+        let width = proposal.width ?? wideInlineMinimumWidth
+        let mode = layoutMode(width: width, actionWidth: actionSize.width)
+
+        switch mode {
+        case .wideInline, .compactInline:
+            let selectorWidth = selectorWidth(for: mode)
+            let selectorSize = subviews[0].sizeThatFits(ProposedViewSize(
+                width: selectorWidth,
+                height: nil
+            ))
+            return CGSize(
+                width: width,
+                height: max(minimumRowHeight, selectorSize.height, actionSize.height)
+            )
+        case .stacked:
+            let selectorSize = subviews[0].sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let fittedActionSize = subviews[1].sizeThatFits(ProposedViewSize(width: width, height: nil))
+            return CGSize(
+                width: width,
+                height: max(minimumRowHeight, selectorSize.height)
+                    + TerminalPodControlLayoutMetrics.rowSpacing
+                    + max(minimumRowHeight, fittedActionSize.height)
+            )
+        }
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+
+        let actionSize = subviews[1].sizeThatFits(.unspecified)
+        let mode = layoutMode(width: bounds.width, actionWidth: actionSize.width)
+
+        switch mode {
+        case .wideInline, .compactInline:
+            let selectorWidth = selectorWidth(for: mode)
+            let selectorSize = subviews[0].sizeThatFits(ProposedViewSize(
+                width: selectorWidth,
+                height: nil
+            ))
+            let rowHeight = max(minimumRowHeight, selectorSize.height, actionSize.height)
+            subviews[0].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + (rowHeight - selectorSize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: selectorWidth,
+                    height: selectorSize.height
+                )
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.maxX - actionSize.width,
+                    y: bounds.minY + (rowHeight - actionSize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: actionSize.width, height: actionSize.height)
+            )
+        case .stacked:
+            let selectorSize = subviews[0].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            let fittedActionSize = subviews[1].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            let selectorRowHeight = max(minimumRowHeight, selectorSize.height)
+            let actionRowHeight = max(minimumRowHeight, fittedActionSize.height)
+            subviews[0].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY + (selectorRowHeight - selectorSize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: bounds.width, height: selectorSize.height)
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX,
+                    y: bounds.minY
+                        + selectorRowHeight
+                        + TerminalPodControlLayoutMetrics.rowSpacing
+                        + (actionRowHeight - fittedActionSize.height) / 2
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: bounds.width, height: fittedActionSize.height)
+            )
+        }
+    }
+
+    private func layoutMode(width: CGFloat, actionWidth: CGFloat) -> TerminalPodActionRailMode {
+        guard !forcesStackedLayout else { return .stacked }
+        if width >= TerminalPodControlLayoutMetrics.wideInlineMinimumWidth(actionWidth: actionWidth) {
+            return .wideInline
+        }
+        if width >= TerminalPodControlLayoutMetrics.compactInlineMinimumWidth(actionWidth: actionWidth) {
+            return .compactInline
+        }
+        return .stacked
+    }
+
+    private func selectorWidth(for mode: TerminalPodActionRailMode) -> CGFloat {
+        switch mode {
+        case .wideInline:
+            return TerminalPodControlLayoutMetrics.wideSelectorWidth
+        case .compactInline:
+            return TerminalPodControlLayoutMetrics.compactSelectorWidth
+        case .stacked:
+            return 0
+        }
+    }
 }
 
 struct TerminalPodSelectorControl: View {
@@ -60,6 +209,7 @@ struct TerminalPodControlLayout<Actions: View>: View {
     let hasActions: Bool
     let selector: (CGFloat) -> TerminalPodSelectorControl
     @ViewBuilder let actions: Actions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(
         accessibilityLabel: String,
@@ -80,9 +230,11 @@ struct TerminalPodControlLayout<Actions: View>: View {
     var body: some View {
         Group {
             if hasActions {
-                RuneAdaptiveToolbar(accessibilityLabel) {
+                TerminalPodActionRailLayout(
+                    minimumRowHeight: minimumRowHeight,
+                    forcesStackedLayout: dynamicTypeSize.isAccessibilitySize
+                ) {
                     selectorGroup
-                } secondary: {
                     actions
                 }
             } else {
@@ -93,6 +245,8 @@ struct TerminalPodControlLayout<Actions: View>: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(RuneSurfaceBackground(kind: .editor))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var selectorGroup: some View {
@@ -115,6 +269,12 @@ struct TerminalPodControlLayout<Actions: View>: View {
             .font(.footnote.weight(.semibold))
             .foregroundStyle(.secondary)
             .lineLimit(1)
+    }
+
+    private var minimumRowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? RuneAdaptiveToolbarMetrics.accessibilityMinimumRowHeight
+            : TerminalPodControlLayoutMetrics.minimumRowHeight
     }
 }
 

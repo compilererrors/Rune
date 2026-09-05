@@ -353,6 +353,19 @@ private struct RuneFakeK8sRouter {
         let pathParts = components.path.split(separator: "/").map(String.init)
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
+        if method == "GET", query["watch"] == "1" {
+            return .watch(events: [
+                [
+                    "type": "MODIFIED",
+                    "object": ["metadata": ["resourceVersion": "synthetic-2"]]
+                ],
+                [
+                    "type": "BOOKMARK",
+                    "object": ["metadata": ["resourceVersion": "synthetic-3"]]
+                ]
+            ])
+        }
+
         if method == "PATCH",
            query["fieldManager"] == "rune",
            query["force"] == "true",
@@ -1492,6 +1505,18 @@ private struct RuneFakeK8sHTTPResponse {
 
     static func text(status: Int, body: String) -> RuneFakeK8sHTTPResponse {
         RuneFakeK8sHTTPResponse(status: status, contentType: "text/plain; charset=utf-8", body: Data(body.utf8))
+    }
+
+    static func watch(events: [[String: Any]]) -> RuneFakeK8sHTTPResponse {
+        let lines = events.compactMap { event in
+            try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys])
+        }
+        var body = Data()
+        for line in lines {
+            body.append(line)
+            body.append(0x0A)
+        }
+        return RuneFakeK8sHTTPResponse(status: 200, contentType: "application/json", body: body)
     }
 }
 

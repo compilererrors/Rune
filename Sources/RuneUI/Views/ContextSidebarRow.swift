@@ -9,9 +9,11 @@ struct ContextSidebarRow: View {
     let isFavorite: Bool
     let isProduction: Bool
     let isManuallyMarkedProduction: Bool
+    let canRemove: Bool
     let onSelect: () -> Void
     let onToggleProduction: () -> Void
     let onToggleFavorite: () -> Void
+    let onRemove: () -> Void
     @Environment(\.runeThemePalette) private var runeThemePalette
     @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
@@ -42,6 +44,13 @@ struct ContextSidebarRow: View {
                         isManuallyMarkedProduction ? "Unmark Production" : "Mark as Production",
                         systemImage: isManuallyMarkedProduction ? "shield.slash" : "exclamationmark.shield"
                     )
+                }
+                if canRemove {
+                    Divider()
+                    Button(role: .destructive, action: onRemove) {
+                        Label("Remove from Rune…", systemImage: "minus.circle")
+                    }
+                    .accessibilityIdentifier("rune.context.remove.\(rawName)")
                 }
             }
 

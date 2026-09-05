@@ -76,8 +76,8 @@ struct AddClusterPopoverView: View {
                 VStack(alignment: .leading, spacing: 13) {
                     header
                     discoveryStatus
-                    standardSection
                     providerToolsSection
+                    standardSection
                     manualTokenSection
                 }
                 .padding(RuneUILayoutMetrics.addClusterPopoverPadding)
@@ -119,7 +119,7 @@ struct AddClusterPopoverView: View {
 
     private var standardSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Standard")
+            sectionLabel("Kubeconfig files")
 
             LazyVGrid(columns: gridColumns, spacing: 8) {
                 quickAction(
@@ -159,7 +159,7 @@ struct AddClusterPopoverView: View {
 
     private var providerToolsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Providers & local tools")
+            sectionLabel("Cloud providers & local clusters")
 
             LazyVGrid(columns: gridColumns, spacing: 8) {
                 ForEach(AddClusterProviderIdentifier.allCases) { provider in
@@ -271,6 +271,7 @@ struct AddClusterPopoverView: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .help(discoveryStatusText)
 
             Spacer(minLength: 0)
 
@@ -318,6 +319,7 @@ struct AddClusterPopoverView: View {
             )
         }
         .buttonStyle(.plain)
+        .help("\(title) — \(subtitle)")
     }
 
     private func actionContent(
@@ -360,7 +362,9 @@ struct AddClusterPopoverView: View {
     private func providerTile(_ provider: AddClusterProviderIdentifier) -> some View {
         let presentation = AddClusterProviderPresentation.resolve(
             provider: provider,
-            externalCommandsAllowed: externalCommandsAllowed
+            mode: provider == .local
+                ? AddClusterProviderExecutionMode(externalCommandsAllowed: externalCommandsAllowed)
+                : .externalCLI
         )
         let accent = provider.accent
 
@@ -377,7 +381,7 @@ struct AddClusterPopoverView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(provider.shortTitle)
                         .font(.subheadline.weight(.semibold))
-                    Text(presentation.subtitle)
+                    Text(presentation.compactSubtitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -414,7 +418,7 @@ struct AddClusterPopoverView: View {
             }
         }
         .buttonStyle(.plain)
-        .help(provider.title)
+        .help("\(provider.title) — \(presentation.compactSubtitle)")
     }
 
 }

@@ -130,6 +130,7 @@ struct DeploymentRolloutHistoryTable: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+                .help(row.replicaSet)
                 .frame(
                     minWidth: DeploymentRolloutHistoryLayoutMetrics.replicaSetMinimumWidth,
                     maxWidth: .infinity,
@@ -141,6 +142,7 @@ struct DeploymentRolloutHistoryTable: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+                .help(row.changeCause.isEmpty ? "No change cause" : row.changeCause)
                 .frame(width: DeploymentRolloutHistoryLayoutMetrics.changeCauseWidth, alignment: .leading)
         }
         .padding(.vertical, 5)
@@ -175,6 +177,7 @@ struct DeploymentRolloutHistoryTable: View {
                 .lineLimit(title == "Change Cause" ? 2 : 1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+                .help(value)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

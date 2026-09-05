@@ -273,9 +273,9 @@ struct ManifestUnsavedEditsChip: View {
             indicatorColor: warning,
             foregroundColor: warning,
             fill: warning.opacity(0.14),
+            helpText: "The YAML draft has local changes that have not been applied to the cluster.",
             accessibilityLabel: "Unsaved YAML edits"
         )
-        .help("The YAML draft has local changes that have not been applied to the cluster.")
     }
 
     private var language: RuneLanguage {
@@ -314,6 +314,7 @@ struct ManifestInlineNote<Accessory: View>: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .help(text)
 
             Spacer(minLength: 0)
 

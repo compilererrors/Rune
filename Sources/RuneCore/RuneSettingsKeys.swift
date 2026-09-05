@@ -80,7 +80,12 @@ public enum RuneSettingsKeys {
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
     public static let terminalScrollbackLineLimitMaximum = 200_000
-    public static let persistTerminalWorkspaceState = "rune.settings.terminal.persistWorkspaceState"
+    /// When true, Rune restores the latest safe workspace state on launch.
+    ///
+    /// The legacy storage key is intentionally retained so users who previously enabled
+    /// terminal workspace restoration keep that choice when the setting is generalized.
+    public static let saveLastAppState = "rune.settings.terminal.persistWorkspaceState"
+    public static let persistTerminalWorkspaceState = saveLastAppState
     public static let sessionLogCacheEntryLimit = "rune.settings.performance.sessionLogCacheEntryLimit"
     public static let sessionLogCacheEntryLimitDefault = 128
     public static let sessionLogCacheEntryLimitMinimum = 16
@@ -127,6 +132,8 @@ public enum RuneSettingsKeys {
     }
 
     public static func registerDefaults() {
+        let customOne = RuneCustomLogPresetConfig.defaultValue(for: .one)
+        let customTwo = RuneCustomLogPresetConfig.defaultValue(for: .two)
         UserDefaults.standard.register(defaults: [
             persistNamespaceListCache: true,
             pendingLaunchAction: "",
@@ -134,14 +141,14 @@ public enum RuneSettingsKeys {
             verboseDebugTrace: false,
             backgroundPrefetchOtherContexts: false,
             enableDemoCluster: true,
-            logsCustomPresetOneMode: RuneCustomLogPresetMode.lines.rawValue,
-            logsCustomPresetOneLines: "5000",
-            logsCustomPresetOneTimeValue: "15",
-            logsCustomPresetOneTimeUnit: RuneCustomLogPresetTimeUnit.minutes.rawValue,
-            logsCustomPresetTwoMode: RuneCustomLogPresetMode.time.rawValue,
-            logsCustomPresetTwoLines: "99999",
-            logsCustomPresetTwoTimeValue: "6",
-            logsCustomPresetTwoTimeUnit: RuneCustomLogPresetTimeUnit.hours.rawValue,
+            logsCustomPresetOneMode: customOne.mode.rawValue,
+            logsCustomPresetOneLines: String(customOne.lines),
+            logsCustomPresetOneTimeValue: String(customOne.timeValue),
+            logsCustomPresetOneTimeUnit: customOne.timeUnit.rawValue,
+            logsCustomPresetTwoMode: customTwo.mode.rawValue,
+            logsCustomPresetTwoLines: String(customTwo.lines),
+            logsCustomPresetTwoTimeValue: String(customTwo.timeValue),
+            logsCustomPresetTwoTimeUnit: customTwo.timeUnit.rawValue,
             exportFolderDisplayName: "",
             exportTextOpenerBundleIdentifier: "",
             exportArchiveOpenerBundleIdentifier: "",
@@ -178,7 +185,7 @@ public enum RuneSettingsKeys {
             appearanceTheme: appearanceThemeDefault,
             appearanceRecentThemes: [appearanceThemeDefault],
             terminalScrollbackLineLimit: terminalScrollbackLineLimitDefault,
-            persistTerminalWorkspaceState: false,
+            saveLastAppState: true,
             sessionLogCacheEntryLimit: sessionLogCacheEntryLimitDefault,
             resourceYAMLUndoSnapshotLimit: resourceYAMLUndoSnapshotLimitDefault,
             writeSafetyRequireApplyDryRun: true,
@@ -328,9 +335,14 @@ public extension UserDefaults {
         }
     }
 
+    var runeSaveLastAppState: Bool {
+        get { (object(forKey: RuneSettingsKeys.saveLastAppState) as? Bool) ?? true }
+        set { set(newValue, forKey: RuneSettingsKeys.saveLastAppState) }
+    }
+
     var runePersistTerminalWorkspaceState: Bool {
-        get { (object(forKey: RuneSettingsKeys.persistTerminalWorkspaceState) as? Bool) ?? false }
-        set { set(newValue, forKey: RuneSettingsKeys.persistTerminalWorkspaceState) }
+        get { runeSaveLastAppState }
+        set { runeSaveLastAppState = newValue }
     }
 
     var runeSessionLogCacheEntryLimit: Int {
@@ -494,18 +506,23 @@ public extension UserDefaults {
 
     func runeCustomLogPresetConfig(slot: RuneCustomLogPresetSlot) -> RuneCustomLogPresetConfig {
         let keys = runeCustomLogPresetKeys(for: slot)
+        let defaults = RuneCustomLogPresetConfig.defaultValue(for: slot)
 
-        let modeRaw = (object(forKey: keys.mode) as? String) ?? RuneCustomLogPresetMode.lines.rawValue
-        let mode = RuneCustomLogPresetMode(rawValue: modeRaw) ?? .lines
+        let modeRaw = object(forKey: keys.mode) as? String
+        let mode = modeRaw.flatMap(RuneCustomLogPresetMode.init(rawValue:)) ?? defaults.mode
 
-        let linesRaw = (object(forKey: keys.lines) as? String) ?? "200"
-        let lines = Int(linesRaw) ?? 200
+        let lines = runeCustomLogPresetInteger(
+            forKey: keys.lines,
+            missingValue: defaults.lines
+        )
 
-        let timeValueRaw = (object(forKey: keys.timeValue) as? String) ?? "15"
-        let timeValue = Int(timeValueRaw) ?? 15
+        let timeValue = runeCustomLogPresetInteger(
+            forKey: keys.timeValue,
+            missingValue: defaults.timeValue
+        )
 
-        let unitRaw = (object(forKey: keys.timeUnit) as? String) ?? RuneCustomLogPresetTimeUnit.minutes.rawValue
-        let unit = RuneCustomLogPresetTimeUnit(rawValue: unitRaw) ?? .minutes
+        let unitRaw = object(forKey: keys.timeUnit) as? String
+        let unit = unitRaw.flatMap(RuneCustomLogPresetTimeUnit.init(rawValue:)) ?? defaults.timeUnit
 
         return RuneCustomLogPresetConfig(
             mode: mode,
@@ -513,6 +530,21 @@ public extension UserDefaults {
             timeValue: timeValue,
             timeUnit: unit
         )
+    }
+
+    private func runeCustomLogPresetInteger(forKey key: String, missingValue: Int) -> Int {
+        guard let storedValue = object(forKey: key) else {
+            return missingValue
+        }
+        let rawValue: String
+        if let string = storedValue as? String {
+            rawValue = string
+        } else if let number = storedValue as? NSNumber {
+            rawValue = number.stringValue
+        } else {
+            return 1
+        }
+        return RuneCustomLogPresetConfig.normalizedPositiveInteger(rawValue)
     }
 
     private func runeCustomLogPresetKeys(for slot: RuneCustomLogPresetSlot) -> (mode: String, lines: String, timeValue: String, timeUnit: String) {

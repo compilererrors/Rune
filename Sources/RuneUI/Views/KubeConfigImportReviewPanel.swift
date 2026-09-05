@@ -206,6 +206,7 @@ struct KubeConfigImportReviewPanel: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .help(sourceName)
         }
     }
 
@@ -222,10 +223,12 @@ struct KubeConfigImportReviewPanel: View {
                         Text(context.name)
                             .font(.caption.weight(.semibold))
                             .lineLimit(1)
+                            .help(context.name)
                         Text(contextDetailText(context))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+                            .help(contextDetailText(context))
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("rune.kubeconfig-import.context.\(context.name)")
@@ -252,6 +255,7 @@ struct KubeConfigImportReviewPanel: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                .help(context.name)
                             HStack(spacing: 6) {
                                 KubeConfigImportMetadataDraftField(
                                     "Alias",
@@ -405,10 +409,12 @@ struct KubeConfigImportReviewPanel: View {
                                 Text(context.name)
                                     .font(.caption.weight(.semibold))
                                     .lineLimit(1)
+                                    .help(context.name)
                                 Text(contextDetailText(context))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
+                                    .help(contextDetailText(context))
                             }
                         }
                     }

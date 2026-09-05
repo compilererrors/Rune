@@ -210,6 +210,10 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             RuneWindowLayoutDefaults.minimumHeight - RuneUILayoutMetrics.dialogContentPadding * 2
         )
         XCTAssertLessThan(
+            RuneUILayoutMetrics.providerDialogBodyCompactHeight,
+            RuneUILayoutMetrics.providerDialogBodyMinHeight
+        )
+        XCTAssertLessThan(
             RuneUILayoutMetrics.providerDialogBodyMinHeight,
             RuneUILayoutMetrics.providerDialogBodyIdealHeight
         )
@@ -410,6 +414,52 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             regionOrLocation: "europe-north1",
             projectID: "synthetic-project"
         ).missingRequiredFieldSummary(for: .gke))
+    }
+
+    func testOptionalAKSServicePrincipalImportRequiresACompleteCredentialSetOnlyWhenUsed() {
+        let clusterOnly = CloudCredentialDraft(
+            clusterName: "synthetic-aks",
+            resourceGroup: "synthetic-group",
+            profileOrSubscription: "11111111-1111-4111-8111-111111111111"
+        )
+        XCTAssertFalse(clusterOnly.hasRequiredNativeFields(for: .aks))
+
+        var partial = clusterOnly
+        partial.nativeAKSTenantID = "22222222-2222-4222-8222-222222222222"
+        XCTAssertFalse(partial.hasRequiredNativeFields(for: .aks))
+
+        var complete = partial
+        complete.nativeAKSClientID = "33333333-3333-4333-8333-333333333333"
+        complete.nativeAKSClientSecret = "synthetic-secret"
+        XCTAssertTrue(complete.hasRequiredNativeFields(for: .aks))
+        XCTAssertNil(complete.missingRequiredNativeFieldSummary(for: .aks))
+    }
+
+    func testOptionalEKSAccessKeyImportRequiresCompleteStaticCredentialsOnlyWhenUsed() {
+        var draft = CloudCredentialDraft(
+            clusterName: "synthetic-eks",
+            regionOrLocation: "eu-north-1"
+        )
+        XCTAssertFalse(draft.hasRequiredNativeFields(for: .eks))
+
+        draft.nativeAWSAccessKeyID = "synthetic-access-key"
+        XCTAssertFalse(draft.hasRequiredNativeFields(for: .eks))
+
+        draft.nativeAWSSecretAccessKey = "synthetic-secret"
+        XCTAssertTrue(draft.hasRequiredNativeFields(for: .eks))
+        XCTAssertNil(draft.missingRequiredNativeFieldSummary(for: .eks))
+    }
+
+    func testOptionalGKEServiceAccountImportRequiresOnlyClusterCoordinatesBeforeFileSelection() {
+        var draft = CloudCredentialDraft(
+            clusterName: "synthetic-gke",
+            regionOrLocation: "europe-north1"
+        )
+        XCTAssertFalse(draft.hasRequiredNativeFields(for: .gke))
+
+        draft.projectID = "synthetic-project"
+        XCTAssertTrue(draft.hasRequiredNativeFields(for: .gke))
+        XCTAssertNil(draft.missingRequiredNativeFieldSummary(for: .gke))
     }
 
     @MainActor

@@ -246,6 +246,11 @@ struct RuneSettingsMenuLabel: View {
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        .help(resolvedHelpText)
+    }
+
+    var resolvedHelpText: String {
+        subtitle.map { "\(title) — \($0)" } ?? title
     }
 }
 
@@ -309,6 +314,7 @@ private struct RuneThemeSelectorCard: View {
             )
         }
         .buttonStyle(.plain)
+        .help("\(presentation.title) — \(presentation.sourceSummary)")
         .accessibilityLabel(theme.title)
         .accessibilityValue(isSelected ? "Selected" : presentation.appearanceTitle)
     }
@@ -443,14 +449,22 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.backgroundPrefetchOtherContexts) private var backgroundPrefetchOtherContexts = false
     @AppStorage(RuneSettingsKeys.enableDemoCluster) private var enableDemoCluster = true
     @AppStorage(RuneSettingsKeys.skipClusterOnTabNavigationFromSections) private var skipClusterOnTabNavigationFromSections = false
-    @AppStorage(RuneSettingsKeys.logsCustomPresetOneMode) private var customOneModeRaw = RuneCustomLogPresetMode.lines.rawValue
-    @AppStorage(RuneSettingsKeys.logsCustomPresetOneLines) private var customOneLinesRaw = "5000"
-    @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeValue) private var customOneTimeValueRaw = "15"
-    @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeUnit) private var customOneTimeUnitRaw = RuneCustomLogPresetTimeUnit.minutes.rawValue
-    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoMode) private var customTwoModeRaw = RuneCustomLogPresetMode.time.rawValue
-    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoLines) private var customTwoLinesRaw = "99999"
-    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw = "6"
-    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw = RuneCustomLogPresetTimeUnit.hours.rawValue
+    @AppStorage(RuneSettingsKeys.logsCustomPresetOneMode) private var customOneModeRaw =
+        RuneCustomLogPresetConfig.defaultValue(for: .one).mode.rawValue
+    @AppStorage(RuneSettingsKeys.logsCustomPresetOneLines) private var customOneLinesRaw =
+        String(RuneCustomLogPresetConfig.defaultValue(for: .one).lines)
+    @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeValue) private var customOneTimeValueRaw =
+        String(RuneCustomLogPresetConfig.defaultValue(for: .one).timeValue)
+    @AppStorage(RuneSettingsKeys.logsCustomPresetOneTimeUnit) private var customOneTimeUnitRaw =
+        RuneCustomLogPresetConfig.defaultValue(for: .one).timeUnit.rawValue
+    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoMode) private var customTwoModeRaw =
+        RuneCustomLogPresetConfig.defaultValue(for: .two).mode.rawValue
+    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoLines) private var customTwoLinesRaw =
+        String(RuneCustomLogPresetConfig.defaultValue(for: .two).lines)
+    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeValue) private var customTwoTimeValueRaw =
+        String(RuneCustomLogPresetConfig.defaultValue(for: .two).timeValue)
+    @AppStorage(RuneSettingsKeys.logsCustomPresetTwoTimeUnit) private var customTwoTimeUnitRaw =
+        RuneCustomLogPresetConfig.defaultValue(for: .two).timeUnit.rawValue
     @AppStorage(RuneSettingsKeys.exportFolderDisplayName) private var exportFolderDisplayName = ""
     @AppStorage(RuneSettingsKeys.exportTextOpenerBundleIdentifier) private var exportTextOpenerBundleIdentifier = ""
     @AppStorage(RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) private var exportArchiveOpenerBundleIdentifier = ""
@@ -465,7 +479,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
-    @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
+    @AppStorage(RuneSettingsKeys.saveLastAppState) private var saveLastAppState = true
     private let inklineRecommendation = ExportOpenerRecommendation(appName: "Inkline", kind: .plainText)
     private let quikZipRecommendation = ExportOpenerRecommendation(appName: "QuikZip", kind: .archive)
     @AppStorage(RuneSettingsKeys.sessionLogCacheEntryLimit) private var sessionLogCacheEntryLimit =
@@ -566,6 +580,14 @@ public struct RunePreferencesView: View {
             title: settingsString(.settingsGeneral),
             subtitle: settingsString(.settingsGeneralSubtitle)
         ) {
+            settingsSection("Session") {
+                settingsToggleRow(
+                    "Save last app state",
+                    help: "Restores the latest context, namespace, section, resource selection, log history, inspector tabs, and terminal targets. Search text, log output, YAML drafts, transcripts, and commands are not saved.",
+                    isOn: $saveLastAppState
+                )
+            }
+
             settingsSection(settingsString(.settingsCache)) {
                 settingsToggleRow(
                     settingsString(.settingsPersistNamespaceListCache),
@@ -745,6 +767,7 @@ public struct RunePreferencesView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
+                            .help(displayThemesDirectoryPath)
                     }
                 } control: {
                     customThemeActions
@@ -1211,6 +1234,7 @@ public struct RunePreferencesView: View {
                             .lineLimit(2)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
+                            .help(DebugTraceWriter.logFileURL.path)
                     }
                 } control: {
                     debugTraceManagementMenu
@@ -1242,14 +1266,6 @@ public struct RunePreferencesView: View {
                     defaultValue: RuneSettingsKeys.terminalScrollbackLineLimitDefault,
                     detail: "Keeps recent shell output bounded while preserving the latest context for long-running sessions.",
                     normalize: RuneSettingsKeys.clampedTerminalScrollbackLineLimit
-                )
-
-                Divider()
-
-                settingsToggleRow(
-                    "Save terminal view state",
-                    help: "Restores open terminal targets and log tabs on next launch. Transcripts and shell commands are not saved.",
-                    isOn: $persistTerminalWorkspaceState
                 )
             }
 
@@ -1289,14 +1305,15 @@ public struct RunePreferencesView: View {
         timeValueRaw: Binding<String>,
         timeUnitRaw: Binding<String>
     ) -> some View {
-        let mode = enumBinding(modeRaw, default: RuneCustomLogPresetMode.lines)
-        let unit = enumBinding(timeUnitRaw, default: RuneCustomLogPresetTimeUnit.minutes)
+        let defaults = RuneCustomLogPresetConfig.defaultValue(for: slot)
+        let mode = enumBinding(modeRaw, default: defaults.mode)
+        let unit = enumBinding(timeUnitRaw, default: defaults.timeUnit)
         let lines = digitsOnlyBinding(linesRaw)
         let timeValue = digitsOnlyBinding(timeValueRaw)
         let summary = customLogPresetSummary(
             mode: mode.wrappedValue,
-            lines: Int(lines.wrappedValue) ?? 1,
-            timeValue: Int(timeValue.wrappedValue) ?? 1,
+            lines: RuneCustomLogPresetConfig.normalizedPositiveInteger(lines.wrappedValue),
+            timeValue: RuneCustomLogPresetConfig.normalizedPositiveInteger(timeValue.wrappedValue),
             timeUnit: unit.wrappedValue
         )
 
@@ -1324,7 +1341,7 @@ public struct RunePreferencesView: View {
                         .font(.body.monospacedDigit())
                         .multilineTextAlignment(.trailing)
                         .frame(width: 72)
-                        .help("Digits only. Enter 99999 to load logs since the beginning.")
+                        .help("Digits only. Use All logs in the log-window menu to load logs since the beginning.")
 
                     Text("lines")
                         .font(.footnote)
@@ -1361,7 +1378,7 @@ public struct RunePreferencesView: View {
         switch mode {
         case .lines:
             let normalizedLines = max(1, lines)
-            return normalizedLines >= 99_999 ? "Since beginning" : "\(normalizedLines) lines"
+            return "\(normalizedLines) lines"
         case .time:
             return "Last \(timeUnit.shortTitle(amount: timeValue))"
         }

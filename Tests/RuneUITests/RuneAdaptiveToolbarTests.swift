@@ -200,7 +200,8 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
 
         XCTAssertTrue(rbac.contains("RuneAdaptiveToolbar(\"RBAC access review actions\")"))
         XCTAssertTrue(rbac.contains("RuneAdaptiveToolbar(\"RBAC access review request\")"))
-        XCTAssertTrue(portForward.contains("RuneAdaptiveToolbar(\"Port-forward controls\")"))
+        XCTAssertTrue(portForward.contains("TerminalPortForwardReservedActionRailLayout("))
+        XCTAssertTrue(portForward.contains(".accessibilityLabel(\"Port-forward controls\")"))
         XCTAssertTrue(portForward.contains("PortForwardEndpointFields("))
         XCTAssertTrue(portForwardControls.contains("PortForwardEndpointLayout"))
         XCTAssertFalse(portForwardControls.contains("ScrollView(.horizontal"))

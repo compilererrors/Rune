@@ -244,6 +244,37 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testLiveResourceWatchFollowsNamespaceAndStopsWhenDisabled() async throws {
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .workloads
+        harness.state.selectedWorkloadKind = .pod
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+
+        harness.viewModel.isLiveStatusUpdatesEnabled = true
+        try await waitUntil {
+            harness.server.requestLines().contains { line in
+                line.contains("/api/v1/namespaces/alpha-zone/pods?") && line.contains("watch=1")
+            }
+        }
+
+        harness.viewModel.setNamespace("bravo-zone")
+        try await waitUntil {
+            harness.server.requestLines().contains { line in
+                line.contains("/api/v1/namespaces/bravo-zone/pods?") && line.contains("watch=1")
+            }
+        }
+
+        harness.viewModel.isLiveStatusUpdatesEnabled = false
+        let watchCountAfterDisable = harness.server.requestLines().filter { $0.contains("watch=1") }.count
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(
+            harness.server.requestLines().filter { $0.contains("watch=1") }.count,
+            watchCountAfterDisable
+        )
+    }
+
     func testTerminalNamespaceSwitchReloadsPodsForShellAndPortForwardSelectors() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }

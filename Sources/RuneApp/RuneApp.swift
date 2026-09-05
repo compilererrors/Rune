@@ -194,7 +194,9 @@ struct RuneApplication: App {
         RuneLaunchEnvironment.applyProcessOverrides()
         _viewModel = StateObject(
             wrappedValue: RuneAppViewModel(
-                contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore()
+                contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore(),
+                lastAppStateStore: JSONLastAppStateStore(),
+                terminalWorkspaceStateStore: JSONTerminalWorkspaceStateStore()
             )
         )
     }

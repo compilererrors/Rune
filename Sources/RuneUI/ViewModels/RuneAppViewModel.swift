@@ -44,7 +44,6 @@ private struct KubeConfigSourceFingerprint: Hashable {
                     modifiedAt: values?.contentModificationDate?.timeIntervalSince1970 ?? -1
                 )
             }
-            .sorted { $0.path < $1.path }
     }
 }
 
@@ -82,7 +81,7 @@ private struct ContextListRequestScope {
 }
 
 private enum ResourceSnapshotLoadResult: Equatable {
-    case applied
+    case applied(failedFamilies: Set<RuneResourceListFamily>)
     case discarded
 }
 
@@ -101,6 +100,30 @@ private struct KubernetesRequestMetricsSelection: Equatable {
         self.sources = sources
         self.context = context
         sourceFingerprint = KubeConfigSourceFingerprint(sources: sources)
+    }
+}
+
+private struct LiveResourceWatchScope: Equatable {
+    let sources: [KubeConfigSource]
+    let sourceFingerprint: KubeConfigSourceFingerprint
+    let context: KubeContext
+    let namespace: String
+    let kind: KubeResourceKind
+    let family: RuneResourceListFamily
+
+    init(
+        sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        family: RuneResourceListFamily
+    ) {
+        self.sources = sources
+        sourceFingerprint = KubeConfigSourceFingerprint(sources: sources)
+        self.context = context
+        self.namespace = namespace
+        self.kind = kind
+        self.family = family
     }
 }
 
@@ -126,12 +149,6 @@ private enum PendingNativeCloudCredential: Sendable {
         case .gke: return .googleGKE
         }
     }
-}
-
-private struct NativeCloudImportPresentationError: LocalizedError, Sendable {
-    let message: String
-
-    var errorDescription: String? { message }
 }
 
 public struct WorkspacePortForwardBrowserOpener: PortForwardBrowserOpening {
@@ -1187,6 +1204,7 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var cloudKubeConfigImportDiagnostic: AddClusterCloudImportDiagnostic?
     @Published public private(set) var cloudKubeConfigImportOutput: String = ""
     @Published public private(set) var isRunningCloudKubeConfigImport = false
+    @Published public private(set) var isSigningInToAzure = false
     @Published public private(set) var isRunningNativeCloudClusterImport = false
     @Published public private(set) var nativeKubernetesAuthStatus: String?
     @Published public private(set) var isConnectingNativeKubernetesAuth = false
@@ -1291,6 +1309,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var savedWorkspaceInspectorRestoreRequest: SavedWorkspaceInspectorRestoreRequest?
     @Published public private(set) var workspaceCommandRequest: WorkspaceCommandRequest?
     @Published public private(set) var isKubeConfigScopeReloadPending = false
+    @Published public private(set) var pendingKubeConfigContextRemoval: KubeConfigContextRemovalPreview?
+    @Published public private(set) var isRemovingKubeConfigContext = false
 
     private let kubeClient: KubernetesClient
     private let bookmarkManager: BookmarkManager
@@ -1304,10 +1324,14 @@ public final class RuneAppViewModel: ObservableObject {
     private let supportBundleBuilder: any SupportBundleBuilding
     private let contextPreferences: ContextPreferencesStoring
     private let savedWorkspaceStore: SavedWorkspaceStoring
+    private let lastAppStateStore: LastAppStateStoring
+    private let terminalWorkspaceStateStore: TerminalWorkspaceStateStoring
     private let kubeConfigImportValidator: KubeConfigImportValidator
     private let kubeConfigImportStore: KubeConfigImportStoring
+    private let kubeConfigContextRemover: KubeConfigContextRemoving
     private let kubeConfigDuplicateResolver = KubeConfigDuplicateResolver()
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
+    private let azureCLISignInRunner: AzureCLISignInRunning
     private let nativeCloudClusterImporter: any NativeCloudClusterImporting
     private let nativeAuthConfigurator: any KubernetesNativeAuthConfiguring
     private let helmCommandRunner: HelmCommandRunning
@@ -1333,13 +1357,19 @@ public final class RuneAppViewModel: ObservableObject {
     private var kubeConfigSourceSyncTask: Task<Void, Never>?
     private var sessionImportedKubeConfigSourcePaths = Set<String>()
     private var latestKubeConfigSourceFingerprint: KubeConfigSourceFingerprint?
+    private var lastAppStateSourceScopeIdentityCache:
+        (fingerprint: KubeConfigSourceFingerprint, contextName: String, identity: String)?
     private var activeKubeConfigReloadFingerprint: KubeConfigSourceFingerprint?
     private var pendingKubeConfigImport: KubeConfigImportTransaction?
     private var pendingKubeConfigImportRegistrySnapshot: KubeConfigImportRegistrySnapshot?
     private var pendingKubeConfigTemporaryDirectories: [URL] = []
     private var pendingCloudKubeConfigProvider: CloudKubeConfigProvider?
     private var pendingNativeCloudCredential: PendingNativeCloudCredential?
+    private var cloudKubeConfigImportTask: Task<Void, Never>?
+    private var cloudKubeConfigOutputID: UUID?
     private var nativeCloudClusterImportTask: Task<Void, Never>?
+    private var azureCLISignInTask: Task<Void, Never>?
+    private var activeAzureCLISignInID: UUID?
     private var nativeGKEImportPickerReservation: UUID?
     private var nativeGKECredentialConnectPickerReservation: UUID?
     private var authDoctorTask: Task<Void, Never>?
@@ -1374,6 +1404,10 @@ public final class RuneAppViewModel: ObservableObject {
     private var scheduledRefreshTask: Task<Void, Never>?
     private var pendingCurrentViewRefreshID: UUID?
     private var savedWorkspaceRestoreTask: Task<Void, Never>?
+    private var lastAppStatePersistTask: Task<Void, Never>?
+    private var pendingLastAppStateRestore: LastAppStateSnapshot?
+    private var pendingLastAppStateRestoreGeneration: UInt64?
+    private var isApplyingLastAppStateRestore = false
     private var navigationSelectionRestoreTask: Task<Void, Never>?
     private var resourceDetailsTask: Task<Void, Never>?
     private var resourceYAMLDryRunTask: Task<Void, Never>?
@@ -1391,8 +1425,10 @@ public final class RuneAppViewModel: ObservableObject {
     private var tailLogsReloadTask: Task<Void, Never>?
     private var terminalOutputFlushTask: Task<Void, Never>?
     private var liveStatusUpdatesTask: Task<Void, Never>?
+    private var liveWatchRefreshInFlight = false
+    private var liveWatchRefreshQueued = false
     private var pendingTerminalOutputBySessionID: [String: String] = [:]
-    private var pendingTerminalEscapeBySessionID: [String: String] = [:]
+    private var terminalScreenEmulatorBySessionID: [String: TerminalScreenEmulator] = [:]
     private var terminalSessionAttemptByID: [String: UUID] = [:]
     private var activePortForwardStartRequestIDs = Set<UUID>()
     private var currentSavedWorkspaceInspectorState: SavedWorkspaceInspectorState?
@@ -1402,6 +1438,10 @@ public final class RuneAppViewModel: ObservableObject {
     private var commandPaletteResultCacheOrder: [String] = []
     private var cachedProductionNameMarker: (contextName: String, isMatch: Bool)?
     private var requiresProductionSecondConfirmation = UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation
+    private var observedCustomLogPresetOne =
+        UserDefaults.standard.runeCustomLogPresetConfig(slot: .one)
+    private var observedCustomLogPresetTwo =
+        UserDefaults.standard.runeCustomLogPresetConfig(slot: .two)
     private var pendingForcedNamespaceRefresh = false
     /// Set during context switch with no explicit namespace so first metadata refresh can override stale carry-over namespace.
     private var pendingNamespaceRevalidationContextName: String?
@@ -1468,9 +1508,17 @@ public final class RuneAppViewModel: ObservableObject {
         supportBundleBuilder: any SupportBundleBuilding = JSONSupportBundleBuilder(),
         contextPreferences: ContextPreferencesStoring = UserDefaultsContextPreferencesStore(),
         savedWorkspaceStore: SavedWorkspaceStoring = JSONSavedWorkspaceStore(),
+        lastAppStateStore: LastAppStateStoring = NoopLastAppStateStore(),
+        terminalWorkspaceStateStore: TerminalWorkspaceStateStoring = NoopTerminalWorkspaceStateStore(),
         kubeConfigImportValidator: KubeConfigImportValidator = KubeConfigImportValidator(),
         kubeConfigImportStore: KubeConfigImportStoring = AppOwnedKubeConfigImportStore(),
-        cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(),
+        kubeConfigContextRemover: KubeConfigContextRemoving = KubeConfigContextRemover(),
+        cloudKubeConfigImporter: CloudKubeConfigImporting = CloudKubeConfigCLIImporter(
+            runner: RuneCloudKubeConfigCommandRunner()
+        ),
+        azureCLISignInRunner: AzureCLISignInRunning = AzureCLISignInRunner(
+            runner: RuneCloudKubeConfigCommandRunner()
+        ),
         nativeCloudClusterImporter: any NativeCloudClusterImporting = NativeCloudClusterImporter(),
         nativeAuthConfigurator: any KubernetesNativeAuthConfiguring = DefaultKubernetesNativeCredentialProvider.shared,
         helmCommandRunner: HelmCommandRunning = ProcessHelmCommandRunner(),
@@ -1500,9 +1548,13 @@ public final class RuneAppViewModel: ObservableObject {
         self.supportBundleBuilder = supportBundleBuilder
         self.contextPreferences = contextPreferences
         self.savedWorkspaceStore = savedWorkspaceStore
+        self.lastAppStateStore = lastAppStateStore
+        self.terminalWorkspaceStateStore = terminalWorkspaceStateStore
         self.kubeConfigImportValidator = kubeConfigImportValidator
         self.kubeConfigImportStore = kubeConfigImportStore
+        self.kubeConfigContextRemover = kubeConfigContextRemover
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
+        self.azureCLISignInRunner = azureCLISignInRunner
         self.nativeCloudClusterImporter = nativeCloudClusterImporter
         self.nativeAuthConfigurator = nativeAuthConfigurator
         self.helmCommandRunner = helmCommandRunner
@@ -1559,6 +1611,16 @@ public final class RuneAppViewModel: ObservableObject {
             )
         }
 
+        if UserDefaults.standard.runeSaveLastAppState,
+           let snapshot = lastAppStateStore.loadLastAppState() {
+            pendingLastAppStateRestore = snapshot
+            pendingLastAppStateRestoreGeneration = deferredSelectionRestoreGeneration
+            applyInitialLastAppState(snapshot)
+        } else if !UserDefaults.standard.runeSaveLastAppState {
+            lastAppStateStore.clearLastAppState()
+            terminalWorkspaceStateStore.clearTerminalWorkspaceState()
+        }
+
         self.state.setFavoriteContextNames(contextPreferences.loadFavoriteContextNames())
         self.state.setFavoriteResourceIDs(contextPreferences.loadFavoriteResourceIDs())
         self.state.setFavoriteNamespaceIDs(contextPreferences.loadFavoriteNamespaceIDs())
@@ -1576,21 +1638,77 @@ public final class RuneAppViewModel: ObservableObject {
         $selectedLogPreset
             .dropFirst()
             .sink { [weak self] _ in
+                guard self?.isApplyingLastAppStateRestore != true else { return }
                 self?.scheduleLogsReloadForSelection()
+                self?.scheduleLastAppStatePersistence()
             }
             .store(in: &cancellables)
 
         $includePreviousLogs
             .dropFirst()
             .sink { [weak self] _ in
+                guard self?.isApplyingLastAppStateRestore != true else { return }
                 self?.scheduleLogsReloadForSelection()
+                self?.scheduleLastAppStatePersistence()
             }
             .store(in: &cancellables)
 
         $selectedLogContainer
             .dropFirst()
             .sink { [weak self] _ in
+                guard self?.isApplyingLastAppStateRestore != true else { return }
                 self?.scheduleLogsReloadForSelection()
+                self?.scheduleLastAppStatePersistence()
+            }
+            .store(in: &cancellables)
+
+        let lastAppStateSelectionChanges: [AnyPublisher<Void, Never>] = [
+            state.$selectedContext.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedNamespace.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedSection.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedWorkloadKind.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedPod.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedDeployment.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedService.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedEvent.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedStatefulSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedDaemonSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedJob.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedCronJob.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedReplicaSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedPersistentVolumeClaim.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedPersistentVolume.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedStorageClass.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedHorizontalPodAutoscaler.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedNetworkPolicy.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedEndpoint.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedIngress.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedConfigMap.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedSecret.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedNode.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedHelmRelease.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedOperatorResource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedRBACResource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            state.$isHelmAllNamespaces.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $podSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $podSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $deploymentSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $deploymentSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $serviceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $serviceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $genericResourceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $genericResourceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $helmReleaseSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $helmReleaseSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $eventSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $eventSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $operatorResourceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $operatorResourceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $operatorResourceFocus.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ]
+        Publishers.MergeMany(lastAppStateSelectionChanges)
+            .sink { [weak self] in
+                self?.scheduleLastAppStatePersistence()
             }
             .store(in: &cancellables)
 
@@ -1682,6 +1800,12 @@ public final class RuneAppViewModel: ObservableObject {
                 self?.receiveUserDefaultsDidChange()
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in
+                self?.persistLastAppStateNow()
+            }
+            .store(in: &cancellables)
     }
 
     private nonisolated func receiveUserDefaultsDidChange() {
@@ -1698,6 +1822,31 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func handleUserDefaultsDidChange() {
         requiresProductionSecondConfirmation = UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation
+        let customOne = UserDefaults.standard.runeCustomLogPresetConfig(slot: .one)
+        let customTwo = UserDefaults.standard.runeCustomLogPresetConfig(slot: .two)
+        let customOneChanged = customOne != observedCustomLogPresetOne
+        let customTwoChanged = customTwo != observedCustomLogPresetTwo
+        observedCustomLogPresetOne = customOne
+        observedCustomLogPresetTwo = customTwo
+        if customOneChanged || customTwoChanged {
+            // PodLogPreset titles and filters are computed from UserDefaults rather than
+            // @Published state, so explicitly refresh the menu and active custom query.
+            objectWillChange.send()
+            if (selectedLogPreset == .customOne && customOneChanged)
+                || (selectedLogPreset == .customTwo && customTwoChanged) {
+                scheduleLogsReloadForSelection()
+            }
+        }
+        if UserDefaults.standard.runeSaveLastAppState {
+            scheduleLastAppStatePersistence()
+        } else {
+            lastAppStatePersistTask?.cancel()
+            lastAppStatePersistTask = nil
+            pendingLastAppStateRestore = nil
+            pendingLastAppStateRestoreGeneration = nil
+            lastAppStateStore.clearLastAppState()
+            terminalWorkspaceStateStore.clearTerminalWorkspaceState()
+        }
         commandPaletteContextMetadataCache.removeAll(keepingCapacity: true)
         commandPaletteContextsWithoutMetadata.removeAll(keepingCapacity: true)
         invalidateCommandPaletteResultCache()
@@ -1907,23 +2056,27 @@ public final class RuneAppViewModel: ObservableObject {
         let resources = selectedGenericResourcesForBulkActions
         guard !resources.isEmpty else { return "" }
 
-        var lines: [String] = [
-            "Selected \(state.selectedWorkloadKind.title) Compare",
-            "Context: \(state.selectedContext?.name ?? "No context")",
-            "Namespace: \(state.selectedNamespace.isEmpty ? "Cluster" : state.selectedNamespace)",
-            "Count: \(resources.count)",
-            ""
-        ]
+        var comparison = ""
+        comparison.reserveCapacity(160 + resources.count * 120)
+        comparison += "Selected \(state.selectedWorkloadKind.title) Compare\n"
+        comparison += "Context: \(state.selectedContext?.name ?? "No context")\n"
+        comparison += "Namespace: \(state.selectedNamespace.isEmpty ? "Cluster" : state.selectedNamespace)\n"
+        comparison += "Count: \(resources.count)\n\n"
 
         for resource in resources {
-            lines.append("- \(resource.namespace.map { "\($0)/" } ?? "")\(resource.name)")
-            lines.append("  Kind: \(resource.kind.title)")
-            lines.append("  Primary: \(resource.primaryText)")
-            lines.append("  Secondary: \(resource.secondaryText)")
-            lines.append("")
+            comparison += "- "
+            if let namespace = resource.namespace {
+                comparison += namespace
+                comparison += "/"
+            }
+            comparison += resource.name
+            comparison += "\n  Kind: \(resource.kind.title)"
+            comparison += "\n  Primary: \(resource.primaryText)"
+            comparison += "\n  Secondary: \(resource.secondaryText)\n\n"
         }
 
-        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        comparison.removeLast(2)
+        return comparison
     }
 
     public func isPodSelectedForBulkAction(_ pod: PodSummary) -> Bool {
@@ -2144,6 +2297,542 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func updateSavedWorkspaceInspectorState(_ inspectorState: SavedWorkspaceInspectorState) {
         currentSavedWorkspaceInspectorState = inspectorState
+        scheduleLastAppStatePersistence()
+    }
+
+    private func applyInitialLastAppState(_ snapshot: LastAppStateSnapshot) {
+        if let sectionID = snapshot.sectionID,
+           let section = RuneSection(rawValue: sectionID) {
+            state.selectedSection = section
+        }
+        if let workloadKindID = snapshot.workloadKindID,
+           let workloadKind = KubeResourceKind(rawValue: workloadKindID) {
+            state.selectedWorkloadKind = workloadKind
+        }
+        if let logPresetID = snapshot.logPresetID {
+            selectedLogPreset = PodLogPreset(rawValue: logPresetID) ?? .recentLines
+        }
+        if let includePreviousLogs = snapshot.includePreviousLogs {
+            self.includePreviousLogs = includePreviousLogs
+        }
+        if let isHelmAllNamespaces = snapshot.isHelmAllNamespaces {
+            state.isHelmAllNamespaces = isHelmAllNamespaces
+        }
+        if let raw = snapshot.podSortColumnID,
+           let value = PodListSortColumn(rawValue: raw) {
+            podSortColumn = value
+        }
+        if let value = snapshot.podSortAscending {
+            podSortAscending = value
+        }
+        if let raw = snapshot.deploymentSortColumnID,
+           let value = DeploymentListSortColumn(rawValue: raw) {
+            deploymentSortColumn = value
+        }
+        if let value = snapshot.deploymentSortAscending {
+            deploymentSortAscending = value
+        }
+        if let raw = snapshot.serviceSortColumnID,
+           let value = ServiceListSortColumn(rawValue: raw) {
+            serviceSortColumn = value
+        }
+        if let value = snapshot.serviceSortAscending {
+            serviceSortAscending = value
+        }
+        if let raw = snapshot.genericResourceSortColumnID,
+           let value = GenericResourceListSortColumn(rawValue: raw) {
+            genericResourceSortColumn = value
+        }
+        if let value = snapshot.genericResourceSortAscending {
+            genericResourceSortAscending = value
+        }
+        if let raw = snapshot.helmReleaseSortColumnID,
+           let value = HelmReleaseListSortColumn(rawValue: raw) {
+            helmReleaseSortColumn = value
+        }
+        if let value = snapshot.helmReleaseSortAscending {
+            helmReleaseSortAscending = value
+        }
+        if let raw = snapshot.eventSortColumnID,
+           let value = EventListSortColumn(rawValue: raw) {
+            eventSortColumn = value
+        }
+        if let value = snapshot.eventSortAscending {
+            eventSortAscending = value
+        }
+        if let raw = snapshot.operatorResourceSortColumnID,
+           let value = OperatorResourceListSortColumn(rawValue: raw) {
+            operatorResourceSortColumn = value
+        }
+        if let value = snapshot.operatorResourceSortAscending {
+            operatorResourceSortAscending = value
+        }
+        if let raw = snapshot.operatorResourceFocusID,
+           let value = OperatorResourceFocus(rawValue: raw) {
+            operatorResourceFocus = value
+        }
+        if let inspectorState = snapshot.inspectorState {
+            savedWorkspaceInspectorRestoreRequest = SavedWorkspaceInspectorRestoreRequest(
+                inspectorState: inspectorState
+            )
+            if inspectorState.helmBrowserTabID == "operatorResources" {
+                helmBrowserResourceFamily = .operatorResources
+            } else if inspectorState.helmBrowserTabID == "releases" {
+                helmBrowserResourceFamily = .helmReleases
+            }
+        }
+        if snapshot.sectionID == RuneSection.helm.rawValue,
+           let resourceKind = snapshot.resourceKind {
+            helmBrowserResourceFamily = resourceKind == HelmReleaseSummary.savedWorkspaceKindLabel
+                ? .helmReleases
+                : .operatorResources
+        }
+    }
+
+    private var currentLastAppStateSnapshot: LastAppStateSnapshot {
+        let inspectorState = currentSavedWorkspaceInspectorState.map {
+            SavedWorkspaceInspectorState(
+                podTabID: $0.podTabID,
+                serviceTabID: $0.serviceTabID,
+                deploymentTabID: $0.deploymentTabID,
+                genericManifestTabID: $0.genericManifestTabID,
+                helmTabID: $0.helmTabID,
+                helmBrowserTabID: $0.helmBrowserTabID,
+                terminalTabID: $0.terminalTabID,
+                isYAMLInlineEditing: nil,
+                showsHistoricalDeploymentReplicaSets: $0.showsHistoricalDeploymentReplicaSets
+            )
+        }
+        let logContainer: String?
+        if state.selectedSection == .workloads,
+           state.selectedWorkloadKind == .pod,
+           state.selectedPod != nil {
+            logContainer = selectedLogContainerName
+        } else {
+            logContainer = nil
+        }
+        return LastAppStateSnapshot(
+            sourceScopeID: lastAppStateSourceScopeIdentity(
+                for: state.kubeConfigSources,
+                contextName: state.selectedContext?.name
+            ),
+            contextName: state.selectedContext?.name,
+            namespace: state.selectedNamespace,
+            sectionID: state.selectedSection.rawValue,
+            workloadKindID: state.selectedWorkloadKind.rawValue,
+            resourceID: selectedResourceID(),
+            resourceKind: selectedResourceKindLabel(),
+            resourceName: selectedResourceName(),
+            resourceNamespace: selectedResourceNamespace(),
+            logPresetID: selectedLogPreset.rawValue,
+            logContainer: logContainer,
+            includePreviousLogs: includePreviousLogs,
+            isHelmAllNamespaces: state.isHelmAllNamespaces,
+            podSortColumnID: podSortColumn.rawValue,
+            podSortAscending: podSortAscending,
+            deploymentSortColumnID: deploymentSortColumn.rawValue,
+            deploymentSortAscending: deploymentSortAscending,
+            serviceSortColumnID: serviceSortColumn.rawValue,
+            serviceSortAscending: serviceSortAscending,
+            genericResourceSortColumnID: genericResourceSortColumn.rawValue,
+            genericResourceSortAscending: genericResourceSortAscending,
+            helmReleaseSortColumnID: helmReleaseSortColumn.rawValue,
+            helmReleaseSortAscending: helmReleaseSortAscending,
+            eventSortColumnID: eventSortColumn.rawValue,
+            eventSortAscending: eventSortAscending,
+            operatorResourceSortColumnID: operatorResourceSortColumn.rawValue,
+            operatorResourceSortAscending: operatorResourceSortAscending,
+            operatorResourceFocusID: operatorResourceFocus.rawValue,
+            inspectorState: inspectorState
+        )
+    }
+
+    private func scheduleLastAppStatePersistence() {
+        guard UserDefaults.standard.runeSaveLastAppState,
+              pendingLastAppStateRestore == nil
+        else { return }
+
+        lastAppStatePersistTask?.cancel()
+        lastAppStatePersistTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000)
+            } catch {
+                return
+            }
+            guard let self,
+                  UserDefaults.standard.runeSaveLastAppState,
+                  self.pendingLastAppStateRestore == nil
+            else { return }
+            self.lastAppStateStore.saveLastAppState(self.currentLastAppStateSnapshot)
+            self.lastAppStatePersistTask = nil
+        }
+    }
+
+    public func persistLastAppStateNow() {
+        lastAppStatePersistTask?.cancel()
+        lastAppStatePersistTask = nil
+        guard UserDefaults.standard.runeSaveLastAppState,
+              pendingLastAppStateRestore == nil
+        else { return }
+        lastAppStateStore.saveLastAppState(currentLastAppStateSnapshot)
+    }
+
+    public func loadPersistedTerminalWorkspaceState() -> TerminalWorkspaceStateSnapshot? {
+        guard let currentScope = terminalWorkspacePersistenceScope,
+              let snapshot = terminalWorkspaceStateStore.loadTerminalWorkspaceState(),
+              snapshot.sourceScopeID == currentScope.sourceScopeID,
+              snapshot.contextName == currentScope.contextName,
+              snapshot.namespace == currentScope.namespace
+        else { return nil }
+        return snapshot
+    }
+
+    public func persistTerminalWorkspaceState(_ snapshot: TerminalWorkspaceStateSnapshot) {
+        guard UserDefaults.standard.runeSaveLastAppState,
+              let currentScope = terminalWorkspacePersistenceScope
+        else { return }
+        terminalWorkspaceStateStore.saveTerminalWorkspaceState(
+            snapshot.scoped(
+                sourceScopeID: currentScope.sourceScopeID,
+                contextName: currentScope.contextName,
+                namespace: currentScope.namespace
+            )
+        )
+    }
+
+    public func clearPersistedTerminalWorkspaceState() {
+        terminalWorkspaceStateStore.clearTerminalWorkspaceState()
+    }
+
+    public var terminalWorkspaceRestoreScopeID: String? {
+        guard let scope = terminalWorkspacePersistenceScope else { return nil }
+        return [scope.sourceScopeID, scope.contextName, scope.namespace]
+            .joined(separator: "\u{0}")
+    }
+
+    private var terminalWorkspacePersistenceScope:
+        (sourceScopeID: String, contextName: String, namespace: String)? {
+        guard let contextName = state.selectedContext?.name,
+              let sourceScopeID = lastAppStateSourceScopeIdentity(
+                  for: state.kubeConfigSources,
+                  contextName: contextName
+              )
+        else { return nil }
+        let namespace = state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !namespace.isEmpty else { return nil }
+        return (sourceScopeID, contextName, namespace)
+    }
+
+    private func lastAppStateSourceScopeMatches(_ snapshot: LastAppStateSnapshot) -> Bool {
+        guard let sourceScopeID = snapshot.sourceScopeID,
+              let contextName = snapshot.contextName
+        else { return false }
+        return sourceScopeID == lastAppStateSourceScopeIdentity(
+            for: state.kubeConfigSources,
+            contextName: contextName
+        )
+    }
+
+    private func lastAppStateCanRestoreInCurrentClusterScope(
+        _ snapshot: LastAppStateSnapshot
+    ) -> Bool {
+        lastAppStateSourceScopeMatches(snapshot)
+    }
+
+    private func preservePendingLastAppStateRestoreAfterFailure() {
+        lastAppStatePersistTask?.cancel()
+        lastAppStatePersistTask = nil
+    }
+
+    private func discardPendingLastAppStateRestore() {
+        pendingLastAppStateRestore = nil
+        pendingLastAppStateRestoreGeneration = nil
+    }
+
+    private func discardKnownUnsafePendingLastAppStateRestore(
+        for sources: [KubeConfigSource]
+    ) {
+        guard let snapshot = pendingLastAppStateRestore else { return }
+        guard let savedScopeID = snapshot.sourceScopeID,
+              let contextName = snapshot.contextName
+        else {
+            discardPendingLastAppStateRestore()
+            return
+        }
+        guard let currentScopeID = lastAppStateSourceScopeIdentity(
+            for: sources,
+            contextName: contextName
+        ) else { return }
+        if savedScopeID != currentScopeID {
+            discardPendingLastAppStateRestore()
+        }
+    }
+
+    private func resourceListFamilyRequiredToRestore(
+        _ snapshot: LastAppStateSnapshot
+    ) -> RuneResourceListFamily? {
+        guard snapshot.resourceName != nil,
+              let sectionID = snapshot.sectionID,
+              let section = RuneSection(rawValue: sectionID)
+        else { return nil }
+
+        switch section {
+        case .events:
+            return .events
+        case .helm:
+            return snapshot.resourceKind == HelmReleaseSummary.savedWorkspaceKindLabel
+                ? .helmReleases
+                : .operatorResources
+        case .rbac:
+            return resourceListFamily(forResourceKindLabel: snapshot.resourceKind)
+        case .workloads, .networking, .config, .storage:
+            guard let kindID = snapshot.workloadKindID,
+                  let kind = KubeResourceKind(rawValue: kindID)
+            else { return resourceListFamily(forResourceKindLabel: snapshot.resourceKind) }
+            return resourceListFamily(for: kind)
+        case .overview, .terminal:
+            return nil
+        }
+    }
+
+    private func resourceListFamily(for kind: KubeResourceKind) -> RuneResourceListFamily {
+        switch kind {
+        case .pod: return .pods
+        case .deployment: return .deployments
+        case .statefulSet: return .statefulSets
+        case .daemonSet: return .daemonSets
+        case .job: return .jobs
+        case .cronJob: return .cronJobs
+        case .replicaSet: return .replicaSets
+        case .service: return .services
+        case .endpoint: return .endpoints
+        case .ingress: return .ingresses
+        case .configMap: return .configMaps
+        case .secret: return .secrets
+        case .node: return .nodes
+        case .event: return .events
+        case .serviceAccount: return .serviceAccounts
+        case .role: return .rbacRoles
+        case .roleBinding: return .rbacRoleBindings
+        case .clusterRole: return .rbacClusterRoles
+        case .clusterRoleBinding: return .rbacClusterRoleBindings
+        case .persistentVolumeClaim: return .persistentVolumeClaims
+        case .persistentVolume: return .persistentVolumes
+        case .storageClass: return .storageClasses
+        case .horizontalPodAutoscaler: return .horizontalPodAutoscalers
+        case .networkPolicy: return .networkPolicies
+        }
+    }
+
+    private func resourceListFamily(forResourceKindLabel label: String?) -> RuneResourceListFamily? {
+        guard let label else { return nil }
+        return KubeResourceKind.allCases
+            .first { $0.kubernetesResourceName == label.lowercased() }
+            .map { resourceListFamily(for: $0) }
+    }
+
+    private func completePendingLastAppStateRestoreAfterSnapshot(
+        failedFamilies: Set<RuneResourceListFamily> = [],
+        hydratedHelmFamilies: Set<RuneResourceListFamily>? = nil
+    ) async {
+        guard let snapshot = pendingLastAppStateRestore else { return }
+        guard pendingLastAppStateRestoreGeneration == deferredSelectionRestoreGeneration else {
+            finishPendingLastAppStateRestore()
+            return
+        }
+
+        guard lastAppStateCanRestoreInCurrentClusterScope(snapshot) else {
+            finishPendingLastAppStateRestore()
+            return
+        }
+
+        if let requiredFamily = resourceListFamilyRequiredToRestore(snapshot),
+           failedFamilies.contains(requiredFamily) {
+            preservePendingLastAppStateRestoreAfterFailure()
+            return
+        }
+
+        guard snapshot.sectionID == RuneSection.helm.rawValue,
+              let context = state.selectedContext,
+              context.name == snapshot.contextName
+        else {
+            finishPendingLastAppStateRestore()
+            return
+        }
+
+        let requestedFamily: RuneResourceListFamily
+        if snapshot.resourceKind == HelmReleaseSummary.savedWorkspaceKindLabel {
+            requestedFamily = .helmReleases
+        } else if snapshot.resourceKind != nil {
+            requestedFamily = .operatorResources
+        } else {
+            requestedFamily = helmBrowserResourceFamily
+        }
+
+        if let hydratedHelmFamilies {
+            guard hydratedHelmFamilies.contains(requestedFamily) else {
+                preservePendingLastAppStateRestoreAfterFailure()
+                return
+            }
+            helmBrowserResourceFamily = requestedFamily
+            activateHelmBrowserSelection(
+                for: requestedFamily,
+                preservingDeferredRestore: true
+            )
+            finishPendingLastAppStateRestore()
+            return
+        }
+
+        let didHydrate = await hydrateInitialHelmBrowserFamilies(
+            requestedFamily: requestedFamily,
+            context: context
+        )
+
+        guard didHydrate else {
+            // Keep the on-disk snapshot intact so a transient API/CLI failure
+            // cannot replace a valid last session with partially loaded state.
+            preservePendingLastAppStateRestoreAfterFailure()
+            return
+        }
+        finishPendingLastAppStateRestore()
+    }
+
+    private func completePendingLastAppStateRestoreOrHydrateInitialHelm(
+        failedFamilies: Set<RuneResourceListFamily>
+    ) async {
+        let pendingRestoreWillHydrateHelm =
+            pendingLastAppStateRestoreGeneration == deferredSelectionRestoreGeneration
+            && pendingLastAppStateRestore?.sectionID == RuneSection.helm.rawValue
+            && pendingLastAppStateRestore.map(lastAppStateCanRestoreInCurrentClusterScope) == true
+
+        await completePendingLastAppStateRestoreAfterSnapshot(
+            failedFamilies: failedFamilies
+        )
+
+        guard state.selectedSection == .helm,
+              !pendingRestoreWillHydrateHelm,
+              let context = state.selectedContext
+        else { return }
+        _ = await hydrateInitialHelmBrowserFamilies(
+            requestedFamily: helmBrowserResourceFamily,
+            context: context
+        )
+    }
+
+    private func hydrateInitialHelmBrowserFamilies(
+        requestedFamily: RuneResourceListFamily,
+        context: KubeContext
+    ) async -> Bool {
+        guard !UserDefaults.standard.runeSimpleMode else {
+            return await hydrateHelmBrowserFamily(
+                requestedFamily,
+                context: context
+            )
+        }
+
+        let releasesHydrated = await hydrateHelmBrowserFamily(
+            .helmReleases,
+            context: context
+        )
+        let operatorsHydrated = await hydrateHelmBrowserFamily(
+            .operatorResources,
+            context: context
+        )
+        helmBrowserResourceFamily = requestedFamily
+        activateHelmBrowserSelection(
+            for: requestedFamily,
+            preservingDeferredRestore: pendingLastAppStateRestore != nil
+        )
+        return requestedFamily == .helmReleases
+            ? releasesHydrated
+            : operatorsHydrated
+    }
+
+    private func hydrateHelmBrowserFamily(
+        _ requestedFamily: RuneResourceListFamily,
+        context: KubeContext
+    ) async -> Bool {
+        if requestedFamily == .helmReleases {
+            helmBrowserResourceFamily = .helmReleases
+            do {
+                try await loadHelmReleases(
+                    context: context,
+                    namespace: state.selectedNamespace,
+                    loadDetails: false
+                )
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        helmBrowserResourceFamily = .operatorResources
+        return await loadOperatorResources(
+            context: context,
+            namespace: state.selectedNamespace,
+            loadDetails: false
+        )
+    }
+
+    private func finishPendingLastAppStateRestore() {
+        guard let snapshot = pendingLastAppStateRestore else { return }
+        let restoreGeneration = pendingLastAppStateRestoreGeneration
+        pendingLastAppStateRestore = nil
+        pendingLastAppStateRestoreGeneration = nil
+
+        if restoreGeneration == deferredSelectionRestoreGeneration,
+           lastAppStateCanRestoreInCurrentClusterScope(snapshot),
+           let contextName = snapshot.contextName,
+           state.selectedContext?.name == contextName,
+           let resourceName = snapshot.resourceName {
+            let workspace = SavedWorkspaceSnapshot(
+                name: "Last app state",
+                contextName: contextName,
+                namespace: snapshot.namespace ?? state.selectedNamespace,
+                section: RuneSection(rawValue: snapshot.sectionID ?? "") ?? state.selectedSection,
+                workloadKind: KubeResourceKind(rawValue: snapshot.workloadKindID ?? "") ?? state.selectedWorkloadKind,
+                resourceKind: snapshot.resourceKind,
+                resourceName: resourceName,
+                resourceNamespace: snapshot.resourceNamespace
+            )
+            isRunningDeferredSelectionRestore = true
+            isApplyingLastAppStateRestore = true
+            defer {
+                isApplyingLastAppStateRestore = false
+                isRunningDeferredSelectionRestore = false
+            }
+
+            if workspace.section == .workloads,
+               workspace.workloadKind == .pod {
+                let restoredPod = state.pods.first {
+                    matchesSavedWorkspaceResource(
+                        name: $0.name,
+                        namespace: $0.namespace,
+                        workspace: workspace
+                    )
+                }
+                if let logContainer = snapshot.logContainer,
+                   restoredPod?.logContainerNames.contains(logContainer) == true {
+                    selectedLogContainer = logContainer
+                } else {
+                    selectedLogContainer = ""
+                }
+            } else {
+                selectedLogContainer = ""
+            }
+
+            if workspace.section == .events,
+               let resourceID = snapshot.resourceID {
+                selectEvent(
+                    state.events.first { $0.id == resourceID },
+                    trackHistory: false
+                )
+            } else {
+                restoreSavedWorkspaceResourceSelection(workspace)
+            }
+        }
+
+        scheduleLastAppStatePersistence()
     }
 
     private func persistSavedWorkspaces() {
@@ -2558,26 +3247,37 @@ public final class RuneAppViewModel: ObservableObject {
                 guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
 
                 if self.state.kubeConfigSources != sources {
+                    self.retireClusterBoundTerminalStateIfNeeded(
+                        from: self.state.kubeConfigSources,
+                        to: sources
+                    )
                     self.state.setSources(sources)
                 }
                 self.latestKubeConfigSourceFingerprint = self.kubeConfigSourceFingerprint(for: sources)
                 self.diagnostics.log("bootstrap resolved sources count=\(sources.count)")
                 self.startKubeConfigSourceSync()
+                self.discardKnownUnsafePendingLastAppStateRestore(for: sources)
 
                 guard !sources.isEmpty else {
                     self.clearClusterDataForEmptyBootstrapIfNeeded()
                     if !self.state.contexts.isEmpty {
                         self.state.setContexts([])
                     }
+                    self.preservePendingLastAppStateRestoreAfterFailure()
                     await self.finishLaunchExperience()
                     return
                 }
 
                 self.persistDiscoveredKubeConfigsInBackground(discoveredURLs)
+                let scopedSnapshot = self.pendingLastAppStateRestore.flatMap { snapshot in
+                    self.lastAppStateSourceScopeMatches(snapshot) ? snapshot : nil
+                }
                 try await self.reloadContexts(
                     loadInitialSnapshotSynchronously: false,
                     showsLoadingIndicator: false,
-                    expectedClusterLoadGeneration: generation
+                    expectedClusterLoadGeneration: generation,
+                    preferredContextName: scopedSnapshot?.contextName,
+                    preferredNamespace: scopedSnapshot?.namespace
                 )
             } catch {
                 guard self.isCurrentClusterLoad(generation),
@@ -2589,6 +3289,7 @@ public final class RuneAppViewModel: ObservableObject {
                     self.diagnostics.log("bootstrap failed: \(error.localizedDescription)")
                     self.state.setError(error)
                 }
+                self.preservePendingLastAppStateRestoreAfterFailure()
             }
             guard self.isCurrentClusterLoad(generation), !Task.isCancelled else { return }
             await self.finishLaunchExperience()
@@ -2844,6 +3545,8 @@ public final class RuneAppViewModel: ObservableObject {
     private func beginKubeConfigImportPreparation() -> Bool {
         guard !isPreparingKubeConfigImport,
               !isCommittingKubeConfigImport,
+              !isSigningInToAzure,
+              !isConnectingNativeKubernetesAuth,
               !isRunningCloudKubeConfigImport else {
             state.setError(RuneError.invalidInput(
                 message: "Wait for the current kubeconfig import to finish before starting another import."
@@ -2863,16 +3566,18 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func runCloudKubeConfigImport(_ request: CloudKubeConfigImportRequest) {
-        guard !isRunningCloudKubeConfigImport else { return }
+        guard !isRunningCloudKubeConfigImport,
+              !isSigningInToAzure,
+              !isConnectingNativeKubernetesAuth,
+              cloudKubeConfigImportTask == nil else { return }
         guard !isPreparingKubeConfigImport,
               !isCommittingKubeConfigImport,
               !isKubeConfigImportConfirmationPending else {
-            state.setError(RuneError.invalidInput(
-                message: "Finish or cancel the current kubeconfig import before running a provider import."
-            ))
             return
         }
         isRunningCloudKubeConfigImport = true
+        let outputID = UUID()
+        cloudKubeConfigOutputID = outputID
         cloudKubeConfigImportDiagnostic = nil
         cloudKubeConfigImportOutput = ""
         if state.lastError != nil {
@@ -2880,9 +3585,12 @@ public final class RuneAppViewModel: ObservableObject {
         }
         cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.runningStatus(for: request.provider)
         appendCloudKubeConfigImportOutput("$ \(cloudKubeConfigCommandPreview(for: request))\n")
-        Task { @MainActor [weak self] in
+        cloudKubeConfigImportTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.isRunningCloudKubeConfigImport = false }
+            defer {
+                self.isRunningCloudKubeConfigImport = false
+                self.cloudKubeConfigImportTask = nil
+            }
             var temporaryDirectory: URL?
             do {
                 let isolated = try self.isolatedCloudKubeConfigImportRequest(request)
@@ -2891,21 +3599,24 @@ public final class RuneAppViewModel: ObservableObject {
                     isolated.request,
                     onOutput: { [weak self] chunk in
                         Task { @MainActor [weak self] in
-                            self?.appendCloudKubeConfigImportOutput(chunk.text)
+                            guard let self, self.cloudKubeConfigOutputID == outputID else { return }
+                            self.appendCloudKubeConfigImportOutput(chunk.text)
                         }
                     }
                 )
+                try Task.checkCancellation()
                 if let failure = AddClusterCloudImportWorkflow.blockingFailure(in: result.reviews) {
                     self.discardPendingKubeConfigImport(clearReview: false)
                     self.kubeConfigImportReviews = result.reviews
                     self.kubeConfigImportReviewMode = .report
                     self.syncKubeConfigImportContextMetadataDrafts(from: result.reviews)
                     self.state.setAuthDoctorChecks(failure.checks)
-                    let error = RuneError.invalidInput(message: failure.message)
                     self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.failedStatus()
-                    self.cloudKubeConfigImportDiagnostic = nil
-                    self.diagnostics.log("cloud kubeconfig import blocked by review: \(error.localizedDescription)")
-                    self.state.setError(error)
+                    self.cloudKubeConfigImportDiagnostic = AddClusterCloudImportWorkflow.blockedReviewDiagnostic(
+                        for: request.provider,
+                        failure: failure
+                    )
+                    self.diagnostics.log("cloud kubeconfig import blocked by review")
                     if let temporaryDirectory {
                         try? FileManager.default.removeItem(at: temporaryDirectory)
                     }
@@ -2927,10 +3638,23 @@ public final class RuneAppViewModel: ObservableObject {
                     logLabel: "runCloudKubeConfigImport",
                     temporaryDirectories: temporaryDirectory.map { [$0] } ?? []
                 )
+                try Task.checkCancellation()
                 temporaryDirectory = nil
                 self.pendingCloudKubeConfigProvider = request.provider
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.readyForReviewStatus(for: request.provider)
                 self.cloudKubeConfigImportDiagnostic = nil
+            } catch where error is CancellationError || Task.isCancelled {
+                self.cloudKubeConfigOutputID = nil
+                self.discardPendingKubeConfigImport(clearReview: true)
+                if let temporaryDirectory {
+                    Task.detached {
+                        try? await Task.sleep(nanoseconds: 750_000_000)
+                        try? FileManager.default.removeItem(at: temporaryDirectory)
+                    }
+                }
+                self.cloudKubeConfigImportStatus = "Import cancelled."
+                self.cloudKubeConfigImportDiagnostic = nil
+                self.diagnostics.log("cloud kubeconfig import cancelled")
             } catch {
                 if let temporaryDirectory {
                     try? FileManager.default.removeItem(at: temporaryDirectory)
@@ -2939,9 +3663,81 @@ public final class RuneAppViewModel: ObservableObject {
                 self.cloudKubeConfigImportDiagnostic = AddClusterCloudImportWorkflow.diagnostic(for: error, provider: request.provider)
                 self.state.setAuthDoctorChecks(AddClusterCloudImportWorkflow.cloudLoginFailureChecks(for: request.provider))
                 self.diagnostics.log("cloud kubeconfig import failed: \(error.localizedDescription)")
-                self.state.setError(error)
             }
         }
+    }
+
+    public func cancelCloudKubeConfigImport() {
+        // Native imports share the cloud busy flag and the sheet's Cancel action.
+        if isRunningNativeCloudClusterImport {
+            cancelNativeCloudClusterImport()
+            return
+        }
+        guard isRunningCloudKubeConfigImport else { return }
+        cloudKubeConfigOutputID = nil
+        cloudKubeConfigImportStatus = "Cancelling import…"
+        cloudKubeConfigImportTask?.cancel()
+    }
+
+    public func signInToAzureAndRetry(_ request: CloudKubeConfigImportRequest) {
+        guard request.provider == .aks else { return }
+        guard !isSigningInToAzure,
+              !isRunningCloudKubeConfigImport,
+              !isConnectingNativeKubernetesAuth,
+              !isPreparingKubeConfigImport,
+              !isCommittingKubeConfigImport,
+              !isKubeConfigImportConfirmationPending else { return }
+
+        let signInID = UUID()
+        let runner = azureCLISignInRunner
+        isSigningInToAzure = true
+        activeAzureCLISignInID = signInID
+        cloudKubeConfigOutputID = nil
+        cloudKubeConfigImportDiagnostic = nil
+        cloudKubeConfigImportStatus = "Waiting for Azure sign-in in your browser…"
+        cloudKubeConfigImportOutput = "$ az login\nComplete the secure Microsoft sign-in in your browser. Account details are not shown or logged by Rune.\n"
+        state.clearError()
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await runner.signIn()
+                try Task.checkCancellation()
+                guard self.activeAzureCLISignInID == signInID else { return }
+                self.azureCLISignInTask = nil
+                self.activeAzureCLISignInID = nil
+                self.isSigningInToAzure = false
+                self.cloudKubeConfigImportStatus = "Azure sign-in complete. Retrying AKS import…"
+                self.runCloudKubeConfigImport(request)
+            } catch is CancellationError {
+                guard self.activeAzureCLISignInID == signInID else { return }
+                self.azureCLISignInTask = nil
+                self.activeAzureCLISignInID = nil
+                self.isSigningInToAzure = false
+                self.cloudKubeConfigImportStatus = "Azure sign-in cancelled."
+            } catch {
+                guard self.activeAzureCLISignInID == signInID else { return }
+                self.azureCLISignInTask = nil
+                self.activeAzureCLISignInID = nil
+                self.isSigningInToAzure = false
+                self.cloudKubeConfigImportStatus = "Azure sign-in failed."
+                self.cloudKubeConfigImportDiagnostic = AddClusterCloudImportWorkflow.azureSignInDiagnostic(
+                    for: error
+                )
+                self.diagnostics.log("Azure CLI sign-in failed")
+            }
+        }
+        azureCLISignInTask = task
+    }
+
+    public func cancelAzureCLISignIn() {
+        guard isSigningInToAzure else { return }
+        activeAzureCLISignInID = nil
+        let task = azureCLISignInTask
+        azureCLISignInTask = nil
+        isSigningInToAzure = false
+        cloudKubeConfigImportStatus = "Azure sign-in cancelled."
+        task?.cancel()
     }
 
     public func runNativeEKSClusterImport(
@@ -2951,7 +3747,7 @@ public final class RuneAppViewModel: ObservableObject {
         secretAccessKey: String,
         sessionToken: String = ""
     ) {
-        guard admitNativeCloudClusterImport() else { return }
+        guard admitNativeCloudClusterImport(provider: .eks) else { return }
         do {
             let request = AWSEKSClusterImportRequest(
                 clusterName: clusterName,
@@ -2984,7 +3780,7 @@ public final class RuneAppViewModel: ObservableObject {
         clientID: String,
         clientSecret: String
     ) {
-        guard admitNativeCloudClusterImport() else { return }
+        guard admitNativeCloudClusterImport(provider: .aks) else { return }
         do {
             let request = try AKSNativeClusterImportRequest(
                 subscriptionID: subscriptionID,
@@ -3010,7 +3806,7 @@ public final class RuneAppViewModel: ObservableObject {
         location: String,
         clusterName: String
     ) {
-        guard admitNativeCloudClusterImport() else { return }
+        guard admitNativeCloudClusterImport(provider: .gke) else { return }
         let request = GKENativeClusterImportRequest(
             projectID: projectID,
             location: location,
@@ -3020,6 +3816,7 @@ public final class RuneAppViewModel: ObservableObject {
         isConnectingNativeKubernetesAuth = true
         isRunningCloudKubeConfigImport = true
         isRunningNativeCloudClusterImport = true
+        cloudKubeConfigOutputID = nil
         cloudKubeConfigImportDiagnostic = nil
         cloudKubeConfigImportOutput = ""
         if state.lastError != nil { state.clearError() }
@@ -3064,8 +3861,9 @@ public final class RuneAppViewModel: ObservableObject {
         nativeCloudClusterImportTask?.cancel()
     }
 
-    private func admitNativeCloudClusterImport() -> Bool {
+    private func admitNativeCloudClusterImport(provider _: CloudKubeConfigProvider) -> Bool {
         guard !isRunningCloudKubeConfigImport,
+              !isSigningInToAzure,
               !isRunningNativeCloudClusterImport,
               !isConnectingNativeKubernetesAuth,
               nativeGKEImportPickerReservation == nil else {
@@ -3074,9 +3872,6 @@ public final class RuneAppViewModel: ObservableObject {
         guard !isPreparingKubeConfigImport,
               !isCommittingKubeConfigImport,
               !isKubeConfigImportConfirmationPending else {
-            state.setError(RuneError.invalidInput(
-                message: "Finish or cancel the current kubeconfig import before importing another cluster."
-            ))
             return false
         }
         return true
@@ -3096,9 +3891,10 @@ public final class RuneAppViewModel: ObservableObject {
         credential: PendingNativeCloudCredential,
         operation: @escaping @Sendable () async throws -> NativeCloudClusterImportResult
     ) {
-        guard admitNativeCloudClusterImport() else { return }
+        guard admitNativeCloudClusterImport(provider: provider) else { return }
         isRunningCloudKubeConfigImport = true
         isRunningNativeCloudClusterImport = true
+        cloudKubeConfigOutputID = nil
         pendingNativeCloudCredential = nil
         cloudKubeConfigImportDiagnostic = nil
         cloudKubeConfigImportOutput = ""
@@ -3158,9 +3954,6 @@ public final class RuneAppViewModel: ObservableObject {
             )
         )
         diagnostics.log("native cloud import failed provider=\(provider.rawValue) classification=\(diagnostic.classification)")
-        state.setError(NativeCloudImportPresentationError(
-            message: "\(diagnostic.title). \(diagnostic.message)"
-        ))
     }
 
     private func isolatedCloudKubeConfigImportRequest(
@@ -3192,7 +3985,8 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func clearCloudKubeConfigImportStatus() {
-        guard !isRunningCloudKubeConfigImport else { return }
+        guard !isRunningCloudKubeConfigImport, !isSigningInToAzure else { return }
+        cloudKubeConfigOutputID = nil
         cloudKubeConfigImportStatus = nil
         cloudKubeConfigImportDiagnostic = nil
         cloudKubeConfigImportOutput = ""
@@ -3200,6 +3994,8 @@ public final class RuneAppViewModel: ObservableObject {
 
     private var canStartNativeCredentialOperation: Bool {
         !isConnectingNativeKubernetesAuth
+            && !isRunningCloudKubeConfigImport
+            && !isSigningInToAzure
             && !isRunningNativeCloudClusterImport
             && nativeCloudClusterImportTask == nil
             && nativeGKEImportPickerReservation == nil
@@ -3609,6 +4405,7 @@ public final class RuneAppViewModel: ObservableObject {
         securityScopedURLs: [URL] = [],
         temporaryDirectories: [URL] = []
     ) async throws {
+        try Task.checkCancellation()
         guard !isCommittingKubeConfigImport else {
             throw RuneError.invalidInput(message: "Wait for the current kubeconfig import to finish before starting another import.")
         }
@@ -3968,6 +4765,10 @@ public final class RuneAppViewModel: ObservableObject {
         let sources = orderedSources.filter { source in
             seenSourcePaths.insert(source.url.standardizedFileURL.path).inserted
         }
+        retireClusterBoundTerminalStateIfNeeded(
+            from: state.kubeConfigSources,
+            to: sources
+        )
         state.setSources(sources)
         latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
         startKubeConfigSourceSync()
@@ -4159,6 +4960,10 @@ public final class RuneAppViewModel: ObservableObject {
 
                 try? bookmarkManager.addKubeConfig(url: selectedURL)
                 let sources = try resolvedKubeConfigSources(fallbackURLs: [selectedURL])
+                retireClusterBoundTerminalStateIfNeeded(
+                    from: state.kubeConfigSources,
+                    to: sources
+                )
                 state.setSources(sources)
                 latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
                 startKubeConfigSourceSync()
@@ -4199,12 +5004,16 @@ public final class RuneAppViewModel: ObservableObject {
         loadInitialSnapshotSynchronously: Bool,
         showsLoadingIndicator: Bool = true,
         expectedClusterLoadGeneration: UUID? = nil,
-        preferredContextName: String? = nil
+        preferredContextName: String? = nil,
+        preferredNamespace: String? = nil
     ) async throws {
         if let expectedClusterLoadGeneration,
            !isCurrentClusterLoad(expectedClusterLoadGeneration) {
             throw CancellationError()
         }
+        discardKnownUnsafePendingLastAppStateRestore(
+            for: state.kubeConfigSources
+        )
         let requestScope = beginContextListRequest(kubeConfigSources: state.kubeConfigSources)
         let loadingOperation = LoadingOperation.contextList(requestScope.requestID)
         if showsLoadingIndicator {
@@ -4229,6 +5038,9 @@ public final class RuneAppViewModel: ObservableObject {
         let preferredContext = preferredContextName.flatMap { preferredName in
             contexts.first { $0.name == preferredName }
         }
+        let restoredNamespace = preferredContext.map { _ in
+            preferredNamespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        } ?? ""
         let retainedContext = previousContextName.flatMap { previousName in
             contexts.first { $0.name == previousName }
         }
@@ -4257,8 +5069,16 @@ public final class RuneAppViewModel: ObservableObject {
             // Keep current in-memory namespace only when staying on the same context.
             // If selected context changed (startup/new context list), start empty and let
             // `loadResourceSnapshot` resolve from context default + live namespace list.
-            let requestedNamespace: String = selected.name == previousContextName ? previousNamespace : ""
-            pendingNamespaceRevalidationContextName = selected.name == previousContextName ? nil : selected.name
+            let requestedNamespace: String
+            if selected.name == previousContextName {
+                requestedNamespace = previousNamespace
+            } else {
+                requestedNamespace = restoredNamespace
+            }
+            pendingNamespaceRevalidationContextName =
+                selected.name == previousContextName || !restoredNamespace.isEmpty
+                    ? nil
+                    : selected.name
             if state.selectedNamespace != requestedNamespace {
                 if selected.name == previousContextName {
                     stopAndClearTerminalSessions(
@@ -4279,23 +5099,40 @@ public final class RuneAppViewModel: ObservableObject {
                 source: "reloadContexts"
             )
             if loadInitialSnapshotSynchronously {
-                try await loadResourceSnapshot(
+                let result = try await loadResourceSnapshot(
                     context: selected,
                     namespace: requestedNamespace,
                     requestID: requestID,
                     forceNamespaceMetadataRefresh: true
                 )
+                switch result {
+                case let .applied(failedFamilies):
+                    await completePendingLastAppStateRestoreOrHydrateInitialHelm(
+                        failedFamilies: failedFamilies
+                    )
+                case .discarded:
+                    preservePendingLastAppStateRestoreAfterFailure()
+                }
             } else {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     do {
-                        try await self.loadResourceSnapshot(
+                        let result = try await self.loadResourceSnapshot(
                             context: selected,
                             namespace: requestedNamespace,
                             requestID: requestID,
                             forceNamespaceMetadataRefresh: true
                         )
+                        switch result {
+                        case let .applied(failedFamilies):
+                            await self.completePendingLastAppStateRestoreOrHydrateInitialHelm(
+                                failedFamilies: failedFamilies
+                            )
+                        case .discarded:
+                            self.preservePendingLastAppStateRestoreAfterFailure()
+                        }
                     } catch {
+                        self.preservePendingLastAppStateRestoreAfterFailure()
                         guard !Self.isBenignCancellationError(error) else { return }
                         self.diagnostics.log("bootstrap background snapshot failed: \(error.localizedDescription)")
                         self.state.setError(error)
@@ -4307,6 +5144,7 @@ public final class RuneAppViewModel: ObservableObject {
             }
         } else {
             state.setNamespaces([])
+            preservePendingLastAppStateRestoreAfterFailure()
         }
     }
 
@@ -4362,6 +5200,10 @@ public final class RuneAppViewModel: ObservableObject {
         }
 
         isKubeConfigScopeReloadPending = true
+        retireClusterBoundTerminalStateIfNeeded(
+            from: state.kubeConfigSources,
+            to: sources
+        )
         invalidateClusterCachesForKubeConfigScopeChange()
         if sourceSetChanged {
             state.setSources(sources)
@@ -4514,6 +5356,82 @@ public final class RuneAppViewModel: ObservableObject {
         KubeConfigSourceFingerprint(sources: sources)
     }
 
+    private func lastAppStateSourceScopeIdentity(
+        for sources: [KubeConfigSource],
+        contextName: String?
+    ) -> String? {
+        guard !sources.isEmpty,
+              let contextName = contextName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !contextName.isEmpty
+        else { return nil }
+        let fingerprint = kubeConfigSourceFingerprint(for: sources)
+        if let cached = lastAppStateSourceScopeIdentityCache,
+           cached.fingerprint == fingerprint,
+           cached.contextName == contextName {
+            return cached.identity
+        }
+
+        guard let analysis = try? KubeConfigNativeAuthAnalyzer().analyze(sources: sources),
+              let descriptor = analysis.contexts.first(where: { $0.contextName == contextName })
+        else { return nil }
+
+        var hasher = SHA256()
+        let stableClusterFields = [
+            descriptor.contextName,
+            descriptor.cluster.server,
+            descriptor.cluster.certificateAuthorityData ?? "",
+            descriptor.cluster.certificateAuthorityPath ?? "",
+            descriptor.cluster.insecureSkipTLSVerify ? "insecure" : "verified",
+            descriptor.cluster.tlsServerName ?? ""
+        ]
+        for field in stableClusterFields {
+            hasher.update(data: Data(field.utf8))
+            hasher.update(data: Data([0]))
+        }
+        let identity = hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
+        lastAppStateSourceScopeIdentityCache = (fingerprint, contextName, identity)
+        return identity
+    }
+
+    private func retireClusterBoundTerminalStateIfNeeded(
+        from previousSources: [KubeConfigSource],
+        to nextSources: [KubeConfigSource]
+    ) {
+        var retiredLiveSession = false
+        let sessionContextNames = Set(state.terminalSessions.map(\.contextName))
+        for contextName in sessionContextNames {
+            let previousIdentity = lastAppStateSourceScopeIdentity(
+                for: previousSources,
+                contextName: contextName
+            )
+            let nextIdentity = lastAppStateSourceScopeIdentity(
+                for: nextSources,
+                contextName: contextName
+            )
+            guard previousIdentity != nextIdentity else { continue }
+            stopAndClearTerminalSessions(contextName: contextName)
+            retiredLiveSession = true
+        }
+
+        var clearedPersistedWorkspace = false
+        if let snapshot = terminalWorkspaceStateStore.loadTerminalWorkspaceState() {
+            let nextIdentity = lastAppStateSourceScopeIdentity(
+                for: nextSources,
+                contextName: snapshot.contextName
+            )
+            if snapshot.sourceScopeID == nil || snapshot.sourceScopeID != nextIdentity {
+                terminalWorkspaceStateStore.clearTerminalWorkspaceState()
+                clearedPersistedWorkspace = true
+            }
+        }
+
+        if retiredLiveSession || clearedPersistedWorkspace {
+            diagnostics.log("retired terminal workspace state after kubeconfig cluster identity changed")
+        }
+    }
+
     private func namespacePersistenceScopeIdentity(for sources: [KubeConfigSource]) -> String {
         var hasher = SHA256()
         for (index, source) in sources.enumerated() {
@@ -4545,6 +5463,116 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func startLiveStatusUpdates() {
         liveStatusUpdatesTask?.cancel()
+        guard isLiveStatusUpdatesEnabled,
+              let context = state.selectedContext,
+              context.name != demoContextName,
+              let kind = liveResourceWatchKind else {
+            startLiveStatusPollingFallback()
+            return
+        }
+        let scope = LiveResourceWatchScope(
+            sources: state.kubeConfigSources,
+            context: context,
+            namespace: state.selectedNamespace,
+            kind: kind,
+            family: resourceListFamily(for: kind)
+        )
+        liveStatusUpdatesTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runLiveResourceWatch(scope)
+        }
+    }
+
+    private func stopLiveStatusUpdates() {
+        liveStatusUpdatesTask?.cancel()
+        liveStatusUpdatesTask = nil
+        liveWatchRefreshInFlight = false
+        liveWatchRefreshQueued = false
+    }
+
+    private var liveResourceWatchKind: KubeResourceKind? {
+        switch state.selectedSection {
+        case .overview, .terminal:
+            return .pod
+        case .events:
+            return .event
+        case .helm:
+            return nil
+        case .workloads, .networking, .config, .storage, .rbac:
+            return state.selectedWorkloadKind
+        }
+    }
+
+    private func runLiveResourceWatch(_ scope: LiveResourceWatchScope) async {
+        var reconnectAttempt = 0
+        var resourceVersion: String?
+        while !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) {
+            do {
+                let events = try await kubeClient.watchResourceChanges(
+                    from: scope.sources,
+                    context: scope.context,
+                    namespace: scope.namespace,
+                    kind: scope.kind,
+                    resourceVersion: resourceVersion
+                )
+                for try await event in events {
+                    guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+                    resourceVersion = event.resourceVersion ?? resourceVersion
+                    if event.type == .bookmark {
+                        reconnectAttempt = 0
+                        state.markResourceListsLive(
+                            [scope.family],
+                            updatedAt: state.freshness(for: scope.family).updatedAt ?? Date(),
+                            message: "Live watch connected"
+                        )
+                        continue
+                    }
+                    reconnectAttempt = 0
+                    if liveWatchRefreshInFlight {
+                        liveWatchRefreshQueued = true
+                        continue
+                    }
+                    liveWatchRefreshInFlight = true
+                    scheduleRefreshCurrentView(
+                        forceNamespaceMetadataRefresh: false,
+                        debounced: true,
+                        preservingLiveWatch: true
+                    )
+                    if scope.kind == .pod || scope.kind == .deployment || scope.kind == .service {
+                        reloadLogsForSelection()
+                    }
+                }
+                reconnectAttempt += 1
+                guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+                try await Task.sleep(nanoseconds: min(UInt64(reconnectAttempt), 5) * 500_000_000)
+            } catch {
+                guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+                reconnectAttempt += 1
+                state.markResourceListsReconnecting(
+                    [scope.family],
+                    message: "Live watch reconnecting"
+                )
+                let delay = min(UInt64(reconnectAttempt), 5) * 500_000_000
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func liveResourceWatchScopeIsCurrent(_ scope: LiveResourceWatchScope) -> Bool {
+        isLiveStatusUpdatesEnabled
+            && state.selectedContext == scope.context
+            && state.selectedNamespace == scope.namespace
+            && state.kubeConfigSources == scope.sources
+            && KubeConfigSourceFingerprint(sources: state.kubeConfigSources) == scope.sourceFingerprint
+            && liveResourceWatchKind == scope.kind
+    }
+
+    private func startLiveStatusPollingFallback() {
+        guard isLiveStatusUpdatesEnabled else { return }
         liveStatusUpdatesTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -4553,24 +5581,14 @@ public final class RuneAppViewModel: ObservableObject {
                 } catch {
                     return
                 }
-                guard !Task.isCancelled else { return }
-                guard self.isLiveStatusUpdatesEnabled,
+                guard !Task.isCancelled,
+                      self.isLiveStatusUpdatesEnabled,
                       self.state.selectedContext != nil,
-                      self.state.selectedSection != .terminal,
                       !self.state.isLoading,
-                      !self.state.isLoadingResourceDetails
-                else { continue }
+                      !self.state.isLoadingResourceDetails else { continue }
                 self.refreshCurrentView(debounced: false)
-                if self.state.selectedWorkloadKind == .pod || self.state.selectedWorkloadKind == .deployment || self.state.selectedWorkloadKind == .service {
-                    self.reloadLogsForSelection()
-                }
             }
         }
-    }
-
-    private func stopLiveStatusUpdates() {
-        liveStatusUpdatesTask?.cancel()
-        liveStatusUpdatesTask = nil
     }
 
     /// Refetches only the right-hand inspector (YAML, describe, logs, etc.) for the current selection — **not** the center list or overview tiles.
@@ -4605,8 +5623,18 @@ public final class RuneAppViewModel: ObservableObject {
         return plan
     }
 
-    private func scheduleRefreshCurrentView(forceNamespaceMetadataRefresh: Bool, debounced: Bool) {
+    private func scheduleRefreshCurrentView(
+        forceNamespaceMetadataRefresh: Bool,
+        debounced: Bool,
+        preservingLiveWatch: Bool = false
+    ) {
         guard let context = state.selectedContext else { return }
+        if isLiveStatusUpdatesEnabled, !preservingLiveWatch {
+            liveStatusUpdatesTask?.cancel()
+            liveStatusUpdatesTask = nil
+            liveWatchRefreshInFlight = false
+            liveWatchRefreshQueued = false
+        }
         invalidateSnapshotRequest()
         invalidateSpecializedListRequestsReplacedByScheduledSnapshot()
         if context.name != demoContextName {
@@ -4726,7 +5754,7 @@ public final class RuneAppViewModel: ObservableObject {
                 requestID: requestID,
                 forceNamespaceMetadataRefresh: forceNamespaceMetadataRefresh
             )
-            guard snapshotResult == .applied else {
+            guard case let .applied(failedFamilies) = snapshotResult else {
                 if latestSnapshotRequestID == requestID {
                     state.markResourceListsReconnecting(
                         cancellationFamilies,
@@ -4746,12 +5774,45 @@ public final class RuneAppViewModel: ObservableObject {
             snapshotApplied = true
             appliedSnapshotNamespace = state.selectedNamespace
             if state.selectedSection == .helm {
+                var hydratedHelmFamilies: Set<RuneResourceListFamily> = []
                 if simpleMode {
-                    try await loadSelectedHelmBrowserResource(context: context, namespace: state.selectedNamespace)
+                    let requestedFamily = helmBrowserResourceFamily
+                    if try await loadSelectedHelmBrowserResource(
+                        family: requestedFamily,
+                        context: context,
+                        namespace: state.selectedNamespace
+                    ) {
+                        hydratedHelmFamilies.insert(requestedFamily)
+                    }
                 } else {
-                    try await loadHelmReleases(context: context, namespace: state.selectedNamespace)
-                    await loadOperatorResources(context: context, namespace: state.selectedNamespace)
+                    do {
+                        try await loadHelmReleases(
+                            context: context,
+                            namespace: state.selectedNamespace
+                        )
+                        hydratedHelmFamilies.insert(.helmReleases)
+                    } catch {
+                        if Self.isBenignCancellationError(error) {
+                            throw error
+                        }
+                        // These resource families are independent. Continue so a
+                        // release-list failure cannot starve an operator restore.
+                    }
+                    if await loadOperatorResources(
+                        context: context,
+                        namespace: state.selectedNamespace
+                    ) {
+                        hydratedHelmFamilies.insert(.operatorResources)
+                    }
                 }
+                await completePendingLastAppStateRestoreAfterSnapshot(
+                    failedFamilies: failedFamilies,
+                    hydratedHelmFamilies: hydratedHelmFamilies
+                )
+            } else {
+                await completePendingLastAppStateRestoreAfterSnapshot(
+                    failedFamilies: failedFamilies
+                )
             }
             guard snapshotRequestIsCurrent(
                 requestID,
@@ -4805,6 +5866,7 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             )
             state.setError(error)
+            resumeLiveStatusUpdatesAfterRefresh()
         }
     }
 
@@ -4819,6 +5881,26 @@ public final class RuneAppViewModel: ObservableObject {
                     : "Live for \(context.name) / \(state.selectedNamespace)"
             )
         )
+        resumeLiveStatusUpdatesAfterRefresh()
+    }
+
+    private func resumeLiveStatusUpdatesAfterRefresh() {
+        guard isLiveStatusUpdatesEnabled else { return }
+        if liveWatchRefreshInFlight {
+            if liveWatchRefreshQueued {
+                liveWatchRefreshQueued = false
+                scheduleRefreshCurrentView(
+                    forceNamespaceMetadataRefresh: false,
+                    debounced: true,
+                    preservingLiveWatch: true
+                )
+                return
+            }
+            liveWatchRefreshInFlight = false
+        }
+        if liveStatusUpdatesTask == nil {
+            startLiveStatusUpdates()
+        }
     }
 
     public func navigateBack() {
@@ -4906,12 +5988,33 @@ public final class RuneAppViewModel: ObservableObject {
         }
         helmBrowserResourceFamily = family
         activateHelmBrowserSelection(for: family)
-        guard UserDefaults.standard.runeSimpleMode,
-              state.selectedSection == .helm else { return }
+        guard state.selectedSection == .helm else { return }
+        let needsHydration = switch family {
+        case .helmReleases:
+            state.helmReleases.isEmpty
+        case .operatorResources:
+            state.operatorResources.isEmpty
+        default:
+            false
+        }
+        guard UserDefaults.standard.runeSimpleMode || needsHydration else { return }
         refreshSelectedHelmBrowserResource(family: family)
     }
 
-    private func activateHelmBrowserSelection(for family: RuneResourceListFamily) {
+    private func activateHelmBrowserSelection(
+        for family: RuneResourceListFamily,
+        preservingDeferredRestore: Bool = false
+    ) {
+        let wasRunningDeferredSelectionRestore = isRunningDeferredSelectionRestore
+        if preservingDeferredRestore {
+            isRunningDeferredSelectionRestore = true
+        }
+        defer {
+            if preservingDeferredRestore {
+                isRunningDeferredSelectionRestore = wasRunningDeferredSelectionRestore
+            }
+        }
+
         switch family {
         case .helmReleases:
             guard state.selectedOperatorResource != nil || state.selectedHelmRelease == nil else { return }
@@ -6265,6 +7368,62 @@ public final class RuneAppViewModel: ObservableObject {
     public func toggleFavorite(for context: KubeContext) {
         state.toggleFavoriteContext(named: context.name)
         contextPreferences.saveFavoriteContextNames(state.favoriteContextNames)
+    }
+
+    public func requestKubeConfigContextRemoval(_ context: KubeContext) {
+        guard context.name != demoContextName else {
+            state.setError(RuneError.invalidInput(message: "The demo context is controlled in Settings and has no kubeconfig entry to remove."))
+            return
+        }
+        guard !state.resourceYAMLHasUnsavedEdits else {
+            state.setError(RuneError.invalidInput(message: "Finish or discard the unsaved YAML edit before changing kubeconfig."))
+            return
+        }
+        do {
+            pendingKubeConfigContextRemoval = try kubeConfigContextRemover.previewRemoval(
+                of: context.name,
+                from: state.kubeConfigSources
+            )
+            state.clearError()
+        } catch {
+            diagnostics.log("kubeconfig context removal preview failed: \(error.localizedDescription)")
+            state.setError(error)
+        }
+    }
+
+    public func cancelKubeConfigContextRemoval() {
+        guard !isRemovingKubeConfigContext else { return }
+        pendingKubeConfigContextRemoval = nil
+    }
+
+    public func confirmKubeConfigContextRemoval() {
+        guard let pending = pendingKubeConfigContextRemoval,
+              !isRemovingKubeConfigContext else { return }
+        guard !state.resourceYAMLHasUnsavedEdits else {
+            state.setError(RuneError.invalidInput(message: "Finish or discard the unsaved YAML edit before changing kubeconfig."))
+            return
+        }
+
+        let sources = state.kubeConfigSources
+        isRemovingKubeConfigContext = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isRemovingKubeConfigContext = false }
+            do {
+                let completed = try self.kubeConfigContextRemover.removeContext(
+                    named: pending.contextName,
+                    from: sources
+                )
+                self.pendingKubeConfigContextRemoval = nil
+                self.diagnostics.log(
+                    "removed kubeconfig context from local sources count=\(completed.affectedSourceDisplayNames.count)"
+                )
+                _ = try await self.syncKubeConfigSourcesFromDiscovery(reason: "context-removal")
+            } catch {
+                self.diagnostics.log("kubeconfig context removal failed: \(error.localizedDescription)")
+                self.state.setError(error)
+            }
+        }
     }
 
     public func toggleProductionMark(for context: KubeContext) {
@@ -9603,6 +10762,10 @@ public final class RuneAppViewModel: ObservableObject {
                 status: .connecting
             )
         )
+        terminalScreenEmulatorBySessionID[sessionID] = TerminalScreenEmulator(
+            maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit,
+            initialText: initialTranscript
+        )
         terminalSessionInput = ""
         state.selectedSection = .terminal
 
@@ -9628,13 +10791,13 @@ public final class RuneAppViewModel: ObservableObject {
                             guard let self,
                                   self.terminalSessionAttemptByID[sessionID] == attemptID else { return }
                             self.terminalSessionAttemptByID.removeValue(forKey: sessionID)
-                            self.flushTerminalSessionOutput()
-                            let status: PodTerminalSessionStatus = exitCode == 0 ? .disconnected : .failed
-                            self.state.updateTerminalSessionStatus(id: sessionID, status: status, exitCode: exitCode)
-                            self.state.appendTerminalSessionOutput(
+                            self.enqueueTerminalSessionOutput(
                                 id: sessionID,
                                 text: "\n[rune] Session ended (exit \(exitCode)).\n"
                             )
+                            self.flushTerminalSessionOutput()
+                            let status: PodTerminalSessionStatus = exitCode == 0 ? .disconnected : .failed
+                            self.state.updateTerminalSessionStatus(id: sessionID, status: status, exitCode: exitCode)
                         }
                     }
                 )
@@ -9652,7 +10815,7 @@ public final class RuneAppViewModel: ObservableObject {
                     return
                 }
                 state.updateTerminalSessionStatus(id: sessionID, status: .connected)
-                state.appendTerminalSessionOutput(
+                enqueueTerminalSessionOutput(
                     id: sessionID,
                     text: "[rune] Connected to \(pod.name) in \(namespace).\n"
                 )
@@ -9669,10 +10832,11 @@ public final class RuneAppViewModel: ObservableObject {
                     shell: terminalShellCommand.joined(separator: " ")
                 )
                 state.updateTerminalSessionStatus(id: sessionID, status: .failed, diagnostic: diagnostic)
-                state.appendTerminalSessionOutput(
+                enqueueTerminalSessionOutput(
                     id: sessionID,
                     text: "\(diagnostic.transcriptMessage)\n[rune] Details: \(error.localizedDescription)\n"
                 )
+                flushTerminalSessionOutput()
                 state.setError(error)
             }
         }
@@ -9723,6 +10887,12 @@ public final class RuneAppViewModel: ObservableObject {
         guard let session = state.terminalSessions.first(where: { $0.id == id }) else { return }
         guard session.status == .connected else { return }
 
+        if var emulator = terminalScreenEmulatorBySessionID[id] {
+            emulator.resize(columns: columns, rows: rows)
+            terminalScreenEmulatorBySessionID[id] = emulator
+            pendingTerminalOutputBySessionID[id] = emulator.renderedText
+        }
+
         Task {
             do {
                 try await kubeClient.resizePodTerminalSession(id: id, columns: columns, rows: rows)
@@ -9733,12 +10903,16 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func enqueueTerminalSessionOutput(id: String, text: String) {
-        var pendingEscape = pendingTerminalEscapeBySessionID[id] ?? ""
-        let sanitized = TerminalTranscriptSanitizer.sanitize(text, pendingEscape: &pendingEscape)
-        pendingTerminalEscapeBySessionID[id] = pendingEscape
-        guard !sanitized.isEmpty else { return }
-
-        pendingTerminalOutputBySessionID[id, default: ""] += sanitized
+        guard !text.isEmpty else { return }
+        let initialText = state.terminalSessions.first(where: { $0.id == id })?.transcript ?? ""
+        var emulator = terminalScreenEmulatorBySessionID[id]
+            ?? TerminalScreenEmulator(
+                maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit,
+                initialText: initialText
+            )
+        emulator.feed(text)
+        terminalScreenEmulatorBySessionID[id] = emulator
+        pendingTerminalOutputBySessionID[id] = emulator.renderedText
         terminalOutputFlushTask?.cancel()
         let flushDelay = terminalOutputFlushNanoseconds
         terminalOutputFlushTask = Task { @MainActor [weak self] in
@@ -9752,7 +10926,7 @@ public final class RuneAppViewModel: ObservableObject {
         let pending = pendingTerminalOutputBySessionID
         pendingTerminalOutputBySessionID.removeAll(keepingCapacity: true)
         for (id, text) in pending {
-            state.appendTerminalSessionOutput(id: id, text: text)
+            state.replaceTerminalSessionTranscript(id: id, text: text)
         }
     }
 
@@ -9771,7 +10945,7 @@ public final class RuneAppViewModel: ObservableObject {
         flushTerminalSessionOutput()
         terminalSessionAttemptByID.removeValue(forKey: sessionID)
         pendingTerminalOutputBySessionID.removeValue(forKey: sessionID)
-        pendingTerminalEscapeBySessionID.removeValue(forKey: sessionID)
+        terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
         terminalSessionInput = ""
         if resetState {
             state.setTerminalSession(nil)
@@ -9792,7 +10966,7 @@ public final class RuneAppViewModel: ObservableObject {
         for sessionID in sessionIDs {
             terminalSessionAttemptByID.removeValue(forKey: sessionID)
             pendingTerminalOutputBySessionID.removeValue(forKey: sessionID)
-            pendingTerminalEscapeBySessionID.removeValue(forKey: sessionID)
+            terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
         }
         terminalSessionInput = ""
         Task {
@@ -9813,7 +10987,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         terminalSessionAttemptByID.removeValue(forKey: id)
         pendingTerminalOutputBySessionID.removeValue(forKey: id)
-        pendingTerminalEscapeBySessionID.removeValue(forKey: id)
+        terminalScreenEmulatorBySessionID.removeValue(forKey: id)
         if wasActive {
             terminalSessionInput = ""
         }
@@ -9823,6 +10997,12 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func clearTerminalSessionTranscript() {
+        if let id = state.activeTerminalSessionID {
+            terminalScreenEmulatorBySessionID[id] = TerminalScreenEmulator(
+                maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit
+            )
+            pendingTerminalOutputBySessionID.removeValue(forKey: id)
+        }
         state.clearTerminalSessionTranscript()
     }
 
@@ -11373,7 +12553,7 @@ public final class RuneAppViewModel: ObservableObject {
                 clusterMemoryPercent: nil,
                 events: []
             )
-            return .applied
+            return .applied(failedFamilies: [])
         }
 
         let cachedSnapshot = store.snapshot(context: context, namespace: effectiveNamespace)
@@ -11909,6 +13089,7 @@ public final class RuneAppViewModel: ObservableObject {
             scaleReplicaInput = max(0, deployment.desiredReplicas)
         }
 
+        let failedFamilies = Self.resourceListFamilies(forSnapshotWarnings: warnings)
         if warnings.isEmpty {
             state.markResourceListsLive(
                 plannedFreshnessFamilies,
@@ -11917,7 +13098,6 @@ public final class RuneAppViewModel: ObservableObject {
             state.clearError()
         } else {
             let warningText = warnings.joined(separator: " | ")
-            let failedFamilies = Self.resourceListFamilies(forSnapshotWarnings: warnings)
             state.markResourceListsLive(
                 plannedFreshnessFamilies.subtracting(failedFamilies),
                 message: "Live for \(context.name) / \(effectiveNamespace)"
@@ -12038,7 +13218,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         diagnostics.log("loadResourceSnapshot done context=\(context.name) namespace=\(namespace)")
         diagnostics.trace("snapshot", "loadResourceSnapshot done context=<redacted-context> namespace=<redacted-namespace>")
-        return .applied
+        return .applied(failedFamilies: failedFamilies)
     }
 
     nonisolated static func podListNeedsJSONEnrichment(_ pods: [PodSummary]) -> Bool {
@@ -12416,15 +13596,13 @@ public final class RuneAppViewModel: ObservableObject {
         latestLogsReloadRequestID = UUID()
     }
 
-    private func commitPodLogFetch(_ logs: String, contextName: String, namespace: String, podName: String) {
-        if isLogTailModeEnabled {
-            state.appendPodLogRead(logs, contextName: contextName, namespace: namespace, podName: podName)
-        } else {
-            state.replacePodLogRead(logs, contextName: contextName, namespace: namespace, podName: podName)
-        }
+    /// Polling reads return the complete snapshot for the selected Kubernetes log filter.
+    /// Replacing prevents identical and overlapping snapshots from multiplying every three seconds.
+    func commitPodLogFetch(_ logs: String, contextName: String, namespace: String, podName: String) {
+        state.replacePodLogRead(logs, contextName: contextName, namespace: namespace, podName: podName)
     }
 
-    private func commitUnifiedLogFetch(
+    func commitUnifiedLogFetch(
         _ mergedText: String,
         pods: [String],
         contextName: String,
@@ -12432,25 +13610,14 @@ public final class RuneAppViewModel: ObservableObject {
         kind: KubeResourceKind,
         resourceName: String
     ) {
-        if isLogTailModeEnabled {
-            state.appendUnifiedServiceLogRead(
-                mergedText,
-                pods: pods,
-                contextName: contextName,
-                namespace: namespace,
-                kind: kind,
-                resourceName: resourceName
-            )
-        } else {
-            state.replaceUnifiedServiceLogRead(
-                mergedText,
-                pods: pods,
-                contextName: contextName,
-                namespace: namespace,
-                kind: kind,
-                resourceName: resourceName
-            )
-        }
+        state.replaceUnifiedServiceLogRead(
+            mergedText,
+            pods: pods,
+            contextName: contextName,
+            namespace: namespace,
+            kind: kind,
+            resourceName: resourceName
+        )
     }
 
     private func scheduleNextTailLogsReload() {
@@ -13256,7 +14423,12 @@ public final class RuneAppViewModel: ObservableObject {
         refreshSelectedHelmBrowserResource(family: .helmReleases)
     }
 
-    private func loadOperatorResources(context: KubeContext, namespace: String) async {
+    @discardableResult
+    private func loadOperatorResources(
+        context: KubeContext,
+        namespace: String,
+        loadDetails: Bool = true
+    ) async -> Bool {
         let requestID = UUID()
         latestOperatorResourceListRequestID = requestID
         let sources = state.kubeConfigSources
@@ -13284,17 +14456,17 @@ public final class RuneAppViewModel: ObservableObject {
                     context: context,
                     namespace: namespace
                 )
-                return
+                return false
             }
             if Self.isBenignCancellationError(error) {
                 state.markResourceListsReconnecting(
                     [.operatorResources],
                     message: "Operator resource refresh cancelled; reconnecting."
                 )
-                return
+                return false
             }
             state.markResourceListsFailed([.operatorResources], message: error.localizedDescription)
-            return
+            return false
         }
         guard operatorResourceListRequestIsCurrent(
             requestID,
@@ -13310,7 +14482,7 @@ public final class RuneAppViewModel: ObservableObject {
                 context: context,
                 namespace: namespace
             )
-            return
+            return false
         }
         state.setOperatorResources(
             resources,
@@ -13320,10 +14492,12 @@ public final class RuneAppViewModel: ObservableObject {
             forResourceCount: visibleOperatorResources.count
         )
         state.markResourceListsLive([.operatorResources], message: "Live for \(context.name) / \(namespace)")
-        if helmBrowserResourceFamily == .operatorResources,
+        if loadDetails,
+           helmBrowserResourceFamily == .operatorResources,
            state.selectedOperatorResource != nil {
             loadOperatorResourceDetailsForCurrentSelection()
         }
+        return true
     }
 
     private func operatorResourceListRequestIsCurrent(
@@ -13382,16 +14556,18 @@ public final class RuneAppViewModel: ObservableObject {
         latestOperatorResourceListRequestID = UUID()
     }
 
+    @discardableResult
     private func loadSelectedHelmBrowserResource(
         family: RuneResourceListFamily? = nil,
         context: KubeContext,
         namespace: String
-    ) async throws {
+    ) async throws -> Bool {
         switch family ?? helmBrowserResourceFamily {
         case .operatorResources:
-            await loadOperatorResources(context: context, namespace: namespace)
+            return await loadOperatorResources(context: context, namespace: namespace)
         default:
             try await loadHelmReleases(context: context, namespace: namespace)
+            return true
         }
     }
 
@@ -13402,11 +14578,16 @@ public final class RuneAppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.loadSelectedHelmBrowserResource(
+                let didHydrate = try await self.loadSelectedHelmBrowserResource(
                     family: requestedFamily,
                     context: context,
                     namespace: namespace
                 )
+                if didHydrate {
+                    await self.completePendingLastAppStateRestoreAfterSnapshot(
+                        hydratedHelmFamilies: [requestedFamily]
+                    )
+                }
             } catch {
                 if Self.isBenignCancellationError(error) { return }
                 self.state.setError(error)
@@ -14177,6 +15358,8 @@ public final class RuneAppViewModel: ObservableObject {
     private func invalidateDeferredSelectionRestores() {
         guard !isRunningDeferredSelectionRestore else { return }
         deferredSelectionRestoreGeneration &+= 1
+        pendingLastAppStateRestore = nil
+        pendingLastAppStateRestoreGeneration = nil
         navigationSelectionRestoreTask?.cancel()
         navigationSelectionRestoreTask = nil
         savedWorkspaceRestoreTask?.cancel()
@@ -17753,6 +18936,15 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
+    private func selectedResourceID() -> String? {
+        switch state.selectedSection {
+        case .events:
+            return state.selectedEvent?.id
+        default:
+            return nil
+        }
+    }
+
     private func selectedResourceName() -> String? {
         switch state.selectedSection {
         case .workloads, .networking, .config, .storage, .rbac:
@@ -17894,7 +19086,14 @@ public final class RuneAppViewModel: ObservableObject {
 
     private func restoreSavedWorkspaceRBACResource(_ workspace: SavedWorkspaceSnapshot) {
         let lists = state.serviceAccounts + state.rbacRoles + state.rbacRoleBindings + state.rbacClusterRoles + state.rbacClusterRoleBindings
-        selectRBACResource(lists.first { matchesSavedWorkspaceResource($0, workspace: workspace) }, trackHistory: false)
+        selectRBACResource(
+            lists.first {
+                matchesSavedWorkspaceResource($0, workspace: workspace)
+                    && (workspace.resourceKind == nil
+                        || $0.kind.kubernetesResourceName == workspace.resourceKind)
+            },
+            trackHistory: false
+        )
     }
 
     private func matchesSavedWorkspaceResource(_ resource: ClusterResourceSummary, workspace: SavedWorkspaceSnapshot) -> Bool {

@@ -38,6 +38,20 @@ final class TerminalLogTabsWorkflowTests: XCTestCase {
         XCTAssertEqual(state.selectedPodID, pods[2].id)
     }
 
+    func testAddingAnOpenPodActivatesItsStableTabWithoutCreatingDuplicateIdentity() {
+        let pod = pod("api-0")
+        var state = TerminalPodLogTabState()
+
+        state.add(preferredPod: pod)
+        let originalID = state.activeTabID
+        state.add(preferredPod: pod)
+
+        XCTAssertEqual(state.tabs.count, 1)
+        XCTAssertEqual(state.activeTabID, originalID)
+        XCTAssertEqual(originalID, "pod:\(pod.id)")
+        XCTAssertEqual(state.selectedPodID, pod.id)
+    }
+
     func testLogTabStateReconcilesRemovedPodsWithoutLeakingDeadTabs() {
         let pods = [pod("api-0"), pod("worker-0"), pod("job-0")]
         var state = TerminalPodLogTabState()
@@ -111,6 +125,27 @@ final class TerminalLogTabsWorkflowTests: XCTestCase {
         XCTAssertEqual(state.tabs.map(\.podName), ["api-0", "job-0"])
         XCTAssertEqual(state.activePod(in: pods, fallback: nil)?.name, "job-0")
         XCTAssertEqual(state.selectedPodID, pods[2].id)
+    }
+
+    func testPodHandoffActivatesExistingLogTabOrRetargetsCurrentTabWithoutClutter() {
+        let pods = [pod("api-0"), pod("worker-0"), pod("job-0")]
+        var state = TerminalPodLogTabState()
+        state.add(preferredPod: pods[0])
+        state.add(preferredPod: pods[1])
+        let apiTabID = state.tabs[0].id
+
+        state.activateOrRetarget(for: pods[0])
+
+        XCTAssertEqual(state.activeTabID, apiTabID)
+        XCTAssertEqual(state.selectedPodID, pods[0].id)
+        XCTAssertEqual(state.tabs.map(\.podID), [pods[0].id, pods[1].id])
+
+        state.activateOrRetarget(for: pods[2])
+
+        XCTAssertEqual(state.activePod(in: pods, fallback: nil)?.id, pods[2].id)
+        XCTAssertEqual(state.selectedPodID, pods[2].id)
+        XCTAssertEqual(state.tabs.map(\.podID), [pods[2].id, pods[1].id])
+        XCTAssertEqual(state.tabs.count, 2)
     }
 
     func testActiveLogTabDoesNotFollowShellPodFallbackChanges() {

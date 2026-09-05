@@ -103,6 +103,11 @@ public struct RuneLargeTextViewportLayout: Equatable, Sendable {
         return max(1, rawStartLine - overscanLineCount)
     }
 
+    public func renderWindowOffset(verticalOffset: Double, strideInLines: Int) -> Double {
+        let stride = rowHeight * Double(max(1, strideInLines))
+        return (clampedVerticalOffset(verticalOffset) / stride).rounded(.down) * stride
+    }
+
     public func scrollTargetLineForClampedOffset(_ verticalOffset: Double) -> Int? {
         guard lineCount > 0, verticalOffset > maxVerticalOffset + rowHeight else { return nil }
         return lineCount
@@ -146,6 +151,10 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
     }
 
     public func line(number oneBasedLineNumber: Int) -> RuneLargeTextLine? {
+        line(number: oneBasedLineNumber, in: text as NSString)
+    }
+
+    private func line(number oneBasedLineNumber: Int, in nsText: NSString) -> RuneLargeTextLine? {
         guard oneBasedLineNumber >= 1, oneBasedLineNumber <= lineCount else { return nil }
         let lineIndex = oneBasedLineNumber - 1
         let start = lineStartUTF16Offsets[lineIndex]
@@ -155,7 +164,6 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
         let contentEnd = lineContentEndUTF16Offsets[lineIndex]
         let fullRange = NSRange(location: start, length: max(0, nextStart - start))
         let contentRange = NSRange(location: start, length: max(0, contentEnd - start))
-        let nsText = text as NSString
         return RuneLargeTextLine(
             number: oneBasedLineNumber,
             range: fullRange,
@@ -176,7 +184,8 @@ public struct RuneLargeTextIndex: Equatable, Sendable {
 
         let clampedStart = min(max(1, startLine), lineCount)
         let endLine = min(lineCount, clampedStart + lineLimit - 1)
-        let lines = (clampedStart...endLine).compactMap { line(number: $0) }
+        let nsText = text as NSString
+        let lines = (clampedStart...endLine).compactMap { line(number: $0, in: nsText) }
         return RuneLargeTextViewport(
             startLine: clampedStart,
             lineLimit: lineLimit,

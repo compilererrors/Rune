@@ -300,6 +300,35 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         XCTAssertTrue(gke.displayCommand.contains("gcloud container clusters get-credentials"))
     }
 
+    func testAzureCLISignInUsesBrowserFlowWithoutSurfacingAccountOutput() async throws {
+        let runner = RecordingCloudCommandRunner(result: .init(
+            exitCode: 0,
+            stdout: "synthetic account metadata",
+            stderr: ""
+        ))
+
+        try await AzureCLISignInRunner(runner: runner, timeout: 15).signIn()
+
+        let command = try XCTUnwrap(runner.commands.first)
+        XCTAssertEqual(command.executable, "az")
+        XCTAssertEqual(command.arguments, ["login", "--only-show-errors", "--output", "none"])
+        XCTAssertEqual(runner.commands.count, 1)
+    }
+
+    func testExpiredAzureGrantHasSafeActionableErrorDescription() {
+        let error = CloudKubeConfigImportError.commandFailed(
+            command: "synthetic command",
+            exitCode: 1,
+            message: "AADSTS50173: The provided grant has expired. tenant=synthetic-sensitive-value"
+        )
+
+        XCTAssertEqual(
+            error.localizedDescription,
+            "Azure CLI sign-in expired. Sign in again, then retry the cluster import."
+        )
+        XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-value"))
+    }
+
     func testCloudImporterBuildsExactCommandsForEveryRunnableProvider() throws {
         let importer = CloudKubeConfigCLIImporter(
             runner: RecordingCloudCommandRunner(),

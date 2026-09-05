@@ -71,6 +71,9 @@ public struct TerminalWorkspaceLogTabSnapshot: Codable, Equatable, Sendable {
 }
 
 public struct TerminalWorkspaceStateSnapshot: Codable, Equatable, Sendable {
+    public let sourceScopeID: String?
+    public let contextName: String?
+    public let namespace: String?
     public let sessions: [TerminalWorkspaceSessionSnapshot]
     public let activeSessionID: String?
     public let logTabs: [TerminalWorkspaceLogTabSnapshot]
@@ -88,8 +91,14 @@ public struct TerminalWorkspaceStateSnapshot: Codable, Equatable, Sendable {
         selectedLogPodID: String?,
         shellPodID: String?,
         portForwardPodID: String?,
-        inspectorTabID: String?
+        inspectorTabID: String?,
+        sourceScopeID: String? = nil,
+        contextName: String? = nil,
+        namespace: String? = nil
     ) {
+        self.sourceScopeID = sourceScopeID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.contextName = contextName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.namespace = namespace?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.sessions = Self.normalizedSessions(sessions)
         self.activeSessionID = activeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.logTabs = Self.normalizedLogTabs(logTabs)
@@ -98,6 +107,22 @@ public struct TerminalWorkspaceStateSnapshot: Codable, Equatable, Sendable {
         self.shellPodID = shellPodID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.portForwardPodID = portForwardPodID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.inspectorTabID = inspectorTabID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    public func scoped(sourceScopeID: String, contextName: String, namespace: String) -> Self {
+        Self(
+            sessions: sessions,
+            activeSessionID: activeSessionID,
+            logTabs: logTabs,
+            activeLogTabID: activeLogTabID,
+            selectedLogPodID: selectedLogPodID,
+            shellPodID: shellPodID,
+            portForwardPodID: portForwardPodID,
+            inspectorTabID: inspectorTabID,
+            sourceScopeID: sourceScopeID,
+            contextName: contextName,
+            namespace: namespace
+        )
     }
 
     public var isEmpty: Bool {
@@ -131,6 +156,14 @@ public protocol TerminalWorkspaceStateStoring {
     func loadTerminalWorkspaceState() -> TerminalWorkspaceStateSnapshot?
     func saveTerminalWorkspaceState(_ snapshot: TerminalWorkspaceStateSnapshot)
     func clearTerminalWorkspaceState()
+}
+
+public struct NoopTerminalWorkspaceStateStore: TerminalWorkspaceStateStoring {
+    public init() {}
+
+    public func loadTerminalWorkspaceState() -> TerminalWorkspaceStateSnapshot? { nil }
+    public func saveTerminalWorkspaceState(_ snapshot: TerminalWorkspaceStateSnapshot) {}
+    public func clearTerminalWorkspaceState() {}
 }
 
 public final class JSONTerminalWorkspaceStateStore: TerminalWorkspaceStateStoring {

@@ -4,6 +4,27 @@ import XCTest
 @testable import RuneKube
 
 final class KubernetesClientTests: XCTestCase {
+    func testKubernetesWatchEventDecodesChangesBookmarksAndErrors() throws {
+        XCTAssertEqual(
+            try KubernetesResourceWatchEvent.decode(
+                line: #"{"type":"MODIFIED","object":{"metadata":{"resourceVersion":"42"}}}"#
+            ),
+            KubernetesResourceWatchEvent(type: .modified, resourceVersion: "42")
+        )
+        XCTAssertEqual(
+            try KubernetesResourceWatchEvent.decode(
+                line: #"{"type":"BOOKMARK","object":{"metadata":{"resourceVersion":"43"}}}"#
+            ).type,
+            .bookmark
+        )
+        XCTAssertEqual(
+            try KubernetesResourceWatchEvent.decode(
+                line: #"{"type":"ERROR","object":{"message":"resource version expired"}}"#
+            ).errorMessage,
+            "resource version expired"
+        )
+    }
+
     func testRESTRequestCoalescerSharesIdenticalInFlightReads() async throws {
         let coalescer = KubernetesRESTRequestCoalescer()
         let counter = RESTRequestCoalescerCounter()

@@ -483,28 +483,71 @@ private final class RuneAppKitColumnWidthStore {
 
     private let defaults: UserDefaults
     private let keyPrefix = "rune.settings.layout.resourceColumnWidths."
+    private var cachedWidths: [String: CGFloat] = [:]
+    private var knownPersistedKeys: Set<String> = []
+    private var pendingWidths: [String: Double] = [:]
+    private var pendingFlush: DispatchWorkItem?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
     func width(tableID: String, columnID: String) -> CGFloat? {
-        let value = defaults.double(forKey: key(tableID: tableID, columnID: columnID))
+        let storageKey = key(tableID: tableID, columnID: columnID)
+        if let cachedWidth = cachedWidths[storageKey] {
+            return cachedWidth
+        }
+        let value = defaults.double(forKey: storageKey)
         guard value > 0 else { return nil }
-        return CGFloat(value)
+        let width = CGFloat(value)
+        cachedWidths[storageKey] = width
+        knownPersistedKeys.insert(storageKey)
+        return width
     }
 
     func setWidth(_ width: CGFloat, tableID: String, columnID: String) {
         guard width > 0 else { return }
-        defaults.set(Double(width.rounded(.toNearestOrAwayFromZero)), forKey: key(tableID: tableID, columnID: columnID))
+        let storageKey = key(tableID: tableID, columnID: columnID)
+        let roundedWidth = width.rounded(.toNearestOrAwayFromZero)
+        guard cachedWidths[storageKey] != roundedWidth else { return }
+        cachedWidths[storageKey] = roundedWidth
+
+        if !knownPersistedKeys.contains(storageKey) {
+            if defaults.object(forKey: storageKey) == nil {
+                defaults.set(Double(roundedWidth), forKey: storageKey)
+            }
+            knownPersistedKeys.insert(storageKey)
+        }
+
+        pendingWidths[storageKey] = Double(roundedWidth)
+        schedulePendingFlush()
     }
 
     func removeWidth(tableID: String, columnID: String) {
-        defaults.removeObject(forKey: key(tableID: tableID, columnID: columnID))
+        let storageKey = key(tableID: tableID, columnID: columnID)
+        cachedWidths.removeValue(forKey: storageKey)
+        knownPersistedKeys.remove(storageKey)
+        pendingWidths.removeValue(forKey: storageKey)
+        defaults.removeObject(forKey: storageKey)
     }
 
     private func key(tableID: String, columnID: String) -> String {
         keyPrefix + tableID + "." + columnID
+    }
+
+    private func schedulePendingFlush() {
+        guard pendingFlush == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let widths = self.pendingWidths
+            self.pendingWidths.removeAll(keepingCapacity: true)
+            self.pendingFlush = nil
+            for (storageKey, width) in widths {
+                self.defaults.set(width, forKey: storageKey)
+            }
+        }
+        pendingFlush = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
     }
 }
 

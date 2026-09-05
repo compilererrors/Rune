@@ -1,6 +1,10 @@
 import SwiftUI
 import RuneCore
 
+enum FavoritePodPickerMetrics {
+    static let popoverMinimumWidth: CGFloat = 320
+}
+
 struct FavoritePodPickerPresentation {
     static func selectedPod(in pods: [PodSummary], selection: String) -> PodSummary? {
         pods.first { $0.id == selection }
@@ -115,6 +119,7 @@ struct FavoritePodPicker: View {
         .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
             podPopover
         }
+        .help(selectedPodHelpText)
         .accessibilityLabel(title)
         .accessibilityValue(selectedPodTitle)
     }
@@ -125,6 +130,7 @@ struct FavoritePodPicker: View {
                 .runeInterfaceFont(weight: .medium)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(selectedPodHelpText)
             Spacer(minLength: 0)
             Image(systemName: "chevron.up.chevron.down")
                 .runeInterfaceFont(relativeSize: -3, weight: .semibold)
@@ -165,7 +171,7 @@ struct FavoritePodPicker: View {
                 .frame(maxHeight: 260)
             }
         }
-        .frame(width: max(width, 280))
+        .frame(width: max(width, FavoritePodPickerMetrics.popoverMinimumWidth))
         .runePointerCursor()
     }
 
@@ -195,6 +201,7 @@ struct FavoritePodPicker: View {
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .help(rowTitle(pod))
 
                         if let detail = rowDetail(pod), !detail.isEmpty {
                             Text(detail)
@@ -202,6 +209,7 @@ struct FavoritePodPicker: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .help(detail)
                         }
                     }
 
@@ -231,6 +239,10 @@ struct FavoritePodPicker: View {
 
     private var selectedPodTitle: String {
         selectedPod.map(rowTitle) ?? "No pods in namespace"
+    }
+
+    private var selectedPodHelpText: String {
+        selectedPod.map(podHelpText) ?? "Choose a pod in the current namespace."
     }
 
     private var selectedPodIsFavorite: Bool {

@@ -234,6 +234,47 @@ struct RuneIconButton: View {
     }
 }
 
+/// Bordered toolbar action for a compact destination or command that needs
+/// stronger visual presence than the plain `RuneIconButton`.
+struct RuneBorderedIconButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    let helpText: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    init(
+        _ accessibilityLabel: String,
+        systemImage: String,
+        help: String? = nil,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        self.systemImage = systemImage
+        self.accessibilityLabel = accessibilityLabel
+        helpText = help ?? accessibilityLabel
+        self.isDisabled = isDisabled
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .frame(width: RuneUILayoutMetrics.borderedIconButtonWidth)
+        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
+        .contentShape(Rectangle())
+        .disabled(isDisabled)
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 private struct RuneIconButtonSelectionAccessibilityModifier: ViewModifier {
     let isSelected: Bool?
 

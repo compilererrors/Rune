@@ -20,7 +20,7 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("kubeconfig CA/client settings"))
     }
 
-    func testBuildScriptDeclaresMacAppStoreCategory() throws {
+    func testBuildScriptDeclaresDeveloperToolsCategory() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)
 
@@ -36,13 +36,13 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("<false/>"))
     }
 
-    func testBuildScriptMarksDirectDistributionByDefault() throws {
+    func testBuildScriptAlwaysMarksDirectDistribution() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("APP_DISTRIBUTION=\"${APP_DISTRIBUTION:-direct}\""))
+        XCTAssertFalse(contents.contains("APP_DISTRIBUTION"))
         XCTAssertTrue(contents.contains("<key>RuneDistribution</key>"))
-        XCTAssertTrue(contents.contains("<string>__APP_DISTRIBUTION__</string>"))
+        XCTAssertTrue(contents.contains("<string>direct</string>"))
     }
 
     func testBuildScriptEnablesExternalCommandsByDefaultWithBuildFlag() throws {

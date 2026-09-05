@@ -3,6 +3,8 @@ import RuneSharedCore
 import SwiftUI
 
 public struct RuneLargeTextSurface: View {
+    private static let renderWindowStrideInLines = 8
+
     private let index: RuneLargeTextIndex
     private let placeholder: String
     private let scrollTargetLine: Int?
@@ -16,6 +18,7 @@ public struct RuneLargeTextSurface: View {
     private let fontSize: CGFloat
     private let onNearBottomChange: (Bool) -> Void
     @State private var verticalOffset: CGFloat = 0
+    @State private var pendingProgrammaticScrollLine: Int?
     @State private var pendingSearchScrollTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
@@ -92,9 +95,28 @@ public struct RuneLargeTextSurface: View {
                     }
                 }
                 .coordinateSpace(name: coordinateSpaceName)
-                .onPreferenceChange(RuneLargeTextVerticalOffsetPreferenceKey.self) { offset in
-                    let normalizedOffset = max(0, offset)
-                    verticalOffset = normalizedOffset
+                .onPreferenceChange(RuneLargeTextVerticalOffsetPreferenceKey.self) { measuredOffset in
+                    guard let measuredOffset, measuredOffset.isFinite else { return }
+                    let normalizedOffset = max(0, measuredOffset)
+                    let renderOffset = CGFloat(
+                        layout(viewportHeight: viewportHeight).renderWindowOffset(
+                            verticalOffset: Double(normalizedOffset),
+                            strideInLines: Self.renderWindowStrideInLines
+                        )
+                    )
+                    let didReachPendingTarget = pendingProgrammaticScrollLine.map {
+                        measuredViewport(
+                            verticalOffset: normalizedOffset,
+                            viewportHeight: viewportHeight,
+                            contains: $0
+                        )
+                    } ?? false
+                    if pendingProgrammaticScrollLine == nil || didReachPendingTarget {
+                        pendingProgrammaticScrollLine = nil
+                    }
+                    if pendingProgrammaticScrollLine == nil, verticalOffset != renderOffset {
+                        verticalOffset = renderOffset
+                    }
                     onNearBottomChange(isNearBottom(verticalOffset: normalizedOffset, viewportHeight: viewportHeight))
                 }
                 .onChange(of: index.lineCount) { _, _ in
@@ -185,6 +207,11 @@ public struct RuneLargeTextSurface: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
+                // Keep the render window at its real layout position. A visual `offset` leaves the stack's
+                // layout frame at the top, so SwiftUI can cull every row when the scroll view moves deep.
+                Color.clear
+                    .frame(width: 1, height: yOffset(for: visible.startLine))
+
                 ForEach(visible.lines, id: \.number) { line in
                     RuneLargeTextLineRow(
                         line: line,
@@ -199,7 +226,6 @@ public struct RuneLargeTextSurface: View {
                 }
             }
             .padding(.trailing, 12)
-            .offset(y: yOffset(for: visible.startLine))
         }
         .frame(minWidth: 1, minHeight: CGFloat(contentHeight), alignment: .topLeading)
     }
@@ -243,6 +269,19 @@ public struct RuneLargeTextSurface: View {
         let contentHeight = max(rowHeight, CGFloat(index.lineCount) * rowHeight + verticalPadding * 2)
         let maxOffset = max(0, contentHeight - max(1, viewportHeight))
         return maxOffset - verticalOffset < rowHeight * 2
+    }
+
+    private func measuredViewport(
+        verticalOffset: CGFloat,
+        viewportHeight: CGFloat,
+        contains line: Int
+    ) -> Bool {
+        let lineTop = yOffset(for: line)
+        let lineBottom = lineTop + rowHeight
+        let viewportTop = max(0, verticalOffset)
+        let viewportBottom = viewportTop + max(1, viewportHeight)
+        return lineBottom >= viewportTop - rowHeight
+            && lineTop <= viewportBottom + rowHeight
     }
 
     private var activeSearchRange: NSRange? {
@@ -290,7 +329,15 @@ public struct RuneLargeTextSurface: View {
 
     private func scheduleScrollToActiveSearchTarget(proxy: ScrollViewProxy) {
         pendingSearchScrollTask?.cancel()
+        pendingProgrammaticScrollLine = nil
         guard let line = scrollTargetLine, line > 0, line <= index.lineCount else { return }
+        // The old measured offset can arrive before `scrollTo` runs. Keep the target window mounted until
+        // geometry confirms that the scroll view has actually reached it.
+        pendingProgrammaticScrollLine = line
+        let targetRenderOffset = yOffset(for: line)
+        if verticalOffset != targetRenderOffset {
+            verticalOffset = targetRenderOffset
+        }
         let targetID = matchScrollTargetID(for: line)
         let shouldAnimate = activeSearchRange != nil && !accessibilityReduceMotion
         pendingSearchScrollTask = Task { @MainActor in
@@ -352,11 +399,17 @@ private struct RuneLargeTextLineRow: View {
                     .textSelection(.disabled)
             }
 
-            Text(highlightedText)
-                .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: true, vertical: false)
+            Group {
+                if searchMatches.isEmpty {
+                    Text(verbatim: line.text.isEmpty ? " " : line.text)
+                } else {
+                    Text(highlightedText)
+                }
+            }
+            .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, max(0, horizontalContentInset))
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -411,9 +464,10 @@ private struct RuneLargeTextLineRow: View {
 }
 
 private struct RuneLargeTextVerticalOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+    static let defaultValue: CGFloat? = nil
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        guard let nextValue = nextValue(), nextValue.isFinite else { return }
+        value = nextValue
     }
 }

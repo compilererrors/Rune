@@ -22,6 +22,19 @@ final class RunePreferencesLayoutTests: XCTestCase {
         )
     }
 
+    func testFixedSettingsMenuLabelHoverIncludesFullTitleAndSubtitle() {
+        let label = RuneSettingsMenuLabel(
+            title: "Synthetic export destination with a long suffix",
+            systemImage: "folder",
+            subtitle: "Synthetic application name"
+        )
+
+        XCTAssertEqual(
+            label.resolvedHelpText,
+            "Synthetic export destination with a long suffix — Synthetic application name"
+        )
+    }
+
     func testSettingsRowStacksAtNarrowWidthAndAccessibilityTextSize() {
         let wide = adaptiveRowSize(width: 680, dynamicTypeSize: .large)
         let narrow = adaptiveRowSize(width: 480, dynamicTypeSize: .large)

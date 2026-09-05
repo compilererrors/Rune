@@ -8,6 +8,10 @@ public struct AddClusterImportReviewFailure {
 }
 
 public struct AddClusterCloudImportDiagnostic: Equatable {
+    public enum RecoveryAction: Equatable {
+        case signInToAzure
+    }
+
     public let title: String
     public let classification: String
     public let message: String
@@ -15,6 +19,7 @@ public struct AddClusterCloudImportDiagnostic: Equatable {
     public let nextAction: String
     public let documentationTitle: String
     public let documentationURL: URL
+    public let recoveryAction: RecoveryAction?
 
     public var commandShape: String { operationShape }
 }
@@ -57,6 +62,7 @@ public enum AddClusterCloudImportWorkflow {
         let classification: String
         let message: String
         let nextAction: String
+        var recoveryAction: AddClusterCloudImportDiagnostic.RecoveryAction? = nil
 
         if let error = error as? CloudKubeConfigImportError {
             switch error {
@@ -67,9 +73,9 @@ public enum AddClusterCloudImportWorkflow {
                 nextAction = "Fill the highlighted provider fields, then run import again."
             case .externalCommandsUnavailable:
                 title = "Provider CLI unavailable"
-                classification = "App Store build"
-                message = "This context requires CLI-backed auth, which this Rune build cannot run."
-                nextAction = "Use static credentials or a native/import-guided flow where available, or use the direct download build for full CLI-backed auth compatibility."
+                classification = "CLI unavailable"
+                message = "Rune could not start the provider CLI on this Mac."
+                nextAction = "Install and sign in to the provider CLI, then retry; file import and optional credentials remain available."
             case .commandFailed(_, let exitCode, let output):
                 if let providerFailure = providerCommandFailureDiagnostic(
                     provider: provider,
@@ -80,6 +86,7 @@ public enum AddClusterCloudImportWorkflow {
                     classification = providerFailure.classification
                     message = providerFailure.message
                     nextAction = providerFailure.nextAction
+                    recoveryAction = providerFailure.recoveryAction
                 } else {
                     title = "Provider CLI failed"
                     classification = "Exit code \(exitCode)"
@@ -111,7 +118,8 @@ public enum AddClusterCloudImportWorkflow {
             operationShape: commandShape(for: provider),
             nextAction: nextAction,
             documentationTitle: documentationTitle(for: provider),
-            documentationURL: documentationURL(for: provider)
+            documentationURL: documentationURL(for: provider),
+            recoveryAction: recoveryAction
         )
     }
 
@@ -127,7 +135,46 @@ public enum AddClusterCloudImportWorkflow {
             operationShape: nativeOperationShape(for: provider),
             nextAction: failure.nextAction,
             documentationTitle: documentationTitle(for: provider),
-            documentationURL: documentationURL(for: provider)
+            documentationURL: documentationURL(for: provider),
+            recoveryAction: nil
+        )
+    }
+
+    public static func blockedReviewDiagnostic(
+        for provider: CloudKubeConfigProvider,
+        failure: AddClusterImportReviewFailure
+    ) -> AddClusterCloudImportDiagnostic {
+        AddClusterCloudImportDiagnostic(
+            title: "Kubeconfig was rejected",
+            classification: "Import review failed",
+            message: failure.message,
+            operationShape: commandShape(for: provider),
+            nextAction: "Fix the reported kubeconfig issue or import a reviewed kubeconfig file, then retry.",
+            documentationTitle: documentationTitle(for: provider),
+            documentationURL: documentationURL(for: provider),
+            recoveryAction: nil
+        )
+    }
+
+    public static func azureSignInDiagnostic(for error: Error) -> AddClusterCloudImportDiagnostic {
+        let timedOut: Bool
+        if let signInError = error as? AzureCLISignInError,
+           case .timedOut = signInError {
+            timedOut = true
+        } else {
+            timedOut = false
+        }
+        return AddClusterCloudImportDiagnostic(
+            title: timedOut ? "Azure sign-in timed out" : "Azure sign-in did not finish",
+            classification: timedOut ? "Sign-in timeout" : "Sign-in failed",
+            message: timedOut
+                ? "Rune did not receive a completed Azure sign-in before the secure login window expired."
+                : "Azure CLI did not complete the secure browser sign-in.",
+            operationShape: commandShape(for: .aks),
+            nextAction: "Choose Sign in to Azure & Retry and finish the browser prompt.",
+            documentationTitle: documentationTitle(for: .aks),
+            documentationURL: documentationURL(for: .aks),
+            recoveryAction: .signInToAzure
         )
     }
 
@@ -556,11 +603,39 @@ public enum AddClusterCloudImportWorkflow {
         provider: CloudKubeConfigProvider,
         exitCode: Int32,
         output: String
-    ) -> (title: String, classification: String, message: String, nextAction: String)? {
+    ) -> (
+        title: String,
+        classification: String,
+        message: String,
+        nextAction: String,
+        recoveryAction: AddClusterCloudImportDiagnostic.RecoveryAction?
+    )? {
         let lower = output.lowercased()
+
+        if lower.contains("required provider cli not found")
+            || lower.contains("command not found") {
+            return (
+                title: "Provider CLI not installed",
+                classification: "CLI not found",
+                message: "Rune could not find \(providerTitle(provider)) on this Mac.",
+                nextAction: "Install \(providerTitle(provider)), sign in, then retry; or import a kubeconfig file from Help & tools.",
+                recoveryAction: nil
+            )
+        }
 
         switch provider {
         case .aks:
+            if lower.contains("aadsts50173")
+                || lower.contains("provided grant has expired")
+                || lower.contains("fresh auth token is needed") {
+                return (
+                    title: "Azure sign-in expired",
+                    classification: "Sign-in required",
+                    message: "Azure CLI's saved sign-in is no longer valid.",
+                    nextAction: "Sign in again; Rune will retry this AKS import automatically.",
+                    recoveryAction: .signInToAzure
+                )
+            }
             if lower.contains("authorizationfailed")
                 || lower.contains("listclusterusercredential")
                 || lower.contains("does not have authorization to perform action") {
@@ -568,11 +643,76 @@ public enum AddClusterCloudImportWorkflow {
                     title: "Azure authorization failed",
                     classification: "AKS permission denied",
                     message: "Azure CLI is logged in, but the selected identity cannot fetch AKS user credentials for this cluster.",
-                    nextAction: "Ask for AKS Cluster User access on this cluster, then retry import."
+                    nextAction: "Ask for AKS Cluster User access on this cluster, then retry import.",
+                    recoveryAction: nil
                 )
             }
-        case .eks, .gke:
-            break
+        case .eks:
+            if lower.contains("accessdenied")
+                || lower.contains("not authorized to perform") {
+                return (
+                    title: "EKS permission denied",
+                    classification: "Authorization failed",
+                    message: "AWS accepted the active identity but denied access to the EKS cluster.",
+                    nextAction: "Grant eks:DescribeCluster for this cluster, then retry import.",
+                    recoveryAction: nil
+                )
+            }
+            if lower.contains("resourcenotfoundexception")
+                || lower.contains("cluster not found") {
+                return (
+                    title: "EKS cluster not found",
+                    classification: "Cluster not found",
+                    message: "Amazon EKS could not find the requested cluster in the selected region or account.",
+                    nextAction: "Check the cluster name, region, and AWS account, then retry import.",
+                    recoveryAction: nil
+                )
+            }
+            if lower.contains("expiredtoken")
+                || lower.contains("invalidclienttokenid")
+                || lower.contains("unrecognizedclientexception")
+                || lower.contains("security token included in the request is invalid") {
+                return (
+                    title: "AWS authentication failed",
+                    classification: "Authentication failed",
+                    message: "AWS rejected the active CLI credentials or session token.",
+                    nextAction: "Refresh the AWS credentials or SSO session, then retry import.",
+                    recoveryAction: nil
+                )
+            }
+        case .gke:
+            if lower.contains("permission_denied")
+                || lower.contains("permission 'container.clusters.get'")
+                || lower.contains("required 'container.clusters.get' permission") {
+                return (
+                    title: "GKE permission denied",
+                    classification: "Authorization failed",
+                    message: "Google Cloud accepted the active identity but denied access to read the GKE cluster.",
+                    nextAction: "Grant container.clusters.get for this cluster, then retry import.",
+                    recoveryAction: nil
+                )
+            }
+            if lower.contains("not_found")
+                || lower.contains("cluster not found") {
+                return (
+                    title: "GKE cluster not found",
+                    classification: "Cluster not found",
+                    message: "Google Kubernetes Engine could not find the requested cluster in the selected project and location.",
+                    nextAction: "Check the project ID, location, and cluster name, then retry import.",
+                    recoveryAction: nil
+                )
+            }
+            if lower.contains("invalid_grant")
+                || lower.contains("reauthentication is needed")
+                || lower.contains("no active account selected") {
+                return (
+                    title: "Google authentication failed",
+                    classification: "Authentication failed",
+                    message: "Google Cloud could not use the active CLI credentials.",
+                    nextAction: "Sign in to Google Cloud again, then retry import.",
+                    recoveryAction: nil
+                )
+            }
         }
 
         if lower.contains("not logged in")
@@ -585,7 +725,8 @@ public enum AddClusterCloudImportWorkflow {
                 title: "Provider login required",
                 classification: "Login required",
                 message: "\(providerTitle(provider)) could not use an active provider login session.",
-                nextAction: "Sign in with the provider CLI, then retry import."
+                nextAction: "Sign in with the provider CLI, then retry import.",
+                recoveryAction: provider == .aks ? .signInToAzure : nil
             )
         }
 

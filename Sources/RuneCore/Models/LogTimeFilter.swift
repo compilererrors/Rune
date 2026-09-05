@@ -13,13 +13,26 @@ public enum LogTimeFilter: Equatable, Codable, Sendable {
         case .all, .tailLines:
             return nil
         case let .lastMinutes(value):
-            return "\(value)m"
+            return "\(Self.normalizedPositive(value))m"
         case let .lastHours(value):
-            return "\(value)h"
+            return "\(Self.normalizedPositive(value))h"
         case let .lastDays(value):
-            return "\(value * 24)h"
+            return "\(Self.saturatedPositiveProduct(value, multiplier: 24))h"
         case let .since(date):
             return ISO8601DateFormatter().string(from: date)
+        }
+    }
+
+    public var kubernetesSinceSeconds: Int? {
+        switch self {
+        case .all, .tailLines, .since:
+            return nil
+        case let .lastMinutes(value):
+            return Self.saturatedPositiveProduct(value, multiplier: 60)
+        case let .lastHours(value):
+            return Self.saturatedPositiveProduct(value, multiplier: 60 * 60)
+        case let .lastDays(value):
+            return Self.saturatedPositiveProduct(value, multiplier: 24 * 60 * 60)
         }
     }
 
@@ -37,5 +50,15 @@ public enum LogTimeFilter: Equatable, Codable, Sendable {
             return true
         }
         return false
+    }
+
+    private static func normalizedPositive(_ value: Int) -> Int {
+        max(1, value)
+    }
+
+    private static func saturatedPositiveProduct(_ value: Int, multiplier: Int) -> Int {
+        let normalized = normalizedPositive(value)
+        let result = normalized.multipliedReportingOverflow(by: multiplier)
+        return result.overflow ? Int.max : result.partialValue
     }
 }

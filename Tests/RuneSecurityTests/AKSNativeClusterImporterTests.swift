@@ -34,7 +34,7 @@ final class AKSNativeClusterImporterTests: XCTestCase {
                 url: request.url,
                 resolvingAgainstBaseURL: false
             )!.queryItems!.map { ($0.name, $0.value ?? "") })
-            XCTAssertEqual(query["api-version"], "2026-04-01")
+            XCTAssertEqual(query["api-version"], "2026-03-01")
             XCTAssertEqual(query["format"], "exec")
             XCTAssertEqual(request.headers["Accept"], "application/json")
             XCTAssertEqual(request.headers["Authorization"], "Bearer synthetic-arm-token")

@@ -2,18 +2,32 @@ import SwiftUI
 
 enum AddClusterProviderCredentialFieldMetrics {
     static let labelToControlSpacing: CGFloat = 4
-    static let inlineLabelSpacing: CGFloat = 8
     static let stackedLabelSpacing: CGFloat = 2
+    static let standardLabelRowHeight: CGFloat = 18
     static let supportedCompactWidth: CGFloat = 400
 }
 
 extension AddClusterProviderField {
-    var requirementTitle: String {
-        isRequired ? "Required" : "Optional"
+    var requirementTitle: String? {
+        switch requirement {
+        case .required:
+            return "Required"
+        case .optional:
+            return "Optional"
+        case .requiredForOptionalMethod:
+            return nil
+        }
     }
 
     var accessibilityRequirementHint: String {
-        isRequired ? "Required field" : "Optional field"
+        switch requirement {
+        case .required:
+            return "Required field"
+        case .optional:
+            return "Optional field"
+        case .requiredForOptionalMethod:
+            return "Needed only when using this optional import method"
+        }
     }
 
     var accessibilityIdentifier: String {
@@ -21,14 +35,14 @@ extension AddClusterProviderField {
     }
 }
 
-/// Keeps provider field names and their requirement visible after a value is entered.
-/// The compact fallback also prevents longer labels from squeezing the control at
-/// enlarged text sizes.
+/// Keeps provider field names visible after a value is entered and reserves one
+/// consistent label block for aligned controls. Conditional requirements are
+/// explained once by their optional method instead of repeated on every field.
 struct AddClusterProviderCredentialField<Content: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private let titleText: String
-    private let requirementTitle: String
+    private let requirementTitle: String?
     private let accessibilityRequirementHint: String
     private let fieldAccessibilityIdentifier: String
     private let content: Content
@@ -63,10 +77,8 @@ struct AddClusterProviderCredentialField<Content: View>: View {
                 if dynamicTypeSize.isAccessibilitySize {
                     stackedLabel
                 } else {
-                    ViewThatFits(in: .horizontal) {
-                        inlineLabel
-                        stackedLabel
-                    }
+                    inlineLabel
+                        .frame(height: AddClusterProviderCredentialFieldMetrics.standardLabelRowHeight)
                 }
             }
             .accessibilityHidden(true)
@@ -80,10 +92,12 @@ struct AddClusterProviderCredentialField<Content: View>: View {
     }
 
     private var inlineLabel: some View {
-        HStack(alignment: .firstTextBaseline, spacing: AddClusterProviderCredentialFieldMetrics.inlineLabelSpacing) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             title
-            Spacer(minLength: AddClusterProviderCredentialFieldMetrics.inlineLabelSpacing)
-            requirement
+            Spacer(minLength: 4)
+            if let requirementTitle {
+                requirementText(requirementTitle)
+            }
         }
     }
 
@@ -97,14 +111,22 @@ struct AddClusterProviderCredentialField<Content: View>: View {
     private var title: some View {
         Text(titleText)
             .font(.caption.weight(.semibold))
-            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            .minimumScaleFactor(0.85)
     }
 
+    @ViewBuilder
     private var requirement: some View {
-        Text(requirementTitle)
+        if let requirementTitle {
+            requirementText(requirementTitle)
+        }
+    }
+
+    private func requirementText(_ value: String) -> some View {
+        Text(value)
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
     }
 }
 

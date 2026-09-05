@@ -69,11 +69,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     private let pagedCountMaxPages: Int = 500
     /// Keep pod metrics merge opportunistic so `Workloads > Pods` does not stall on metrics hiccups.
     private let opportunisticPodTopTimeout: TimeInterval = 2.0
-    /// Unified logs should stay responsive in large namespaces with many historical pods.
-    private let unifiedLogsMaxPods: Int = 8
     private let unifiedLogsMaxConcurrentPodFetches: Int = 3
-    /// Keep per-pod log fetch short so one slow pod does not block the whole merged view.
-    private let unifiedLogsPerPodTimeout: TimeInterval = 8
     /// Selector/pod-discovery for unified logs should fail fast; stale workloads should not block the inspector for minutes.
     private let unifiedLogsSelectorTimeout: TimeInterval = 12
     /// Validation should feel near-live while still giving the API server room on slower clusters.
@@ -223,6 +219,25 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let pods = try parser.parsePodsListJSON(namespace: namespace, from: raw.trimmingCharacters(in: .whitespacesAndNewlines))
         let metrics = (try? await podMetricsByNameViaREST(environment: env, context: context, namespace: namespace)) ?? [:]
         return mergePodNameMetrics(pods, metrics)
+    }
+
+    public func watchResourceChanges(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        kind: KubeResourceKind,
+        resourceVersion: String? = nil,
+        timeoutSeconds: Int = 290
+    ) async throws -> AsyncThrowingStream<KubernetesResourceWatchEvent, Error> {
+        let environment = try kubeconfigEnvironment(from: sources)
+        return try await restClient.watchCollection(
+            environment: environment,
+            contextName: context.name,
+            resource: KubernetesRESTPath.resourceName(for: kind),
+            namespace: kind.isNamespaced ? namespace : nil,
+            resourceVersion: resourceVersion,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 
     /// Full JSON list merged into `base` by pod id — keeps status/restarts/age/CPU/mem from `base`, fills IP/node/QoS/ready from JSON.
@@ -1447,13 +1462,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     }
 
     private func selectPodsForUnifiedLogs(_ pods: [PodSummary]) -> [PodSummary] {
-        guard !pods.isEmpty else { return [] }
-        let active = pods.filter { pod in
-            let status = pod.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return status == "running" || status == "pending" || status == "unknown"
-        }
-        let source = active.isEmpty ? pods : active
-        return Array(source.prefix(unifiedLogsMaxPods))
+        pods
     }
 
     private func collectUnifiedPodLogLines(
@@ -1468,6 +1477,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
         var collectedLines: [TaggedLogLine] = []
         var failures: [Error] = []
+        var successfulPodFetches = 0
         try await withThrowingTaskGroup(of: UnifiedPodLogFetchResult.self) { group in
             var nextPodIndex = 0
             let initial = min(unifiedLogsMaxConcurrentPodFetches, pods.count)
@@ -1485,7 +1495,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                             namespace: namespace,
                             filter: filter,
                             previous: previous,
-                            timeoutOverride: self.unifiedLogsPerPodTimeout,
+                            timeoutOverride: nil,
                             profile: .unifiedPerPod,
                             allowsPartialFailure: true
                         )
@@ -1494,7 +1504,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                         if error is CancellationError {
                             throw error
                         }
-                        return .failure(error)
+                        return .failure(podName: pod.name, error: error)
                     }
                 }
             }
@@ -1502,9 +1512,17 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             while let result = try await group.next() {
                 switch result {
                 case let .success(podLines):
+                    successfulPodFetches += 1
                     collectedLines.append(contentsOf: podLines)
-                case let .failure(error):
+                case let .failure(podName, error):
                     failures.append(error)
+                    collectedLines.append(TaggedLogLine(
+                        podName: podName,
+                        containerName: nil,
+                        text: "⚠ Logs unavailable for pod \(podName): \(error.localizedDescription)",
+                        timestamp: nil,
+                        sequence: Int.max
+                    ))
                 }
                 if nextPodIndex < pods.count {
                     let pod = pods[nextPodIndex]
@@ -1519,7 +1537,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                                 namespace: namespace,
                                 filter: filter,
                                 previous: previous,
-                                timeoutOverride: self.unifiedLogsPerPodTimeout,
+                                timeoutOverride: nil,
                                 profile: .unifiedPerPod,
                                 allowsPartialFailure: true
                             )
@@ -1528,14 +1546,14 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                             if error is CancellationError {
                                 throw error
                             }
-                            return .failure(error)
+                            return .failure(podName: pod.name, error: error)
                         }
                     }
                 }
             }
         }
 
-        if collectedLines.isEmpty, let firstFailure = failures.first {
+        if successfulPodFetches == 0, let firstFailure = failures.first {
             throw firstFailure
         }
 
@@ -2524,7 +2542,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
 
     private enum UnifiedPodLogFetchResult: Sendable {
         case success([TaggedLogLine])
-        case failure(Error)
+        case failure(podName: String, error: Error)
     }
 
     private func isMissingPreviousLogsError(_ error: Error) -> Bool {

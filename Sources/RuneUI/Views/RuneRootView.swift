@@ -714,6 +714,15 @@ private struct RuneHelmSelectionIdentity: Equatable {
     let operatorResourceID: String?
 }
 
+private struct RuneInspectorStateSyncIdentity: Equatable {
+    let genericManifestTab: GenericResourceManifestTab
+    let helmInspectorTab: HelmInspectorTab
+    let helmBrowserTab: HelmBrowserTab
+    let terminalInspectorTab: TerminalInspectorTab
+    let isYAMLInlineEditing: Bool
+    let showsHistoricalDeploymentReplicaSets: Bool
+}
+
 private struct RuneHelmSelectionSyncModifier: ViewModifier {
     let restoreRequest: SavedWorkspaceInspectorRestoreRequest?
     let selectionIdentity: RuneHelmSelectionIdentity
@@ -1078,7 +1087,7 @@ public struct RuneRootView: View {
     @AppStorage(RuneSettingsKeys.layoutSidebarWidth) private var persistedSidebarWidth = 280.0
     @AppStorage(RuneSettingsKeys.layoutDetailWidth) private var persistedDetailWidth = 440.0
     @AppStorage(RuneSettingsKeys.layoutPodNameColumnWidth) private var persistedPodNameColumnWidth = Double(PodTableLayout.nameColumnDefaultWidth)
-    @AppStorage(RuneSettingsKeys.persistTerminalWorkspaceState) private var persistTerminalWorkspaceState = false
+    @AppStorage(RuneSettingsKeys.saveLastAppState) private var saveLastAppState = true
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.skipClusterOnTabNavigationFromSections) private var skipClusterOnTabNavigationFromSections = false
@@ -1122,6 +1131,8 @@ public struct RuneRootView: View {
     @State private var addClusterNativeContextAnalysisMessage: String?
     @State private var addClusterNativeContextRefreshGate = RuneScopedLatestRequestGate()
     @State private var isManualAddClusterExpanded = false
+    @State private var isAddClusterProviderAdvancedImportExpanded = false
+    @State private var isAddClusterProviderToolsExpanded = false
     @State private var isAddClusterProviderCommandDetailsExpanded = false
     @State private var isAddClusterProviderLoginOutputExpanded = false
     @State private var hasMountedWorkspaceChrome = false
@@ -1250,6 +1261,16 @@ public struct RuneRootView: View {
                 )
             }
         }
+        .sheet(isPresented: kubeConfigContextRemovalPresentedBinding) {
+            if let preview = viewModel.pendingKubeConfigContextRemoval {
+                KubeConfigContextRemovalSheet(
+                    preview: preview,
+                    isRemoving: viewModel.isRemovingKubeConfigContext,
+                    onConfirm: viewModel.confirmKubeConfigContextRemoval,
+                    onCancel: viewModel.cancelKubeConfigContextRemoval
+                )
+            }
+        }
         .onPreferenceChange(RuneRootLayoutFramePreferenceKey.self) { frames in
             layoutProbeFrames = frames.compactMapValues { frame in
                 guard frame.generation == layoutGeneration else { return nil }
@@ -1286,23 +1307,22 @@ public struct RuneRootView: View {
                 viewModel.reloadLogsForSelection()
             }
         }
-        .onChange(of: genericResourceManifestTab) { _, _ in
-            syncSavedWorkspaceInspectorState()
-        }
-        .onChange(of: helmInspectorTab) { _, _ in
-            syncSavedWorkspaceInspectorState()
-        }
-        .onChange(of: terminalInspectorTab) { _, _ in
+        .onChange(of: inspectorStateSyncIdentity) { _, _ in
             syncSavedWorkspaceInspectorState()
         }
         .onChange(of: viewModel.workspaceCommandRequest) { _, request in
             guard let request else { return }
             handleWorkspaceCommand(request.command)
         }
-        .onChange(of: yamlManifestIsEditing) { _, _ in
-            syncSavedWorkspaceInspectorState()
-        }
         .modifier(terminalWorkspacePersistenceLifecycleModifier)
+        .onChange(of: viewModel.terminalWorkspaceRestoreScopeID) { oldScope, newScope in
+            guard oldScope != newScope else { return }
+            hasRestoredTerminalWorkspaceState = false
+            if oldScope != nil {
+                clearTerminalWorkspaceScopeSelections()
+            }
+            restoreTerminalWorkspaceStateIfNeeded()
+        }
         .onChange(of: viewModel.isSidebarVisible) { _, isVisible in
             if !isVisible, keyboardPaneFocus == .sidebarSections || keyboardPaneFocus == .sidebarContexts {
                 keyboardPaneFocus = .content
@@ -1346,12 +1366,34 @@ public struct RuneRootView: View {
         )
     }
 
+    private var inspectorStateSyncIdentity: RuneInspectorStateSyncIdentity {
+        RuneInspectorStateSyncIdentity(
+            genericManifestTab: genericResourceManifestTab,
+            helmInspectorTab: helmInspectorTab,
+            helmBrowserTab: helmBrowserTab,
+            terminalInspectorTab: terminalInspectorTab,
+            isYAMLInlineEditing: yamlManifestIsEditing,
+            showsHistoricalDeploymentReplicaSets: showsHistoricalDeploymentReplicaSets
+        )
+    }
+
     private var kubeConfigImportReviewPresentedBinding: Binding<Bool> {
         Binding(
             get: { viewModel.isKubeConfigImportConfirmationPending },
             set: { isPresented in
                 if !isPresented {
                     viewModel.cancelKubeConfigImport()
+                }
+            }
+        )
+    }
+
+    private var kubeConfigContextRemovalPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.pendingKubeConfigContextRemoval != nil },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.cancelKubeConfigContextRemoval()
                 }
             }
         )
@@ -1383,6 +1425,9 @@ public struct RuneRootView: View {
             )
         }
         startLiveDebugScenarioIfNeeded()
+        applySavedWorkspaceInspectorState(
+            viewModel.savedWorkspaceInspectorRestoreRequest?.inspectorState
+        )
         syncSavedWorkspaceInspectorState()
         syncHelmBrowserTabWithSelection()
         restoreTerminalWorkspaceStateIfNeeded()
@@ -1392,9 +1437,13 @@ public struct RuneRootView: View {
     }
 
     private func restoreTerminalWorkspaceStateIfNeeded() {
-        guard persistTerminalWorkspaceState, !hasRestoredTerminalWorkspaceState else { return }
+        guard !debugDisableLayoutPersistence,
+              saveLastAppState,
+              !hasRestoredTerminalWorkspaceState,
+              viewModel.terminalWorkspaceRestoreScopeID != nil
+        else { return }
         hasRestoredTerminalWorkspaceState = true
-        guard let snapshot = JSONTerminalWorkspaceStateStore().loadTerminalWorkspaceState() else { return }
+        guard let snapshot = viewModel.loadPersistedTerminalWorkspaceState() else { return }
 
         terminalShellPodID = snapshot.shellPodID ?? terminalShellPodID
         terminalPortForwardPodID = snapshot.portForwardPodID ?? terminalPortForwardPodID
@@ -1418,14 +1467,23 @@ public struct RuneRootView: View {
         }
     }
 
+    private func clearTerminalWorkspaceScopeSelections() {
+        terminalShellPodID = ""
+        terminalPortForwardPodID = ""
+        terminalLogTabState = TerminalPodLogTabState()
+    }
+
     private func persistTerminalWorkspaceStateIfNeeded() {
-        guard persistTerminalWorkspaceState else { return }
-        JSONTerminalWorkspaceStateStore().saveTerminalWorkspaceState(currentTerminalWorkspaceStateSnapshot)
+        guard !debugDisableLayoutPersistence,
+              saveLastAppState,
+              hasRestoredTerminalWorkspaceState
+        else { return }
+        viewModel.persistTerminalWorkspaceState(currentTerminalWorkspaceStateSnapshot)
     }
 
     private var terminalWorkspacePersistenceLifecycleModifier: TerminalWorkspacePersistenceLifecycleModifier {
         TerminalWorkspacePersistenceLifecycleModifier(
-            isEnabled: persistTerminalWorkspaceState,
+            isEnabled: saveLastAppState,
             terminalInspectorTab: terminalInspectorTab,
             terminalShellPodID: terminalShellPodID,
             terminalPortForwardPodID: terminalPortForwardPodID,
@@ -1437,7 +1495,8 @@ public struct RuneRootView: View {
                 persistTerminalWorkspaceStateIfNeeded()
             },
             onDisable: {
-                JSONTerminalWorkspaceStateStore().clearTerminalWorkspaceState()
+                guard !debugDisableLayoutPersistence else { return }
+                viewModel.clearPersistedTerminalWorkspaceState()
             },
             onPersist: persistTerminalWorkspaceStateIfNeeded
         )
@@ -1463,8 +1522,10 @@ public struct RuneRootView: View {
             deploymentTabID: deploymentInspectorTab.rawValue,
             genericManifestTabID: genericResourceManifestTab.rawValue,
             helmTabID: helmInspectorTab.rawValue,
+            helmBrowserTabID: helmBrowserTab.rawValue,
             terminalTabID: terminalInspectorTab.rawValue,
-            isYAMLInlineEditing: yamlManifestIsEditing
+            isYAMLInlineEditing: yamlManifestIsEditing,
+            showsHistoricalDeploymentReplicaSets: showsHistoricalDeploymentReplicaSets
         )
     }
 
@@ -1520,12 +1581,20 @@ public struct RuneRootView: View {
            let tab = HelmInspectorTab(rawValue: helmTabID) {
             helmInspectorTab = tab
         }
+        if let helmBrowserTabID = inspectorState.helmBrowserTabID,
+           let tab = HelmBrowserTab(rawValue: helmBrowserTabID) {
+            helmBrowserTab = tab
+            viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)
+        }
         if let terminalTabID = inspectorState.terminalTabID,
            let tab = TerminalInspectorTab(rawValue: terminalTabID) {
             terminalInspectorTab = tab
         }
         if let isYAMLInlineEditing = inspectorState.isYAMLInlineEditing {
             yamlManifestIsEditing = isYAMLInlineEditing && resolvedManifestInlineEditorImplementation.supportsInlineEditing
+        }
+        if let showsHistoricalDeploymentReplicaSets = inspectorState.showsHistoricalDeploymentReplicaSets {
+            self.showsHistoricalDeploymentReplicaSets = showsHistoricalDeploymentReplicaSets
         }
         syncSavedWorkspaceInspectorState()
     }
@@ -1555,6 +1624,8 @@ public struct RuneRootView: View {
     }
 
     private func handleRootDisappear() {
+        viewModel.persistLastAppStateNow()
+        persistTerminalWorkspaceStateIfNeeded()
         removeLocalKeyboardMonitor()
     }
 
@@ -1716,6 +1787,7 @@ public struct RuneRootView: View {
                             .runeInterfaceFont(weight: .medium)
                             .lineLimit(1)
                     }
+                    .help(viewModel.state.selectedContext?.name ?? "No Context")
 
                     Menu {
                         ForEach(namespaceSuggestions, id: \.self) { namespace in
@@ -1754,6 +1826,7 @@ public struct RuneRootView: View {
                             .runeInterfaceFont(weight: .medium)
                             .lineLimit(1)
                     }
+                    .help(namespaceMenuTitle)
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -2767,6 +2840,7 @@ public struct RuneRootView: View {
             isFavorite: viewModel.state.isFavorite(context),
             isProduction: viewModel.isProductionContext(context),
             isManuallyMarkedProduction: viewModel.isManuallyMarkedProduction(context),
+            canRemove: context.name != "rune-demo",
             onSelect: {
                 viewModel.setContext(context)
             },
@@ -2775,6 +2849,9 @@ public struct RuneRootView: View {
             },
             onToggleFavorite: {
                 viewModel.toggleFavorite(for: context)
+            },
+            onRemove: {
+                viewModel.requestKubeConfigContextRemoval(context)
             }
         )
     }
@@ -2786,7 +2863,16 @@ public struct RuneRootView: View {
         } ?? false
         let presentation = AddClusterProviderPresentation.resolve(
             provider: provider,
-            externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands,
+            mode: provider == .local
+                ? AddClusterProviderExecutionMode(
+                    externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands
+                )
+                : .externalCLI,
+            isNativeProfileConnected: isNativeProfileConnected
+        )
+        let optionalCredentialPresentation = AddClusterProviderPresentation.resolve(
+            provider: provider,
+            mode: .nativeOnly,
             isNativeProfileConnected: isNativeProfileConnected
         )
         let hasCompatibleImportedContext = !addClusterNativeContextOptions.isEmpty
@@ -2799,9 +2885,30 @@ public struct RuneRootView: View {
         let visibleUtilityActions = utilityActions.filter { action in
             action.id != .runAuthDoctor || !simpleMode
         }
+        let advancedImportActions = optionalCredentialPresentation.utilityActions.filter { action in
+            action.id == .runNativeImport || action.id == .chooseServiceAccountJSON
+        }
+        let generalUtilityActions = visibleUtilityActions.filter { action in
+            action.id != .runNativeImport && action.id != .chooseServiceAccountJSON
+                && (provider.cloudProvider == nil || action.id != .importKubeconfig)
+        }
         let canRunCredentialImport = canRunProviderCredentialImport(provider)
         let credentialCommand = providerCredentialCommand(provider, canRunCredentialImport: canRunCredentialImport)
         let runHelp = providerCredentialRunHelp(provider, canRunCredentialImport: canRunCredentialImport)
+        let bodyMinimumHeight = presentation.executionMode == .nativeOnly
+            && !isAddClusterProviderAdvancedImportExpanded
+            && !isAddClusterProviderToolsExpanded
+            ? RuneUILayoutMetrics.providerDialogBodyCompactHeight
+            : RuneUILayoutMetrics.providerDialogBodyMinHeight
+        let bodyIdealHeight: CGFloat = if presentation.executionMode != .nativeOnly {
+            RuneUILayoutMetrics.providerDialogBodyIdealHeight
+        } else if isAddClusterProviderAdvancedImportExpanded {
+            RuneUILayoutMetrics.providerDialogBodyMaxHeight
+        } else if isAddClusterProviderToolsExpanded {
+            RuneUILayoutMetrics.providerDialogBodyIdealHeight
+        } else {
+            RuneUILayoutMetrics.providerDialogBodyCompactHeight
+        }
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
@@ -2819,7 +2926,11 @@ public struct RuneRootView: View {
                 .buttonStyle(.borderless)
                 .help("Back to Add Cluster")
                 .accessibilityLabel("Back to Add Cluster")
-                .disabled(viewModel.isRunningNativeCloudClusterImport)
+                .disabled(
+                    viewModel.isRunningCloudKubeConfigImport
+                        || viewModel.isRunningNativeCloudClusterImport
+                        || viewModel.isSigningInToAzure
+                )
 
                 Image(systemName: presentation.symbolName)
                     .font(.system(size: 24, weight: .semibold))
@@ -2842,12 +2953,43 @@ public struct RuneRootView: View {
 
             Divider()
 
+            if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                addClusterCloudImportDiagnosticView(diagnostic, provider: provider)
+                    .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
+                    .padding(.vertical, 12)
+                    .accessibilityIdentifier("rune.add-cluster.provider.diagnostic")
+                Divider()
+            } else if provider.cloudProvider != nil,
+                      let status = viewModel.cloudKubeConfigImportStatus {
+                addClusterProviderStatusView(status)
+                    .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
+                    .padding(.vertical, 10)
+                Divider()
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
-                    Text(presentation.note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if provider.cloudProvider != nil {
+                        addClusterProviderRecommendedPath(
+                            provider: provider,
+                            presentation: presentation
+                        )
+                        Button {
+                            closeAddClusterProviderSheet()
+                            viewModel.importKubeConfig()
+                        } label: {
+                            Label("Import kubeconfig…", systemImage: "doc.badge.plus")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.isRunningCloudKubeConfigImport || viewModel.isSigningInToAzure)
+                        .help("Choose a kubeconfig file and review its contexts before adding them.")
+                        .accessibilityIdentifier("rune.add-cluster.provider.import-kubeconfig")
+                    } else {
+                        Text(presentation.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     if presentation.requiresCompatibleImportedContext {
                         AddClusterNativeContextSection(
@@ -2862,52 +3004,84 @@ public struct RuneRootView: View {
                     if !presentation.fields.isEmpty
                         && provider != .local
                         && (!presentation.requiresCompatibleImportedContext || selectedNativeContext != nil) {
-                        addClusterProviderFormSection("Credentials") {
-                            providerCredentialFields(presentation.fields)
-                        }
-                        .disabled(viewModel.isRunningCloudKubeConfigImport)
-                    }
+                        Group {
+                            if provider.cloudProvider != nil {
+                                addClusterProviderFormSection("Cluster") {
+                                    providerCredentialFields(presentation.fields)
+                                }
 
-                    if !visibleUtilityActions.isEmpty {
-                        addClusterProviderFormSection("Tools") {
-                            LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
-                                ForEach(visibleUtilityActions) { action in
-                                    addClusterProviderUtilityAction(
-                                        action,
-                                        provider: provider,
-                                        credentialCommand: credentialCommand,
-                                        selectedNativeContext: selectedNativeContext
-                                    )
+                                addClusterProviderAdvancedImportSection(
+                                    presentation: optionalCredentialPresentation,
+                                    actions: advancedImportActions,
+                                    provider: provider,
+                                    credentialCommand: credentialCommand,
+                                    selectedNativeContext: selectedNativeContext
+                                )
+                            } else {
+                                addClusterProviderFormSection(presentation.credentialSectionTitle) {
+                                    providerCredentialFields(presentation.fields)
                                 }
                             }
-                            .controlSize(.regular)
                         }
-                        .disabled(viewModel.isRunningCloudKubeConfigImport)
+                        .disabled(viewModel.isRunningCloudKubeConfigImport || viewModel.isSigningInToAzure)
                     }
 
-                    if provider.cloudProvider != nil,
-                       let status = viewModel.cloudKubeConfigImportStatus {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("Provider login status: \(status)")
+                    if !generalUtilityActions.isEmpty {
+                        Group {
+                            if provider.cloudProvider != nil {
+                                RuneDisclosureSection(
+                                    "Help & tools",
+                                    isExpanded: $isAddClusterProviderToolsExpanded,
+                                    accessibilityIdentifier: "rune.add-cluster.provider.tools"
+                                ) {
+                                    LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                                        ForEach(generalUtilityActions) { action in
+                                            addClusterProviderUtilityAction(
+                                                action,
+                                                provider: provider,
+                                                credentialCommand: credentialCommand,
+                                                selectedNativeContext: selectedNativeContext
+                                            )
+                                        }
+                                    }
+                                    .controlSize(.regular)
+                                    .runeInsetCard(padding: 12)
+                                    .padding(.top, 8)
+                                } label: {
+                                    Label("Help & tools", systemImage: "wrench.and.screwdriver")
+                                        .font(.caption.weight(.semibold))
+                                }
+                            } else {
+                                addClusterProviderFormSection("Tools") {
+                                    LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                                        ForEach(generalUtilityActions) { action in
+                                            addClusterProviderUtilityAction(
+                                                action,
+                                                provider: provider,
+                                                credentialCommand: credentialCommand,
+                                                selectedNativeContext: selectedNativeContext
+                                            )
+                                        }
+                                    }
+                                    .controlSize(.regular)
+                                }
+                            }
+                        }
+                        .disabled(viewModel.isRunningCloudKubeConfigImport || viewModel.isSigningInToAzure)
                     }
 
-                    if let nativeStatus = viewModel.nativeKubernetesAuthStatus {
+                    if viewModel.cloudKubeConfigImportDiagnostic == nil,
+                       let nativeStatus = viewModel.nativeKubernetesAuthStatus,
+                       nativeStatus != viewModel.cloudKubeConfigImportStatus {
                         Text(nativeStatus)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("Authentication status: \(nativeStatus)")
                     }
 
-                    if presentation.executionMode == .externalCLI,
-                       provider.cloudProvider != nil,
+                    if provider.cloudProvider != nil,
                        !viewModel.cloudKubeConfigImportOutput.isEmpty {
                         addClusterCloudImportOutputView(viewModel.cloudKubeConfigImportOutput)
-                    }
-
-                    if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
-                        addClusterCloudImportDiagnosticView(diagnostic)
                     }
 
                     if presentation.showsCommandDetails {
@@ -2965,15 +3139,23 @@ public struct RuneRootView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(
-                minHeight: RuneUILayoutMetrics.providerDialogBodyMinHeight,
-                idealHeight: RuneUILayoutMetrics.providerDialogBodyIdealHeight,
+                minHeight: bodyMinimumHeight,
+                idealHeight: bodyIdealHeight,
                 maxHeight: RuneUILayoutMetrics.providerDialogBodyMaxHeight
             )
 
             RuneDialogActionBar {
-                if viewModel.isRunningNativeCloudClusterImport {
+                if viewModel.isSigningInToAzure {
                     Button(role: .cancel) {
-                        viewModel.cancelNativeCloudClusterImport()
+                        viewModel.cancelAzureCLISignIn()
+                    } label: {
+                        RuneDialogButtonLabel("Cancel Sign-in")
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                } else if viewModel.isRunningCloudKubeConfigImport {
+                    Button(role: .cancel) {
+                        viewModel.cancelCloudKubeConfigImport()
                     } label: {
                         RuneDialogButtonLabel("Cancel Import")
                     }
@@ -2989,20 +3171,28 @@ public struct RuneRootView: View {
                     .keyboardShortcut(.cancelAction)
                 }
 
-                providerPrimaryAction(
-                    primaryAction,
-                    provider: provider,
-                    canRunCredentialImport: canRunCredentialImport,
-                    runHelp: runHelp
-                )
+                if !viewModel.isSigningInToAzure {
+                    providerPrimaryAction(
+                        primaryAction,
+                        provider: provider,
+                        canRunCredentialImport: canRunCredentialImport,
+                        runHelp: runHelp
+                    )
+                }
             }
             .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
             .padding(.bottom, RuneUILayoutMetrics.dialogContentPadding)
         }
         .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
         .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
+        .animation(.easeInOut(duration: 0.18), value: isAddClusterProviderAdvancedImportExpanded)
+        .animation(.easeInOut(duration: 0.18), value: isAddClusterProviderToolsExpanded)
         .runePointerCursor()
-        .interactiveDismissDisabled(viewModel.isRunningNativeCloudClusterImport)
+        .interactiveDismissDisabled(
+            viewModel.isRunningCloudKubeConfigImport
+                || viewModel.isRunningNativeCloudClusterImport
+                || viewModel.isSigningInToAzure
+        )
         .task(id: "\(provider.rawValue)-\(viewModel.isConnectingNativeKubernetesAuth)") {
             guard presentation.requiresCompatibleImportedContext else { return }
             let scopeGeneration = addClusterNativeContextRefreshGate.scopeGeneration
@@ -3035,44 +3225,111 @@ public struct RuneRootView: View {
         }
     }
 
-    private func addClusterCloudImportDiagnosticView(_ diagnostic: AddClusterCloudImportDiagnostic) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+    private func addClusterCloudImportDiagnosticView(
+        _ diagnostic: AddClusterCloudImportDiagnostic,
+        provider: RuneAddClusterProvider
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.red)
                 Text(diagnostic.title)
-                    .font(.caption.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(diagnostic.classification)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.red.opacity(0.11)))
+
+                Button {
+                    viewModel.clearCloudKubeConfigImportStatus()
+                    viewModel.clearNativeKubernetesAuthStatus()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Dismiss provider warning")
+                .accessibilityLabel("Dismiss provider warning")
             }
 
             Text(diagnostic.message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(diagnostic.operationShape)
                 .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .textSelection(.enabled)
 
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Label(diagnostic.nextAction, systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.045)))
 
+            HStack(spacing: 8) {
                 Link(destination: diagnostic.documentationURL) {
                     Label(diagnostic.documentationTitle, systemImage: "book")
                 }
                 .font(.caption2.weight(.semibold))
+
+                Spacer(minLength: 0)
+
+                if diagnostic.recoveryAction == .signInToAzure,
+                   provider.cloudProvider == .aks {
+                    Button {
+                        viewModel.signInToAzureAndRetry(
+                            cloudCredentialDraft.request(provider: .aks)
+                        )
+                    } label: {
+                        Label("Sign in to Azure & Retry", systemImage: "person.badge.key")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(viewModel.isSigningInToAzure || viewModel.isRunningCloudKubeConfigImport)
+                    .help("Open secure Microsoft sign-in, then retry this AKS import automatically.")
+                }
             }
         }
-        .padding(10)
-        .background(RuneSurfaceBackground(kind: .inset))
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.055)))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.red.opacity(0.24), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func addClusterProviderStatusView(_ status: String) -> some View {
+        HStack(spacing: 9) {
+            if viewModel.isRunningCloudKubeConfigImport || viewModel.isSigningInToAzure {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            Text(status)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityLabel("Provider status: \(status)")
     }
 
     private var addClusterProviderActionColumns: [GridItem] {
@@ -3119,6 +3376,40 @@ public struct RuneRootView: View {
             }
             .buttonStyle(.bordered)
             .help("Import another kubeconfig and review its contexts before adding them.")
+
+        case .runNativeImport:
+            if let cloudProvider = provider.cloudProvider,
+               provider == .aks || provider == .eks {
+                let canRunOptionalImport = cloudCredentialDraft.hasRequiredNativeFields(for: cloudProvider)
+                Button {
+                    runNativeCloudImport(provider)
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    !canRunOptionalImport
+                        || viewModel.isRunningCloudKubeConfigImport
+                )
+                .help(optionalNativeImportHelp(provider, isReady: canRunOptionalImport))
+            }
+
+        case .chooseServiceAccountJSON:
+            let canRunOptionalImport = cloudCredentialDraft.hasRequiredNativeFields(for: .gke)
+            Button {
+                chooseAndRunNativeGKEImport()
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(
+                provider != .gke
+                    || !canRunOptionalImport
+                    || viewModel.isRunningCloudKubeConfigImport
+            )
+            .help(optionalNativeImportHelp(.gke, isReady: canRunOptionalImport))
 
         case .copyExternalCommand, .copyLocalSetupCommand:
             Button {
@@ -3179,9 +3470,32 @@ public struct RuneRootView: View {
                 .help("Remove native credentials only for \(selectedNativeContext.contextName).")
             }
 
-        case .runExternalCLI, .runNativeImport, .connectNativeCredentials, .chooseServiceAccountJSON:
+        case .runExternalCLI, .connectNativeCredentials:
             EmptyView()
         }
+    }
+
+    private func optionalNativeImportHelp(
+        _ provider: RuneAddClusterProvider,
+        isReady: Bool
+    ) -> String {
+        if isReady {
+            switch provider {
+            case .aks:
+                return "Fetch AKS access using the optional service-principal method."
+            case .eks:
+                return "Fetch EKS access using the optional access-key method."
+            case .gke:
+                return "Choose a service-account JSON file and fetch GKE access using the optional service-account method."
+            case .local:
+                return ""
+            }
+        }
+        guard let cloudProvider = provider.cloudProvider,
+              let missingFields = cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) else {
+            return "Complete the fields for this optional import method."
+        }
+        return "Optional method: enter \(missingFields) to continue."
     }
 
     @MainActor
@@ -3292,6 +3606,8 @@ public struct RuneRootView: View {
         connectedAddClusterNativeContextBindingIDs = []
         addClusterNativeContextAnalysisMessage = nil
         isCheckingAddClusterNativeProfiles = false
+        isAddClusterProviderAdvancedImportExpanded = false
+        isAddClusterProviderToolsExpanded = false
         isAddClusterProviderCommandDetailsExpanded = false
         isAddClusterProviderLoginOutputExpanded = false
         addClusterPopoverPresented = false
@@ -3306,6 +3622,8 @@ public struct RuneRootView: View {
         connectedAddClusterNativeContextBindingIDs = []
         addClusterNativeContextAnalysisMessage = nil
         isCheckingAddClusterNativeProfiles = false
+        isAddClusterProviderAdvancedImportExpanded = false
+        isAddClusterProviderToolsExpanded = false
         isAddClusterProviderCommandDetailsExpanded = false
         isAddClusterProviderLoginOutputExpanded = false
         if !showPopover {
@@ -3318,7 +3636,8 @@ public struct RuneRootView: View {
     }
 
     private func resetAddClusterProviderSheetStateIfIdle() {
-        guard !viewModel.isRunningCloudKubeConfigImport else { return }
+        guard !viewModel.isRunningCloudKubeConfigImport,
+              !viewModel.isSigningInToAzure else { return }
         cloudCredentialDraft = CloudCredentialDraft()
         viewModel.clearCloudKubeConfigImportStatus()
     }
@@ -3335,6 +3654,108 @@ public struct RuneRootView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func addClusterProviderAdvancedImportSection(
+        presentation: AddClusterProviderPresentation,
+        actions: [AddClusterProviderAction],
+        provider: RuneAddClusterProvider,
+        credentialCommand: String,
+        selectedNativeContext: AddClusterNativeContextOption?
+    ) -> some View {
+        RuneDisclosureSection(
+            "Optional \(presentation.credentialSectionTitle)",
+            isExpanded: $isAddClusterProviderAdvancedImportExpanded,
+            accessibilityIdentifier: "rune.add-cluster.provider.advanced-import"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(presentation.credentialSectionDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                providerCredentialFields(presentation.fields)
+
+                if let cloudProvider = provider.cloudProvider,
+                   cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) != nil {
+                    Label("Complete the fields above to continue.", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                ForEach(actions) { action in
+                    addClusterProviderUtilityAction(
+                        action,
+                        provider: provider,
+                        credentialCommand: credentialCommand,
+                        selectedNativeContext: selectedNativeContext
+                    )
+                    .controlSize(.regular)
+                }
+            }
+            .runeInsetCard(padding: 12)
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Label("Advanced", systemImage: "slider.horizontal.3")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(presentation.credentialSectionTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Optional")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.secondary.opacity(0.10)))
+            }
+        }
+    }
+
+    private func addClusterProviderRecommendedPath(
+        provider: RuneAddClusterProvider,
+        presentation: AddClusterProviderPresentation
+    ) -> some View {
+        let cliName = provider.cloudCLIName ?? "provider CLI"
+
+        return HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(provider.accent)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(provider.accent.opacity(0.12)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect with \(cliName)")
+                        .font(.caption.weight(.semibold))
+                    Text(presentation.note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text("Recommended")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(provider.accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(provider.accent.opacity(0.12)))
+            }
+        .runeInsetCard(padding: 12)
+        .help("Rune runs the provider CLI locally, reads its isolated kubeconfig, and opens review automatically.")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Connect with \(cliName), recommended")
+        .accessibilityHint("Rune runs the provider CLI locally and opens kubeconfig review automatically.")
+        .accessibilityIdentifier("rune.add-cluster.provider.recommended")
+    }
+
+    private func importKubeConfigFromProviderSheet() {
+        selectedAddClusterProvider = nil
+        viewModel.importKubeConfig()
     }
 
     private func addClusterProviderFormSection<Content: View>(
@@ -3381,11 +3802,11 @@ public struct RuneRootView: View {
             AddClusterProviderCredentialTextInput(field: field, text: $cloudCredentialDraft.nativeAKSClientSecret)
         case .googleServiceAccountJSON:
             AddClusterProviderCredentialField(field: field) {
-                Label("Choose the JSON document with the primary action below.", systemImage: "doc.badge.plus")
+                Label("Choose the JSON document with “Import with service account…” below.", systemImage: "doc.badge.plus")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityValue("Choose with the primary action below")
+                    .accessibilityValue("Choose with Import with service account below")
             }
         }
     }
@@ -3400,8 +3821,7 @@ public struct RuneRootView: View {
         switch action.id {
         case .importKubeconfig:
             Button {
-                selectedAddClusterProvider = nil
-                viewModel.importKubeConfig()
+                importKubeConfigFromProviderSheet()
             } label: {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(
@@ -3418,7 +3838,7 @@ public struct RuneRootView: View {
                     viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
                 } label: {
                     Label {
-                        Text(viewModel.isRunningCloudKubeConfigImport ? "Running" : "Run")
+                        Text(viewModel.isRunningCloudKubeConfigImport ? "Connecting…" : action.title)
                     } icon: {
                         Image(systemName: "icloud.and.arrow.down")
                     }
@@ -3611,10 +4031,7 @@ public struct RuneRootView: View {
 
     private func canRunProviderCredentialImport(_ provider: RuneAddClusterProvider) -> Bool {
         guard let cloudProvider = provider.cloudProvider else { return false }
-        if RuneExternalCommandPolicy.allowsExternalCommands {
-            return cloudCredentialDraft.hasRequiredFields(for: cloudProvider)
-        }
-        return cloudCredentialDraft.hasRequiredNativeFields(for: cloudProvider)
+        return cloudCredentialDraft.hasRequiredFields(for: cloudProvider)
     }
 
     private func providerCredentialRunHelp(
@@ -3627,16 +4044,8 @@ public struct RuneRootView: View {
         if viewModel.isRunningCloudKubeConfigImport {
             return "Provider import is already running."
         }
-        if !RuneExternalCommandPolicy.allowsExternalCommands {
-            if canRunCredentialImport {
-                return "Fetch cluster access through the provider API, review kubeconfig, then store credentials in Keychain."
-            }
-            if let missingFields = cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) {
-                return "Enter \(missingFields) to import this cluster."
-            }
-        }
         if canRunCredentialImport {
-            return "Run the provider CLI locally, validate kubeconfig, and refresh contexts."
+            return "Run the provider CLI locally in the background, then review and add its kubeconfig automatically."
         }
         if let missingFields = cloudCredentialDraft.missingRequiredFieldSummary(for: cloudProvider) {
             return "Enter \(missingFields) to run provider import."
@@ -6543,7 +6952,8 @@ public struct RuneRootView: View {
             onSaveAllTerminalTranscriptsToExportFolder: { viewModel.saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: false) },
             onSaveAllTerminalTranscriptsAndOpen: { viewModel.saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: true) },
             isFavoritePod: isFavoritePod,
-            onToggleFavoritePod: toggleFavoritePod
+            onToggleFavoritePod: toggleFavoritePod,
+            onOpenSelectedPodLogs: openTerminalLogs
         )
         .id("terminal")
         .onAppear(perform: reconcileTerminalPodSelections)
@@ -6573,8 +6983,21 @@ public struct RuneRootView: View {
 
     private var terminalDetails: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(appString(.terminal))
-                .font(.title2.weight(.bold))
+            HStack(spacing: 8) {
+                Text(appString(.terminal))
+                    .font(.title2.weight(.bold))
+                Spacer(minLength: 0)
+                if terminalInspectorTab == .logs, let pod = terminalLogActivePod {
+                    RuneBorderedIconButton(
+                        "Use \(pod.name) in Pod Shell",
+                        systemImage: "terminal",
+                        help: "Use \(pod.namespace)/\(pod.name) in Pod Shell"
+                    ) {
+                        openTerminalShell(for: pod)
+                    }
+                    .accessibilityIdentifier("terminal-logs-use-pod-in-shell")
+                }
+            }
 
             RuneSegmentedPickerInScroll(
                 "",
@@ -6754,6 +7177,32 @@ public struct RuneRootView: View {
 
     private func ensureTerminalLogTabs(for pod: PodSummary) {
         terminalLogTabState.ensureTab(for: pod)
+    }
+
+    private func openTerminalLogs(for pod: PodSummary) {
+        terminalInspectorTab = .logs
+        terminalLogTabState.activateOrRetarget(for: pod)
+        viewModel.focusTerminalPodInspector(
+            pod,
+            reloadLogs: shouldReloadTerminalPodLogs(for: pod)
+        )
+        viewModel.isDetailPaneVisible = true
+        keyboardPaneFocus = .detail
+    }
+
+    private func openTerminalShell(for pod: PodSummary) {
+        if let sessionID = TerminalShellPodSelectionPolicy.preferredSessionIDForHandoff(
+            pod: pod,
+            sessions: viewModel.state.terminalSessions,
+            contextName: viewModel.state.selectedContext?.name,
+            preferredContainer: viewModel.selectedLogContainer
+        ) {
+            viewModel.selectTerminalSession(id: sessionID)
+            keyboardPaneFocus = .content
+            return
+        }
+        terminalShellPodID = pod.id
+        keyboardPaneFocus = .content
     }
 
     private func reconcileTerminalLogTabs() {
@@ -8529,9 +8978,9 @@ public struct RuneRootView: View {
             tint: .red,
             foregroundColor: .red,
             fill: Color.red.opacity(0.16),
+            helpText: "Production context active",
             accessibilityLabel: "Production context active"
         )
-        .help("Production context active")
     }
 
     private var commandPalettePresentedBinding: Binding<Bool> {
