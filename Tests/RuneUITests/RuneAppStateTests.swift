@@ -6727,6 +6727,7 @@ final class RuneAppStateTests: XCTestCase {
     func testCurrentLogsConfiguredExportUsesExportFolderWorkflow() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
+        configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs-2.log")
         let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
@@ -6734,15 +6735,56 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
         state.setPodLogs("line\n")
 
-        viewModel.saveCurrentLogsToExportFolder(openAfterSave: true)
+        for (index, openAfterSave) in [false, true].enumerated() {
+            viewModel.saveCurrentLogsToExportFolder(openAfterSave: openAfterSave)
 
-        XCTAssertEqual(configuredExporter.saves.count, 1)
-        XCTAssertEqual(String(data: configuredExporter.saves[0].data, encoding: .utf8), "line\n")
-        XCTAssertTrue(configuredExporter.saves[0].suggestedName.hasPrefix("pod-api-0-logs-"))
-        XCTAssertEqual(configuredExporter.saves[0].allowedFileTypes, ["log", "txt"])
-        XCTAssertEqual(configuredExporter.saves[0].kind, .plainText)
-        XCTAssertTrue(configuredExporter.saves[0].openAfterSave)
-        XCTAssertNil(state.lastError)
+            XCTAssertEqual(configuredExporter.saves.count, index + 1)
+            XCTAssertEqual(String(data: configuredExporter.saves[index].data, encoding: .utf8), "line\n")
+            XCTAssertTrue(configuredExporter.saves[index].suggestedName.hasPrefix("pod-api-0-logs-"))
+            XCTAssertEqual(configuredExporter.saves[index].allowedFileTypes, ["log", "txt"])
+            XCTAssertEqual(configuredExporter.saves[index].kind, .plainText)
+            XCTAssertEqual(configuredExporter.saves[index].openAfterSave, openAfterSave)
+            XCTAssertNil(state.lastError)
+            XCTAssertEqual(state.activeNotice?.severity, .info)
+            XCTAssertEqual(state.activeNotice?.title, "Logs saved")
+            XCTAssertEqual(state.activeNotice?.message, "Saved synthetic-logs-2.log to the default export folder.")
+            state.clearError()
+        }
+    }
+
+    @MainActor
+    func testFailedConfiguredLogExportsDoNotShowSuccessNotices() {
+        for exportError in [FileExportError.userCancelled, .missingConfiguredExportFolder] {
+            let configuredExporter = RecordingConfiguredExporter()
+            configuredExporter.error = exportError
+            let state = RuneAppState()
+            let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+            state.selectedWorkloadKind = .pod
+            state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
+            state.setPodLogs("synthetic log line\n")
+            state.setTerminalSession(PodTerminalSession(
+                id: "synthetic-shell",
+                contextName: "synthetic-context",
+                namespace: "synthetic",
+                podName: "synthetic-api",
+                shell: "sh",
+                transcript: "synthetic transcript\n",
+                status: .connected
+            ))
+
+            for save in [viewModel.saveCurrentLogsToExportFolder, viewModel.saveActiveTerminalTranscriptToExportFolder] {
+                save(false)
+
+                if exportError == .userCancelled {
+                    XCTAssertNil(state.lastError)
+                    XCTAssertNil(state.activeNotice)
+                } else {
+                    XCTAssertEqual(state.lastError, exportError.localizedDescription)
+                    XCTAssertEqual(state.activeNotice?.severity, .error)
+                }
+                state.clearError()
+            }
+        }
     }
 
     @MainActor
@@ -6850,6 +6892,25 @@ final class RuneAppStateTests: XCTestCase {
 
         XCTAssertNil(state.lastError)
         XCTAssertNil(state.activeNotice)
+    }
+
+    @MainActor
+    func testInfoNoticePreservesExistingWarningOrError() {
+        let state = RuneAppState()
+        let errors: [RuneError] = [
+            .invalidInput(message: "Choose a namespace."),
+            .commandFailed(command: "kubectl get pods", message: "forbidden")
+        ]
+        for error in errors {
+            state.setError(error)
+            let notice = state.activeNotice
+            let lastError = state.lastError
+
+            state.setInfoNotice(title: "Logs saved", message: "Saved synthetic.log to the default export folder.")
+
+            XCTAssertEqual(state.activeNotice, notice)
+            XCTAssertEqual(state.lastError, lastError)
+        }
     }
 
     @MainActor
@@ -7887,6 +7948,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testActiveTerminalTranscriptConfiguredExportUsesTextWorkflow() {
         let configuredExporter = RecordingConfiguredExporter()
+        configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-transcript-2.log")
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
         state.setTerminalSession(PodTerminalSession(
@@ -7909,6 +7971,10 @@ final class RuneAppStateTests: XCTestCase {
         let payload = String(decoding: configuredExporter.saves[0].data, as: UTF8.self)
         XCTAssertTrue(payload.contains("Context: demo-context"))
         XCTAssertTrue(payload.contains("active line"))
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(state.activeNotice?.severity, .info)
+        XCTAssertEqual(state.activeNotice?.title, "Transcript saved")
+        XCTAssertEqual(state.activeNotice?.message, "Saved synthetic-transcript-2.log to the default export folder.")
     }
 
     @MainActor
@@ -12414,6 +12480,8 @@ private final class RecordingFileExporter: FileExporting {
 
 @MainActor
 private final class RecordingConfiguredExporter: ConfiguredExporting {
+    var savedURL: URL?
+    var error: Error?
     private(set) var saves: [
         (
             data: Data,
@@ -12431,8 +12499,9 @@ private final class RecordingConfiguredExporter: ConfiguredExporting {
         kind: ConfiguredExportFileKind,
         openAfterSave: Bool
     ) throws -> URL {
+        if let error { throw error }
         saves.append((data, suggestedName, allowedFileTypes, kind, openAfterSave))
-        return URL(fileURLWithPath: "/tmp/\(suggestedName)")
+        return savedURL ?? URL(fileURLWithPath: "/tmp/\(suggestedName)")
     }
 }
 

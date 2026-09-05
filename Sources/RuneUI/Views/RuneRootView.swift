@@ -1266,6 +1266,7 @@ public struct RuneRootView: View {
                 KubeConfigContextRemovalSheet(
                     preview: preview,
                     isRemoving: viewModel.isRemovingKubeConfigContext,
+                    errorMessage: viewModel.kubeConfigContextRemovalError,
                     onConfirm: viewModel.confirmKubeConfigContextRemoval,
                     onCancel: viewModel.cancelKubeConfigContextRemoval
                 )
@@ -1872,7 +1873,9 @@ public struct RuneRootView: View {
                         title: viewModel.pendingWriteActionTitle,
                         confirmLabel: viewModel.pendingWriteActionConfirmLabel,
                         isDestructive: viewModel.pendingWriteActionIsDestructive,
-                        message: pendingWriteActionDialogMessage,
+                        message: viewModel.pendingWriteActionMessage,
+                        targetSummary: viewModel.pendingWriteActionTargetSummary,
+                        commandPreview: viewModel.pendingWriteActionKubectlCommand,
                         showsCopyCommandAction: !viewModel.pendingWriteActionKubectlCommand.isEmpty,
                         onConfirm: confirmPendingWriteActionFromDialog,
                         onCancel: cancelPendingWriteActionFromDialog,
@@ -1890,22 +1893,18 @@ public struct RuneRootView: View {
                 manualNamespaceSheet
             }
             .runePendingWriteConfirmation(
-                isPresented: pendingWriteActionPresentedBinding,
+                isPresented: rootPendingWriteActionPresentedBinding,
                 title: viewModel.pendingWriteActionTitle,
                 confirmLabel: viewModel.pendingWriteActionConfirmLabel,
                 isDestructive: viewModel.pendingWriteActionIsDestructive,
-                message: pendingWriteActionDialogMessage,
+                message: viewModel.pendingWriteActionMessage,
+                targetSummary: viewModel.pendingWriteActionTargetSummary,
+                commandPreview: viewModel.pendingWriteActionKubectlCommand,
                 showsCopyCommandAction: !viewModel.pendingWriteActionKubectlCommand.isEmpty,
                 onConfirm: confirmPendingWriteActionFromDialog,
                 onCancel: cancelPendingWriteActionFromDialog,
                 onCopyCommand: viewModel.copyPendingWriteActionKubectlCommand
             )
-    }
-
-    private var pendingWriteActionDialogMessage: String {
-        let command = viewModel.pendingWriteActionKubectlCommand
-        guard !command.isEmpty else { return viewModel.pendingWriteActionMessage }
-        return viewModel.pendingWriteActionMessage + "\n\nkubectl preview:\n" + command
     }
 
     private var resolvedShellVariant: RuneRootShellVariant {
@@ -2910,7 +2909,12 @@ public struct RuneRootView: View {
             RuneUILayoutMetrics.providerDialogBodyCompactHeight
         }
 
-        return VStack(alignment: .leading, spacing: 0) {
+        return AddClusterProviderSheetLayout(
+            bodyMinimumHeight: bodyMinimumHeight,
+            bodyIdealHeight: bodyIdealHeight,
+            noticeToken: viewModel.cloudKubeConfigImportDiagnostic.map { "\($0.title)\n\($0.message)" }
+                ?? viewModel.cloudKubeConfigImportStatus
+        ) {
             HStack(alignment: .top, spacing: 12) {
                 Button {
                     closeAddClusterProviderSheet(showPopover: true)
@@ -2939,36 +2943,24 @@ public struct RuneRootView: View {
                     .background(Circle().fill(provider.accent.opacity(0.14)))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(presentation.title)
-                        .font(.title3.weight(.semibold))
+                        .runeInterfaceFont(relativeSize: 2, weight: .semibold)
                         .accessibilityAddTraits(.isHeader)
                     Text(presentation.subtitle)
-                        .font(.subheadline)
+                        .runeInterfaceFont()
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
-            .padding(.top, RuneUILayoutMetrics.dialogContentPadding)
-            .padding(.bottom, RuneUILayoutMetrics.dialogSectionSpacing)
-
-            Divider()
-
-            if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
-                addClusterCloudImportDiagnosticView(diagnostic, provider: provider)
-                    .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
-                    .padding(.vertical, 12)
-                    .accessibilityIdentifier("rune.add-cluster.provider.diagnostic")
-                Divider()
-            } else if provider.cloudProvider != nil,
-                      let status = viewModel.cloudKubeConfigImportStatus {
-                addClusterProviderStatusView(status)
-                    .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
-                    .padding(.vertical, 10)
-                Divider()
-            }
-
-            ScrollView {
+        } content: {
                 VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
+                    if let diagnostic = viewModel.cloudKubeConfigImportDiagnostic {
+                        addClusterCloudImportDiagnosticView(diagnostic, provider: provider)
+                            .accessibilityIdentifier("rune.add-cluster.provider.diagnostic")
+                    } else if provider.cloudProvider != nil,
+                              let status = viewModel.cloudKubeConfigImportStatus {
+                        addClusterProviderStatusView(status)
+                    }
+
                     if provider.cloudProvider != nil {
                         addClusterProviderRecommendedPath(
                             provider: provider,
@@ -2986,7 +2978,7 @@ public struct RuneRootView: View {
                         .accessibilityIdentifier("rune.add-cluster.provider.import-kubeconfig")
                     } else {
                         Text(presentation.note)
-                            .font(.caption)
+                            .runeInterfaceFont(relativeSize: -1)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -3012,6 +3004,7 @@ public struct RuneRootView: View {
 
                                 addClusterProviderAdvancedImportSection(
                                     presentation: optionalCredentialPresentation,
+                                    sharedFields: presentation.fields,
                                     actions: advancedImportActions,
                                     provider: provider,
                                     credentialCommand: credentialCommand,
@@ -3034,6 +3027,8 @@ public struct RuneRootView: View {
                                     isExpanded: $isAddClusterProviderToolsExpanded,
                                     accessibilityIdentifier: "rune.add-cluster.provider.tools"
                                 ) {
+                                    addClusterProviderLocalSetupHelp(presentation)
+                                        .padding(.vertical, RuneUILayoutMetrics.dialogControlSpacing)
                                     LazyVGrid(columns: addClusterProviderActionColumns, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
                                         ForEach(generalUtilityActions) { action in
                                             addClusterProviderUtilityAction(
@@ -3044,12 +3039,12 @@ public struct RuneRootView: View {
                                             )
                                         }
                                     }
-                                    .controlSize(.regular)
+                                    .runeInterfaceControlSize()
                                     .runeInsetCard(padding: 12)
                                     .padding(.top, 8)
                                 } label: {
                                     Label("Help & tools", systemImage: "wrench.and.screwdriver")
-                                        .font(.caption.weight(.semibold))
+                                        .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                                 }
                             } else {
                                 addClusterProviderFormSection("Tools") {
@@ -3063,7 +3058,7 @@ public struct RuneRootView: View {
                                             )
                                         }
                                     }
-                                    .controlSize(.regular)
+                                    .runeInterfaceControlSize()
                                 }
                             }
                         }
@@ -3074,7 +3069,7 @@ public struct RuneRootView: View {
                        let nativeStatus = viewModel.nativeKubernetesAuthStatus,
                        nativeStatus != viewModel.cloudKubeConfigImportStatus {
                         Text(nativeStatus)
-                            .font(.caption)
+                            .runeInterfaceFont(relativeSize: -1)
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("Authentication status: \(nativeStatus)")
                     }
@@ -3092,7 +3087,7 @@ public struct RuneRootView: View {
                         ) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(credentialCommand)
-                                    .font(.system(.caption, design: .monospaced))
+                                    .runeInterfaceFont(relativeSize: -1, design: .monospaced)
                                     .textSelection(.enabled)
                                     .padding(10)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3101,10 +3096,10 @@ public struct RuneRootView: View {
                                 ForEach(provider.auxiliaryCommands, id: \.title) { item in
                                     HStack(spacing: 8) {
                                         Text(item.title)
-                                            .font(.caption.weight(.semibold))
+                                            .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                                             .frame(width: 54, alignment: .leading)
                                         Text(item.command)
-                                            .font(.system(.caption, design: .monospaced))
+                                            .runeInterfaceFont(relativeSize: -1, design: .monospaced)
                                             .lineLimit(1)
                                             .truncationMode(.middle)
                                             .textSelection(.enabled)
@@ -3130,21 +3125,11 @@ public struct RuneRootView: View {
                             .padding(.top, 8)
                         } label: {
                             Label("Command Details", systemImage: "terminal")
-                                .font(.caption.weight(.semibold))
+                                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                         }
                     }
                 }
-                .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
-                .padding(.vertical, RuneUILayoutMetrics.dialogSectionSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(
-                minHeight: bodyMinimumHeight,
-                idealHeight: bodyIdealHeight,
-                maxHeight: RuneUILayoutMetrics.providerDialogBodyMaxHeight
-            )
-
-            RuneDialogActionBar {
+        } actions: {
                 if viewModel.isSigningInToAzure {
                     Button(role: .cancel) {
                         viewModel.cancelAzureCLISignIn()
@@ -3179,12 +3164,7 @@ public struct RuneRootView: View {
                         runHelp: runHelp
                     )
                 }
-            }
-            .padding(.horizontal, RuneUILayoutMetrics.dialogContentPadding)
-            .padding(.bottom, RuneUILayoutMetrics.dialogContentPadding)
         }
-        .frame(width: RuneAddClusterProviderActionLayout.dialogWidth)
-        .frame(maxHeight: RuneUILayoutMetrics.providerDialogMaxHeight)
         .animation(.easeInOut(duration: 0.18), value: isAddClusterProviderAdvancedImportExpanded)
         .animation(.easeInOut(duration: 0.18), value: isAddClusterProviderToolsExpanded)
         .runePointerCursor()
@@ -3211,7 +3191,7 @@ public struct RuneRootView: View {
         ) {
             ScrollView {
                 Text(output)
-                    .font(.system(.caption2, design: .monospaced))
+                    .runeInterfaceFont(relativeSize: -2, design: .monospaced)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -3221,7 +3201,7 @@ public struct RuneRootView: View {
             .padding(.top, 8)
         } label: {
             Label("Login Output", systemImage: "terminal")
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
         }
     }
 
@@ -3234,15 +3214,15 @@ public struct RuneRootView: View {
                 Image(systemName: "exclamationmark.octagon.fill")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.red)
-                Text(diagnostic.title)
-                    .font(.subheadline.weight(.semibold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(diagnostic.title)
+                        .runeInterfaceFont(weight: .semibold)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(diagnostic.classification)
+                        .runeInterfaceFont(relativeSize: -2, weight: .semibold)
+                        .foregroundStyle(.red)
+                }
                 Spacer(minLength: 0)
-                Text(diagnostic.classification)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.red.opacity(0.11)))
 
                 Button {
                     viewModel.clearCloudKubeConfigImportStatus()
@@ -3250,7 +3230,10 @@ public struct RuneRootView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
-                        .frame(width: 20, height: 20)
+                        .frame(
+                            width: RuneUILayoutMetrics.dialogIconButtonSize,
+                            height: RuneUILayoutMetrics.dialogIconButtonSize
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -3260,19 +3243,19 @@ public struct RuneRootView: View {
             }
 
             Text(diagnostic.message)
-                .font(.caption)
+                .runeInterfaceFont(relativeSize: -1)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(diagnostic.operationShape)
-                .font(.system(.caption2, design: .monospaced))
+                .runeInterfaceFont(relativeSize: -2, design: .monospaced)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .textSelection(.enabled)
 
             HStack(alignment: .top, spacing: 8) {
                 Label(diagnostic.nextAction, systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -3281,13 +3264,17 @@ public struct RuneRootView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.045)))
 
-            HStack(spacing: 8) {
+            (dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing))
+                : AnyLayout(HStackLayout(spacing: RuneUILayoutMetrics.dialogControlSpacing))) {
                 Link(destination: diagnostic.documentationURL) {
                     Label(diagnostic.documentationTitle, systemImage: "book")
                 }
-                .font(.caption2.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -2, weight: .semibold)
 
-                Spacer(minLength: 0)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Spacer(minLength: 0)
+                }
 
                 if diagnostic.recoveryAction == .signInToAzure,
                    provider.cloudProvider == .aks {
@@ -3320,15 +3307,16 @@ public struct RuneRootView: View {
                 ProgressView()
                     .controlSize(.small)
             } else {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
             }
             Text(status)
-                .font(.caption.weight(.medium))
+                .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("Provider status: \(status)")
     }
 
@@ -3339,17 +3327,6 @@ public struct RuneRootView: View {
         return [GridItem(
             .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumButtonWidth),
             spacing: RuneAddClusterProviderActionLayout.columnSpacing
-        )]
-    }
-
-    private var addClusterProviderCredentialColumns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(), spacing: RuneUILayoutMetrics.dialogControlSpacing, alignment: .top)]
-        }
-        return [GridItem(
-            .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth),
-            spacing: RuneUILayoutMetrics.dialogControlSpacing,
-            alignment: .top
         )]
     }
 
@@ -3644,20 +3621,14 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private func providerCredentialFields(_ fields: [AddClusterProviderField]) -> some View {
-        LazyVGrid(
-            columns: addClusterProviderCredentialColumns,
-            alignment: .leading,
-            spacing: RuneUILayoutMetrics.dialogControlSpacing
-        ) {
-            ForEach(fields) { field in
-                providerCredentialInput(field)
-            }
+        AddClusterProviderCredentialGrid(fields: fields) { field in
+            providerCredentialInput(field)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func addClusterProviderAdvancedImportSection(
         presentation: AddClusterProviderPresentation,
+        sharedFields: [AddClusterProviderField],
         actions: [AddClusterProviderAction],
         provider: RuneAddClusterProvider,
         credentialCommand: String,
@@ -3670,16 +3641,16 @@ public struct RuneRootView: View {
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(presentation.credentialSectionDescription)
-                    .font(.caption)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                providerCredentialFields(presentation.fields)
+                providerCredentialFields(presentation.credentialFields(excluding: sharedFields))
 
                 if let cloudProvider = provider.cloudProvider,
-                   cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) != nil {
-                    Label("Complete the fields above to continue.", systemImage: "info.circle")
-                        .font(.caption)
+                   let missingFields = cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) {
+                    Label("Required for this method: \(missingFields).", systemImage: "info.circle")
+                        .runeInterfaceFont(relativeSize: -1)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -3691,7 +3662,7 @@ public struct RuneRootView: View {
                         credentialCommand: credentialCommand,
                         selectedNativeContext: selectedNativeContext
                     )
-                    .controlSize(.regular)
+                    .runeInterfaceControlSize()
                 }
             }
             .runeInsetCard(padding: 12)
@@ -3699,13 +3670,13 @@ public struct RuneRootView: View {
         } label: {
             HStack(spacing: 8) {
                 Label("Advanced", systemImage: "slider.horizontal.3")
-                    .font(.caption.weight(.semibold))
+                    .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 Spacer(minLength: 8)
                 Text(presentation.credentialSectionTitle)
-                    .font(.caption)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.secondary)
                 Text("Optional")
-                    .font(.caption2.weight(.semibold))
+                    .runeInterfaceFont(relativeSize: -2, weight: .semibold)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -3720,7 +3691,7 @@ public struct RuneRootView: View {
     ) -> some View {
         let cliName = provider.cloudCLIName ?? "provider CLI"
 
-        return HStack(alignment: .center, spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "terminal.fill")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(provider.accent)
@@ -3729,21 +3700,15 @@ public struct RuneRootView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Connect with \(cliName)")
-                        .font(.caption.weight(.semibold))
+                        .runeInterfaceFont(relativeSize: -1, weight: .semibold)
+                    Text("Recommended")
+                        .runeInterfaceFont(relativeSize: -2, weight: .semibold)
+                        .foregroundStyle(provider.accent)
                     Text(presentation.note)
-                        .font(.caption2)
+                        .runeInterfaceFont(relativeSize: -2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Spacer(minLength: 8)
-
-                Text("Recommended")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(provider.accent)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(provider.accent.opacity(0.12)))
             }
         .runeInsetCard(padding: 12)
         .help("Rune runs the provider CLI locally, reads its isolated kubeconfig, and opens review automatically.")
@@ -3758,13 +3723,50 @@ public struct RuneRootView: View {
         viewModel.importKubeConfig()
     }
 
+    private func addClusterProviderLocalSetupHelp(_ presentation: AddClusterProviderPresentation) -> some View {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+            Text(presentation.localCLISetupDescription)
+                .runeInterfaceFont(relativeSize: -1)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(presentation.localCLISetupCommands, id: \.self) { command in
+                HStack(alignment: .top, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                    Text(command)
+                        .runeInterfaceFont(relativeSize: -1, design: .monospaced)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    RuneIconButton("Copy sign-in command", systemImage: "doc.on.doc") {
+                        copyToPasteboard(command)
+                    }
+                    .help("Copy this command to run in Terminal.")
+                }
+                .runeInsetCard(padding: 8)
+            }
+
+            if presentation.provider == .eks {
+                Text("Replace <profile> with your SSO profile name before running the sign-in command in Terminal.")
+                    .runeInterfaceFont(relativeSize: -2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let url = presentation.localCLISetupDocumentationURL {
+                Link("Installation & sign-in guide", destination: url)
+                    .runeInterfaceFont(relativeSize: -1, weight: .semibold)
+            }
+        }
+        .accessibilityIdentifier("rune.add-cluster.provider.local-setup")
+    }
+
     private func addClusterProviderFormSection<Content: View>(
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .foregroundStyle(.secondary)
 
             content()
@@ -3803,7 +3805,7 @@ public struct RuneRootView: View {
         case .googleServiceAccountJSON:
             AddClusterProviderCredentialField(field: field) {
                 Label("Choose the JSON document with “Import with service account…” below.", systemImage: "doc.badge.plus")
-                    .font(.caption)
+                    .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityValue("Choose with Import with service account below")
@@ -3834,11 +3836,12 @@ public struct RuneRootView: View {
             .help("Import kubeconfig from a file.")
         case .runExternalCLI:
             if let cloudProvider = provider.cloudProvider {
+                let idleTitle = isAddClusterProviderAdvancedImportExpanded ? "Add with CLI" : action.title
                 Button {
                     viewModel.runCloudKubeConfigImport(cloudCredentialDraft.request(provider: cloudProvider))
                 } label: {
                     Label {
-                        Text(viewModel.isRunningCloudKubeConfigImport ? "Connecting…" : action.title)
+                        Text(viewModel.isRunningCloudKubeConfigImport ? "Connecting…" : idleTitle)
                     } icon: {
                         Image(systemName: "icloud.and.arrow.down")
                     }
@@ -3848,7 +3851,7 @@ public struct RuneRootView: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(isAddClusterProviderAdvancedImportExpanded ? nil : .defaultAction)
                 .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
                 .help(runHelp)
             }
@@ -6693,6 +6696,8 @@ public struct RuneRootView: View {
             onExportToExportFolder: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: false) },
             onExportAndOpen: { viewModel.saveCurrentResourceYAMLToExportFolder(openAfterSave: true) },
             onClose: { isYAMLEditorSheetPresented = false },
+            notice: viewModel.state.activeNotice,
+            onDismissNotice: { viewModel.state.clearError() },
             documentState: yamlManifestDocumentState,
             editorRestorationRequest: viewModel.state.resourceYAMLEditorRestorationRequest,
             onEditorEdit: { yaml, presentation in
@@ -9005,6 +9010,13 @@ public struct RuneRootView: View {
                     viewModel.cancelPendingWriteAction()
                 }
             }
+        )
+    }
+
+    private var rootPendingWriteActionPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { !isYAMLEditorSheetPresented && pendingWriteActionPresentedBinding.wrappedValue },
+            set: { pendingWriteActionPresentedBinding.wrappedValue = $0 }
         )
     }
 

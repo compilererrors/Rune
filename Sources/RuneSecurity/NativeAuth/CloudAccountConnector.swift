@@ -610,6 +610,7 @@ public actor CloudAccountCoordinator {
     private var connectOperations: [CloudAccountProvider: ConnectOperation] = [:]
     private var refreshOperations: [CloudAccountID: RefreshOperation] = [:]
     private var discoveryOperations: [CloudAccountID: DiscoveryOperation] = [:]
+    private var diagnosticOperations: [CloudAccountID: CloudAccountOperationID] = [:]
 
     public init(
         connectors: [any CloudAccountConnector],
@@ -680,6 +681,7 @@ public actor CloudAccountCoordinator {
             }
             refreshOperations.removeValue(forKey: result.id)?.task.cancel()
             discoveryOperations.removeValue(forKey: result.id)?.task.cancel()
+            diagnosticOperations.removeValue(forKey: result.id)
             let accepted = result.updatingLocalLabel(
                 normalizedLabel.isEmpty ? connectorLabel : normalizedLabel
             )
@@ -739,7 +741,8 @@ public actor CloudAccountCoordinator {
                   current.generation == generation,
                   current.credentialGeneration == account.credentialGeneration,
                   accountOperationGenerations[accountID] == generation.rawValue,
-                  accounts[accountID]?.credentialGeneration == account.credentialGeneration else {
+                  let latestAccount = accounts[accountID],
+                  latestAccount.credentialGeneration == account.credentialGeneration else {
                 throw CloudAccountCoordinatorError.superseded
             }
             refreshOperations.removeValue(forKey: accountID)
@@ -749,7 +752,7 @@ public actor CloudAccountCoordinator {
                 throw CloudAccountCoordinatorError.invalidConnectorResult
             }
             discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
-            let accepted = result.updatingLocalLabel(account.localLabel)
+            let accepted = result.updatingLocalLabel(latestAccount.localLabel)
             accounts[accountID] = accepted
             return accepted
         } catch {
@@ -801,13 +804,14 @@ public actor CloudAccountCoordinator {
                   current.generation == generation,
                   current.credentialGeneration == account.credentialGeneration,
                   accountOperationGenerations[accountID] == generation.rawValue,
-                  accounts[accountID]?.credentialGeneration == account.credentialGeneration else {
+                  let latestAccount = accounts[accountID],
+                  latestAccount.credentialGeneration == account.credentialGeneration else {
                 throw CloudAccountCoordinatorError.superseded
             }
             discoveryOperations.removeValue(forKey: accountID)
-            accounts[accountID] = account.updatingAfterSync(
+            accounts[accountID] = latestAccount.updatingAfterSync(
                 clusterCount: result.candidates.count,
-                at: result.isPartial ? account.lastSuccessfulSync : now()
+                at: result.isPartial ? latestAccount.lastSuccessfulSync : now()
             )
             return result
         } catch {
@@ -819,11 +823,13 @@ public actor CloudAccountCoordinator {
     }
 
     public func cancelSynchronization(accountID: CloudAccountID) {
+        guard let operation = discoveryOperations.removeValue(forKey: accountID) else { return }
         _ = nextAccountOperationGeneration(for: accountID)
-        discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
+        operation.task.cancel()
     }
 
     public func diagnostics(accountID: CloudAccountID) async throws -> [CloudAccountDiagnostic] {
+        try Task.checkCancellation()
         guard let account = accounts[accountID] else {
             throw CloudAccountCoordinatorError.accountNotFound
         }
@@ -833,12 +839,26 @@ public actor CloudAccountCoordinator {
         let generation = CloudAccountGeneration(
             rawValue: accountOperationGenerations[accountID, default: 0]
         )
+        let id = CloudAccountOperationID()
+        diagnosticOperations[accountID] = id
+        defer {
+            if diagnosticOperations[accountID] == id {
+                diagnosticOperations.removeValue(forKey: accountID)
+            }
+        }
         let request = boundRequest(
-            id: CloudAccountOperationID(),
+            id: id,
             generation: generation,
             account: account
         )
-        return await connector.diagnostics(request)
+        let result = await connector.diagnostics(request)
+        try Task.checkCancellation()
+        guard diagnosticOperations[accountID] == id,
+              accountOperationGenerations[accountID] == generation.rawValue,
+              accounts[accountID]?.credentialGeneration == account.credentialGeneration else {
+            throw CloudAccountCoordinatorError.superseded
+        }
+        return result
     }
 
     public func disconnect(accountID: CloudAccountID) async throws {
@@ -850,6 +870,7 @@ public actor CloudAccountCoordinator {
         }
         refreshOperations.removeValue(forKey: accountID)?.task.cancel()
         discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
+        diagnosticOperations.removeValue(forKey: accountID)
         let generation = nextAccountOperationGeneration(for: accountID)
         let request = boundRequest(
             id: CloudAccountOperationID(),

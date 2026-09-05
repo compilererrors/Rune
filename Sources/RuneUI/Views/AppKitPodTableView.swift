@@ -531,6 +531,18 @@ private final class RuneAppKitColumnWidthStore {
         defaults.removeObject(forKey: storageKey)
     }
 
+    func discardCachedWidths(for storageKeys: [String]) {
+        for storageKey in storageKeys {
+            cachedWidths.removeValue(forKey: storageKey)
+            knownPersistedKeys.remove(storageKey)
+            pendingWidths.removeValue(forKey: storageKey)
+        }
+        if pendingWidths.isEmpty {
+            pendingFlush?.cancel()
+            pendingFlush = nil
+        }
+    }
+
     private func key(tableID: String, columnID: String) -> String {
         keyPrefix + tableID + "." + columnID
     }
@@ -549,6 +561,13 @@ private final class RuneAppKitColumnWidthStore {
         pendingFlush = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
     }
+}
+
+/// Tests that replace stored preferences must also isolate cached widths and
+/// prevent deferred resize writes from escaping their fixture lifetime.
+@MainActor
+func discardResourceColumnWidthStateForTesting(storageKeys: [String]) {
+    RuneAppKitColumnWidthStore.shared.discardCachedWidths(for: storageKeys)
 }
 
 @MainActor

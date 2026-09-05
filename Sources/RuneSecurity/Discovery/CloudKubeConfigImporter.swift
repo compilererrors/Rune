@@ -160,7 +160,11 @@ public struct AzureCLISignInRunner: AzureCLISignInRunning {
         let command = CloudKubeConfigCommandPreview(
             executable: "az",
             arguments: ["login", "--only-show-errors", "--output", "none"],
-            displayCommand: "az login --only-show-errors --output none"
+            displayCommand: "az login --only-show-errors --output none",
+            // Rune selects the target subscription in the import form. Disable
+            // CLI 2.61+'s terminal picker for this invocation only; keep browser
+            // authentication and the user's saved CLI configuration intact.
+            environment: ["AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"]
         )
         let result = try await runner.run(command, timeout: timeout)
         if result.timedOut {

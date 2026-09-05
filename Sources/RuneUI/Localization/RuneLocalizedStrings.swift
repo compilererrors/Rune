@@ -85,6 +85,8 @@ public enum RuneLocalizedStringKey: String, CaseIterable, Sendable {
     case previous
     case previousLogsHelp
     case quickEdit
+    case quickSaveLogs
+    case quickSaveLogsHelp
     case releases
     case replicaSets
     case reload

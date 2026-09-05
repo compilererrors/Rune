@@ -66,9 +66,8 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertTrue(rootSource.contains("RuneDisclosureSection(\n                                    \"Help & tools\""))
         XCTAssertTrue(rootSource.contains("Text(\"Optional\")"))
         XCTAssertTrue(rootSource.contains("addClusterProviderFormSection(\"Tools\")"))
-        XCTAssertTrue(providerRegion.contains("LazyVGrid("))
-        XCTAssertTrue(providerRegion.contains("columns: addClusterProviderCredentialColumns"))
-        XCTAssertTrue(providerRegion.contains("ForEach(fields) { field in"))
+        XCTAssertTrue(providerRegion.contains("AddClusterProviderCredentialGrid(fields: fields)"))
+        XCTAssertTrue(providerRegion.contains("presentation.credentialFields(excluding: sharedFields)"))
         XCTAssertTrue(providerRegion.contains("providerCredentialInput(field)"))
         XCTAssertTrue(providerRegion.contains("AddClusterProviderCredentialTextInput(field: field"))
         XCTAssertTrue(providerRegion.contains("AddClusterProviderCredentialField(field: field)"))
@@ -84,7 +83,7 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertTrue(componentSource.contains("titleText = field.title"))
         XCTAssertTrue(componentSource.contains("requirementTitle = field.requirementTitle"))
         XCTAssertTrue(componentSource.contains("Text(titleText)"))
-        XCTAssertTrue(componentSource.contains("Text(requirementTitle)"))
+        XCTAssertTrue(componentSource.contains("requirementText(requirementTitle)"))
         XCTAssertTrue(componentSource.contains("standardLabelRowHeight"))
         XCTAssertTrue(componentSource.contains("HStack(alignment: .firstTextBaseline, spacing: 6)"))
         XCTAssertFalse(componentSource.contains("ViewThatFits(in: .horizontal)"))
@@ -99,11 +98,7 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
     }
 
     func testProviderSheetCredentialGridAdaptsWithoutCompressingFields() throws {
-        let rootSource = try source("Sources/RuneUI/Views/RuneRootView.swift")
-        let columnRegion = try XCTUnwrap(rootSource.slice(
-            from: "private var addClusterProviderCredentialColumns: [GridItem]",
-            to: "private var selectedAddClusterNativeContextOption"
-        ))
+        let columnRegion = try source("Sources/RuneUI/Views/AddClusterProviderCredentialField.swift")
 
         XCTAssertTrue(columnRegion.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(columnRegion.contains("GridItem(.flexible()"))
@@ -215,7 +210,7 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
             case .required:
                 return field.accessibilityRequirementHint == "Required field"
             case .optional:
-                return field.accessibilityRequirementHint == "Optional field"
+                return field.accessibilityRequirementHint.hasPrefix("Optional field")
             case .requiredForOptionalMethod:
                 return field.accessibilityRequirementHint == "Needed only when using this optional import method"
             }
@@ -284,8 +279,7 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         fields: [AddClusterProviderField],
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(fields) { field in
+        AddClusterProviderCredentialGrid(fields: fields) { field in
                 if field.input == .sensitiveJSONFile {
                     AddClusterProviderCredentialField(field: field) {
                         Label("Choose a synthetic JSON document below.", systemImage: "doc.badge.plus")
@@ -296,12 +290,93 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
                         text: .constant("synthetic-value")
                     )
                 }
-            }
         }
         .padding(12)
         .dynamicTypeSize(dynamicTypeSize)
+        .runeInterfaceTypography(configuredFontSize: 13, systemDynamicTypeSize: dynamicTypeSize)
         .environment(\.locale, Locale(identifier: "en"))
         .frame(width: AddClusterProviderCredentialFieldMetrics.supportedCompactWidth)
+    }
+
+    func testProviderSheetKeepsFooterVisibleWithLongContentAtCompactAndEnlargedSizes() throws {
+        for provider in [AddClusterProviderIdentifier.aks, .eks, .gke] {
+            for width in [CGFloat(400), CGFloat(560)] {
+                for dynamicTypeSize in [DynamicTypeSize.large, .accessibility3] {
+                    let primary = presentation(provider, mode: .externalCLI)
+                    let optional = presentation(provider, mode: .nativeOnly)
+                    let host = NSHostingView(rootView: AddClusterProviderSheetLayout(width: width) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(primary.title).runeInterfaceFont(relativeSize: 2, weight: .semibold)
+                            Text(primary.subtitle).runeInterfaceFont().foregroundStyle(.secondary)
+                        }
+                    } content: {
+                        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
+                            Text(primary.note).runeInterfaceFont(relativeSize: -1)
+                            Text("Cluster").runeInterfaceFont(weight: .semibold)
+                            self.renderedFields(primary.fields).runeInsetCard(padding: 12)
+                            Text("Advanced · \(optional.credentialSectionTitle)").runeInterfaceFont(weight: .semibold)
+                            Text(optional.credentialSectionDescription).runeInterfaceFont(relativeSize: -1)
+                            self.renderedFields(optional.credentialFields(excluding: primary.fields))
+                                .runeInsetCard(padding: 12)
+                            Text(String(repeating: "Synthetic provider diagnostic with a suggested recovery action. ", count: 12))
+                                .runeInterfaceFont(relativeSize: -1)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } actions: {
+                        Button {} label: { RuneDialogButtonLabel("Close") }
+                            .buttonStyle(.bordered)
+                            .background(ProviderFieldFrameProbe(identifier: "close"))
+                        Button {} label: { RuneDialogButtonLabel("Add cluster") }
+                            .buttonStyle(.borderedProminent)
+                            .background(ProviderFieldFrameProbe(identifier: "primary"))
+                    }
+                    .dynamicTypeSize(dynamicTypeSize)
+                    .runeInterfaceTypography(configuredFontSize: 13, systemDynamicTypeSize: dynamicTypeSize)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .environment(\.colorScheme, .light)
+                    .environment(\.locale, Locale(identifier: "en")))
+
+                    host.appearance = NSAppearance(named: .aqua)
+                    host.frame = NSRect(x: 0, y: 0, width: width, height: RuneUILayoutMetrics.providerDialogMaxHeight)
+                    host.layoutSubtreeIfNeeded()
+                    XCTAssertEqual(host.fittingSize.width, width, accuracy: 0.5)
+                    let scrollView = try XCTUnwrap(scrollViews(in: host).first)
+                    XCTAssertFalse(scrollView.hasHorizontalScroller)
+                    let scrollFrame = host.convert(scrollView.bounds, from: scrollView)
+                    for id in ["close", "primary"] {
+                        let probe = try XCTUnwrap(descendants(in: host).first { $0.identifier?.rawValue == id })
+                        let frame = host.convert(probe.bounds, from: probe)
+                        XCTAssertGreaterThan(frame.width, 40)
+                        XCTAssertGreaterThan(frame.height, 20)
+                        XCTAssertTrue(host.bounds.insetBy(dx: -1, dy: -1).contains(frame), "The \(id) action must remain inside the sheet.")
+                        XCTAssertFalse(scrollFrame.intersects(frame), "The footer must remain outside the scrolling form.")
+                    }
+
+                    if let directory = ProcessInfo.processInfo.environment["RUNE_UI_SNAPSHOT_DIRECTORY"] {
+                        let destination = URL(fileURLWithPath: directory, isDirectory: true)
+                        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                        let sizeName = dynamicTypeSize.isAccessibilitySize ? "enlarged" : "regular"
+                        try renderedPNG(from: host).write(to: destination.appendingPathComponent("provider-\(provider.rawValue)-\(Int(width))-\(sizeName).png"))
+                    }
+                }
+            }
+        }
+    }
+
+    private func renderedFields(_ fields: [AddClusterProviderField]) -> some View {
+        AddClusterProviderCredentialGrid(fields: fields) { field in
+            if field.input == .sensitiveJSONFile {
+                AddClusterProviderCredentialField(field: field) {
+                    Button("Choose JSON…") {}
+                }
+            } else {
+                AddClusterProviderCredentialTextInput(field: field, text: .constant("synthetic-value"))
+            }
+        }
+    }
+
+    private func descendants(in root: NSView) -> [NSView] {
+        [root] + root.subviews.flatMap { descendants(in: $0) }
     }
 
     private func scrollViews(in root: NSView) -> [NSScrollView] {
@@ -332,6 +407,18 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
     }
+}
+
+private struct ProviderFieldFrameProbe: NSViewRepresentable {
+    let identifier: String
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.identifier = NSUserInterfaceItemIdentifier(identifier)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 private extension AddClusterProviderFieldIdentifier {

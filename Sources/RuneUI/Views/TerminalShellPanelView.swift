@@ -231,6 +231,15 @@ struct TerminalShellPanelView: View {
                     .accessibilityIdentifier("terminal-shell-open-pod-logs")
                 }
                 exportMenu
+                RuneBorderedIconButton(
+                    "Save Active to Export Folder",
+                    systemImage: "folder.badge.plus",
+                    help: "Save the active terminal transcript directly to the default export folder."
+                ) {
+                    onSaveActiveTranscriptToExportFolder()
+                }
+                .disabled(!canSaveActiveTranscript)
+                .accessibilityIdentifier("terminal-quick-save")
             }
         }
     }

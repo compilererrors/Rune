@@ -20,14 +20,16 @@ extension AddClusterProviderField {
     }
 
     var accessibilityRequirementHint: String {
+        let requirementHint: String
         switch requirement {
         case .required:
-            return "Required field"
+            requirementHint = "Required field"
         case .optional:
-            return "Optional field"
+            requirementHint = "Optional field"
         case .requiredForOptionalMethod:
-            return "Needed only when using this optional import method"
+            requirementHint = "Needed only when using this optional import method"
         }
+        return [requirementHint, helpText].compactMap { $0 }.joined(separator: ". ")
     }
 
     var accessibilityIdentifier: String {
@@ -40,11 +42,13 @@ extension AddClusterProviderField {
 /// explained once by their optional method instead of repeated on every field.
 struct AddClusterProviderCredentialField<Content: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     private let titleText: String
     private let requirementTitle: String?
     private let accessibilityRequirementHint: String
     private let fieldAccessibilityIdentifier: String
+    private let helpText: String?
     private let content: Content
 
     init(
@@ -55,6 +59,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
         requirementTitle = field.requirementTitle
         accessibilityRequirementHint = field.accessibilityRequirementHint
         fieldAccessibilityIdentifier = field.accessibilityIdentifier
+        helpText = field.helpText
         self.content = content()
     }
 
@@ -68,6 +73,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
         requirementTitle = isRequired ? "Required" : "Optional"
         accessibilityRequirementHint = isRequired ? "Required field" : "Optional field"
         fieldAccessibilityIdentifier = accessibilityIdentifier
+        helpText = nil
         self.content = content()
     }
 
@@ -78,7 +84,10 @@ struct AddClusterProviderCredentialField<Content: View>: View {
                     stackedLabel
                 } else {
                     inlineLabel
-                        .frame(height: AddClusterProviderCredentialFieldMetrics.standardLabelRowHeight)
+                        .frame(minHeight: max(
+                            AddClusterProviderCredentialFieldMetrics.standardLabelRowHeight,
+                            interfaceFontSize + 5
+                        ))
                 }
             }
             .accessibilityHidden(true)
@@ -87,6 +96,14 @@ struct AddClusterProviderCredentialField<Content: View>: View {
                 .accessibilityLabel(titleText)
                 .accessibilityHint(accessibilityRequirementHint)
                 .accessibilityIdentifier(fieldAccessibilityIdentifier)
+
+            if let helpText {
+                Text(helpText)
+                    .runeInterfaceFont(relativeSize: -2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -110,7 +127,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
 
     private var title: some View {
         Text(titleText)
-            .font(.caption.weight(.semibold))
+            .runeInterfaceFont(relativeSize: -1, weight: .semibold)
             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             .minimumScaleFactor(0.85)
     }
@@ -124,9 +141,44 @@ struct AddClusterProviderCredentialField<Content: View>: View {
 
     private func requirementText(_ value: String) -> some View {
         Text(value)
-            .font(.caption2.weight(.medium))
+            .runeInterfaceFont(relativeSize: -2, weight: .medium)
             .foregroundStyle(.secondary)
             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+    }
+}
+
+/// The production provider form grid, shared with rendered layout checks.
+struct AddClusterProviderCredentialGrid<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
+
+    let fields: [AddClusterProviderField]
+    @ViewBuilder var input: (AddClusterProviderField) -> Content
+
+    var body: some View {
+        LazyVGrid(
+            columns: columns,
+            alignment: .leading,
+            spacing: RuneUILayoutMetrics.dialogControlSpacing
+        ) {
+            ForEach(fields) { field in
+                input(field)
+            }
+        }
+        .runeInterfaceFont()
+        .runeInterfaceControlSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var columns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize || interfaceFontSize >= 16 {
+            return [GridItem(.flexible(), spacing: RuneUILayoutMetrics.dialogControlSpacing, alignment: .top)]
+        }
+        return [GridItem(
+            .adaptive(minimum: RuneAddClusterProviderActionLayout.minimumCredentialFieldWidth),
+            spacing: RuneUILayoutMetrics.dialogControlSpacing,
+            alignment: .top
+        )]
     }
 }
 

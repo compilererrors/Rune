@@ -8,18 +8,25 @@ struct HelmRollbackOptionsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Rollback options")
-                .font(.caption.weight(.semibold))
+                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
+            RuneAdaptiveFormRow {
                 Toggle("Wait", isOn: $wait)
                     .toggleStyle(.checkbox)
                 Toggle("Cleanup on fail", isOn: $cleanupOnFail)
                     .toggleStyle(.checkbox)
-                TextField("Timeout", text: $timeout)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 86)
+                HStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                    Text("Timeout")
+                        .foregroundStyle(.secondary)
+                    TextField("5m", text: $timeout)
+                        .textFieldStyle(.roundedBorder)
+                        .runeTextInputCursor()
+                        .frame(width: 86)
+                        .accessibilityLabel("Rollback timeout")
+                        .help("Maximum wait duration, for example 5m or 30s.")
+                }
             }
-            .font(.caption)
+            .runeInterfaceFont(relativeSize: -1)
         }
     }
 }

@@ -2,6 +2,41 @@ import XCTest
 @testable import RuneUI
 
 final class AddClusterProviderPresentationTests: XCTestCase {
+    func testOptionalCredentialsReuseClusterFieldsWithoutDuplicatingInputs() {
+        for provider in [AddClusterProviderIdentifier.aks, .eks, .gke] {
+            let primary = presentation(provider, mode: .externalCLI)
+            let optional = presentation(provider, mode: .nativeOnly)
+            let credentials = optional.credentialFields(excluding: primary.fields)
+            let visibleIdentifiers = (primary.fields + credentials).map(\.id)
+
+            XCTAssertEqual(visibleIdentifiers.count, Set(visibleIdentifiers).count)
+            XCTAssertTrue(optional.fields.allSatisfy { visibleIdentifiers.contains($0.id) })
+            XCTAssertFalse(credentials.contains { $0.id == .clusterName })
+            XCTAssertEqual(credentials.filter { $0.input.isSensitive }.count, optional.fields.filter { $0.input.isSensitive }.count)
+        }
+    }
+
+    func testSharedAzureSubscriptionExplainsBothImportRequirements() throws {
+        let primary = presentation(.aks, mode: .externalCLI)
+        let field = try XCTUnwrap(primary.fields.first { $0.id == .subscription })
+        XCTAssertFalse(field.isRequired, "Azure CLI can use its active subscription.")
+        XCTAssertEqual(field.title, "Subscription ID or name")
+        XCTAssertEqual(field.helpText, "Optional for Azure CLI. Service-principal import requires a subscription ID.")
+    }
+
+    func testLocalCLISetupUsesInteractiveSignInAndClearlyMarksSSOProfileTemplate() {
+        XCTAssertEqual(presentation(.aks, mode: .externalCLI).localCLISetupCommands, ["az login"])
+        XCTAssertEqual(presentation(.eks, mode: .externalCLI).localCLISetupCommands, ["aws configure sso", "aws sso login --profile <profile>"])
+        XCTAssertEqual(presentation(.gke, mode: .externalCLI).localCLISetupCommands, ["gcloud auth login"])
+        for provider in [AddClusterProviderIdentifier.aks, .eks, .gke] {
+            let value = presentation(provider, mode: .externalCLI)
+            XCTAssertEqual(value.localCLISetupDocumentationURL?.scheme, "https")
+            XCTAssertFalse(value.localCLISetupCommands.contains("aws configure"))
+            XCTAssertTrue(value.localCLISetupDescription.localizedCaseInsensitiveContains("no Rune account or server"))
+        }
+        XCTAssertTrue(presentation(.local, mode: .externalCLI).localCLISetupCommands.isEmpty)
+    }
+
     func testExecutionModeUsesCapabilityInsteadOfDistributionLabel() {
         XCTAssertEqual(
             AddClusterProviderExecutionMode(externalCommandsAllowed: true),

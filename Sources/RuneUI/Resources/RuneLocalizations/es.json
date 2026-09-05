@@ -57,6 +57,8 @@
   "previous": "Anterior",
   "previousLogsHelp": "Solicita logs de la instancia anterior del contenedor cuando Kubernetes la tenga.",
   "quickEdit": "Edicion rapida",
+  "quickSaveLogs": "Guardar logs rápido",
+  "quickSaveLogsHelp": "Guarda los logs actuales directamente en la carpeta de exportación predeterminada, sin elegir una carpeta ni etiquetas.",
   "releases": "Releases",
   "replicaSets": "ReplicaSets",
   "reload": "Recargar",

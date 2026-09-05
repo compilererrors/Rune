@@ -57,6 +57,8 @@
   "previous": "पिछला",
   "previousLogsHelp": "जब Kubernetes के पास हो, तो पिछले container instance के logs मांगें.",
   "quickEdit": "त्वरित संपादन",
+  "quickSaveLogs": "लॉग तुरंत सेव करें",
+  "quickSaveLogsHelp": "फ़ोल्डर या टैग चुने बिना मौजूदा लॉग सीधे डिफ़ॉल्ट एक्सपोर्ट फ़ोल्डर में सेव करें।",
   "releases": "Releases",
   "replicaSets": "ReplicaSets",
   "reload": "रीलोड करें",

@@ -188,44 +188,38 @@ struct ResourceLogsToolbar: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    @ViewBuilder
     private var tailControl: some View {
-        if isTailModeEnabled {
-            if isStreamPaused {
-                Button(action: toggleTailPlayback) {
-                    toolbarIconLabel(t(.resume), systemImage: "play.fill", help: t(.resumeTailHelp))
-                }
-                .buttonStyle(.bordered)
-                .logToolbarIconButtonFrame()
-                .contextMenu {
-                    Button(t(.stopTail)) {
-                        isTailModeEnabled = false
-                        isStreamPaused = false
-                    }
-                }
-                .help(t(.resumeTailHelp))
-            } else {
-                Button(action: toggleTailPlayback) {
-                    toolbarIconLabel(t(.pause), systemImage: "pause.fill", help: t(.pauseTailHelp))
-                }
-                .buttonStyle(.borderedProminent)
-                .logToolbarIconButtonFrame()
-                .contextMenu {
-                    Button(t(.stopTail)) {
-                        isTailModeEnabled = false
-                        isStreamPaused = false
-                    }
-                }
-                .help(t(.pauseTailHelp))
-            }
-        } else {
-            Button(action: toggleTailPlayback) {
-                toolbarIconLabel(t(.tail), systemImage: "play.fill", help: t(.startTailHelp))
-            }
-            .buttonStyle(.bordered)
-            .logToolbarIconButtonFrame()
-            .help(t(.startTailHelp))
+        Button(action: toggleTailPlayback) {
+            LogToolbarStatusIndicator(
+                statusText: statusText,
+                isTailModeEnabled: isTailModeEnabled,
+                isStreamPaused: isStreamPaused
+            )
         }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .help("\(statusText). \(tailActionHelp)")
+        .accessibilityLabel(tailActionTitle)
+        .accessibilityValue(statusText)
+        .accessibilityIdentifier("log-tail-playback")
+        .contextMenu {
+            if isTailModeEnabled {
+                Button(t(.stopTail)) {
+                    isTailModeEnabled = false
+                    isStreamPaused = false
+                }
+            }
+        }
+    }
+
+    private var tailActionTitle: String {
+        guard isTailModeEnabled else { return t(.tail) }
+        return isStreamPaused ? t(.resume) : t(.pause)
+    }
+
+    private var tailActionHelp: String {
+        guard isTailModeEnabled else { return t(.startTailHelp) }
+        return isStreamPaused ? t(.resumeTailHelp) : t(.pauseTailHelp)
     }
 
     private func toggleTailPlayback() {
@@ -239,10 +233,7 @@ struct ResourceLogsToolbar: View {
 
     private var toolbarActions: some View {
         LogToolbarGroup(spacing: 6) {
-            LogToolbarStatusIndicator(
-                statusText: statusText,
-                showsPreviousHint: includePreviousLogs
-            )
+            tailControl
 
             Button(action: onReload) {
                 Label(t(.reload), systemImage: "arrow.clockwise")
@@ -251,6 +242,14 @@ struct ResourceLogsToolbar: View {
             .logToolbarButtonFrame()
             .help(t(.reloadLogsHelp))
 
+            Toggle(isOn: $includePreviousLogs) {
+                toolbarIconLabel(t(.previous), systemImage: "clock.arrow.circlepath", help: t(.previousLogsHelp))
+            }
+            .toggleStyle(.button)
+            .logToolbarIconButtonFrame()
+            .help(t(.previousLogsHelp))
+            .accessibilityLabel(t(.previous))
+
             Button(action: onSave) {
                 Label(t(.saveLogs), systemImage: "square.and.arrow.down")
             }
@@ -258,15 +257,14 @@ struct ResourceLogsToolbar: View {
             .logToolbarButtonFrame(width: 114)
             .help(t(.saveCurrentLogsHelp))
 
-            Toggle(isOn: $includePreviousLogs) {
-                toolbarIconLabel(t(.previous), systemImage: "clock.arrow.circlepath", help: t(.previousLogsHelp))
+            Button(action: onSaveToExportFolder) {
+                toolbarIconLabel(t(.quickSaveLogs), systemImage: "folder.badge.plus", help: t(.quickSaveLogsHelp))
             }
-                .toggleStyle(.button)
-                .logToolbarIconButtonFrame()
-                .help(t(.previousLogsHelp))
-                .accessibilityLabel(t(.previous))
-
-            tailControl
+            .buttonStyle(.bordered)
+            .logToolbarIconButtonFrame()
+            .help(t(.quickSaveLogsHelp))
+            .accessibilityLabel(t(.quickSaveLogs))
+            .accessibilityIdentifier("log-quick-save")
 
             Menu {
                 Button(action: onCopySelection) {
@@ -691,30 +689,25 @@ struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
 
 private struct LogToolbarStatusIndicator: View {
     let statusText: String
-    let showsPreviousHint: Bool
+    let isTailModeEnabled: Bool
+    let isStreamPaused: Bool
+    @State private var isHovered = false
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         ZStack {
             Circle()
-                .fill(statusColor.opacity(0.18))
-                .frame(width: 18, height: 18)
+                .fill(statusColor.opacity(isHovered ? 0.28 : 0.18))
+                .frame(width: RuneUILayoutMetrics.iconButtonSize, height: RuneUILayoutMetrics.iconButtonSize)
 
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
+            Image(systemName: isTailModeEnabled && !isStreamPaused ? "pause.fill" : "play.fill")
+                .runeInterfaceFont(relativeSize: -3, weight: .bold)
+                .foregroundStyle(statusColor)
         }
-        .frame(width: 20, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
-        .help(helpText)
-        .accessibilityLabel("Log status: \(statusText)")
+        .frame(width: RuneUILayoutMetrics.borderedIconButtonWidth, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
         .fixedSize(horizontal: true, vertical: true)
-    }
-
-    private var helpText: String {
-        if showsPreviousHint {
-            return "\(statusText). Previous logs only exist for restarted containers."
-        }
-        return statusText
     }
 
     private var statusColor: Color {
@@ -725,8 +718,11 @@ private struct LogToolbarStatusIndicator: View {
         if normalized.contains("loading") || normalized.contains("reloading") {
             return RuneSemanticColorRole.info.color(in: runeThemePalette)
         }
-        if normalized.contains("paused") {
+        if isTailModeEnabled && isStreamPaused {
             return RuneSemanticColorRole.warning.color(in: runeThemePalette)
+        }
+        guard isTailModeEnabled else {
+            return runeThemePalette?.secondaryText ?? Color.secondary
         }
         return RuneSemanticColorRole.success.color(in: runeThemePalette)
     }

@@ -47,6 +47,40 @@ private struct KubeConfigSourceFingerprint: Hashable {
     }
 }
 
+/// Content identity is reserved for explicit reviews and writes, outside frequent refresh paths.
+private struct ReviewedKubeConfigSourceIdentity: Equatable, Sendable {
+    private struct Entry: Equatable, Sendable {
+        let path: String
+        let digest: Data
+    }
+
+    private let entries: [Entry]
+
+    init(sources: [KubeConfigSource]) throws {
+        let maximumBytes = 16 * 1_024 * 1_024
+        entries = try sources.map { source in
+            let url = source.url.standardizedFileURL
+            let resolvedURL = url.resolvingSymlinksInPath()
+            let values = try resolvedURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, (values.fileSize ?? 0) <= maximumBytes else {
+                throw RuneError.invalidInput(message: "Kubeconfig review requires regular files no larger than 16 MiB each.")
+            }
+            let handle = try FileHandle(forReadingFrom: resolvedURL)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            var bytesRead = 0
+            while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+                bytesRead += chunk.count
+                guard bytesRead <= maximumBytes else {
+                    throw RuneError.invalidInput(message: "The kubeconfig grew beyond the 16 MiB review limit. Review a smaller file.")
+                }
+                hasher.update(data: chunk)
+            }
+            return Entry(path: url.path, digest: Data(hasher.finalize()))
+        }
+    }
+}
+
 private struct ResourceSnapshotRequestScope {
     let requestID: UUID
     let kubeConfigSources: [KubeConfigSource]
@@ -1117,9 +1151,16 @@ public final class RuneAppViewModel: ObservableObject {
     private struct PendingWriteScopeSnapshot: Equatable, Sendable {
         let id: UInt64
         let kubeConfigSources: [KubeConfigSource]
+        let sourceFingerprint: KubeConfigSourceFingerprint
+        let sourceIdentity: ReviewedKubeConfigSourceIdentity?
         let context: KubeContext
         let namespace: String
         let isProduction: Bool
+    }
+
+    private struct PendingKubeConfigContextRemovalScope {
+        let sources: [KubeConfigSource]
+        let identity: ReviewedKubeConfigSourceIdentity
     }
 
     private struct AuthDoctorScope: Equatable {
@@ -1217,6 +1258,8 @@ public final class RuneAppViewModel: ObservableObject {
                 pendingWriteScopeSnapshot = PendingWriteScopeSnapshot(
                     id: nextPendingWriteScopeID,
                     kubeConfigSources: appState.kubeConfigSources,
+                    sourceFingerprint: kubeConfigSourceFingerprint(for: appState.kubeConfigSources),
+                    sourceIdentity: try? ReviewedKubeConfigSourceIdentity(sources: appState.kubeConfigSources),
                     context: context,
                     namespace: appState.selectedNamespace,
                     isProduction: isProductionContext(context)
@@ -1311,6 +1354,8 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var isKubeConfigScopeReloadPending = false
     @Published public private(set) var pendingKubeConfigContextRemoval: KubeConfigContextRemovalPreview?
     @Published public private(set) var isRemovingKubeConfigContext = false
+    @Published public private(set) var kubeConfigContextRemovalError: String?
+    private var pendingKubeConfigContextRemovalScope: PendingKubeConfigContextRemovalScope?
 
     private let kubeClient: KubernetesClient
     private let bookmarkManager: BookmarkManager
@@ -3180,6 +3225,26 @@ public final class RuneAppViewModel: ObservableObject {
         return message
     }
 
+    public var pendingWriteActionTargetSummary: String {
+        guard let action = pendingWriteAction, let scope = pendingWriteScopeSnapshot else { return "" }
+        let target: String
+        switch action {
+        case let .delete(kind, _), let .apply(kind, _, _, _), let .controllerRolloutUndo(kind, _, _):
+            target = kind.isNamespaced ? "Namespace: \(scope.namespace)" : "Cluster-wide resource"
+        case let .deleteMany(resources):
+            let namespaces = Set(resources.filter { $0.kind.isNamespaced }.map(\.namespace)).sorted()
+            let hasClusterResources = resources.contains { !$0.kind.isNamespaced }
+            var parts = namespaces.isEmpty ? [] : ["Namespaces: \(namespaces.joined(separator: ", "))"]
+            if hasClusterResources { parts.append("Includes cluster-wide resources") }
+            target = parts.joined(separator: "\n")
+        case let .helmRollback(_, namespace, _, _, _, _):
+            target = "Namespace: \(namespace)"
+        default:
+            target = "Namespace: \(scope.namespace)"
+        }
+        return ["Context: \(scope.context.name)", target].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
     public var pendingWriteActionKubectlCommand: String {
         guard UserDefaults.standard.runeWriteSafetyRequireCopyableCommand else { return "" }
         guard let pendingWriteAction,
@@ -3924,7 +3989,7 @@ public final class RuneAppViewModel: ObservableObject {
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeReadyForReviewStatus(for: provider)
                 self.cloudKubeConfigImportDiagnostic = nil
                 self.nativeKubernetesAuthStatus = "Cluster access is ready for review. Credentials remain in memory until you confirm."
-            } catch is CancellationError {
+            } catch where error is CancellationError || Task.isCancelled {
                 self.discardPendingKubeConfigImport(clearReview: true)
                 self.cloudKubeConfigImportStatus = AddClusterCloudImportWorkflow.nativeCancelledStatus(for: provider)
                 self.cloudKubeConfigImportDiagnostic = nil
@@ -3994,6 +4059,9 @@ public final class RuneAppViewModel: ObservableObject {
 
     private var canStartNativeCredentialOperation: Bool {
         !isConnectingNativeKubernetesAuth
+            && !isPreparingKubeConfigImport
+            && !isCommittingKubeConfigImport
+            && !isKubeConfigImportConfirmationPending
             && !isRunningCloudKubeConfigImport
             && !isSigningInToAzure
             && !isRunningNativeCloudClusterImport
@@ -7371,6 +7439,10 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func requestKubeConfigContextRemoval(_ context: KubeContext) {
+        guard !isRemovingKubeConfigContext else { return }
+        kubeConfigContextRemovalError = nil
+        pendingKubeConfigContextRemoval = nil
+        pendingKubeConfigContextRemovalScope = nil
         guard context.name != demoContextName else {
             state.setError(RuneError.invalidInput(message: "The demo context is controlled in Settings and has no kubeconfig entry to remove."))
             return
@@ -7380,10 +7452,17 @@ public final class RuneAppViewModel: ObservableObject {
             return
         }
         do {
-            pendingKubeConfigContextRemoval = try kubeConfigContextRemover.previewRemoval(
+            let sources = state.kubeConfigSources
+            let identity = try ReviewedKubeConfigSourceIdentity(sources: sources)
+            let preview = try kubeConfigContextRemover.previewRemoval(
                 of: context.name,
-                from: state.kubeConfigSources
+                from: sources
             )
+            guard try ReviewedKubeConfigSourceIdentity(sources: sources) == identity else {
+                throw RuneError.invalidInput(message: "The kubeconfig changed while preparing this review. Review removal again.")
+            }
+            pendingKubeConfigContextRemovalScope = PendingKubeConfigContextRemovalScope(sources: sources, identity: identity)
+            pendingKubeConfigContextRemoval = preview
             state.clearError()
         } catch {
             diagnostics.log("kubeconfig context removal preview failed: \(error.localizedDescription)")
@@ -7394,32 +7473,49 @@ public final class RuneAppViewModel: ObservableObject {
     public func cancelKubeConfigContextRemoval() {
         guard !isRemovingKubeConfigContext else { return }
         pendingKubeConfigContextRemoval = nil
+        pendingKubeConfigContextRemovalScope = nil
+        kubeConfigContextRemovalError = nil
     }
 
     public func confirmKubeConfigContextRemoval() {
         guard let pending = pendingKubeConfigContextRemoval,
               !isRemovingKubeConfigContext else { return }
         guard !state.resourceYAMLHasUnsavedEdits else {
-            state.setError(RuneError.invalidInput(message: "Finish or discard the unsaved YAML edit before changing kubeconfig."))
+            let message = "Finish or discard the unsaved YAML edit before changing kubeconfig."
+            kubeConfigContextRemovalError = message
+            state.setError(RuneError.invalidInput(message: message))
             return
         }
 
-        let sources = state.kubeConfigSources
+        guard let scope = pendingKubeConfigContextRemovalScope,
+              state.kubeConfigSources == scope.sources,
+              (try? ReviewedKubeConfigSourceIdentity(sources: scope.sources)) == scope.identity else {
+            kubeConfigContextRemovalError = "The local kubeconfig changed after this review. Cancel and review removal again."
+            return
+        }
+        kubeConfigContextRemovalError = nil
         isRemovingKubeConfigContext = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.isRemovingKubeConfigContext = false }
             do {
+                guard self.state.kubeConfigSources == scope.sources,
+                      try ReviewedKubeConfigSourceIdentity(sources: scope.sources) == scope.identity else {
+                    self.kubeConfigContextRemovalError = "The local kubeconfig changed after this review. Cancel and review removal again."
+                    return
+                }
                 let completed = try self.kubeConfigContextRemover.removeContext(
                     named: pending.contextName,
-                    from: sources
+                    from: scope.sources
                 )
                 self.pendingKubeConfigContextRemoval = nil
+                self.pendingKubeConfigContextRemovalScope = nil
                 self.diagnostics.log(
                     "removed kubeconfig context from local sources count=\(completed.affectedSourceDisplayNames.count)"
                 )
                 _ = try await self.syncKubeConfigSourcesFromDiscovery(reason: "context-removal")
             } catch {
+                self.kubeConfigContextRemovalError = "Rune could not update the local kubeconfig. Check file access and file validity, then try again."
                 self.diagnostics.log("kubeconfig context removal failed: \(error.localizedDescription)")
                 self.state.setError(error)
             }
@@ -8154,12 +8250,16 @@ public final class RuneAppViewModel: ObservableObject {
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
             guard let payload = currentLogsExportPayload(timestamp: timestamp) else { return }
-            _ = try configuredExporter.save(
+            let savedURL = try configuredExporter.save(
                 data: payload.data,
                 suggestedName: payload.suggestedName,
                 allowedFileTypes: payload.allowedFileTypes,
                 kind: .plainText,
                 openAfterSave: openAfterSave
+            )
+            state.setInfoNotice(
+                title: "Logs saved",
+                message: "Saved \(savedURL.lastPathComponent) to the default export folder."
             )
         } catch {
             setExportErrorUnlessCancelled(error)
@@ -8218,12 +8318,16 @@ public final class RuneAppViewModel: ObservableObject {
         do {
             let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
             guard let payload = activeTerminalTranscriptExportPayload(timestamp: timestamp) else { return }
-            _ = try configuredExporter.save(
+            let savedURL = try configuredExporter.save(
                 data: payload.data,
                 suggestedName: payload.suggestedName,
                 allowedFileTypes: payload.allowedFileTypes,
                 kind: .plainText,
                 openAfterSave: openAfterSave
+            )
+            state.setInfoNotice(
+                title: "Transcript saved",
+                message: "Saved \(savedURL.lastPathComponent) to the default export folder."
             )
         } catch {
             setExportErrorUnlessCancelled(error)
@@ -11324,6 +11428,14 @@ public final class RuneAppViewModel: ObservableObject {
             state.setError(RuneError.invalidInput(message: "The write target is unavailable. Arm the action again."))
             return
         }
+        do {
+            try validatePendingWriteExecution(scope)
+        } catch {
+            cancelPendingWriteAction()
+            pendingRollbackPlan = nil
+            state.setError(error)
+            return
+        }
         if scope.isProduction,
            action.isDestructive,
            requiresProductionSecondConfirmation,
@@ -11340,6 +11452,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
+                try validatePendingWriteExecution(scope)
                 switch action {
                 case let .delete(kind, name):
                     try await kubeClient.deleteResource(
@@ -11351,6 +11464,7 @@ public final class RuneAppViewModel: ObservableObject {
                     )
                 case let .deleteMany(resources):
                     for resource in resources {
+                        try validatePendingWriteExecution(scope)
                         try await kubeClient.deleteResource(
                             from: scope.kubeConfigSources,
                             context: scope.context,
@@ -11387,6 +11501,7 @@ public final class RuneAppViewModel: ObservableObject {
                             )
                         }
                     }
+                    try validatePendingWriteExecution(scope)
                     try await kubeClient.applyYAML(
                         from: scope.kubeConfigSources,
                         context: scope.context,
@@ -11433,6 +11548,7 @@ public final class RuneAppViewModel: ObservableObject {
                             revision: revision
                         )
                     }
+                    try validatePendingWriteExecution(scope)
                     try await kubeClient.rollbackDeploymentRollout(
                         from: scope.kubeConfigSources,
                         context: scope.context,
@@ -11476,6 +11592,7 @@ public final class RuneAppViewModel: ObservableObject {
                             timeout: 120
                         )
                     }
+                    try validatePendingWriteExecution(scope)
                     _ = try await helmCommandRunner.rollback(request, timeout: 120)
                     if pendingWriteScopeMatchesCurrentSelection(scope) {
                         do {
@@ -11551,13 +11668,28 @@ public final class RuneAppViewModel: ObservableObject {
                 )
             } catch {
                 appendWriteAudit(audit, status: "Failed", message: error.localizedDescription)
-                state.setError(error)
+                if pendingWriteScopeMatchesCurrentSelection(scope) {
+                    state.setError(error)
+                }
             }
+        }
+    }
+
+    private func validatePendingWriteExecution(_ scope: PendingWriteScopeSnapshot) throws {
+        try Task.checkCancellation()
+        guard !state.isReadOnlyMode else { throw RuneError.readOnlyMode }
+        guard let identity = scope.sourceIdentity,
+              kubeConfigSourceFingerprint(for: scope.kubeConfigSources) == scope.sourceFingerprint,
+              (try? ReviewedKubeConfigSourceIdentity(sources: scope.kubeConfigSources)) == identity else {
+            throw RuneError.invalidInput(message: "The kubeconfig changed after this action was reviewed. Review the target and confirm the action again.")
         }
     }
 
     private func pendingWriteScopeMatchesCurrentSelection(_ scope: PendingWriteScopeSnapshot) -> Bool {
         guard state.kubeConfigSources == scope.kubeConfigSources,
+              kubeConfigSourceFingerprint(for: scope.kubeConfigSources) == scope.sourceFingerprint,
+              let identity = scope.sourceIdentity,
+              (try? ReviewedKubeConfigSourceIdentity(sources: scope.kubeConfigSources)) == identity,
               state.selectedContext == scope.context else {
             return false
         }
@@ -11779,6 +11911,7 @@ public final class RuneAppViewModel: ObservableObject {
     ) -> (action: String, resource: String, contextName: String, namespace: String) {
         let resource: String
         let actionName: String
+        var auditNamespace = namespace
 
         switch action {
         case let .delete(kind, name):
@@ -11810,6 +11943,7 @@ public final class RuneAppViewModel: ObservableObject {
             resource = revision.map { "\(kind.kubernetesResourceName)/\(name) revision=\($0)" } ?? "\(kind.kubernetesResourceName)/\(name)"
         case let .helmRollback(releaseName, namespace, revision, _, timeout, cleanupOnFail):
             actionName = "Helm Rollback"
+            auditNamespace = namespace
             resource = "helmrelease/\(namespace)/\(releaseName) revision=\(revision) timeout=\(timeout) cleanupOnFail=\(cleanupOnFail)"
         case let .exec(podName, command):
             actionName = "Exec"
@@ -11819,7 +11953,7 @@ public final class RuneAppViewModel: ObservableObject {
             resource = "cronjob/\(cronJobName) -> job/\(jobName)"
         }
 
-        return (actionName, resource, context.name, namespace)
+        return (actionName, resource, context.name, auditNamespace)
     }
 
     private func postActionVerificationMessage(

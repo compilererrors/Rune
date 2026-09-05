@@ -400,6 +400,122 @@ final class CloudAccountCoordinatorTests: XCTestCase {
         XCTAssertFalse(text.contains("endpoint"))
     }
 
+    func testRenameSurvivesInFlightCredentialRefresh() async throws {
+        let gate = SyntheticCloudGate()
+        let initial = account(id: uuid(80), generation: 1, label: "Original")
+        let refreshed = account(id: uuid(80), generation: 2, label: "Provider label")
+        let connector = SyntheticCloudAccountConnector(
+            connectSteps: [.record(initial)], refreshSteps: [.gated(gate, refreshed)]
+        )
+        let coordinator = CloudAccountCoordinator(connectors: [connector])
+        _ = try await coordinator.connect(provider: .azure)
+        let task = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+
+        _ = try await coordinator.rename(accountID: initial.id, localLabel: "Renamed locally")
+        await gate.open()
+        let result = try await task.value
+        let stored = await coordinator.account(id: initial.id)
+
+        XCTAssertEqual(result.localLabel, "Renamed locally")
+        XCTAssertEqual(result.credentialGeneration, refreshed.credentialGeneration)
+        XCTAssertEqual(stored, result)
+    }
+
+    func testRenameSurvivesInFlightDiscovery() async throws {
+        let gate = SyntheticCloudGate()
+        let initial = account(id: uuid(81), generation: 1, label: "Original")
+        let connector = SyntheticCloudAccountConnector(
+            connectSteps: [.record(initial)],
+            clusterSteps: [.gated(gate, CloudClusterDiscoveryPage(candidates: []))]
+        )
+        let fixedNow = now
+        let coordinator = CloudAccountCoordinator(connectors: [connector], now: { fixedNow })
+        _ = try await coordinator.connect(provider: .azure)
+        let task = Task { try await coordinator.synchronize(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+
+        _ = try await coordinator.rename(accountID: initial.id, localLabel: "Renamed locally")
+        await gate.open()
+        _ = try await task.value
+        let stored = await coordinator.account(id: initial.id)
+
+        XCTAssertEqual(stored?.localLabel, "Renamed locally")
+        XCTAssertEqual(stored?.lastSuccessfulSync, now)
+    }
+
+    func testCancelWithoutDiscoveryDoesNotSupersedeCredentialRefresh() async throws {
+        let gate = SyntheticCloudGate()
+        let initial = account(id: uuid(82), generation: 1, label: "Synthetic")
+        let refreshed = account(id: uuid(82), generation: 2, label: "Synthetic")
+        let connector = SyntheticCloudAccountConnector(
+            connectSteps: [.record(initial)], refreshSteps: [.gated(gate, refreshed)]
+        )
+        let coordinator = CloudAccountCoordinator(connectors: [connector])
+        _ = try await coordinator.connect(provider: .azure)
+        let task = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+
+        await coordinator.cancelSynchronization(accountID: initial.id)
+        await gate.open()
+        let result = try await task.value
+
+        XCTAssertEqual(result, refreshed)
+    }
+
+    func testDiagnosticsCannotReturnAfterCredentialRefreshOrDisconnect() async throws {
+        for shouldDisconnect in [false, true] {
+            let gate = SyntheticCloudGate()
+            let initial = account(id: uuid(83), generation: 1, label: "Synthetic")
+            let refreshed = account(id: uuid(83), generation: 2, label: "Synthetic")
+            let connector = SyntheticCloudAccountConnector(
+                connectSteps: [.record(initial)],
+                refreshSteps: [.record(refreshed)],
+                diagnosticGates: [gate]
+            )
+            let coordinator = CloudAccountCoordinator(connectors: [connector])
+            _ = try await coordinator.connect(provider: .azure)
+            let task = Task { try await coordinator.diagnostics(accountID: initial.id) }
+            try await gate.waitUntilBlocked()
+
+            if shouldDisconnect {
+                try await coordinator.disconnect(accountID: initial.id)
+            } else {
+                _ = try await coordinator.refresh(accountID: initial.id)
+            }
+            await gate.open()
+
+            do {
+                _ = try await task.value
+                XCTFail("Expected stale account diagnostics to be rejected")
+            } catch {
+                XCTAssertEqual(error as? CloudAccountCoordinatorError, .superseded)
+            }
+        }
+    }
+
+    func testNewDiagnosticsSupersedeOlderSameAccountRequest() async throws {
+        let gate = SyntheticCloudGate()
+        let initial = account(id: uuid(84), generation: 1, label: "Synthetic")
+        let connector = SyntheticCloudAccountConnector(
+            connectSteps: [.record(initial)], diagnosticGates: [gate]
+        )
+        let coordinator = CloudAccountCoordinator(connectors: [connector])
+        _ = try await coordinator.connect(provider: .azure)
+        let task = Task { try await coordinator.diagnostics(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+
+        let newest = try await coordinator.diagnostics(accountID: initial.id)
+        await gate.open()
+        XCTAssertTrue(newest.isEmpty)
+        do {
+            _ = try await task.value
+            XCTFail("Expected the earlier diagnostic request to be rejected")
+        } catch {
+            XCTAssertEqual(error as? CloudAccountCoordinatorError, .superseded)
+        }
+    }
+
     private func account(
         id: UUID,
         generation: UInt64,
@@ -471,6 +587,7 @@ private enum SyntheticConnectStep: Sendable {
 
 private enum SyntheticRefreshStep: Sendable {
     case record(CloudAccountRecord)
+    case gated(SyntheticCloudGate, CloudAccountRecord)
     case failure(CloudAccountFailure)
 }
 
@@ -493,6 +610,7 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
     private var scopeScript: [SyntheticScopeStep]
     private var clusterScript: [SyntheticClusterStep]
     private let diagnosticScript: [CloudAccountDiagnostic]
+    private var diagnosticGates: [SyntheticCloudGate]
     private var capturedConnectRequests: [CloudAccountConnectRequest] = []
     private var capturedScopeRequests: [CloudAccountPageRequest] = []
     private var capturedClusterRequests: [CloudAccountPageRequest] = []
@@ -503,13 +621,15 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
         refreshSteps: [SyntheticRefreshStep] = [],
         scopeSteps: [SyntheticScopeStep] = [.page(CloudDiscoveryScopePage(scopes: []))],
         clusterSteps: [SyntheticClusterStep] = [.page(CloudClusterDiscoveryPage(candidates: []))],
-        diagnostics: [CloudAccountDiagnostic] = []
+        diagnostics: [CloudAccountDiagnostic] = [],
+        diagnosticGates: [SyntheticCloudGate] = []
     ) {
         self.connectScript = connectSteps
         self.refreshScript = refreshSteps
         self.scopeScript = scopeSteps
         self.clusterScript = clusterSteps
         self.diagnosticScript = diagnostics
+        self.diagnosticGates = diagnosticGates
     }
 
     func connect(_ request: CloudAccountConnectRequest) async throws -> CloudAccountRecord {
@@ -532,6 +652,9 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
         let step = refreshScript.removeFirst()
         switch step {
         case .record(let account):
+            return account
+        case .gated(let gate, let account):
+            await gate.block()
             return account
         case .failure(let failure):
             throw failure
@@ -570,7 +693,11 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
     }
 
     func diagnostics(_ request: CloudAccountBoundRequest) async -> [CloudAccountDiagnostic] {
-        diagnosticScript
+        if !diagnosticGates.isEmpty {
+            let gate = diagnosticGates.removeFirst()
+            await gate.block()
+        }
+        return diagnosticScript
     }
 
     func scopeRequests() -> [CloudAccountPageRequest] { capturedScopeRequests }

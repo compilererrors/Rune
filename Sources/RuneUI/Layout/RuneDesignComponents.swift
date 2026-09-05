@@ -771,9 +771,44 @@ struct RuneInspectorActionRow<Content: View>: View {
     }
 }
 
+/// Short forms share one wrapping rule, including enlarged accessibility text.
+struct RuneAdaptiveFormRow<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ViewBuilder let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                stackedContent
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                        content
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    stackedContent
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .runeInterfaceControlSize()
+    }
+
+    private var stackedContent: some View {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+            content
+        }
+    }
+}
+
 /// Consistent bottom action area for custom macOS sheets. Actions remain
 /// right-aligned, use regular controls, and are separated from body content.
 struct RuneDialogActionBar<Actions: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ViewBuilder var actions: Actions
 
     init(@ViewBuilder actions: () -> Actions) {
@@ -783,13 +818,29 @@ struct RuneDialogActionBar<Actions: View>: View {
     var body: some View {
         VStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
             Divider()
-            HStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
-                Spacer(minLength: 0)
-                actions
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    stackedActions
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+                            actions
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        stackedActions
+                    }
+                }
             }
-            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .runeInterfaceControlSize()
         }
         .padding(.top, 2)
+    }
+
+    private var stackedActions: some View {
+        VStack(alignment: .trailing, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
+            actions
+        }
     }
 }
 
@@ -803,6 +854,7 @@ struct RuneDialogButtonLabel: View {
 
     var body: some View {
         Text(title)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(
                 minWidth: RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth,
                 minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight

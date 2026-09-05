@@ -95,6 +95,94 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    func testProcessCommandExecutorPreservesSplitUTF8AndStreamsTheSameFinalText() async throws {
+        let recorder = ProcessOutputChunkRecorder()
+        let result = try await ProcessCommandExecutor().run(
+            executable: "sh",
+            arguments: ["-c", #"printf 'prefix \303'; sleep 0.1; printf '\245\360\237'; sleep 0.1; printf '\231\202 final\n'"#],
+            environment: [:],
+            timeout: 2,
+            onOutput: { recorder.append($0) }
+        )
+
+        XCTAssertEqual(result.stdout, "prefix å🙂 final\n")
+        XCTAssertEqual(recorder.chunks.filter { $0.stream == .stdout }.map(\.text).joined(), result.stdout)
+    }
+
+    func testProcessCommandExecutorBoundsCaptureAndDrainsBothPipesPastTheLimit() async throws {
+        let recorder = ProcessOutputChunkRecorder()
+        let result = try await ProcessCommandExecutor(outputByteLimit: 5).run(
+            executable: "sh",
+            arguments: ["-c", #"printf 'abc\360\237\231\202'; /usr/bin/yes x | /usr/bin/head -c 131072; /usr/bin/yes y | /usr/bin/head -c 131072 >&2"#],
+            environment: [:],
+            timeout: 3,
+            onOutput: { recorder.append($0) }
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.stdout, "abc\n[Additional command output omitted.]\n")
+        XCTAssertEqual(result.stderr, "y\ny\ny\n[Additional command output omitted.]\n")
+        XCTAssertEqual(recorder.chunks.filter { $0.stream == .stdout }.map(\.text).joined(), result.stdout)
+        XCTAssertEqual(recorder.chunks.filter { $0.stream == .stderr }.map(\.text).joined(), result.stderr)
+    }
+
+    func testProcessCommandExecutorDoesNotWaitForInheritedPipesAfterParentExits() async throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("RuneSyntheticChild.\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let start = ContinuousClock.now
+        let result = try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
+            executable: "sh",
+            arguments: ["-c", #"/bin/sleep 10 & printf '%s' "$!" > "$RUNE_CHILD_PID"; /bin/sleep 0.1; printf completed"#],
+            environment: ["RUNE_CHILD_PID": marker.path],
+            timeout: 1
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "completed")
+        XCTAssertFalse(result.timedOut)
+        XCTAssertLessThan(start.duration(to: .now), .seconds(1))
+        let pid = try XCTUnwrap(Int32(String(contentsOf: marker, encoding: .utf8)))
+        defer { kill(pid, SIGKILL) }
+        XCTAssertNotEqual(kill(pid, 0), 0, "The inherited pipe's child must terminate with the command")
+    }
+
+    func testProcessCommandExecutorCancellationAndTimeoutKillTermIgnoringProcessGroups() async throws {
+        for cancel in [false, true] {
+            let marker = FileManager.default.temporaryDirectory.appendingPathComponent("RuneSyntheticProcessGroup.\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: marker) }
+            let task = Task {
+                try await ProcessCommandExecutor(terminationGracePeriod: 0.05).run(
+                    executable: "sh",
+                    arguments: ["-c", #"trap '' TERM; /bin/sleep 10 & printf '%s %s' "$$" "$!" > "$RUNE_CHILD_PIDS"; wait"#],
+                    environment: ["RUNE_CHILD_PIDS": marker.path],
+                    timeout: cancel ? 5 : 0.3
+                )
+            }
+            var pids: [Int32] = []
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while pids.count != 2, ContinuousClock.now < deadline {
+                pids = ((try? String(contentsOf: marker, encoding: .utf8)) ?? "")
+                    .split(whereSeparator: \.isWhitespace).compactMap { Int32($0) }
+                if pids.count != 2 { try await Task.sleep(for: .milliseconds(5)) }
+            }
+            defer { pids.forEach { kill($0, SIGKILL) } }
+            XCTAssertEqual(pids.count, 2)
+            if cancel { task.cancel() }
+
+            do {
+                let result = try await task.value
+                XCTAssertFalse(cancel, "Expected cancellation")
+                XCTAssertTrue(result.timedOut)
+            } catch is CancellationError {
+                XCTAssertTrue(cancel)
+            }
+            for pid in pids {
+                XCTAssertNotEqual(kill(pid, 0), 0, "A provider process survived termination")
+            }
+        }
+    }
+
     func testHelmRollbackCommandBuilderBuildsDryRunPreviewWithoutRunningHelm() throws {
         let source = KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune synthetic/config-one"))
         let preview = try HelmRollbackCommandBuilder().preview(for: HelmRollbackRequest(
@@ -312,6 +400,7 @@ final class CloudKubeConfigImporterTests: XCTestCase {
         let command = try XCTUnwrap(runner.commands.first)
         XCTAssertEqual(command.executable, "az")
         XCTAssertEqual(command.arguments, ["login", "--only-show-errors", "--output", "none"])
+        XCTAssertEqual(command.environment, ["AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"])
         XCTAssertEqual(runner.commands.count, 1)
     }
 

@@ -62,6 +62,7 @@ struct AddClusterProviderField: Sendable, Equatable, Identifiable {
     let title: String
     let requirement: AddClusterProviderFieldRequirement
     let input: AddClusterProviderFieldInput
+    let helpText: String?
 
     var isRequired: Bool {
         requirement == .required
@@ -71,24 +72,28 @@ struct AddClusterProviderField: Sendable, Equatable, Identifiable {
         _ id: AddClusterProviderFieldIdentifier,
         title: String,
         isRequired: Bool,
-        input: AddClusterProviderFieldInput = .text
+        input: AddClusterProviderFieldInput = .text,
+        helpText: String? = nil
     ) {
         self.id = id
         self.title = title
         requirement = isRequired ? .required : .optional
         self.input = input
+        self.helpText = helpText
     }
 
     init(
         _ id: AddClusterProviderFieldIdentifier,
         title: String,
         requirement: AddClusterProviderFieldRequirement,
-        input: AddClusterProviderFieldInput = .text
+        input: AddClusterProviderFieldInput = .text,
+        helpText: String? = nil
     ) {
         self.id = id
         self.title = title
         self.requirement = requirement
         self.input = input
+        self.helpText = helpText
     }
 }
 
@@ -162,6 +167,13 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
         primaryAction.id.isCLIOnly || utilityActions.contains { $0.id.isCLIOnly }
     }
 
+    /// Shares cluster details with the main form while keeping each input and
+    /// accessibility identity unique when the optional method is expanded.
+    func credentialFields(excluding sharedFields: [AddClusterProviderField]) -> [AddClusterProviderField] {
+        let sharedIdentifiers = Set(sharedFields.map(\.id))
+        return fields.filter { !sharedIdentifiers.contains($0.id) }
+    }
+
     var credentialSectionTitle: String {
         guard executionMode == .nativeOnly else { return "Credentials" }
         switch provider {
@@ -180,11 +192,11 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
         guard executionMode == .nativeOnly else { return "" }
         switch provider {
         case .aks:
-            return "For unattended Azure access. Complete these fields only when using this optional method; the secret is stored only in Keychain."
+            return "Uses the cluster name, resource group and subscription ID above. Complete these credentials only for this optional method; the secret is stored only in Keychain."
         case .eks:
-            return "For IAM user access without AWS CLI. The session token is needed only for temporary credentials; secrets are stored only in Keychain."
+            return "Uses the cluster name and region above. The session token is needed only for temporary credentials; secrets are stored only in Keychain."
         case .gke:
-            return "For non-interactive Google Cloud access. Enter the cluster details, then choose a service-account JSON document stored only in Keychain."
+            return "Uses the cluster details above. Choose a service-account JSON document stored only in Keychain."
         case .local:
             return ""
         }
@@ -199,6 +211,41 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
             return "Automatic CLI setup"
         case .nativeOnly:
             return "Kubeconfig + auth"
+        }
+    }
+
+    var localCLISetupDescription: String {
+        switch provider {
+        case .aks:
+            return "Install Azure CLI and sign in on this Mac. Rune uses that local session; no Rune account or server is needed."
+        case .eks:
+            return "Install AWS CLI v2. For IAM Identity Center, configure SSO once, then sign in with the same profile you enter above. No Rune account or server is needed."
+        case .gke:
+            return "Install Google Cloud CLI and the GKE auth plugin, then sign in on this Mac. Rune uses that local session; no Rune account or server is needed."
+        case .local:
+            return ""
+        }
+    }
+
+    var localCLISetupCommands: [String] {
+        switch provider {
+        case .aks: return ["az login"]
+        case .eks: return ["aws configure sso", "aws sso login --profile <profile>"]
+        case .gke: return ["gcloud auth login"]
+        case .local: return []
+        }
+    }
+
+    var localCLISetupDocumentationURL: URL? {
+        switch provider {
+        case .aks:
+            return URL(string: "https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli-interactively")
+        case .eks:
+            return URL(string: "https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html")
+        case .gke:
+            return URL(string: "https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl")
+        case .local:
+            return nil
         }
     }
 
@@ -279,7 +326,12 @@ struct AddClusterProviderPresentation: Sendable, Equatable {
             fields = [
                 AddClusterProviderField(.clusterName, title: "Cluster name", isRequired: true),
                 AddClusterProviderField(.resourceGroup, title: "Resource group", isRequired: true),
-                AddClusterProviderField(.subscription, title: "Subscription ID or name", isRequired: false)
+                AddClusterProviderField(
+                    .subscription,
+                    title: "Subscription ID or name",
+                    isRequired: false,
+                    helpText: "Optional for Azure CLI. Service-principal import requires a subscription ID."
+                )
             ]
         case .eks:
             subtitle = "AWS CLI · automatic kubeconfig"

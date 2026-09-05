@@ -316,6 +316,100 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     @MainActor
+    func testCombinedLogStatusControlStartsPausesAndResumesBesideIndependentQuickSave() async throws {
+        var unavailablePresentations: [String] = []
+        for presentationStyle in [ResourceLogsPresentationStyle.regular, .terminalCompact] {
+            let model = ResourceLogToolbarActionsModel()
+            let host = NSHostingController(
+                rootView: ResourceLogToolbarActionsHarness(model: model, presentationStyle: presentationStyle)
+                    .frame(width: 760, height: 150, alignment: .topLeading)
+                    .runeAppearanceTheme(RuneAppearanceTheme.graphiteBlue.resolvedTheme)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 150),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.contentViewController = host
+            window.makeKeyAndOrderFront(nil)
+            defer { closeTestWindow(window) }
+            try await settle(window: window)
+
+            try captureLogToolbarSnapshot(from: host.view, name: "logs-toolbar-\(presentationStyle)")
+            if ProcessInfo.processInfo.environment["RUNE_LOG_TOOLBAR_SNAPSHOT_DIR"] != nil
+                || ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] != nil {
+                model.isTailModeEnabled = true
+                model.isStreamPaused = false
+                try await settle(window: window)
+                try captureLogToolbarSnapshot(from: host.view, name: "logs-toolbar-\(presentationStyle)-active")
+                model.isStreamPaused = true
+                try await settle(window: window)
+                try captureLogToolbarSnapshot(from: host.view, name: "logs-toolbar-\(presentationStyle)-paused")
+                model.isTailModeEnabled = false
+                try await settle(window: window)
+            }
+            var nodes = logToolbarAccessibilityNodes(in: host.view)
+            guard nodes.contains(where: { $0.role == .button }) else {
+                unavailablePresentations.append(String(describing: presentationStyle))
+                continue
+            }
+            let startControl = try XCTUnwrap(nodes.filter {
+                $0.identifier == "log-tail-playback" && $0.role == .button
+            }.only, "Expected one start control in \(presentationStyle): \(nodes.map(\.diagnosticDescription).joined(separator: "; "))")
+            XCTAssertEqual(startControl.label, "Tail")
+            XCTAssertEqual(startControl.value, model.statusText)
+            XCTAssertTrue(startControl.help?.contains(model.statusText) == true)
+            XCTAssertTrue(startControl.performPress())
+            try await settle(window: window)
+            XCTAssertTrue(model.isTailModeEnabled)
+            XCTAssertFalse(model.isStreamPaused, "Starting tail must clear an old paused state.")
+            XCTAssertEqual(model.togglePauseCount, 0)
+
+            for (action, expectedPaused, expectedCount) in [("Pause", true, 1), ("Resume", false, 2)] {
+                nodes = logToolbarAccessibilityNodes(in: host.view)
+                let playbackControl = try XCTUnwrap(nodes.filter {
+                    $0.identifier == "log-tail-playback" && $0.role == .button
+                }.only, "Expected one \(action) control in \(presentationStyle): \(nodes.map(\.diagnosticDescription).joined(separator: "; "))")
+                XCTAssertEqual(playbackControl.label, action)
+                XCTAssertEqual(playbackControl.value, model.statusText)
+                XCTAssertTrue(playbackControl.help?.contains(model.statusText) == true)
+                XCTAssertTrue(playbackControl.performPress())
+                try await settle(window: window)
+                XCTAssertTrue(model.isTailModeEnabled)
+                XCTAssertEqual(model.isStreamPaused, expectedPaused)
+                XCTAssertEqual(model.togglePauseCount, expectedCount)
+            }
+
+            nodes = logToolbarAccessibilityNodes(in: host.view)
+            let quickSave = try XCTUnwrap(nodes.filter {
+                $0.identifier == "log-quick-save" && $0.role == .button
+            }.only, "Expected one quick-save control in \(presentationStyle): \(nodes.map(\.diagnosticDescription).joined(separator: "; "))")
+            let saveWithOptions = try XCTUnwrap(nodes.first {
+                $0.label == "Save Logs" && $0.role == .button
+            })
+            XCTAssertEqual(quickSave.frame.midY, saveWithOptions.frame.midY, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(quickSave.frame.minX, saveWithOptions.frame.maxX - 1)
+            XCTAssertLessThanOrEqual(quickSave.frame.minX - saveWithOptions.frame.maxX, 12)
+            XCTAssertLessThan(quickSave.frame.width, saveWithOptions.frame.width)
+            XCTAssertTrue(quickSave.performPress())
+            try await settle(window: window)
+            XCTAssertEqual(model.quickSaveCount, 1)
+            XCTAssertEqual(model.saveWithOptionsCount, 0)
+            XCTAssertTrue(saveWithOptions.performPress())
+            try await settle(window: window)
+            XCTAssertEqual(model.saveWithOptionsCount, 1)
+            XCTAssertEqual(model.quickSaveCount, 1)
+
+            try captureLogToolbarSnapshot(from: host.view, name: "logs-toolbar-\(presentationStyle)-active")
+        }
+        if !unavailablePresentations.isEmpty {
+            throw XCTSkip("SwiftUI accessibility button proxies are unavailable for: \(unavailablePresentations.joined(separator: ", ")).")
+        }
+    }
+
+    @MainActor
     func testLogWindowAndContainerPickersShareWidthHeightAndBaseline() async throws {
         let model = ResourceLogToolbarPickerModel()
         let host = NSHostingController(
@@ -931,10 +1025,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             to: "private struct LogToolbarSourceSummary"
         ))
 
-        XCTAssertTrue(statusPanelSource.contains(".frame(width: 20, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)"))
-        XCTAssertTrue(statusPanelSource.contains("statusColor.opacity(0.18)"))
-        XCTAssertTrue(statusPanelSource.contains(".help(helpText)"))
-        XCTAssertTrue(statusPanelSource.contains(".accessibilityLabel(\"Log status: \\(statusText)\")"))
+        XCTAssertTrue(statusPanelSource.contains("statusColor.opacity("))
+        XCTAssertTrue(statusPanelSource.contains("\"pause.fill\""))
+        XCTAssertTrue(statusPanelSource.contains("\"play.fill\""))
+        XCTAssertTrue(source.contains(".accessibilityElement(children: .ignore)"))
         XCTAssertFalse(statusPanelSource.contains("Text(compactText)"))
         XCTAssertFalse(statusPanelSource.contains("private var compactText"))
         XCTAssertFalse(statusPanelSource.contains(".frame(maxWidth: .infinity"))
@@ -1010,15 +1104,19 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             from: "private var toolbarActions: some View",
             to: "private var language: RuneLanguage"
         ))
+        let tailControl = try XCTUnwrap(source.slice(
+            from: "private var tailControl: some View",
+            to: "private func toggleTailPlayback()"
+        ))
 
         XCTAssertTrue(toolbarActions.contains("tailControl"))
-        XCTAssertTrue(toolbarActions.contains("LogToolbarStatusIndicator("))
-        XCTAssertTrue(toolbarActions.contains("statusText: statusText"))
-        XCTAssertTrue(toolbarActions.contains("showsPreviousHint: includePreviousLogs"))
+        XCTAssertFalse(toolbarActions.contains("LogToolbarStatusIndicator("))
+        XCTAssertTrue(tailControl.contains("LogToolbarStatusIndicator("))
+        XCTAssertTrue(tailControl.contains("statusText: statusText"))
+        XCTAssertTrue(tailControl.contains("isTailModeEnabled: isTailModeEnabled"))
+        XCTAssertTrue(tailControl.contains("isStreamPaused: isStreamPaused"))
         XCTAssertTrue(toolbarActions.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\""))
-        XCTAssertTrue(source.contains("if isStreamPaused"))
-        XCTAssertTrue(source.contains("toolbarIconLabel(t(.resume), systemImage: \"play.fill\""))
-        XCTAssertTrue(source.contains("toolbarIconLabel(t(.pause), systemImage: \"pause.fill\""))
+        XCTAssertEqual(tailControl.components(separatedBy: "Button(action: toggleTailPlayback)").count - 1, 1)
         XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
         XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
@@ -1049,10 +1147,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             to: "private struct LogToolbarSourceSummary"
         ))
 
-        XCTAssertTrue(indicatorSource.contains(".help(helpText)"))
-        XCTAssertTrue(indicatorSource.contains(".accessibilityLabel(\"Log status: \\(statusText)\")"))
-        XCTAssertTrue(indicatorSource.contains("Previous logs only exist for restarted containers."))
-        XCTAssertTrue(indicatorSource.contains("RuneUILayoutMetrics.inspectorToolbarControlMinHeight"))
+        XCTAssertTrue(source.contains(".help(\"\\(statusText). \\(tailActionHelp)\")"))
+        XCTAssertTrue(source.contains(".accessibilityValue(statusText)"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(tailActionTitle)"))
+        XCTAssertTrue(source.contains(".accessibilityElement(children: .ignore)"))
         XCTAssertFalse(indicatorSource.contains("Text(compactText)"))
     }
 
@@ -1064,9 +1162,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         ))
 
         XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\", help: t(.previousLogsHelp))"))
-        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.tail), systemImage: \"play.fill\", help: t(.startTailHelp))"))
-        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.pause), systemImage: \"pause.fill\", help: t(.pauseTailHelp))"))
-        XCTAssertTrue(toolbarSource.contains("toolbarIconLabel(t(.resume), systemImage: \"play.fill\", help: t(.resumeTailHelp))"))
+        XCTAssertTrue(toolbarSource.contains("t(.startTailHelp)"))
+        XCTAssertTrue(toolbarSource.contains("t(.pauseTailHelp)"))
+        XCTAssertTrue(toolbarSource.contains("t(.resumeTailHelp)"))
+        XCTAssertTrue(toolbarSource.contains(".help(\"\\(statusText). \\(tailActionHelp)\")"))
         XCTAssertTrue(toolbarSource.contains("Label(title, systemImage: systemImage)"))
         XCTAssertTrue(toolbarSource.contains(".help(help)"))
         XCTAssertTrue(toolbarSource.contains(".accessibilityLabel(title)"))
@@ -1769,6 +1868,53 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     }
 
     @MainActor
+    private func captureLogToolbarSnapshot(from view: NSView, name: String) throws {
+        guard let artifactDirectory = ProcessInfo.processInfo.environment["RUNE_LOG_TOOLBAR_SNAPSHOT_DIR"]
+            ?? ProcessInfo.processInfo.environment["RUNE_UI_TEST_ARTIFACT_DIR"] else { return }
+        let directory = URL(fileURLWithPath: artifactDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try renderedPNG(from: view).write(to: directory.appendingPathComponent("\(name).png"))
+    }
+
+    @MainActor
+    private func logToolbarAccessibilityNodes(in rootView: NSView) -> [LogToolbarAccessibilityNode] {
+        var visited: Set<ObjectIdentifier> = []
+        var result: [LogToolbarAccessibilityNode] = []
+
+        func visit(_ candidate: Any) {
+            guard let object = candidate as AnyObject?,
+                  visited.insert(ObjectIdentifier(object)).inserted else { return }
+            if let view = candidate as? NSView {
+                result.append(LogToolbarAccessibilityNode(
+                    identifier: view.accessibilityIdentifier(),
+                    label: view.accessibilityLabel(),
+                    value: view.accessibilityValue() as? String,
+                    help: view.accessibilityHelp(),
+                    role: view.accessibilityRole(),
+                    frame: view.accessibilityFrame(),
+                    performPress: view.accessibilityPerformPress
+                ))
+                view.accessibilityChildren()?.forEach(visit)
+                view.subviews.forEach(visit)
+            } else if let element = candidate as? NSAccessibilityElement {
+                result.append(LogToolbarAccessibilityNode(
+                    identifier: element.accessibilityIdentifier(),
+                    label: element.accessibilityLabel(),
+                    value: element.accessibilityValue() as? String,
+                    help: element.accessibilityHelp(),
+                    role: element.accessibilityRole(),
+                    frame: element.accessibilityFrame(),
+                    performPress: element.accessibilityPerformPress
+                ))
+                element.accessibilityChildren()?.forEach(visit)
+            }
+        }
+
+        visit(rootView)
+        return result
+    }
+
+    @MainActor
     private func renderedPNG(from view: NSView) throws -> Data {
         view.layoutSubtreeIfNeeded()
         let bounds = view.bounds
@@ -1960,6 +2106,67 @@ private struct ResourceLogAdjustedThemeHarness: View {
             )
         }
         .runeAppearanceTheme(model.theme)
+    }
+}
+
+@MainActor
+private struct LogToolbarAccessibilityNode {
+    let identifier: String?
+    let label: String?
+    let value: String?
+    let help: String?
+    let role: NSAccessibility.Role?
+    let frame: NSRect
+    let performPress: () -> Bool
+
+    var diagnosticDescription: String {
+        "id=\(identifier ?? "nil"), label=\(label ?? "nil"), role=\(role?.rawValue ?? "nil")"
+    }
+}
+
+@MainActor
+private final class ResourceLogToolbarActionsModel: ObservableObject {
+    @Published var isTailModeEnabled = false
+    @Published var isStreamPaused = true
+    var togglePauseCount = 0
+    var quickSaveCount = 0
+    var saveWithOptionsCount = 0
+
+    var statusText: String {
+        if !isTailModeEnabled { return "Tail off" }
+        return isStreamPaused ? "Tail paused" : "Tail on"
+    }
+}
+
+private struct ResourceLogToolbarActionsHarness: View {
+    @ObservedObject var model: ResourceLogToolbarActionsModel
+    let presentationStyle: ResourceLogsPresentationStyle
+
+    var body: some View {
+        ResourceLogsToolbar(
+            selectedLogPreset: .constant(.recentLines),
+            includePreviousLogs: .constant(false),
+            selectedContainer: .constant(""),
+            isTailModeEnabled: $model.isTailModeEnabled,
+            isStreamPaused: $model.isStreamPaused,
+            statusText: model.statusText,
+            presentationStyle: presentationStyle,
+            containerOptions: ["app"],
+            visibleLogText: "INFO ready\n",
+            onReload: {},
+            onSave: { model.saveWithOptionsCount += 1 },
+            onSaveToExportFolder: { model.quickSaveCount += 1 },
+            onSaveVisibleZip: { _ in },
+            onSaveFullZip: {},
+            onSaveAllPodsZip: {},
+            onCopySelection: {},
+            onCopyAll: {},
+            onToggleStreamPause: {
+                model.togglePauseCount += 1
+                model.isStreamPaused.toggle()
+            },
+            interfaceLanguageRaw: RuneLanguage.english.rawValue
+        )
     }
 }
 

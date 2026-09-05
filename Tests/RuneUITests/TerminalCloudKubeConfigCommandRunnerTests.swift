@@ -189,7 +189,7 @@ final class TerminalCloudKubeConfigCommandRunnerTests: XCTestCase {
         XCTAssertNotNil(launcher.launchedScript)
     }
 
-    func testCancellationCreatesARequestForTheTerminalChildCommand() async throws {
+    func testCancellationCleansUpANonAcknowledgingTerminalLaunch() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let launcher = NonCompletingTerminalLauncher()
@@ -219,9 +219,7 @@ final class TerminalCloudKubeConfigCommandRunnerTests: XCTestCase {
             XCTFail("Expected cancellation")
         } catch is CancellationError {
         }
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: directory.appendingPathComponent(".rune-cloud-import.cancel").path
-        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(launcher.commandFileURL).deletingLastPathComponent().path))
     }
 
     func testCancellationBeforeTerminalStartsNeverLaunchesProviderCLI() async throws {
@@ -250,6 +248,209 @@ final class TerminalCloudKubeConfigCommandRunnerTests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, 130)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testStreamsSplitUTF8AndDrainsTheFinalOutputBeforeReturning() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = TerminalCloudOutputRecorder()
+        let launcher = SplitOutputTerminalLauncher(recorder: recorder)
+        let runner = TerminalCloudKubeConfigCommandRunner(launcher: launcher, pollNanoseconds: 1_000_000)
+
+        let result = try await runner.run(command(in: directory), timeout: 2, onOutput: { recorder.append($0) })
+
+        XCTAssertTrue(launcher.streamedBeforeCompletion)
+        XCTAssertEqual(result.stdout, "prefix å🙂 final\n")
+        XCTAssertEqual(recorder.chunks.filter { $0.stream == .stdout }.map(\.text).joined(), result.stdout)
+        XCTAssertEqual(result.stderr, "last warning\n")
+        XCTAssertEqual(recorder.chunks.filter { $0.stream == .stderr }.map(\.text).joined(), result.stderr)
+    }
+
+    func testBoundsReaderMemoryAndDoesNotSplitUTF8AtTheCaptureLimit() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let launcher = CompletingTerminalLauncher(stdout: "abc🙂" + String(repeating: "x", count: 200_000), stderr: "", exitCode: 0)
+        let recorder = TerminalCloudOutputRecorder()
+        let runner = TerminalCloudKubeConfigCommandRunner(launcher: launcher, pollNanoseconds: 1_000_000, outputByteLimit: 5)
+
+        let result = try await runner.run(command(in: directory), timeout: 2, onOutput: { recorder.append($0) })
+
+        XCTAssertEqual(result.stdout, "abc\n[Additional command output omitted.]\n")
+        XCTAssertEqual(recorder.chunks.map(\.text).joined(), result.stdout)
+    }
+
+    func testGeneratedScriptBoundsDiskOutputAndContinuesDrainingBothStreams() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeFakeCLI(in: directory, script: """
+        /usr/bin/yes x | /usr/bin/head -c 131072
+        /usr/bin/yes y | /usr/bin/head -c 131072 >&2
+        print -r -- 'completed' > "$KUBECONFIG"
+        /bin/sleep 0.1
+        """)
+        let launcher = InspectingExecutingTerminalLauncher()
+        let runner = TerminalCloudKubeConfigCommandRunner(
+            launcher: launcher,
+            pollNanoseconds: 50_000_000,
+            cliSearchPath: "\(directory.path):/usr/bin:/bin",
+            outputByteLimit: 128
+        )
+
+        let result = try await runner.run(command(in: directory), timeout: 3)
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(launcher.outputFileSizes, [129, 129])
+        XCTAssertTrue(result.stdout.hasSuffix("[Additional command output omitted.]\n"))
+        XCTAssertTrue(result.stderr.hasSuffix("[Additional command output omitted.]\n"))
+        XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("config"), encoding: .utf8), "completed\n")
+    }
+
+    func testGeneratedScriptStreamsShortLoginOutputBeforeTheProviderCompletes() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeFakeCLI(in: directory, script: """
+        print -r -- 'Use synthetic sign-in code'
+        for attempt in {1..100}; do
+          [[ -e "$KUBECONFIG.ready" ]] && exit 0
+          /bin/sleep 0.01
+        done
+        exit 9
+        """)
+        let recorder = TerminalCloudOutputRecorder()
+        let acknowledgement = directory.appendingPathComponent("config.ready")
+        let runner = TerminalCloudKubeConfigCommandRunner(
+            launcher: ExecutingTerminalLauncher(),
+            pollNanoseconds: 1_000_000,
+            cliSearchPath: "\(directory.path):/usr/bin:/bin"
+        )
+
+        let result = try await runner.run(command(in: directory), timeout: 3, onOutput: { chunk in
+            recorder.append(chunk)
+            if recorder.chunks.map(\.text).joined().contains("Use synthetic sign-in code") {
+                try? Data().write(to: acknowledgement)
+            }
+        })
+
+        XCTAssertEqual(result.exitCode, 0, "The CLI must receive acknowledgement while it is still running")
+        XCTAssertEqual(result.stdout, "Use synthetic sign-in code\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgement.path))
+    }
+
+    func testTimeoutIncludesTheTerminalLaunchAndRemovesItsPrivateDirectory() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let launcher = SuspendedTerminalLauncher()
+        let runner = TerminalCloudKubeConfigCommandRunner(launcher: launcher, pollNanoseconds: 1_000_000)
+        let start = ContinuousClock.now
+
+        let result = try await runner.run(command(in: directory), timeout: 0.02)
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.exitCode, 124)
+        XCTAssertLessThan(start.duration(to: .now), .seconds(2))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(launcher.commandFileURL).deletingLastPathComponent().path))
+        launcher.resume()
+    }
+
+    func testTimedOutQueuedScriptCannotStartAfterCleanupEvenIfTerminalAlreadyReadIt() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeFakeCLI(in: directory, script: "print -r -- 'unexpected' > \"$KUBECONFIG\"")
+        let launcher = NonCompletingTerminalLauncher()
+        let runner = TerminalCloudKubeConfigCommandRunner(
+            launcher: launcher,
+            pollNanoseconds: 1_000_000,
+            cliSearchPath: "\(directory.path):/usr/bin:/bin"
+        )
+
+        let result = try await runner.run(command(in: directory), timeout: 0.02)
+        let delayedScript = directory.appendingPathComponent("delayed.command")
+        try Data(try XCTUnwrap(launcher.launchedScript).utf8).write(to: delayedScript)
+        try await ExecutingTerminalLauncher().launch(commandFileURL: delayedScript)
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("config").path))
+    }
+
+    func testCancellationAndTimeoutTerminateTermIgnoringProviderAndItsChild() async throws {
+        for cancel in [false, true] {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try writeFakeCLI(in: directory, script: """
+            trap '' TERM
+            /bin/sleep 30 &
+            print -r -- "$$ $!" > "$KUBECONFIG"
+            wait
+            """)
+            let launcher = NonblockingExecutingTerminalLauncher()
+            let runner = TerminalCloudKubeConfigCommandRunner(
+                launcher: launcher,
+                pollNanoseconds: 1_000_000,
+                cliSearchPath: "\(directory.path):/usr/bin:/bin"
+            )
+            let preview = command(in: directory)
+            let task = Task { try await runner.run(preview, timeout: cancel ? 10 : 0.5) }
+            let target = directory.appendingPathComponent("config")
+            let startedDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !FileManager.default.fileExists(atPath: target.path), ContinuousClock.now < startedDeadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let pids = try String(contentsOf: target, encoding: .utf8)
+                .split(whereSeparator: \.isWhitespace).compactMap { Int32($0) }
+            XCTAssertEqual(pids.count, 2)
+            if cancel { task.cancel() }
+
+            do {
+                let result = try await task.value
+                XCTAssertFalse(cancel, "Expected cancellation")
+                XCTAssertTrue(result.timedOut)
+            } catch is CancellationError {
+                XCTAssertTrue(cancel)
+            }
+
+            let stoppedDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while pids.contains(where: { kill($0, 0) == 0 }), ContinuousClock.now < stoppedDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            for pid in pids {
+                XCTAssertNotEqual(kill(pid, 0), 0, "Provider process \(pid) survived shutdown")
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(launcher.commandFileURL).deletingLastPathComponent().path))
+        }
+    }
+
+    func testAlreadyCancelledTaskDoesNotLaunchTerminalOrCreateHelpers() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let launcher = NonCompletingTerminalLauncher()
+        let runner = TerminalCloudKubeConfigCommandRunner(launcher: launcher)
+        let preview = command(in: directory)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await runner.run(preview, timeout: 1)
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError { }
+        XCTAssertNil(launcher.launchedScript)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    private func command(in directory: URL) -> CloudKubeConfigCommandPreview {
+        .init(
+            executable: "aws",
+            arguments: ["eks", "update-kubeconfig", "--name", "synthetic-cluster"],
+            displayCommand: "synthetic preview",
+            environment: ["KUBECONFIG": directory.appendingPathComponent("config").path]
+        )
+    }
+
+    private func writeFakeCLI(in directory: URL, script: String) throws {
+        let url = directory.appendingPathComponent("aws")
+        try Data("#!/bin/zsh\n\(script)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -285,8 +486,10 @@ private final class CompletingTerminalLauncher: TerminalCommandDocumentLaunching
 @MainActor
 private final class NonCompletingTerminalLauncher: TerminalCommandDocumentLaunching {
     private(set) var launchedScript: String?
+    private(set) var commandFileURL: URL?
 
     func launch(commandFileURL: URL) async throws {
+        self.commandFileURL = commandFileURL
         launchedScript = try String(contentsOf: commandFileURL, encoding: .utf8)
     }
 }
@@ -304,12 +507,105 @@ private struct CancelledBeforeExecutionTerminalLauncher: TerminalCommandDocument
 @MainActor
 private struct ExecutingTerminalLauncher: TerminalCommandDocumentLaunching {
     func launch(commandFileURL: URL) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [commandFileURL.path]
-        try process.run()
-        process.waitUntilExit()
+        let process = terminalFixtureProcess(commandFileURL: commandFileURL)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { _ in continuation.resume() }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(throwing: error)
+            }
+        }
     }
+}
+
+@MainActor
+private final class NonblockingExecutingTerminalLauncher: TerminalCommandDocumentLaunching {
+    private var process: Process?
+    private(set) var commandFileURL: URL?
+
+    func launch(commandFileURL: URL) async throws {
+        self.commandFileURL = commandFileURL
+        let process = terminalFixtureProcess(commandFileURL: commandFileURL)
+        self.process = process
+        try process.run()
+    }
+}
+
+@MainActor
+private final class InspectingExecutingTerminalLauncher: TerminalCommandDocumentLaunching {
+    private(set) var outputFileSizes = [0, 0]
+
+    func launch(commandFileURL: URL) async throws {
+        let process = terminalFixtureProcess(commandFileURL: commandFileURL)
+        let directory = commandFileURL.deletingLastPathComponent()
+        try process.run()
+        while process.isRunning {
+            for (index, name) in ["stdout", "stderr"].enumerated() {
+                let path = directory.appendingPathComponent(".rune-cloud-import.\(name)").path
+                if let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber {
+                    outputFileSizes[index] = max(outputFileSizes[index], size.intValue)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+}
+
+@MainActor
+private final class SuspendedTerminalLauncher: TerminalCommandDocumentLaunching {
+    private(set) var commandFileURL: URL?
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func launch(commandFileURL: URL) async throws {
+        self.commandFileURL = commandFileURL
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+@MainActor
+private final class SplitOutputTerminalLauncher: TerminalCommandDocumentLaunching {
+    let recorder: TerminalCloudOutputRecorder
+    private(set) var streamedBeforeCompletion = false
+
+    init(recorder: TerminalCloudOutputRecorder) {
+        self.recorder = recorder
+    }
+
+    func launch(commandFileURL: URL) async throws {
+        let directory = commandFileURL.deletingLastPathComponent()
+        let output = directory.appendingPathComponent(".rune-cloud-import.stdout")
+        try Data("prefix ".utf8).write(to: output)
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        for byte in "å🙂".utf8 {
+            try handle.write(contentsOf: Data([byte]))
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        streamedBeforeCompletion = recorder.chunks.map(\.text).joined() == "prefix å🙂"
+        try handle.write(contentsOf: Data(" final\n".utf8))
+        try Data("last warning\n".utf8).write(to: directory.appendingPathComponent(".rune-cloud-import.stderr"))
+        try Data("0\n".utf8).write(to: directory.appendingPathComponent(".rune-cloud-import.status"))
+    }
+}
+
+private func terminalFixtureProcess(commandFileURL: URL) -> Process {
+    let process = Process()
+    // Terminal launches command documents with a controlling TTY. Reproduce that
+    // locally so process-group cancellation is tested without opening Terminal.
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+    process.arguments = ["-q", "/dev/null", "/bin/zsh", commandFileURL.path]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    return process
 }
 
 private final class TerminalCloudOutputRecorder: @unchecked Sendable {

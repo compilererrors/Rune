@@ -74,6 +74,22 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let readyStatus = viewModel.cloudKubeConfigImportStatus
         let readyNativeStatus = viewModel.nativeKubernetesAuthStatus
         let reviewCount = viewModel.kubeConfigImportReviews.count
+        let competingCredentialRequest = KubernetesNativeCredentialRequest(
+            bindingID: "synthetic-competing-binding",
+            provider: .awsEKS,
+            contextName: "synthetic-competing-context",
+            clusterName: "synthetic-competing-cluster",
+            userName: "synthetic-competing-user",
+            server: "https://cluster.example.invalid",
+            exec: KubernetesNativeAuthExecDescriptor(command: "synthetic-auth-plugin"),
+            authProvider: nil
+        )
+        viewModel.connectEKSNativeAuth(
+            request: competingCredentialRequest,
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.disconnectNativeAuth(request: competingCredentialRequest, expectedProvider: .awsEKS)
         viewModel.runNativeEKSClusterImport(
             clusterName: "",
             region: "",
@@ -107,12 +123,23 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         viewModel.confirmKubeConfigImport()
         try await waitUntil { await credentials.hasStartedBinding() }
         XCTAssertTrue(viewModel.isCommittingKubeConfigImport)
+        let committingStatus = viewModel.nativeKubernetesAuthStatus
+        viewModel.connectEKSNativeAuth(
+            request: competingCredentialRequest,
+            accessKeyID: "",
+            secretAccessKey: ""
+        )
+        viewModel.disconnectNativeAuth(request: competingCredentialRequest, expectedProvider: .awsEKS)
+        XCTAssertFalse(viewModel.isConnectingNativeKubernetesAuth)
+        XCTAssertEqual(viewModel.nativeKubernetesAuthStatus, committingStatus)
         try await waitUntil {
             let call = await credentials.awsCall()
             return call != nil && !viewModel.isCommittingKubeConfigImport
         }
 
         let recordedCall = await credentials.awsCall()
+        let removedBindingIDs = await credentials.removedBindingIDs()
+        XCTAssertTrue(removedBindingIDs.isEmpty)
         let call = try XCTUnwrap(recordedCall)
         XCTAssertEqual(call.request.provider, .awsEKS)
         XCTAssertEqual(call.request.contextName, RuneFakeK8sFixture.defaultContextName)
@@ -281,6 +308,33 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Amazon EKS import cancelled.")
         XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
         XCTAssertNil(state.lastError)
+    }
+
+    func testCancelledNativeImportTreatsLateTransportErrorAsCancellation() async throws {
+        let importer = HangingNativeCloudClusterImporter(failsAfterCancellation: true)
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(
+            state: state,
+            nativeCloudClusterImporter: importer,
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        viewModel.runNativeEKSClusterImport(
+            clusterName: "synthetic-cluster",
+            region: "eu-north-1",
+            accessKeyID: "SYNTHETICACCESSKEY",
+            secretAccessKey: "synthetic-secret-material"
+        )
+        try await waitUntil { await importer.hasStarted() }
+
+        viewModel.cancelCloudKubeConfigImport()
+        try await waitUntil { !viewModel.isRunningNativeCloudClusterImport }
+
+        XCTAssertEqual(viewModel.cloudKubeConfigImportStatus, "Amazon EKS import cancelled.")
+        XCTAssertNil(viewModel.cloudKubeConfigImportDiagnostic)
+        XCTAssertNil(viewModel.nativeKubernetesAuthStatus)
+        XCTAssertTrue(state.authDoctorChecks.isEmpty)
+        XCTAssertFalse(viewModel.isKubeConfigImportConfirmationPending)
     }
 
     func testNativeImportRejectsCredentialConnectAndDisconnectWithoutPresentationMutation() async throws {
@@ -704,6 +758,11 @@ private struct FixedNativeCloudClusterImporter: NativeCloudClusterImporting {
 private actor HangingNativeCloudClusterImporter: NativeCloudClusterImporting {
     private var started = false
     private var eksCalls = 0
+    private let failsAfterCancellation: Bool
+
+    init(failsAfterCancellation: Bool = false) {
+        self.failsAfterCancellation = failsAfterCancellation
+    }
 
     func importAKS(
         _: AKSNativeClusterImportRequest,
@@ -718,7 +777,12 @@ private actor HangingNativeCloudClusterImporter: NativeCloudClusterImporting {
     ) async throws -> NativeCloudClusterImportResult {
         eksCalls += 1
         started = true
-        try await Task.sleep(nanoseconds: 30_000_000_000)
+        do {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+        } catch {
+            if failsAfterCancellation { throw URLError(.cancelled) }
+            throw error
+        }
         throw CancellationError()
     }
 

@@ -386,6 +386,8 @@ struct ResourceYAMLEditorSheetView: View {
     let onExportToExportFolder: () -> Void
     let onExportAndOpen: () -> Void
     let onClose: () -> Void
+    var notice: RuneUserNotice? = nil
+    var onDismissNotice: () -> Void = {}
     var documentState: ManifestDocumentState? = nil
     var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
     var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
@@ -430,6 +432,11 @@ struct ResourceYAMLEditorSheetView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
+            }
+
+            if let notice {
+                RuneNoticeBanner(notice: notice, onDismiss: onDismissNotice)
+                    .accessibilityIdentifier("rune.yaml-editor.notice")
             }
 
             ManifestActionToolbar(

@@ -1808,7 +1808,9 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
             "rune.settings.layout.resourceColumnWidths.genericResources.configMap.\($0)"
         }
         let savedValues = Dictionary(uniqueKeysWithValues: keys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        discardResourceColumnWidthStateForTesting(storageKeys: keys)
         defer {
+            discardResourceColumnWidthStateForTesting(storageKeys: keys)
             for key in keys {
                 if let savedValue = savedValues[key] ?? nil {
                     UserDefaults.standard.set(savedValue, forKey: key)
@@ -1865,7 +1867,9 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         let savedValues = Dictionary(uniqueKeysWithValues: keys.values.map {
             ($0, UserDefaults.standard.object(forKey: $0))
         })
+        discardResourceColumnWidthStateForTesting(storageKeys: Array(keys.values))
         defer {
+            discardResourceColumnWidthStateForTesting(storageKeys: Array(keys.values))
             for key in keys.values {
                 if let savedValue = savedValues[key] ?? nil {
                     UserDefaults.standard.set(savedValue, forKey: key)

@@ -3709,7 +3709,9 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let savedDefaults = Dictionary(uniqueKeysWithValues: touchedKeys.map { key in
             (key, UserDefaults.standard.object(forKey: key))
         })
+        discardResourceColumnWidthStateForTesting(storageKeys: touchedKeys)
         func restoreTouchedColumnWidths() {
+            discardResourceColumnWidthStateForTesting(storageKeys: touchedKeys)
             for key in touchedKeys {
                 if let savedValue = savedDefaults[key],
                    let value = savedValue {

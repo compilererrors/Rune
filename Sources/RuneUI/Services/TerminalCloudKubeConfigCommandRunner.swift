@@ -77,15 +77,18 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
     private let launcher: any TerminalCommandDocumentLaunching
     private let pollNanoseconds: UInt64
     private let cliSearchPath: String
+    private let outputByteLimit: Int
 
     init(
         launcher: any TerminalCommandDocumentLaunching = WorkspaceTerminalCommandDocumentLauncher(),
         pollNanoseconds: UInt64 = 100_000_000,
-        cliSearchPath: String = Self.defaultCLISearchPath
+        cliSearchPath: String = Self.defaultCLISearchPath,
+        outputByteLimit: Int = 1_048_576
     ) {
         self.launcher = launcher
         self.pollNanoseconds = pollNanoseconds
         self.cliSearchPath = cliSearchPath
+        self.outputByteLimit = min(max(outputByteLimit, 4), 1_048_576)
     }
 
     func run(
@@ -104,6 +107,10 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
         guard Self.isAllowed(command) else {
             throw RuneError.invalidInput(message: "Unsupported cloud import command.")
         }
+        guard timeout.isFinite, timeout > 0 else {
+            return CloudKubeConfigCommandResult(exitCode: 124, stdout: "", stderr: "", timedOut: true)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
 
         let files = try executionFiles(for: command)
         do {
@@ -114,21 +121,33 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
         }
 
         return try await withTaskCancellationHandler {
-            do {
-                try await launcher.launch(commandFileURL: files.command)
-            } catch {
-                cleanup(files: files)
-                throw RuneError.commandFailed(
-                    command: command.executable,
-                    message: "Terminal could not start the cloud import command."
-                )
+            let launchState = TerminalCloudImportLaunchState()
+            let launchTask = Task {
+                do {
+                    try Task.checkCancellation()
+                    guard !files.isCancellationRequested else { return }
+                    try await launcher.launch(commandFileURL: files.command)
+                } catch {
+                    launchState.markFailed()
+                }
             }
-
-            return try await waitForResult(
-                files: files,
-                timeout: timeout,
-                onOutput: onOutput
-            )
+            defer {
+                launchTask.cancel()
+                cleanup(files: files)
+            }
+            do {
+                return try await waitForResult(
+                    files: files,
+                    command: command,
+                    launchState: launchState,
+                    deadline: deadline,
+                    onOutput: onOutput
+                )
+            } catch {
+                files.requestCancellation()
+                await waitForCancellation(files: files)
+                throw error
+            }
         } onCancel: {
             files.requestCancellation()
         }
@@ -141,14 +160,7 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
             ?? value(after: "--file", in: command.arguments)
             ?? value(after: "--kubeconfig", in: command.arguments)
         if command.executable == "az", command.arguments == ["login", "--only-show-errors", "--output", "none"] {
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("RuneCloudCommand.\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-            return TerminalCloudImportExecutionFiles(directory: directory, ownsDirectory: true)
+            return try makeExecutionFiles(in: FileManager.default.temporaryDirectory)
         }
 
         guard let targetPath,
@@ -161,6 +173,16 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
         let directory = URL(fileURLWithPath: targetPath)
             .standardizedFileURL
             .deletingLastPathComponent()
+        return try makeExecutionFiles(in: directory)
+    }
+
+    private func makeExecutionFiles(in parent: URL) throws -> TerminalCloudImportExecutionFiles {
+        let directory = parent.appendingPathComponent(".rune-cloud-import.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
         return TerminalCloudImportExecutionFiles(directory: directory)
     }
 
@@ -220,6 +242,8 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
         #!/bin/zsh
         set +e
         umask 077
+        work_dir=\(shellQuote(files.directory.path))
+        [[ -d "$work_dir" ]] || exit 130
         export PATH=\(shellQuote(cliSearchPath))
         \(environment)
         stdout_file=\(shellQuote(files.stdout.path))
@@ -227,37 +251,83 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
         status_file=\(shellQuote(files.status.path))
         status_tmp=\(shellQuote(files.statusTemporary.path))
         cancel_file=\(shellQuote(files.cancel.path))
+        stdout_pipe=\(shellQuote(files.stdoutPipe.path))
+        stderr_pipe=\(shellQuote(files.stderrPipe.path))
+        child_pid=''
+        stdout_pid=''
+        stderr_pid=''
+        capture_output() {
+          local remaining=\(outputByteLimit + 1) count
+          while (( remaining > 0 )); do
+            sysread -s "$(( remaining < 16384 ? remaining : 16384 ))" -c count -o 1 || return
+            (( remaining -= count ))
+          done
+          /bin/cat > /dev/null
+        }
+        # Terminal provides a controlling TTY. Job control gives the provider and
+        # all of its descendants their own process group for bounded shutdown.
+        stop_child() {
+          if [[ -n "$child_pid" ]]; then
+            if kill -TERM -- -"$child_pid" 2>/dev/null; then
+              /bin/sleep 0.2
+              kill -KILL -- -"$child_pid" 2>/dev/null
+            fi
+            wait "$child_pid" 2>/dev/null
+          fi
+        }
+        finish() {
+          local result="$1"
+          [[ -n "$stdout_pid" ]] && wait "$stdout_pid" 2>/dev/null
+          [[ -n "$stderr_pid" ]] && wait "$stderr_pid" 2>/dev/null
+          /bin/rm -f "$stdout_pipe" "$stderr_pipe"
+          if [[ -d "$work_dir" ]]; then
+            print -r -- "$result" > "$status_tmp"
+            /bin/mv -f "$status_tmp" "$status_file"
+          fi
+          exit "$result"
+        }
+        trap 'stop_child; finish 130' HUP INT TERM
         : > "$stdout_file"
         : > "$stderr_file"
-        rm -f "$status_file" "$status_tmp"
+        /bin/rm -f "$status_file" "$status_tmp"
         if [[ -e "$cancel_file" ]]; then
-          print -r -- '130' > "$status_tmp"
-          mv -f "$status_tmp" "$status_file"
-          exit 130
+          finish 130
+        fi
+        if ! setopt MONITOR NO_BG_NICE 2>/dev/null || ! zmodload zsh/system; then
+          print -r -- 'Terminal could not create an isolated command job.' > "$stderr_file"
+          finish 125
         fi
         if ! command -v \(executable) >/dev/null 2>&1; then
           print -r -- "Required provider CLI not found: \(command.executable)" > "$stderr_file"
-          print -r -- '127' > "$status_tmp"
-          mv -f "$status_tmp" "$status_file"
-          exit 127
+          finish 127
         fi
-        \(executable) \(arguments) > "$stdout_file" 2> "$stderr_file" &
+        if ! /usr/bin/mkfifo "$stdout_pipe" "$stderr_pipe"; then
+          print -r -- 'Terminal could not prepare command output.' > "$stderr_file"
+          finish 125
+        fi
+        # Keep one extra byte to detect truncation. Drain everything beyond the
+        # cap so a verbose CLI cannot fill the disk or fail with a broken pipe.
+        capture_output > "$stdout_file" < "$stdout_pipe" &
+        stdout_pid=$!
+        capture_output > "$stderr_file" < "$stderr_pipe" &
+        stderr_pid=$!
+        if [[ ! -d "$work_dir" || -e "$cancel_file" ]]; then
+          kill -TERM -- -"$stdout_pid" -"$stderr_pid" 2>/dev/null
+          finish 130
+        fi
+        \(executable) \(arguments) > "$stdout_pipe" 2> "$stderr_pipe" &
         child_pid=$!
         while kill -0 "$child_pid" 2>/dev/null; do
-          if [[ -e "$cancel_file" ]]; then
-            kill -TERM "$child_pid" 2>/dev/null
-            wait "$child_pid" 2>/dev/null
-            print -r -- '130' > "$status_tmp"
-            mv -f "$status_tmp" "$status_file"
-            exit 130
+          if [[ ! -d "$work_dir" || -e "$cancel_file" ]]; then
+            stop_child
+            finish 130
           fi
-          sleep 0.1
+          /bin/sleep 0.1
         done
         wait "$child_pid"
         exit_code=$?
-        print -r -- "$exit_code" > "$status_tmp"
-        mv -f "$status_tmp" "$status_file"
-        exit "$exit_code"
+        stop_child
+        finish "$exit_code"
         """
     }
 
@@ -267,92 +337,77 @@ struct TerminalCloudKubeConfigCommandRunner: CloudKubeConfigCommandRunning {
 
     private func waitForResult(
         files: TerminalCloudImportExecutionFiles,
-        timeout: TimeInterval,
+        command: CloudKubeConfigCommandPreview,
+        launchState: TerminalCloudImportLaunchState,
+        deadline: ContinuousClock.Instant,
         onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
     ) async throws -> CloudKubeConfigCommandResult {
-        let deadline = Date().addingTimeInterval(timeout)
-        var streamedStdoutBytes = 0
-        var streamedStderrBytes = 0
+        var stdout = TerminalCloudImportOutputReader(limit: outputByteLimit)
+        var stderr = TerminalCloudImportOutputReader(limit: outputByteLimit)
 
-        while Date() < deadline {
+        while ContinuousClock.now < deadline {
             try Task.checkCancellation()
-            streamNewOutput(
-                from: files.stdout,
-                stream: .stdout,
-                previousByteCount: &streamedStdoutBytes,
-                onOutput: onOutput
-            )
-            streamNewOutput(
-                from: files.stderr,
-                stream: .stderr,
-                previousByteCount: &streamedStderrBytes,
-                onOutput: onOutput
-            )
-
             if let exitCode = readExitCode(from: files.status) {
-                let result = CloudKubeConfigCommandResult(
+                stdout.read(from: files.stdout, stream: .stdout, final: true, onOutput: onOutput)
+                stderr.read(from: files.stderr, stream: .stderr, final: true, onOutput: onOutput)
+                return CloudKubeConfigCommandResult(
                     exitCode: exitCode,
-                    stdout: readText(from: files.stdout),
-                    stderr: readText(from: files.stderr),
+                    stdout: stdout.text,
+                    stderr: stderr.text,
                     timedOut: false
                 )
-                cleanup(files: files)
-                return result
             }
-
-            try await Task.sleep(nanoseconds: pollNanoseconds)
+            if launchState.hasFailed {
+                throw RuneError.commandFailed(
+                    command: command.executable,
+                    message: "Terminal could not start the cloud import command."
+                )
+            }
+            stdout.read(from: files.stdout, stream: .stdout, onOutput: onOutput)
+            stderr.read(from: files.stderr, stream: .stderr, onOutput: onOutput)
+            try await Task.sleep(for: min(.nanoseconds(pollNanoseconds), ContinuousClock.now.duration(to: deadline)))
         }
 
+        try Task.checkCancellation()
         files.requestCancellation()
-        let cancellationDeadline = Date().addingTimeInterval(0.75)
-        while Date() < cancellationDeadline, readExitCode(from: files.status) == nil {
-            try? await Task.sleep(nanoseconds: min(pollNanoseconds, 100_000_000))
-        }
-        let result = CloudKubeConfigCommandResult(
+        await waitForCancellation(files: files)
+        try Task.checkCancellation()
+        stdout.read(from: files.stdout, stream: .stdout, final: true, onOutput: onOutput)
+        stderr.read(from: files.stderr, stream: .stderr, final: true, onOutput: onOutput)
+        return CloudKubeConfigCommandResult(
             exitCode: 124,
-            stdout: readText(from: files.stdout),
-            stderr: readText(from: files.stderr),
+            stdout: stdout.text,
+            stderr: stderr.text,
             timedOut: true
         )
-        cleanup(files: files, preservingCancellationMarker: true)
-        return result
     }
 
-    private func streamNewOutput(
-        from url: URL,
-        stream: CloudKubeConfigCommandOutputStream,
-        previousByteCount: inout Int,
-        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
-    ) {
-        guard let data = try? Data(contentsOf: url), data.count > previousByteCount else { return }
-        let newData = data.subdata(in: previousByteCount..<data.count)
-        previousByteCount = data.count
-        guard let text = String(data: newData, encoding: .utf8), !text.isEmpty else { return }
-        onOutput(CloudKubeConfigCommandOutput(stream: stream, text: text))
+    private func waitForCancellation(files: TerminalCloudImportExecutionFiles) async {
+        // A cancelled task cannot use Task.sleep itself: it immediately throws.
+        // Give Terminal time to acknowledge TERM/KILL before removing its files.
+        await Task.detached {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while ContinuousClock.now < deadline, readExitCode(from: files.status) == nil {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }.value
     }
 
     private func readExitCode(from url: URL) -> Int32? {
-        guard let raw = try? String(contentsOf: url, encoding: .utf8),
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 32),
+              let raw = String(data: data, encoding: .utf8),
               let value = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return nil
         }
         return value
     }
 
-    private func readText(from url: URL) -> String {
-        (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    }
-
-    private func cleanup(
-        files: TerminalCloudImportExecutionFiles,
-        preservingCancellationMarker: Bool = false
-    ) {
-        for url in files.helperFiles where !preservingCancellationMarker || url != files.cancel {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if files.ownsDirectory, !preservingCancellationMarker {
-            try? FileManager.default.removeItem(at: files.directory)
-        }
+    private func cleanup(files: TerminalCloudImportExecutionFiles) {
+        // Each invocation owns a unique directory. Removing it also makes an
+        // already queued Terminal document fail closed before starting the CLI.
+        try? FileManager.default.removeItem(at: files.directory)
     }
 }
 
@@ -364,26 +419,119 @@ private struct TerminalCloudImportExecutionFiles: Sendable {
     let status: URL
     let statusTemporary: URL
     let cancel: URL
-    let ownsDirectory: Bool
+    let stdoutPipe: URL
+    let stderrPipe: URL
 
-    init(directory: URL, ownsDirectory: Bool = false) {
+    init(directory: URL) {
         self.directory = directory
-        self.ownsDirectory = ownsDirectory
         command = directory.appendingPathComponent("rune-cloud-import.command")
         stdout = directory.appendingPathComponent(".rune-cloud-import.stdout")
         stderr = directory.appendingPathComponent(".rune-cloud-import.stderr")
         status = directory.appendingPathComponent(".rune-cloud-import.status")
         statusTemporary = directory.appendingPathComponent(".rune-cloud-import.status.tmp")
         cancel = directory.appendingPathComponent(".rune-cloud-import.cancel")
+        stdoutPipe = directory.appendingPathComponent(".rune-cloud-import.stdout.pipe")
+        stderrPipe = directory.appendingPathComponent(".rune-cloud-import.stderr.pipe")
     }
 
     var helperFiles: [URL] {
-        [command, stdout, stderr, status, statusTemporary, cancel]
+        [command, stdout, stderr, status, statusTemporary, cancel, stdoutPipe, stderrPipe]
+    }
+
+    var isCancellationRequested: Bool {
+        !FileManager.default.fileExists(atPath: directory.path)
+            || FileManager.default.fileExists(atPath: cancel.path)
     }
 
     func requestCancellation() {
         FileManager.default.createFile(atPath: cancel.path, contents: Data(), attributes: [
             .posixPermissions: 0o600
         ])
+    }
+}
+
+private final class TerminalCloudImportLaunchState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failed = false
+
+    var hasFailed: Bool {
+        lock.withLock { failed }
+    }
+
+    func markFailed() {
+        lock.withLock { failed = true }
+    }
+}
+
+private struct TerminalCloudImportOutputReader {
+    private static let truncationMessage = "\n[Additional command output omitted.]\n"
+    let limit: Int
+    private var offset = 0
+    private var pendingUTF8 = Data()
+    private var truncated = false
+    private(set) var text = ""
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    mutating func read(
+        from url: URL,
+        stream: CloudKubeConfigCommandOutputStream,
+        final: Bool = false,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) {
+        if !truncated, let handle = try? FileHandle(forReadingFrom: url) {
+            defer { try? handle.close() }
+            try? handle.seek(toOffset: UInt64(offset))
+            while offset <= limit,
+                  let data = try? handle.read(upToCount: min(16_384, limit + 1 - offset)),
+                  !data.isEmpty {
+                let accepted = min(data.count, limit - offset)
+                pendingUTF8.append(data.prefix(accepted))
+                offset += data.count
+                let split = completeUTF8PrefixLength(pendingUTF8)
+                emit(String(decoding: pendingUTF8.prefix(split), as: UTF8.self), stream: stream, onOutput: onOutput)
+                pendingUTF8 = Data(pendingUTF8.dropFirst(split))
+                if offset > limit {
+                    truncated = true
+                    // Do not produce a replacement character for a valid scalar
+                    // whose final bytes happened to fall beyond the capture cap.
+                    pendingUTF8.removeAll()
+                    emit(Self.truncationMessage, stream: stream, onOutput: onOutput)
+                }
+            }
+        }
+        if final, !pendingUTF8.isEmpty {
+            emit(String(decoding: pendingUTF8, as: UTF8.self), stream: stream, onOutput: onOutput)
+            pendingUTF8.removeAll()
+        }
+    }
+
+    private func completeUTF8PrefixLength(_ data: Data) -> Int {
+        let count = data.count
+        for index in stride(from: count - 1, through: max(0, count - 4), by: -1) {
+            let byte = data[index]
+            if byte & 0xC0 == 0x80 { continue }
+            let length: Int
+            switch byte {
+            case 0xC2...0xDF: length = 2
+            case 0xE0...0xEF: length = 3
+            case 0xF0...0xF4: length = 4
+            default: length = 1
+            }
+            return count - index < length ? index : count
+        }
+        return count
+    }
+
+    private mutating func emit(
+        _ value: String,
+        stream: CloudKubeConfigCommandOutputStream,
+        onOutput: @escaping @Sendable (CloudKubeConfigCommandOutput) -> Void
+    ) {
+        guard !value.isEmpty else { return }
+        text += value
+        onOutput(CloudKubeConfigCommandOutput(stream: stream, text: value))
     }
 }

@@ -57,6 +57,8 @@
   "previous": "上一轮",
   "previousLogsHelp": "当 Kubernetes 保留上一容器实例时，请求上一实例的日志。",
   "quickEdit": "快速编辑",
+  "quickSaveLogs": "快速保存日志",
+  "quickSaveLogsHelp": "将当前日志直接保存到默认导出文件夹，无需选择文件夹或标签。",
   "releases": "发布版本",
   "replicaSets": "ReplicaSet",
   "reload": "重新加载",
