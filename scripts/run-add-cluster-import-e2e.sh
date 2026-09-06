@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker-compose/docker-compose.fake-k8s.yml"
 COMPOSE_PROJECT="${RUNE_ADD_CLUSTER_E2E_COMPOSE_PROJECT:-rune-fake-k8s}"
 KUBECONFIG_FIXTURE="$ROOT_DIR/docker-compose/generated/rune-fake-kubeconfig.yaml"
-APP_BUNDLE="$ROOT_DIR/dist/Rune.app"
+APP_BUNDLE="${RUNE_ADD_CLUSTER_E2E_APP_BUNDLE:-$ROOT_DIR/dist/Rune.app}"
 APP_BIN="$APP_BUNDLE/Contents/MacOS/RuneApp"
 SKIP_BUILD="${RUNE_ADD_CLUSTER_E2E_SKIP_BUILD:-0}"
 
@@ -110,7 +110,7 @@ if [[ "$contexts" != "fake-lattice-spark fake-orbit-mesh " ]]; then
 fi
 
 if [[ "$SKIP_BUILD" != "1" || ! -x "$APP_BIN" ]]; then
-  "$ROOT_DIR/scripts/build-macos-app.sh"
+  APP_BUNDLE="$APP_BUNDLE" "$ROOT_DIR/scripts/build-macos-app.sh"
 fi
 if [[ ! -x "$APP_BIN" ]]; then
   echo "Rune app binary is missing: $APP_BIN" >&2
@@ -159,6 +159,17 @@ import_result="$(
 printf '%s\n' "$import_result"
 if [[ "$import_result" != "$expected_import_result" ]]; then
   echo "Add Cluster E2E used an unexpected import route. Expected: $expected_import_result; got: $import_result" >&2
+  exit 1
+fi
+
+reimport_result="$(
+  RUNE_UI_SMOKE_IMPORT_KUBECONFIG="$KUBECONFIG_FIXTURE" \
+  RUNE_UI_SMOKE_IMPORT_ROOT="$IMPORT_ROOT" \
+    "$AX_HELPER" "$APP_PID" reimport-kubeconfig
+)"
+printf '%s\n' "$reimport_result"
+if [[ "$reimport_result" != "reimport-kubeconfig-e2e passed contexts=2 copies=1 ownership=unchanged" ]]; then
+  echo "Add Cluster reimport did not preserve the existing owned copy." >&2
   exit 1
 fi
 

@@ -106,7 +106,7 @@ struct ManifestActionToolbar<PrimaryActions: View, SecondaryActions: View>: View
         ManifestToolbarScrollRow {
             ManifestToolbarGroup(role: .action) {
                 Button(applyTitle, action: onApply)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                     .disabled(!canApply)
                     .help(applyHelp)
 
@@ -132,7 +132,7 @@ struct ManifestEditorUndoButton: View {
         Button(action: onUndo) {
             Label("Undo", systemImage: "arrow.uturn.backward")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(!canUndo)
         .help(canUndo ? "Undo the last local YAML edit (⌘Z)." : "No local YAML edit to undo.")
         .keyboardShortcut("z", modifiers: [.command])
@@ -154,7 +154,7 @@ struct ManifestYAMLActionMenus: View {
     let onExportAndOpen: () -> Void
 
     var body: some View {
-        Menu {
+        RuneToolbarMenu {
             Button("Apply Last Fetched YAML", action: onReapplySnapshot)
                 .disabled(!canReapplySnapshot)
                 .help("Apply the last YAML fetched for this resource again. Rune shows a confirmation and diff before sending it.")
@@ -167,10 +167,9 @@ struct ManifestYAMLActionMenus: View {
         } label: {
             Label(draftTitle, systemImage: "clock.arrow.circlepath")
                 .runeInterfaceFont(relativeSize: -1, weight: .medium)
-                .runeMinimumInteractiveTarget()
         }
 
-        Menu {
+        RuneToolbarMenu {
             Button("Import YAML…", action: onImport)
                 .help("Replace the editor with the contents of a YAML file.")
 
@@ -188,7 +187,6 @@ struct ManifestYAMLActionMenus: View {
         } label: {
             Label(fileTitle, systemImage: "doc")
                 .runeInterfaceFont(relativeSize: -1, weight: .medium)
-                .runeMinimumInteractiveTarget()
         }
     }
 }
@@ -269,7 +267,7 @@ struct ManifestStatusChip: View {
     var body: some View {
         Label(text, systemImage: systemImage)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
             .lineLimit(1)
             .truncationMode(.middle)
             .monospacedDigit()

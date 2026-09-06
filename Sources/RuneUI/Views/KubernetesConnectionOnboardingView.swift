@@ -16,7 +16,7 @@ struct KubernetesConnectionOnboardingView: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.runeAccent)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(Color.accentColor.opacity(0.13)))
                     .accessibilityHidden(true)
@@ -27,7 +27,7 @@ struct KubernetesConnectionOnboardingView: View {
                         .accessibilityAddTraits(.isHeader)
                     Text("Import a kubeconfig to load contexts, namespaces, and resources. Rune reviews the file before saving anything.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -63,7 +63,7 @@ struct KubernetesConnectionOnboardingView: View {
                 .runeMinimumInteractiveTarget()
         }
         .accessibilityIdentifier("rune.onboarding.import-kubeconfig")
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
         .keyboardShortcut(.defaultAction)
         .help("Choose one or more kubeconfig files and review them before import")
     }

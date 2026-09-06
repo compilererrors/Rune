@@ -47,20 +47,22 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
         )
 
         for size in [start, copy, expand] {
-            XCTAssertEqual(size.width, TerminalActionLayoutMetrics.buttonWidth, accuracy: 0.5)
+            XCTAssertGreaterThanOrEqual(size.width, TerminalActionLayoutMetrics.buttonWidth)
             XCTAssertEqual(size.height, TerminalActionLayoutMetrics.regularMinimumHeight, accuracy: 0.5)
         }
         for size in [disconnect, clear] {
             XCTAssertEqual(size.width, TerminalActionLayoutMetrics.buttonWidth, accuracy: 0.5)
             XCTAssertEqual(size.height, TerminalActionLayoutMetrics.compactMinimumHeight, accuracy: 0.5)
         }
-        XCTAssertEqual(start, copy)
-        XCTAssertEqual(copy, expand)
+        // Longer labels may grow instead of shrinking their text. Their painted
+        // surfaces still share a height and a minimum width.
+        XCTAssertEqual(start.height, copy.height)
+        XCTAssertEqual(copy.height, expand.height)
         XCTAssertEqual(disconnect, clear)
-        XCTAssertLessThan(disconnect.height, start.height)
+        XCTAssertEqual(disconnect.height, start.height)
         XCTAssertEqual(
             disconnect.height,
-            RuneUILayoutMetrics.iconButtonSize,
+            RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
             accuracy: 0.5
         )
         XCTAssertEqual(TerminalActionLayoutMetrics.spacing, 8)
@@ -129,10 +131,10 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
             sessionBelowWideInlineBreakpoint.height,
             sessionAtWideInlineBreakpoint.height
         )
-        XCTAssertEqual(sessionWide.height, selectorWide.height, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(sessionWide.height, selectorWide.height)
         XCTAssertEqual(
             sessionWide.height,
-            TerminalPodControlLayoutMetrics.minimumRowHeight + 16,
+            RuneUILayoutMetrics.inspectorToolbarControlMinHeight + 16,
             accuracy: 0.5
         )
         XCTAssertEqual(
@@ -380,14 +382,14 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
         if isProminent {
             return NSHostingView(
                 rootView: Button(action: {}) { label }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                     .terminalActionControl(density)
                     .dynamicTypeSize(dynamicTypeSize)
             ).fittingSize
         }
         return NSHostingView(
             rootView: Button(action: {}) { label }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .terminalActionControl(density)
                 .dynamicTypeSize(dynamicTypeSize)
         ).fittingSize

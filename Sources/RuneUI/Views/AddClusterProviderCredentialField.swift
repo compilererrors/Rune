@@ -100,7 +100,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
             if let helpText {
                 Text(helpText)
                     .runeInterfaceFont(relativeSize: -2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityHidden(true)
             }
@@ -142,7 +142,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
     private func requirementText(_ value: String) -> some View {
         Text(value)
             .runeInterfaceFont(relativeSize: -2, weight: .medium)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
     }
 }

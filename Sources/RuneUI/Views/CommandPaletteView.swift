@@ -291,7 +291,7 @@ struct CommandPaletteView: View {
             Label("All Prefixes", systemImage: "questionmark.circle")
                 .runeMinimumInteractiveTarget()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .controlSize(.small)
         .help("Browse all command prefixes")
         .popover(isPresented: $isPrefixHelpPresented, arrowEdge: .bottom) {

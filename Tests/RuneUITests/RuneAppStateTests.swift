@@ -1406,10 +1406,11 @@ final class RuneAppStateTests: XCTestCase {
         try await confirmPendingKubeConfigImport(fixture.viewModel)
 
         try await waitUntilForRuneAppState {
-            (fixture.bookmarks.records.count == 2 && !fixture.viewModel.isKubeConfigImportConfirmationPending)
+            (!fixture.viewModel.isKubeConfigImportConfirmationPending && !fixture.viewModel.isCommittingKubeConfigImport)
                 || fixture.state.lastError != nil
         }
         XCTAssertNil(fixture.state.lastError)
+        XCTAssertEqual(fixture.bookmarks.records.count, 1, "Skipped contexts must not create another imported file or bookmark.")
         XCTAssertEqual(fixture.bookmarks.records.first?.path, fixture.existingSource.path)
         XCTAssertEqual(
             fixture.preferences.loadContextDisplayMetadata(for: "synthetic-context")?.alias,
@@ -1447,11 +1448,12 @@ final class RuneAppStateTests: XCTestCase {
         )
         try await confirmPendingKubeConfigImport(viewModel)
         try await waitUntilForRuneAppState {
-            bookmarks.records.count == 1 && !viewModel.isKubeConfigImportConfirmationPending
+            !viewModel.isKubeConfigImportConfirmationPending && !viewModel.isCommittingKubeConfigImport
         }
 
         XCTAssertEqual(state.kubeConfigSources.first?.url.standardizedFileURL, existingSource.standardizedFileURL)
-        XCTAssertEqual(state.kubeConfigSources.count, 2)
+        XCTAssertEqual(state.kubeConfigSources.count, 1)
+        XCTAssertTrue(bookmarks.records.isEmpty, "Skipping a duplicate must leave an unbookmarked source alone.")
         XCTAssertTrue(viewModel.kubeConfigImportReviews.first?.contexts.isEmpty == true)
     }
 
@@ -6748,7 +6750,45 @@ final class RuneAppStateTests: XCTestCase {
             XCTAssertEqual(state.activeNotice?.severity, .info)
             XCTAssertEqual(state.activeNotice?.title, "Logs saved")
             XCTAssertEqual(state.activeNotice?.message, "Saved synthetic-logs-2.log to the default export folder.")
+            XCTAssertEqual(state.activeNotice?.savedFileURL, configuredExporter.savedURL)
             state.clearError()
+        }
+    }
+
+    @MainActor
+    func testConfiguredExportRetryReplacesOnlyItsOwnFailureWithSavedActions() {
+        for hasNewerClusterWarning in [false, true] {
+            let state = RuneAppState()
+            let exporter = RecordingConfiguredExporter()
+            exporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-recovered.log")
+            let viewModel = RuneAppViewModel(state: state, configuredExporter: exporter)
+            state.selectedWorkloadKind = .pod
+            state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
+            state.setPodLogs("synthetic log line\n")
+            state.setTerminalSession(PodTerminalSession(
+                id: "synthetic-shell", contextName: "synthetic-context", namespace: "synthetic",
+                podName: "synthetic-api", shell: "sh", transcript: "synthetic transcript\n", status: .connected
+            ))
+            for save in [viewModel.saveCurrentLogsToExportFolder, viewModel.saveActiveTerminalTranscriptToExportFolder] {
+                state.clearError()
+                exporter.error = FileExportError.missingConfiguredExportFolder
+                save(false)
+                XCTAssertEqual(state.activeNotice?.severity, .error)
+                if hasNewerClusterWarning {
+                    state.setErrorMessage("Synthetic cluster read failed")
+                }
+                let previousNotice = state.activeNotice
+                exporter.error = nil
+                save(false)
+                if hasNewerClusterWarning {
+                    XCTAssertEqual(state.activeNotice, previousNotice)
+                    XCTAssertEqual(state.lastError, "Synthetic cluster read failed")
+                } else {
+                    XCTAssertNil(state.lastError)
+                    XCTAssertEqual(state.activeNotice?.severity, .info)
+                    XCTAssertEqual(state.activeNotice?.savedFileURL, exporter.savedURL)
+                }
+            }
         }
     }
 
@@ -6784,6 +6824,52 @@ final class RuneAppStateTests: XCTestCase {
                 }
                 state.clearError()
             }
+        }
+    }
+
+    @MainActor
+    func testSavedLogNoticeActionsKeepTheSavedFileAfterChangingSelection() throws {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs-2.log")
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        state.selectedWorkloadKind = .pod
+        state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
+        state.setPodLogs("synthetic log line\n")
+
+        viewModel.saveCurrentLogsToExportFolder(openAfterSave: false)
+        let notice = try XCTUnwrap(state.activeNotice)
+        let savedURL = try XCTUnwrap(notice.savedFileURL)
+        state.selectedPod = PodSummary(name: "synthetic-worker", namespace: "synthetic", status: "Running")
+        state.setPodLogs("different synthetic log line\n")
+
+        viewModel.openSavedLogFolder(savedURL)
+        viewModel.openSavedLogFile(savedURL)
+
+        XCTAssertEqual(configuredExporter.openedFolders, [savedURL])
+        XCTAssertEqual(configuredExporter.openedFiles.map(\.url), [savedURL])
+        XCTAssertEqual(configuredExporter.openedFiles.first?.kind, .plainText)
+        XCTAssertEqual(configuredExporter.saves.count, 1, "Opening the saved export must not save again.")
+        XCTAssertEqual(state.activeNotice, notice)
+        XCTAssertNil(state.lastError)
+    }
+
+    @MainActor
+    func testSavedLogOpenFailureReplacesSavedActionsWithAnErrorNotice() {
+        let state = RuneAppState()
+        let configuredExporter = RecordingConfiguredExporter()
+        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs.log")
+        configuredExporter.error = FileExportError.exportFolderUnavailable
+
+        for open in [viewModel.openSavedLogFile, viewModel.openSavedLogFolder] {
+            state.clearError()
+            state.setInfoNotice(title: "Logs saved", message: "Saved synthetic logs.", savedFileURL: savedURL)
+            open(savedURL)
+
+            XCTAssertEqual(state.activeNotice?.severity, .error)
+            XCTAssertNil(state.activeNotice?.savedFileURL)
+            XCTAssertEqual(state.lastError, FileExportError.exportFolderUnavailable.localizedDescription)
         }
     }
 
@@ -7975,6 +8061,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(state.activeNotice?.severity, .info)
         XCTAssertEqual(state.activeNotice?.title, "Transcript saved")
         XCTAssertEqual(state.activeNotice?.message, "Saved synthetic-transcript-2.log to the default export folder.")
+        XCTAssertEqual(state.activeNotice?.savedFileURL, configuredExporter.savedURL)
     }
 
     @MainActor
@@ -12482,6 +12569,8 @@ private final class RecordingFileExporter: FileExporting {
 private final class RecordingConfiguredExporter: ConfiguredExporting {
     var savedURL: URL?
     var error: Error?
+    private(set) var openedFiles: [(url: URL, kind: ConfiguredExportFileKind)] = []
+    private(set) var openedFolders: [URL] = []
     private(set) var saves: [
         (
             data: Data,
@@ -12502,6 +12591,16 @@ private final class RecordingConfiguredExporter: ConfiguredExporting {
         if let error { throw error }
         saves.append((data, suggestedName, allowedFileTypes, kind, openAfterSave))
         return savedURL ?? URL(fileURLWithPath: "/tmp/\(suggestedName)")
+    }
+
+    func openSavedFile(_ url: URL, kind: ConfiguredExportFileKind) throws {
+        if let error { throw error }
+        openedFiles.append((url, kind))
+    }
+
+    func openSavedFolder(for url: URL) throws {
+        if let error { throw error }
+        openedFolders.append(url)
     }
 }
 

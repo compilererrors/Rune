@@ -50,9 +50,13 @@ Partial results remain visible with a coarse failure class and recovery action. 
 
 ## Keychain and local process access
 
-Refresh tokens, temporary credentials, and optional static secrets belong in Keychain with the strictest practical desktop-app accessibility. Account records persist only non-secret metadata and opaque references. Access tokens remain in memory and are refreshed early with one serialized refresh per binding.
+Refresh tokens, temporary credentials, and optional static secrets belong in Keychain with the strictest practical desktop-app accessibility. Account metadata and credential material have separate types and read APIs. The native-account store commits them together in one bounded Data Protection Keychain item using WhenUnlockedThisDeviceOnly and disabled synchronization. Its transaction lock covers store instances in the same process. Generation comparisons reject competing writes; a stale coordinator must reload rather than overwrite another coordinator's accepted generation.
 
-A process already able to read Rune's memory or authorized Keychain items remains a platform-level risk. Release review must verify sandbox entitlements, signing identity, Keychain access groups, backup behavior, and behavior after device restore or app reinstall.
+Connectors return verified credentials in memory. Only the coordinator may persist them, after checking the exact operation and credential generations. Storage errors cannot publish memory-only account changes, and failed deletion leaves the account available for retry. Credential descriptions and reflection redact their payloads. The current limits are 64 accounts, 64 KiB per credential payload, and 8 MiB per encoded store.
+
+The existing static-profile store still uses the legacy macOS keychain. Its migration and signed-app access behavior remain separate work; setting an accessibility class on the legacy backend does not enforce that class.
+
+A process already able to read Rune's memory or authorized Keychain items remains a platform-level risk. Keychain access isolation, backup behavior, and behavior after device restore or app reinstall require verification.
 
 ## Log and diagnostic leakage
 
@@ -64,7 +68,7 @@ Support-bundle and verbose-trace tests must scan for all seeded synthetic secret
 
 Browser callbacks, credential refreshes, discovery pages, imports, context reloads, and HTTP authentication failures may complete after cancellation or replacement. Cancellation alone is insufficient because a dependency may not cooperate.
 
-All commit points therefore validate opaque operation identity, operation generation, account identity, and credential generation. A delayed authentication rejection may invalidate only the credential revision used by that request. Closing or reopening a sheet and starting a newer refresh must advance the owning generation before cancellation.
+All commit points therefore validate opaque operation identity, operation generation, account identity, and credential generation. A delayed authentication rejection may invalidate only the credential revision used by that request. Closing, reconnecting, and disconnecting invalidate older operations before canceling them. Concurrent credential readers share one refresh exchange; canceling one reader must not interrupt a rotation used by another reader. Discovery waits for that exchange and retains its own cancellable request identity while waiting.
 
 ## Unsafe disconnect
 
@@ -72,12 +76,18 @@ Disconnect could remove the wrong account, imported kubeconfig, shared context, 
 
 Removing Rune-owned connections is a separate reviewed choice driven by explicit provenance. Imported files, watched folders, default kubeconfig, shared connections, and external provider resources are never removed by inference from a display or context name.
 
+## Imported-copy ownership
+
+Each new Rune-owned import has a private manifest with opaque identity, revision, explicit origin, local filename, and a fingerprint covering configuration and referenced assets. Reuse requires a registered source with matching origin and verified bytes. Old copies without a manifest and external files are never inferred to be owned. These records describe local copies; account-level connection ownership and disconnect review remain separate work.
+
+Publication distinguishes new copies from reused ones so rollback only removes files created by that operation. Deletion validates every requested entry before removing anything, rejects changed contents, symlinks, and unexpected files, and preserves sibling entries in the same batch. The manifest is local bookkeeping, not protection against an attacker who already controls the user's writable files.
+
 ## Denial of service and resource retention
 
-Repeated sign-in, pagination, throttling, and non-cooperative requests may consume memory, network, or provider quota. One active authorization attempt is retained per sheet, one refresh or discovery operation owns an account generation, and replacement cancels prior work. Provider implementations must additionally bound decoded object depth, cached metadata lifetime, network timeouts, regional fan-out, and Keychain record count.
+Repeated sign-in, pagination, throttling, and non-cooperative requests may consume memory, network, or provider quota. One active authorization attempt is retained per sheet and one refresh exchange is retained per account. Refresh supersedes discovery; a newer discovery request waits for active refresh and replaces older discovery. Provider implementations must additionally bound decoded object depth, cached metadata lifetime, network timeouts, and regional fan-out.
 
 ## Release blockers
 
-Native onboarding remains disabled for a provider until its production OAuth registration, redirect ownership, publisher or application verification, provider policy review, token-signature validation, Keychain behavior, privacy manifest, and App Store artifact are verified.
+Native onboarding remains disabled for a provider until its production OAuth registration, redirect ownership, publisher or application verification, provider policy review, token-signature validation, Keychain behavior, and privacy manifest are verified.
 
 Each provider also requires deterministic connector contract tests and an external sandbox smoke test for login, discovery, review, Kubernetes authentication, expiry refresh, revocation, reconnect, and disconnect. Synthetic repository fixtures must not contain real account or infrastructure data.

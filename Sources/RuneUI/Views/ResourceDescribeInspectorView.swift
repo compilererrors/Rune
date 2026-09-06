@@ -53,7 +53,7 @@ struct ResourceDescribeInspectorPane: View {
                 } label: {
                     Label("Edit YAML…", systemImage: "square.and.pencil")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .accessibilityIdentifier("resource-describe-edit-yaml")
                 .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help("Open this resource's editable YAML. Changes stay local until you choose Apply.")
@@ -65,13 +65,12 @@ struct ResourceDescribeInspectorPane: View {
                     )
                 }
 
-                Menu {
+                RuneToolbarMenu {
                     Button("\(t(.exportDescribe))...", action: onExport)
                     Button("Save Describe to Export Folder", action: onExportToExportFolder)
                     Button("Save Describe and Open", action: onExportAndOpen)
                 } label: {
                     Label(t(.exportDescribe), systemImage: "square.and.arrow.down")
-                        .runeMinimumInteractiveTarget()
                 }
                 .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help("Export the current describe output to a file.")

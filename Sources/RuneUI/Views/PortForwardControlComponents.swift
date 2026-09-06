@@ -206,7 +206,7 @@ struct PortForwardEndpointFields: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
             TextField(placeholder, text: text)
                 .textFieldStyle(.roundedBorder)
                 .font(.callout.monospaced())
@@ -218,7 +218,7 @@ struct PortForwardEndpointFields: View {
     private var directionIndicator: some View {
         Text("→")
             .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
             .frame(minHeight: minimumControlHeight)
             .accessibilityHidden(true)
     }
@@ -281,7 +281,7 @@ struct PortForwardPrimaryActionButton: View {
                 usesUniformWidth: usesUniformWidth
             )
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(RuneToolbarButtonStyle())
         .terminalActionControl(.regular, usesUniformWidth: usesUniformWidth)
         .disabled(activeSession == nil && isStartDisabled)
         .help(primaryActionTitle)

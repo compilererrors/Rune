@@ -199,13 +199,13 @@ struct RuneContentStateView: View {
         VStack(alignment: alignment == .center ? .center : .leading, spacing: 4) {
             Text(state.title)
                 .font(variant == .inline ? .caption.weight(.semibold) : .body.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(.runePrimary)
 
             if let message = state.message,
                !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(message)
                     .font(variant == .inline ? .caption2 : .footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -223,7 +223,7 @@ struct RuneContentStateView: View {
                 Text(action.title)
             }
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .controlSize(variant == .inline ? .small : .regular)
     }
 

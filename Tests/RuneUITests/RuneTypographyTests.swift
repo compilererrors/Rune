@@ -209,10 +209,10 @@ final class RuneTypographyTests: XCTestCase {
         let importSource = try source(at: "Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift")
         let nativeContextSource = try source(at: "Sources/RuneUI/Views/AddClusterNativeContextSection.swift")
 
-        XCTAssertTrue(designSource.contains("Text(title)\n                .font(.caption)\n                .foregroundStyle(.secondary)"))
-        XCTAssertTrue(importSource.contains("Text(context.name)\n                                .font(.caption2)\n                                .foregroundStyle(.secondary)"))
+        XCTAssertTrue(designSource.contains("Text(title)\n                .font(.caption)\n                .foregroundStyle(.runeSecondary)"))
+        XCTAssertTrue(importSource.contains("Text(context.name)\n                                .font(.caption2)\n                                .foregroundStyle(.runeSecondary)"))
         XCTAssertTrue(importSource.contains("Duplicate handling requires an explicit choice before saving:"))
-        XCTAssertTrue(nativeContextSource.contains("Text(\"Imported context\")\n                .font(.caption)\n                .foregroundStyle(.secondary)"))
+        XCTAssertTrue(nativeContextSource.contains("Text(\"Imported context\")\n                .font(.caption)\n                .foregroundStyle(.runeSecondary)"))
     }
 
     private func fittingSize(dynamicTypeSize: DynamicTypeSize) -> CGSize {

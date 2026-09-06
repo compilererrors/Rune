@@ -121,7 +121,7 @@ struct RunePendingWriteConfirmationSheet: View {
                         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
                             Text("Command preview")
                                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                             Text(commandPreview)
                                 .runeInterfaceFont(relativeSize: -1, design: .monospaced)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -132,7 +132,7 @@ struct RunePendingWriteConfirmationSheet: View {
                     }
                     if showsCopyCommandAction {
                         Button("Copy command", action: onCopyCommand)
-                            .buttonStyle(.bordered)
+                            .buttonStyle(RuneToolbarButtonStyle())
                             .accessibilityIdentifier("rune.write-review.copy-command")
                     }
                 }
@@ -145,12 +145,12 @@ struct RunePendingWriteConfirmationSheet: View {
                 Button(role: .cancel, action: onCancel) {
                     RuneDialogButtonLabel("Cancel")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .keyboardShortcut(.cancelAction)
                 Button(role: isDestructive ? .destructive : nil, action: confirm) {
                     RuneDialogButtonLabel(confirmLabel)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .tint(isDestructive
                     ? RuneSemanticColorRole.danger.color(in: runeThemePalette)
                     : RuneSemanticColorRole.info.color(in: runeThemePalette))

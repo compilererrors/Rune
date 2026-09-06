@@ -5,6 +5,34 @@ import XCTest
 
 final class RuneResourceSortingTests: XCTestCase {
     @MainActor
+    func testResourceNamesUseNaturalNumericOrder() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.setPods([10, 2, 1].map { PodSummary(name: "sample-\($0)", namespace: "alpha", status: "Running") })
+        XCTAssertEqual(viewModel.visiblePods.map(\.name), ["sample-1", "sample-2", "sample-10"])
+        viewModel.togglePodSort(.name)
+        XCTAssertEqual(viewModel.visiblePods.map(\.name), ["sample-10", "sample-2", "sample-1"])
+    }
+
+    @MainActor
+    func testEventDatesSortChronologicallyAcrossOffsetsAndKeepUnknownDatesLast() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state)
+        state.setEvents([
+            ("later", "2026-01-01T09:30:00.250Z"),
+            ("earlier", "2026-01-01T10:00:00+01:00"),
+            ("missing", nil),
+            ("invalid", "unknown")
+        ].map { name, timestamp in
+            EventSummary(type: "Normal", reason: name, objectName: "sample", message: "Synthetic event", lastTimestamp: timestamp)
+        })
+        viewModel.toggleEventSort(.lastSeen)
+        XCTAssertEqual(viewModel.visibleEvents.map(\.reason), ["later", "earlier", "invalid", "missing"])
+        viewModel.toggleEventSort(.lastSeen)
+        XCTAssertEqual(viewModel.visibleEvents.map(\.reason), ["earlier", "later", "invalid", "missing"])
+    }
+
+    @MainActor
     func testResourceComparatorsAreIrreflexiveInBothDirections() {
         let viewModel = RuneAppViewModel(state: RuneAppState())
         let pod = PodSummary(name: "sample", namespace: "alpha", status: "Running")

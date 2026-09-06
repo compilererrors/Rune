@@ -5,14 +5,14 @@ import XCTest
 @testable import RuneUI
 
 final class ResourceLogsInspectorViewTests: XCTestCase {
-    func testLogToolbarUsesStableRowsInsteadOfBreakpointWrapping() throws {
+    func testLogToolbarKeepsSourcesStableAndWrapsActionsAtCompactWidths() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let toolbarSource = try XCTUnwrap(source.slice(
             from: "struct ResourceLogsToolbar: View",
             to: "private enum LogToolbarGroupRole"
         ))
 
-        XCTAssertFalse(toolbarSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(toolbarSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(source.contains("LogToolbarScrollRow"))
         XCTAssertTrue(source.contains("private var sourceControls: some View"))
         XCTAssertTrue(source.contains("private var primaryControls: some View"))
@@ -24,7 +24,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorSectionSpacing"))
         XCTAssertTrue(source.contains("LogToolbarGroup"))
         XCTAssertTrue(source.contains("LogToolbarGroup(role: .source)"))
-        XCTAssertTrue(source.contains("LogToolbarGroup(spacing: 6)"))
+        XCTAssertTrue(source.contains("LogToolbarGroup {"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.window), role: .window)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.container), role: .container)"))
         XCTAssertTrue(source.contains("static let sourcePickerWidth: CGFloat = 180"))
@@ -39,7 +39,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("sourcePanelTitle: \"Pods\""))
         XCTAssertTrue(source.contains("LogToolbarSourceSummary("))
         XCTAssertTrue(source.contains("sourceSummaryTitle: source.sourcePanelTitle"))
-        XCTAssertTrue(source.contains(".toggleStyle(.button)"))
+        XCTAssertTrue(source.contains(".toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))"))
         XCTAssertTrue(source.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(source.contains(".frame(minHeight: role.height)"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight"))
@@ -55,7 +55,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("Label(\"Save As...\", systemImage: \"shippingbox\")"))
         XCTAssertTrue(source.contains("Label(\"Save to Export Folder\", systemImage: \"folder.badge.plus\")"))
         XCTAssertTrue(source.contains("Label(\"Save and Open\", systemImage: \"archivebox\")"))
-        XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
+        XCTAssertTrue(source.contains(".buttonStyle(RuneToolbarButtonStyle())"))
         XCTAssertTrue(source.contains("Label(t(.more), systemImage: \"ellipsis.circle\")"))
         XCTAssertTrue(source.contains("t(.exportVisibleResultsZip)"))
         XCTAssertTrue(source.contains("t(.exportFullUnfilteredZip)"))
@@ -73,7 +73,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains(".controlSize(.small)"))
         XCTAssertTrue(source.contains(".logToolbarButtonFrame()"))
         XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
-        XCTAssertTrue(source.contains("idealWidth: width"))
+        XCTAssertFalse(toolbarSource.contains("idealWidth: width"))
         XCTAssertFalse(source.contains("maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight"))
         XCTAssertTrue(source.contains(".font(.caption.weight(.semibold))"))
     }
@@ -153,7 +153,6 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(searchBarSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
         XCTAssertTrue(searchBarSource.contains("RuneSurfaceBackground(kind: .editor)"))
-        XCTAssertTrue(searchBarSource.contains("runeThemePalette?.divider"))
         XCTAssertTrue(searchBarSource.contains("runeThemePalette?.secondaryText"))
         XCTAssertTrue(searchBarSource.contains("runeThemePalette?.foreground"))
         XCTAssertTrue(searchBarSource.contains("runeThemePalette?.mutedText"))
@@ -554,18 +553,13 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("struct ResourceLogsExplorePanel"))
         XCTAssertFalse(source.contains("RuneFindBarChrome(\"Log find controls\")"))
         XCTAssertTrue(searchBarSource.contains("ViewThatFits(in: .horizontal)"))
-        XCTAssertTrue(searchBarSource.contains("compactSearchAccessories"))
         XCTAssertFalse(searchBarSource.contains("LogSearchPulseOverlay"))
         XCTAssertFalse(searchBarSource.contains("flashSearchPulse"))
         XCTAssertFalse(searchBarSource.contains("Text(searchSummary.badgeText)"))
         XCTAssertFalse(searchBarSource.contains("Spacer(minLength:"))
-        XCTAssertTrue(searchBarSource.contains("private func matchControls(statusWidth: CGFloat)"))
-        XCTAssertTrue(searchBarSource.contains(".fixedSize(horizontal: true, vertical: false)"))
-        XCTAssertTrue(searchBarSource.contains("ResourceLogsLayoutMetrics.searchMatchStatusWidth"))
         XCTAssertTrue(searchBarSource.contains("transaction.animation = nil"))
         XCTAssertTrue(source.contains("@FocusState private var isSearchFocused"))
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: [.command])"))
-        XCTAssertTrue(source.contains("RuneMatchCaseButton(isSelected: $matchCase, help: matchCaseHelp)"))
         XCTAssertTrue(source.contains("searchResult.isRenderableSnapshot(for: logText)"))
         XCTAssertTrue(source.contains("renderSearchResult: renderSearchResult"))
         XCTAssertTrue(source.contains("navigationSearchResult: activeSearchResult"))
@@ -1025,10 +1019,10 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             to: "private struct LogToolbarSourceSummary"
         ))
 
-        XCTAssertTrue(statusPanelSource.contains("statusColor.opacity("))
+        XCTAssertTrue(statusPanelSource.contains(".foregroundStyle(statusColor)"))
         XCTAssertTrue(statusPanelSource.contains("\"pause.fill\""))
         XCTAssertTrue(statusPanelSource.contains("\"play.fill\""))
-        XCTAssertTrue(source.contains(".accessibilityElement(children: .ignore)"))
+        XCTAssertFalse(source.contains(".accessibilityElement(children: .ignore)"), "The playback button must retain its native accessible button role.")
         XCTAssertFalse(statusPanelSource.contains("Text(compactText)"))
         XCTAssertFalse(statusPanelSource.contains("private var compactText"))
         XCTAssertFalse(statusPanelSource.contains(".frame(maxWidth: .infinity"))
@@ -1117,15 +1111,15 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(tailControl.contains("isStreamPaused: isStreamPaused"))
         XCTAssertTrue(toolbarActions.contains("toolbarIconLabel(t(.previous), systemImage: \"clock.arrow.circlepath\""))
         XCTAssertEqual(tailControl.components(separatedBy: "Button(action: toggleTailPlayback)").count - 1, 1)
-        XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
-        XCTAssertTrue(source.contains(".buttonStyle(.borderedProminent)"))
+        XCTAssertTrue(source.contains("RuneToolbarMenu {"))
+        XCTAssertTrue(source.contains(".buttonStyle(RuneToolbarButtonStyle())"))
         XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
         XCTAssertTrue(source.contains("Button(t(.stopTail))"))
         XCTAssertFalse(source.contains("Toggle(\"Tail\""))
         XCTAssertFalse(source.contains("Button(isStreamPaused ? \"Resume\" : \"Pause\""))
     }
 
-    func testTerminalCompactLogsToolbarKeepsSourcesOnFirstRowAndConsolidatedActionsOnSecondRow() throws {
+    func testTerminalCompactLogsToolbarKeepsSourcesFirstAndAllowsActionsToWrap() throws {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
         let compactBody = try XCTUnwrap(source.slice(
             from: "private var terminalCompactBody: some View",
@@ -1133,7 +1127,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         ))
 
         XCTAssertTrue(compactBody.contains("LogToolbarScrollRow {\n                primaryControls"))
-        XCTAssertTrue(compactBody.contains("LogToolbarScrollRow {\n                toolbarActions"))
+        XCTAssertTrue(compactBody.contains("toolbarActions\n                .controlSize(toolbarControlSize)"))
         XCTAssertFalse(compactBody.contains("LogToolbarScrollRow {\n                modeControls"))
         XCTAssertFalse(source.contains("private var modeControls: some View"))
         XCTAssertFalse(compactBody.contains("ResourceLogsStatusPanel("))
@@ -1150,7 +1144,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains(".help(\"\\(statusText). \\(tailActionHelp)\")"))
         XCTAssertTrue(source.contains(".accessibilityValue(statusText)"))
         XCTAssertTrue(source.contains(".accessibilityLabel(tailActionTitle)"))
-        XCTAssertTrue(source.contains(".accessibilityElement(children: .ignore)"))
+        XCTAssertFalse(source.contains(".accessibilityElement(children: .ignore)"), "The playback button must retain its native accessible button role.")
         XCTAssertFalse(indicatorSource.contains("Text(compactText)"))
     }
 
@@ -1310,7 +1304,6 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("matchPositionText(selectedIndex: selectedMatchIndex)"))
-        XCTAssertTrue(source.contains("Text(matchStatusText)"))
         XCTAssertTrue(source.contains("guard searchSummary.hasMatches else { return \"No results\" }"))
         XCTAssertFalse(source.contains("ResourceLogsSearchSummaryBar("))
         XCTAssertTrue(source.contains("selectedSearchMatchIndex: $selectedSearchMatchIndex"))
@@ -1459,7 +1452,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         )
         XCTAssertTrue(sharedSource.contains("searchMatchRanges"))
         XCTAssertTrue(sharedSource.contains("highlightedText"))
-        XCTAssertTrue(sharedSource.contains("findHighlightColor"))
+        XCTAssertTrue(sharedSource.contains("colors.warning.opacity(0.10)"))
         XCTAssertTrue(sharedSource.contains("easeOut(duration: 0.12)"))
     }
 

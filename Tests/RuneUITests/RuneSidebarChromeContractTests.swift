@@ -1950,7 +1950,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(preferencesSource.contains("case themes"))
         XCTAssertTrue(preferencesSource.contains("Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)"))
         XCTAssertTrue(preferencesSource.contains("private var themesSettingsForm: some View"))
-        XCTAssertTrue(preferencesSource.contains("private struct RuneThemeSelectorCard"))
+        XCTAssertTrue(preferencesSource.contains("struct RuneThemeSelectorCard"))
         XCTAssertTrue(preferencesSource.contains("settingsSection(\"Choose theme\")"))
         XCTAssertTrue(preferencesSource.contains("Text(\"Recent\")"))
         XCTAssertTrue(preferencesSource.contains("Text(\"Current: \\(selectedAppearanceTheme.title)\")"))
@@ -1980,7 +1980,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(preferencesSource.contains("themePickerMenu"))
         XCTAssertFalse(preferencesSource.contains("customThemeManagementMenu"))
         XCTAssertTrue(preferencesSource.contains("private var swatches: some View"))
-        XCTAssertTrue(preferencesSource.contains("swatch(palette.accent)"))
+        XCTAssertTrue(preferencesSource.contains("swatch(palette.accentFill)"))
         XCTAssertTrue(preferencesSource.contains("selectAppearanceTheme(theme.id)"))
         XCTAssertTrue(preferencesSource.contains("private func reloadAppearanceThemes()"))
         XCTAssertTrue(preferencesSource.contains("if !availableIDs.contains(appearanceThemeRaw)"))
@@ -2008,7 +2008,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(preferencesSource.contains("@AppStorage(RuneSettingsKeys.appearanceTheme)"))
         XCTAssertTrue(preferencesSource.contains("Menu {"))
         XCTAssertTrue(preferencesSource.contains("appearanceThemeRaw = themeID"))
-        XCTAssertTrue(preferencesSource.contains("chevron.up.chevron.down"))
+        XCTAssertTrue(preferencesSource.contains("RuneToolbarMenu(fillsWidth: true)"))
         XCTAssertTrue(themeSource.contains("RuneAppearanceTheme.allCases.map(\\.resolvedTheme) + userThemes()"))
         XCTAssertTrue(preferencesSource.contains(".runeAppearanceTheme(selectedAppearanceTheme)"))
 
@@ -2029,7 +2029,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(themeSource.contains("window.contentView?.appearance = nil"))
         XCTAssertTrue(themeSource.contains("window.backgroundColor = .windowBackgroundColor"))
         XCTAssertTrue(themeSource.contains(".preferredColorScheme(theme.preferredColorScheme)"))
-        XCTAssertFalse(themeSource.contains(".foregroundStyle(palette?.foreground"))
+        XCTAssertTrue(themeSource.contains(".foregroundStyle(palette?.foreground"))
         XCTAssertTrue(themeSource.contains("selectionFill"))
         XCTAssertTrue(themeSource.contains("secondaryText"))
         XCTAssertTrue(designSource.contains("kind.fill(theme: resolvedTheme)"))
@@ -2098,8 +2098,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertEqual(theme.sourceSummary, "Custom theme")
         XCTAssertEqual(theme.preferredColorScheme, .dark)
         XCTAssertNotNil(theme.palette)
-        XCTAssertEqual(theme.appKitPalette?.accent, "#6bb7f7ff")
-        XCTAssertEqual(theme.appKitPalette?.danger, "#ff7a9aff")
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(try XCTUnwrap(theme.appKitPalette?.accent)), over: NSColor(try XCTUnwrap(theme.palette).panel)), 4.5)
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(try XCTUnwrap(theme.appKitPalette?.danger)), over: NSColor(try XCTUnwrap(theme.palette).panel)), 4.5)
         XCTAssertEqual(theme.syntaxPalette?.key, "#8bd3ffff")
         XCTAssertNil(theme.builtin)
     }
@@ -2187,7 +2187,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{authDoctorPanel"))
         XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return false }"))
         XCTAssertTrue(rootViewSource.contains("guard !simpleMode else { return }"))
-        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    Menu {\n                        Button(\"Save Bundle\")"))
+        XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                    RuneToolbarMenu {\n                        Button(\"Save Bundle\")"))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {") && rootViewSource.contains("viewModel.runAuthDoctor()"))
         XCTAssertTrue(rootViewSource.contains("if !simpleMode {\n                RBACCanISimulatorPanel(viewModel: viewModel)"))
         XCTAssertTrue(rootViewSource.contains("viewModel.setHelmBrowserResourceFamily(tab.resourceListFamily)"))
@@ -2515,7 +2515,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(appKitPodTableSource.contains("drawColumnDivider"))
         XCTAssertTrue(appKitPodTableSource.contains("RuneUILayoutMetrics.compactGlyphCornerRadius"))
         XCTAssertTrue(appKitPodTableSource.contains("tableTheme.rowFill"))
-        XCTAssertTrue(appKitPodTableSource.contains("NSColor.controlAccentColor.withAlphaComponent(0.11)"))
+        XCTAssertTrue(appKitPodTableSource.contains("selectedRowFill: nativeSelectedRowFill"))
         XCTAssertTrue(appKitPodTableSource.contains("tableViewColumnDidResize"))
         XCTAssertTrue(appKitPodTableSource.contains("DispatchQueue.main.asyncAfter(deadline: .now() + 0.18"))
         XCTAssertTrue(appKitPodTableSource.contains("column.resizingMask = isUserResizable ? .userResizingMask : []"))
@@ -2633,8 +2633,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertEqual(appKitPodTableSource.components(separatedBy: "override func keyDown(with event: NSEvent)").count - 1, 1)
         XCTAssertTrue(appKitPodTableSource.contains("private struct RuneAppKitResourceTableTheme"))
         XCTAssertTrue(appKitPodTableSource.contains("let headerFill: NSColor"))
-        XCTAssertTrue(appKitPodTableSource.contains("headerFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42)"))
-        XCTAssertTrue(appKitPodTableSource.contains("headerFill: NSColor.runeHex(row).withAlphaComponent(0.62)"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerFill: .controlBackgroundColor"))
+        XCTAssertTrue(appKitPodTableSource.contains("headerFill: NSColor.runeHex(row)"))
         XCTAssertTrue(appKitPodTableSource.contains("private func drawHeaderBackground(in dirtyRect: NSRect)"))
         XCTAssertTrue(appKitPodTableSource.contains("roundedRect: rect"))
         XCTAssertTrue(appKitPodTableSource.contains("xRadius: RuneUILayoutMetrics.compactGlyphCornerRadius"))
@@ -2936,7 +2936,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(onboardingSource.contains("let onUseDefault: () -> Void"))
         XCTAssertTrue(onboardingSource.contains("let onShowMoreOptions: () -> Void"))
         XCTAssertEqual(
-            onboardingSource.components(separatedBy: ".buttonStyle(.borderedProminent)").count - 1,
+            onboardingSource.components(separatedBy: ".buttonStyle(RuneToolbarButtonStyle(isProminent: true))").count - 1,
             1,
             "Import should be the single visually primary onboarding action."
         )
@@ -2993,7 +2993,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         let contentPaneBlock = String(rootViewSource[contentPaneStart.lowerBound..<contentHeaderStart.lowerBound])
         let detailPaneBlock = String(rootViewSource[detailPaneStart.lowerBound..<overviewDetailsStart.lowerBound])
-        XCTAssertTrue(contentPaneBlock.contains("RuneNoticeBanner(notice: notice)"))
+        XCTAssertTrue(contentPaneBlock.contains("RuneNoticeBanner("))
+        XCTAssertTrue(contentPaneBlock.contains("notice: notice"))
         XCTAssertTrue(contentPaneBlock.contains("viewModel.state.activeNotice"))
         XCTAssertFalse(contentPaneBlock.contains("Text(error)"))
         XCTAssertFalse(contentPaneBlock.contains(".foregroundStyle(.red)"))
@@ -3372,7 +3373,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(
             primaryActionBlock.contains("case .importKubeconfig:")
                 && primaryActionBlock.contains("Label(action.title, systemImage: action.systemImage)")
-                && primaryActionBlock.contains(".buttonStyle(.borderedProminent)\n            .keyboardShortcut(.defaultAction)"),
+                && primaryActionBlock.contains(".buttonStyle(RuneToolbarButtonStyle(isProminent: true))\n            .keyboardShortcut(.defaultAction)"),
             "Local and native Add Cluster should default Return to Import when a kubeconfig is needed."
         )
         XCTAssertTrue(
@@ -3413,7 +3414,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(authDoctorBlock.contains("RuneDisclosureRow("))
         XCTAssertTrue(authDoctorBlock.contains(".frame(minWidth: 154, alignment: .leading)"))
         XCTAssertTrue(authDoctorBlock.contains("private func authDoctorActions(runLabel: String) -> some View"))
-        XCTAssertTrue(authDoctorBlock.contains(".buttonStyle(.bordered)"))
+        XCTAssertTrue(authDoctorBlock.contains(".buttonStyle(RuneToolbarButtonStyle())"))
         XCTAssertTrue(authDoctorBlock.contains(".controlSize(.small)"))
         XCTAssertTrue(authDoctorBlock.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(authDoctorBlock.contains("authDoctorSummaryChip"))
@@ -4438,7 +4439,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             in: viewModelSource
         )
 
-        XCTAssertTrue(viewModelSource.contains("@Published public private(set) var pendingProductionDestructiveConfirmation"))
+        XCTAssertTrue(viewModelSource.contains("public private(set) var pendingProductionDestructiveConfirmation"))
         XCTAssertTrue(viewModelSource.contains("Destructive production actions require a second confirmation"))
         XCTAssertTrue(viewModelSource.contains("private struct PendingWriteScopeSnapshot"))
         XCTAssertTrue(viewModelSource.contains("let kubeConfigSources: [KubeConfigSource]"))

@@ -107,7 +107,7 @@ struct AddClusterPopoverView: View {
         HStack(spacing: 9) {
             Image(systemName: "plus.circle.fill")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.runeAccent)
                 .frame(width: 24, height: 24)
                 .background(Circle().fill(Color.accentColor.opacity(0.12)))
             Text("Add Cluster")
@@ -218,7 +218,7 @@ struct AddClusterPopoverView: View {
                 Button(action: onImportManualToken) {
                     Label("Add Manual Token Cluster", systemImage: "key")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .controlSize(.regular)
                 .disabled(!canImportManualToken)
             }
@@ -226,7 +226,7 @@ struct AddClusterPopoverView: View {
         } label: {
             Label("Manual Token Server", systemImage: "key")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
         .padding(10)
         .background(RuneSurfaceBackground(kind: .inset))
@@ -242,7 +242,7 @@ struct AddClusterPopoverView: View {
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
     }
 
     private var canImportManualToken: Bool {
@@ -269,7 +269,7 @@ struct AddClusterPopoverView: View {
 
             Text(discoveryStatusText)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(discoveryStatusText)
 
@@ -331,14 +331,14 @@ struct AddClusterPopoverView: View {
             Image(systemName: symbolName)
                 .font(.body.weight(.semibold))
                 .frame(width: 24, height: 24)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.runeAccent)
                 .background(Circle().fill(Color.accentColor.opacity(0.11)))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Text(subtitle)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -383,7 +383,7 @@ struct AddClusterPopoverView: View {
                         .font(.subheadline.weight(.semibold))
                     Text(presentation.compactSubtitle)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
 
@@ -391,7 +391,7 @@ struct AddClusterPopoverView: View {
 
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.runeTertiary)
             }
             .padding(10)
             .frame(

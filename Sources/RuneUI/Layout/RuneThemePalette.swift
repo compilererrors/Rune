@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RuneSharedUI
 
 enum RuneAppearanceTheme: String, CaseIterable, Identifiable {
     case native
@@ -346,6 +347,33 @@ struct RuneResolvedTheme: Identifiable {
     let syntaxPalette: RuneThemeSyntaxPalette?
     let builtin: RuneAppearanceTheme?
 
+    init(id: String, title: String, sourceSummary: String, preferredColorScheme: ColorScheme?,
+         palette: RuneThemePalette?, appKitPalette: RuneThemeAppKitPalette?,
+         syntaxPalette: RuneThemeSyntaxPalette?, builtin: RuneAppearanceTheme?) {
+        self.id = id
+        self.title = title
+        self.sourceSummary = sourceSummary
+        self.preferredColorScheme = preferredColorScheme
+        self.builtin = builtin
+        guard let palette, let preferredColorScheme else {
+            self.palette = palette
+            self.appKitPalette = appKitPalette
+            self.syntaxPalette = syntaxPalette
+            return
+        }
+        let corrected = RuneThemeContrast.normalized(palette, scheme: preferredColorScheme)
+        self.palette = corrected
+        self.appKitPalette = RuneThemeAppKitPalette(
+            window: corrected.window.runeHexRGB, foreground: corrected.foreground.runeHexRGB,
+            accent: corrected.accentFill.runeHexRGB, stroke: corrected.stroke.runeHexRGB,
+            row: corrected.row.runeHexRGB, rowSelected: corrected.rowSelected.runeHexRGB,
+            success: corrected.success.runeHexRGB, warning: corrected.warning.runeHexRGB,
+            danger: corrected.danger.runeHexRGB, info: corrected.info.runeHexRGB,
+            selectedAlpha: appKitPalette?.selectedAlpha ?? 0.18
+        )
+        self.syntaxPalette = syntaxPalette.map { RuneThemeContrast.syntax($0, palette: corrected) }
+    }
+
     var isNative: Bool { builtin == .native }
 }
 
@@ -417,10 +445,14 @@ struct RuneThemePalette {
     let warning: Color
     let danger: Color
     let info: Color
+    // Text may need a contrast correction; fills and selections retain the
+    // authored accent instead of inheriting that lighter/darker text color.
+    var authoredAccent: Color? = nil
 
-    var selectionFill: Color { accent.opacity(0.18) }
-    var selectionStroke: Color { accent.opacity(0.46) }
-    var focusRing: Color { accent.opacity(0.72) }
+    var accentFill: Color { authoredAccent ?? accent }
+    var selectionFill: Color { accentFill.opacity(0.18) }
+    var selectionStroke: Color { accentFill.opacity(0.46) }
+    var focusRing: Color { accentFill.opacity(0.72) }
     var chipFill: Color { secondaryText.opacity(0.13) }
     var divider: Color { stroke.opacity(0.48) }
 }
@@ -433,10 +465,10 @@ enum RuneSemanticColorRole: Sendable {
 
     func color(in palette: RuneThemePalette?) -> Color {
         switch self {
-        case .success: return palette?.success ?? .green
-        case .warning: return palette?.warning ?? .orange
-        case .danger: return palette?.danger ?? .red
-        case .info: return palette?.info ?? .blue
+        case .success: return palette?.success ?? Color(nsColor: RuneThemeContrast.nativeInk(.systemGreen))
+        case .warning: return palette?.warning ?? Color(nsColor: RuneThemeContrast.nativeInk(.systemOrange))
+        case .danger: return palette?.danger ?? Color(nsColor: RuneThemeContrast.nativeInk(.systemRed))
+        case .info: return palette?.info ?? Color(nsColor: RuneThemeContrast.nativeInk(.systemBlue))
         }
     }
 }
@@ -926,15 +958,31 @@ extension EnvironmentValues {
 }
 
 private struct RuneAppearanceThemeModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
     let theme: RuneResolvedTheme
+
+    private var largeTextColors: RuneLargeTextColors {
+        if let palette = theme.palette {
+            return RuneLargeTextColors(foreground: palette.foreground, secondary: palette.secondaryText,
+                                       accent: palette.accent, warning: palette.warning)
+        }
+        var environment = EnvironmentValues()
+        environment.colorScheme = colorScheme
+        return RuneLargeTextColors(foreground: RuneTextStyle.primary.resolve(in: environment),
+                                   secondary: RuneTextStyle.secondary.resolve(in: environment),
+                                   accent: RuneTextStyle.accent.resolve(in: environment),
+                                   warning: RuneTextStyle.warning.resolve(in: environment))
+    }
 
     func body(content: Content) -> some View {
         let palette = theme.palette
         content
+            .foregroundStyle(palette?.foreground ?? Color.primary)
             .environment(\.runeResolvedTheme, theme)
             .environment(\.runeThemePalette, palette)
-            .tint(palette?.accent ?? Color.accentColor)
-            .accentColor(palette?.accent)
+            .environment(\.runeLargeTextColors, largeTextColors)
+            .tint(palette?.accentFill ?? Color.accentColor)
+            .accentColor(palette?.accentFill)
             .background((palette?.window ?? Color.clear).ignoresSafeArea())
             .background(RuneAppearanceWindowConfigurator(theme: theme).id(theme.id).frame(width: 0, height: 0))
             .preferredColorScheme(theme.preferredColorScheme)

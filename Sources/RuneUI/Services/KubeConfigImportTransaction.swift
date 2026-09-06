@@ -16,6 +16,14 @@ struct KubeConfigImportTransaction {
         let raw: String
         let sourceName: String
         let sourceURL: URL?
+        let origin: KubeConfigImportOrigin
+
+        init(raw: String, sourceName: String, sourceURL: URL?, origin: KubeConfigImportOrigin = .init()) {
+            self.raw = raw
+            self.sourceName = sourceName
+            self.sourceURL = sourceURL
+            self.origin = origin
+        }
     }
 
     struct Resolution {
@@ -87,7 +95,8 @@ struct KubeConfigImportTransaction {
             let resolvedPayload = Payload(
                 raw: duplicateResolution.raw,
                 sourceName: payload.sourceName,
-                sourceURL: payload.sourceURL
+                sourceURL: payload.sourceURL,
+                origin: payload.origin
             )
             let validated = validator.validate(
                 raw: resolvedPayload.raw,

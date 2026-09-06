@@ -267,7 +267,7 @@ struct TerminalPodControlLayout<Actions: View>: View {
     private var selectorLabel: some View {
         Label(title, systemImage: systemImage)
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
             .lineLimit(1)
     }
 
@@ -345,7 +345,7 @@ struct TerminalPodSelectorRow: View {
                 Label(actionTitle, systemImage: actionSystemImage)
                     .lineLimit(1)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .controlSize(.small)
             .frame(width: 104)
             .disabled(isActionDisabled)

@@ -75,13 +75,13 @@ struct RuneGlassPaneSurface: View {
         guard let palette = theme.palette else { return role.tint }
         switch role {
         case .window:
-            return palette.window.opacity(0.96)
+            return palette.window
         case .sidebar:
-            return palette.sidebar.opacity(0.94)
+            return palette.sidebar
         case .content:
-            return palette.content.opacity(0.94)
+            return palette.content
         case .inspector:
-            return palette.panel.opacity(0.94)
+            return palette.panel
         }
     }
 }

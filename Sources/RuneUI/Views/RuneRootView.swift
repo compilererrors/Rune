@@ -1653,7 +1653,7 @@ public struct RuneRootView: View {
                 VStack(spacing: 5) {
                     Text("Loading workspace")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 ProgressView()
@@ -1678,7 +1678,7 @@ public struct RuneRootView: View {
         } else {
             Image(systemName: "hexagon")
                 .font(.system(size: 58, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.runeAccent)
                 .frame(width: 112, height: 112)
                 .accessibilityHidden(true)
         }
@@ -1860,6 +1860,8 @@ public struct RuneRootView: View {
                         Image(systemName: "gearshape")
                     }
                     .help("Settings")
+                    .accessibilityLabel("Settings")
+                    .accessibilityIdentifier("rune.settings.open")
                 }
             }
             .toolbarBackground(.visible, for: .windowToolbar)
@@ -1922,7 +1924,7 @@ public struct RuneRootView: View {
                 .accessibilityAddTraits(.isHeader)
             Text("Use this when RBAC does not allow listing namespaces, or when the namespace is not in the cached menu yet.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             TextField("namespace", text: $manualNamespaceInput)
@@ -1935,7 +1937,7 @@ public struct RuneRootView: View {
                 } label: {
                     RuneDialogButtonLabel("Cancel")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .keyboardShortcut(.cancelAction)
 
                 Button {
@@ -1944,7 +1946,7 @@ public struct RuneRootView: View {
                 } label: {
                     RuneDialogButtonLabel("Use Namespace")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .keyboardShortcut(.defaultAction)
                 .disabled(manualNamespaceInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -2138,10 +2140,14 @@ public struct RuneRootView: View {
     private func waitUntilLiveDebugScenarioStepCanApply(_ step: RuneRootLiveDebugScenarioStep) async -> Bool {
         let timeout = Date().addingTimeInterval(25)
         repeat {
-            if applyLiveDebugScenarioStep(step) {
-                return true
+            // Re-selecting the section invalidates its snapshot request. Let
+            // a pending read finish before retrying a fixture-dependent step.
+            if !viewModel.state.isLoading {
+                if applyLiveDebugScenarioStep(step) {
+                    return true
+                }
+                viewModel.refreshCurrentView()
             }
-            viewModel.refreshCurrentView()
             try? await Task.sleep(nanoseconds: 500_000_000)
         } while Date() < timeout
         return false
@@ -2660,7 +2666,7 @@ public struct RuneRootView: View {
 
             Text("Sections")
                 .runeInterfaceFont(relativeSize: 1, weight: .semibold)
-                .foregroundStyle(keyboardPaneFocus == .sidebarSections ? Color.accentColor : .secondary)
+                .foregroundStyle(keyboardPaneFocus == .sidebarSections ? RuneTextStyle.accent : .secondary)
 
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(RuneSection.allCases) { section in
@@ -2674,7 +2680,7 @@ public struct RuneRootView: View {
             HStack(spacing: 8) {
                 Text("Contexts")
                     .runeInterfaceFont(relativeSize: 1, weight: .semibold)
-                    .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? Color.accentColor : .secondary)
+                    .foregroundStyle(keyboardPaneFocus == .sidebarContexts ? RuneTextStyle.accent : .secondary)
                 Spacer(minLength: 0)
                 addClusterButton
             }
@@ -2749,7 +2755,7 @@ public struct RuneRootView: View {
                 Spacer(minLength: 8)
                 Text("⌘" + String(section.commandShortcut))
                     .runeInterfaceFont(relativeSize: -2, design: .monospaced)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .accessibilityLabel("Command " + String(section.commandShortcut))
             }
             .padding(.horizontal, 10)
@@ -2771,7 +2777,7 @@ public struct RuneRootView: View {
                 .padding(.vertical, 5)
                 .frame(minHeight: RuneUILayoutMetrics.iconButtonSize)
                 .background(Capsule().fill(Color.accentColor.opacity(0.16)))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.runeAccent)
         }
         .accessibilityIdentifier("rune.add-cluster.button")
         .buttonStyle(.plain)
@@ -2947,7 +2953,7 @@ public struct RuneRootView: View {
                         .accessibilityAddTraits(.isHeader)
                     Text(presentation.subtitle)
                         .runeInterfaceFont()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
                 Spacer(minLength: 0)
             }
@@ -2972,14 +2978,14 @@ public struct RuneRootView: View {
                         } label: {
                             Label("Import kubeconfig…", systemImage: "doc.badge.plus")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(RuneToolbarButtonStyle())
                         .disabled(viewModel.isRunningCloudKubeConfigImport || viewModel.isSigningInToAzure)
                         .help("Choose a kubeconfig file and review its contexts before adding them.")
                         .accessibilityIdentifier("rune.add-cluster.provider.import-kubeconfig")
                     } else {
                         Text(presentation.note)
                             .runeInterfaceFont(relativeSize: -1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -3070,7 +3076,7 @@ public struct RuneRootView: View {
                        nativeStatus != viewModel.cloudKubeConfigImportStatus {
                         Text(nativeStatus)
                             .runeInterfaceFont(relativeSize: -1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .accessibilityLabel("Authentication status: \(nativeStatus)")
                     }
 
@@ -3136,7 +3142,7 @@ public struct RuneRootView: View {
                     } label: {
                         RuneDialogButtonLabel("Cancel Sign-in")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .keyboardShortcut(.cancelAction)
                 } else if viewModel.isRunningCloudKubeConfigImport {
                     Button(role: .cancel) {
@@ -3144,7 +3150,7 @@ public struct RuneRootView: View {
                     } label: {
                         RuneDialogButtonLabel("Cancel Import")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .keyboardShortcut(.cancelAction)
                 } else {
                     Button {
@@ -3152,7 +3158,7 @@ public struct RuneRootView: View {
                     } label: {
                         RuneDialogButtonLabel("Close")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .keyboardShortcut(.cancelAction)
                 }
 
@@ -3213,14 +3219,14 @@ public struct RuneRootView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.octagon.fill")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.runeDanger)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(diagnostic.title)
                         .runeInterfaceFont(weight: .semibold)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(diagnostic.classification)
                         .runeInterfaceFont(relativeSize: -2, weight: .semibold)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.runeDanger)
                 }
                 Spacer(minLength: 0)
 
@@ -3237,26 +3243,26 @@ public struct RuneRootView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .help("Dismiss provider warning")
                 .accessibilityLabel("Dismiss provider warning")
             }
 
             Text(diagnostic.message)
                 .runeInterfaceFont(relativeSize: -1)
-                .foregroundStyle(.primary)
+                .foregroundStyle(.runePrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(diagnostic.operationShape)
                 .runeInterfaceFont(relativeSize: -2, design: .monospaced)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(2)
                 .textSelection(.enabled)
 
             HStack(alignment: .top, spacing: 8) {
                 Label(diagnostic.nextAction, systemImage: "arrow.triangle.2.circlepath")
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.runePrimary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
@@ -3285,7 +3291,7 @@ public struct RuneRootView: View {
                     } label: {
                         Label("Sign in to Azure & Retry", systemImage: "person.badge.key")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                     .controlSize(.small)
                     .disabled(viewModel.isSigningInToAzure || viewModel.isRunningCloudKubeConfigImport)
                     .help("Open secure Microsoft sign-in, then retry this AKS import automatically.")
@@ -3308,11 +3314,11 @@ public struct RuneRootView: View {
                     .controlSize(.small)
             } else {
                 Image(systemName: "info.circle")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
             Text(status)
                 .runeInterfaceFont(relativeSize: -1, weight: .medium)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -3351,7 +3357,7 @@ public struct RuneRootView: View {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .help("Import another kubeconfig and review its contexts before adding them.")
 
         case .runNativeImport:
@@ -3364,7 +3370,7 @@ public struct RuneRootView: View {
                     Label(action.title, systemImage: action.systemImage)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .disabled(
                     !canRunOptionalImport
                         || viewModel.isRunningCloudKubeConfigImport
@@ -3380,7 +3386,7 @@ public struct RuneRootView: View {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .disabled(
                 provider != .gke
                     || !canRunOptionalImport
@@ -3395,7 +3401,7 @@ public struct RuneRootView: View {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .help(action.id == .copyLocalSetupCommand
                 ? "Copy the local cluster setup command."
                 : "Copy the provider CLI command.")
@@ -3415,7 +3421,7 @@ public struct RuneRootView: View {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .help(provider == .local
                 ? "Refresh detected contexts after your local cluster tool writes kubeconfig."
                 : "Refresh imported contexts and native credential status.")
@@ -3427,7 +3433,7 @@ public struct RuneRootView: View {
                 Label(action.title, systemImage: action.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .disabled(viewModel.state.isRunningAuthDoctor)
             .help("Run Auth Doctor for provider login, kubeconfig, RBAC, and API access checks.")
 
@@ -3442,7 +3448,7 @@ public struct RuneRootView: View {
                     Label(action.title, systemImage: action.systemImage)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .disabled(viewModel.isConnectingNativeKubernetesAuth)
                 .help("Remove native credentials only for \(selectedNativeContext.contextName).")
             }
@@ -3642,7 +3648,7 @@ public struct RuneRootView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(presentation.credentialSectionDescription)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 providerCredentialFields(presentation.credentialFields(excluding: sharedFields))
@@ -3651,7 +3657,7 @@ public struct RuneRootView: View {
                    let missingFields = cloudCredentialDraft.missingRequiredNativeFieldSummary(for: cloudProvider) {
                     Label("Required for this method: \(missingFields).", systemImage: "info.circle")
                         .runeInterfaceFont(relativeSize: -1)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -3674,10 +3680,10 @@ public struct RuneRootView: View {
                 Spacer(minLength: 8)
                 Text(presentation.credentialSectionTitle)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                 Text("Optional")
                     .runeInterfaceFont(relativeSize: -2, weight: .semibold)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.secondary.opacity(0.10)))
@@ -3703,10 +3709,10 @@ public struct RuneRootView: View {
                         .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                     Text("Recommended")
                         .runeInterfaceFont(relativeSize: -2, weight: .semibold)
-                        .foregroundStyle(provider.accent)
+                        .foregroundStyle(.runeAccent)
                     Text(presentation.note)
                         .runeInterfaceFont(relativeSize: -2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -3727,7 +3733,7 @@ public struct RuneRootView: View {
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogControlSpacing) {
             Text(presentation.localCLISetupDescription)
                 .runeInterfaceFont(relativeSize: -1)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             ForEach(presentation.localCLISetupCommands, id: \.self) { command in
@@ -3748,7 +3754,7 @@ public struct RuneRootView: View {
             if presentation.provider == .eks {
                 Text("Replace <profile> with your SSO profile name before running the sign-in command in Terminal.")
                     .runeInterfaceFont(relativeSize: -2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -3767,7 +3773,7 @@ public struct RuneRootView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             content()
                 .runeInsetCard(padding: 12)
@@ -3806,7 +3812,7 @@ public struct RuneRootView: View {
             AddClusterProviderCredentialField(field: field) {
                 Label("Choose the JSON document with “Import with service account…” below.", systemImage: "doc.badge.plus")
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityValue("Choose with Import with service account below")
             }
@@ -3831,7 +3837,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .help("Import kubeconfig from a file.")
         case .runExternalCLI:
@@ -3850,7 +3856,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .keyboardShortcut(isAddClusterProviderAdvancedImportExpanded ? nil : .defaultAction)
                 .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
                 .help(runHelp)
@@ -3869,7 +3875,7 @@ public struct RuneRootView: View {
                     minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                 )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
             .help(runHelp)
@@ -3888,7 +3894,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canRunCredentialImport || viewModel.isRunningCloudKubeConfigImport)
                 .help(runHelp)
@@ -3976,7 +3982,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .disabled(
                 selectedAddClusterNativeContextOption == nil
@@ -3997,7 +4003,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .disabled(
                 selectedAddClusterNativeContextOption == nil
@@ -4016,7 +4022,7 @@ public struct RuneRootView: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .disabled(selectedAddClusterNativeContextOption == nil || viewModel.isConnectingNativeKubernetesAuth)
             .help("Choose and bind a Google service-account JSON file to the compatible imported GKE context selected above.")
@@ -4064,7 +4070,11 @@ public struct RuneRootView: View {
     private var contentPane: some View {
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentModuleSpacing) {
             if let notice = viewModel.state.activeNotice {
-                RuneNoticeBanner(notice: notice) {
+                RuneNoticeBanner(
+                    notice: notice,
+                    onOpenFolder: viewModel.openSavedLogFolder,
+                    onOpenFile: viewModel.openSavedLogFile
+                ) {
                     viewModel.state.clearError()
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
@@ -4154,7 +4164,7 @@ public struct RuneRootView: View {
                         role: .status,
                         systemImage: "lock.fill",
                         tint: .orange,
-                        foregroundColor: .orange,
+                        foregroundColor: RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette),
                         fill: Color.orange.opacity(0.16),
                         accessibilityLabel: "Mode: Read-only"
                     )
@@ -4264,7 +4274,7 @@ public struct RuneRootView: View {
             if viewModel.state.selectedSection == .events {
                 Label("Event stream", systemImage: "bolt.horizontal.circle")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .accessibilityLabel("Resource type: Events")
             } else {
                 sectionSpecificControls
@@ -4374,6 +4384,82 @@ public struct RuneRootView: View {
 
     @ViewBuilder
     private var resourceListToolbarActions: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: RuneUILayoutMetrics.contentControlSpacing) {
+                resourceSortMenu
+                contextualResourceListToolbarActions
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    @ViewBuilder
+    private var resourceSortMenu: some View {
+        switch viewModel.state.selectedSection {
+        case .workloads where viewModel.state.selectedWorkloadKind == .pod:
+            RuneResourceSortMenu(
+                options: [(.name, "Name"), (.status, "Status"), (.age, "Age"), (.cpu, "CPU"), (.memory, "Memory"), (.restarts, "Restarts")],
+                column: viewModel.podSortColumn,
+                ascending: viewModel.podSortAscending,
+                ascendingTitle: viewModel.podSortColumn == .age ? "Newest First" : "Ascending",
+                descendingTitle: viewModel.podSortColumn == .age ? "Oldest First" : "Descending",
+                onSelectColumn: viewModel.togglePodSort,
+                onReverseDirection: { viewModel.togglePodSort(viewModel.podSortColumn) }
+            )
+        case .workloads where viewModel.state.selectedWorkloadKind == .deployment:
+            RuneResourceSortMenu(
+                options: [(.name, "Name"), (.replicas, "Replicas")],
+                column: viewModel.deploymentSortColumn, ascending: viewModel.deploymentSortAscending,
+                onSelectColumn: viewModel.toggleDeploymentSort,
+                onReverseDirection: { viewModel.toggleDeploymentSort(viewModel.deploymentSortColumn) }
+            )
+        case .networking where viewModel.state.selectedWorkloadKind == .service:
+            RuneResourceSortMenu(
+                options: [(.name, "Name"), (.type, "Type"), (.clusterIP, "Cluster IP")],
+                column: viewModel.serviceSortColumn, ascending: viewModel.serviceSortAscending,
+                onSelectColumn: viewModel.toggleServiceSort,
+                onReverseDirection: { viewModel.toggleServiceSort(viewModel.serviceSortColumn) }
+            )
+        case .workloads, .networking, .config, .storage, .rbac:
+            let presentation = RuneGenericResourceColumnPresentation.resolve(for: viewModel.state.selectedWorkloadKind)
+            RuneResourceSortMenu(
+                options: [(.name, "Name"), (.namespace, "Namespace"), (.primary, presentation.primaryTitle), (.secondary, presentation.secondaryTitle)],
+                column: viewModel.genericResourceSortColumn, ascending: viewModel.genericResourceSortAscending,
+                onSelectColumn: viewModel.toggleGenericResourceSort,
+                onReverseDirection: { viewModel.toggleGenericResourceSort(viewModel.genericResourceSortColumn) }
+            )
+        case .events:
+            RuneResourceSortMenu(
+                options: [(.lastSeen, "Last Seen"), (.reason, "Reason"), (.type, "Type"), (.object, "Object"), (.namespace, "Namespace")],
+                column: viewModel.eventSortColumn, ascending: viewModel.eventSortAscending,
+                ascendingTitle: viewModel.eventSortColumn == .lastSeen ? "Oldest First" : "Ascending",
+                descendingTitle: viewModel.eventSortColumn == .lastSeen ? "Newest First" : "Descending",
+                onSelectColumn: viewModel.toggleEventSort,
+                onReverseDirection: { viewModel.toggleEventSort(viewModel.eventSortColumn) }
+            )
+        case .helm:
+            if effectiveHelmBrowserTab == .releases {
+                RuneResourceSortMenu(
+                    options: [(.name, "Name"), (.namespace, "Namespace"), (.status, "Status"), (.revision, "Revision"), (.chart, "Chart"), (.appVersion, "App Version")],
+                    column: viewModel.helmReleaseSortColumn, ascending: viewModel.helmReleaseSortAscending,
+                    onSelectColumn: viewModel.toggleHelmReleaseSort,
+                    onReverseDirection: { viewModel.toggleHelmReleaseSort(viewModel.helmReleaseSortColumn) }
+                )
+            } else {
+                RuneResourceSortMenu(
+                    options: [(.name, "Name"), (.namespace, "Namespace"), (.family, "Family"), (.kind, "Kind"), (.status, "Status"), (.apiPath, "API Path")],
+                    column: viewModel.operatorResourceSortColumn, ascending: viewModel.operatorResourceSortAscending,
+                    onSelectColumn: viewModel.toggleOperatorResourceSort,
+                    onReverseDirection: { viewModel.toggleOperatorResourceSort(viewModel.operatorResourceSortColumn) }
+                )
+            }
+        case .overview, .terminal:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var contextualResourceListToolbarActions: some View {
         switch viewModel.state.selectedSection {
         case .workloads:
             switch viewModel.state.selectedWorkloadKind {
@@ -4398,7 +4484,7 @@ public struct RuneRootView: View {
             } label: {
                 Label("Export Events…", systemImage: "square.and.arrow.up")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .runeMinimumInteractiveTarget()
             .help("Export the events visible in the current scope")
         case .helm:
@@ -4441,7 +4527,7 @@ public struct RuneRootView: View {
     }
 
     private func operatorResourceFocusMenu(compact: Bool) -> some View {
-        Menu {
+        RuneToolbarMenu {
             ForEach(OperatorResourceFocus.allCases) { focus in
                 Button {
                     viewModel.setOperatorResourceFocus(focus)
@@ -4470,7 +4556,7 @@ public struct RuneRootView: View {
         HStack(spacing: 2) {
             Text(viewModel.operatorResourcePageSummary)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .monospacedDigit()
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -4500,7 +4586,7 @@ public struct RuneRootView: View {
         let family = viewModel.operatorPrinterColumnFamilyForCustomization
         let showsColumns = viewModel.showsOperatorPrinterColumnsForCurrentFamily
 
-        return Menu {
+        return RuneToolbarMenu {
             if let family {
                 Button {
                     viewModel.toggleOperatorPrinterColumnsForCurrentFamily()
@@ -4528,7 +4614,7 @@ public struct RuneRootView: View {
     }
 
     private func helmNamespaceScopeMenu(compact: Bool) -> some View {
-        Menu {
+        RuneToolbarMenu {
             Button {
                 viewModel.setHelmAllNamespaces(false)
             } label: {
@@ -4574,7 +4660,7 @@ public struct RuneRootView: View {
             onClearSelection: viewModel.clearPodBulkSelection
         ) {
             if viewModel.selectedPodCount > 0 {
-                Menu {
+                RuneToolbarMenu {
                     Button {
                         viewModel.saveSelectedPodLogsZip()
                     } label: {
@@ -4621,7 +4707,7 @@ public struct RuneRootView: View {
             onClearSelection: viewModel.clearGenericResourceBulkSelection
         ) {
             if viewModel.selectedGenericResourceCount > 0 {
-                Menu {
+                RuneToolbarMenu {
                     Button {
                         didCopyGenericResourceComparison = false
                         isGenericResourceComparisonPresented = true
@@ -4662,14 +4748,14 @@ public struct RuneRootView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "rectangle.split.2x1")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.runeAccent)
                 Text("Compare selected resources")
                     .font(.headline)
             }
 
             Text("Review key fields for the selected resources in one place. Copy the summary when you want to share it.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             ScrollView([.vertical, .horizontal]) {
@@ -4686,7 +4772,7 @@ public struct RuneRootView: View {
                 if didCopyGenericResourceComparison {
                     Label("Copied", systemImage: "checkmark")
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 Spacer()
@@ -4700,7 +4786,7 @@ public struct RuneRootView: View {
                     viewModel.copySelectedGenericResourceComparisonToClipboard()
                     didCopyGenericResourceComparison = true
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             }
         }
         .padding(16)
@@ -5361,7 +5447,7 @@ public struct RuneRootView: View {
                 }
 
                 if !simpleMode {
-                    Menu {
+                    RuneToolbarMenu {
                         Button("Save Bundle") {
                             viewModel.saveSupportBundle()
                         }
@@ -5375,7 +5461,6 @@ public struct RuneRootView: View {
                         }
                     } label: {
                         Label("Save Bundle", systemImage: "square.and.arrow.down")
-                            .runeMinimumInteractiveTarget()
                     }
                 }
             }
@@ -5387,7 +5472,7 @@ public struct RuneRootView: View {
                     Text("Write Audit")
                         .font(.headline)
                     Spacer(minLength: 0)
-                    Menu {
+                    RuneToolbarMenu {
                         Button("Export JSON…") {
                             viewModel.saveVisibleWriteAuditLog()
                         }
@@ -5401,9 +5486,8 @@ public struct RuneRootView: View {
                         }
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
-                            .runeMinimumInteractiveTarget()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .controlSize(.small)
                     .disabled(viewModel.state.writeAuditLog.isEmpty)
                     .help("Export visible write audit entries")
@@ -5412,7 +5496,7 @@ public struct RuneRootView: View {
                 if viewModel.state.writeAuditLog.isEmpty {
                     Text("No write actions in this session.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 } else {
                     TextField("Search audit", text: $viewModel.writeAuditSearchQuery)
                         .textFieldStyle(.roundedBorder)
@@ -5421,7 +5505,7 @@ public struct RuneRootView: View {
                     if viewModel.visibleWriteAuditEntries.isEmpty {
                         Text("No audit entries match the current search.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                     }
 
                     ForEach(viewModel.visibleWriteAuditEntries.prefix(8)) { entry in
@@ -5432,7 +5516,7 @@ public struct RuneRootView: View {
                                 Spacer(minLength: 8)
                                 Text(entry.status)
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(entry.status == "Succeeded" ? Color.green : Color.red)
+                                    .foregroundStyle(entry.status == "Succeeded" ? RuneTextStyle.success : .danger)
                             }
                             Text(entry.resource)
                                 .font(.caption)
@@ -5440,7 +5524,7 @@ public struct RuneRootView: View {
                                 .help(entry.resource)
                             Text("\(entry.contextName) · \(entry.namespace) · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                         }
                         .padding(.vertical, 4)
                     }
@@ -5510,7 +5594,7 @@ public struct RuneRootView: View {
                 Button("Restart Rollout") {
                     viewModel.requestRolloutRestartSelectedStatefulSet()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .disabled(!viewModel.canApplyClusterMutations)
 
                 Divider()
@@ -5824,13 +5908,13 @@ public struct RuneRootView: View {
         switch helmInspectorTab {
         case .values:
             Button("Save Values…", action: viewModel.saveCurrentHelmValues)
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
         case .manifest:
             Button("Save Manifest…", action: viewModel.saveCurrentHelmManifest)
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
         case .history:
             Button("Save History…", action: viewModel.saveCurrentHelmHistory)
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
         case .overview:
             EmptyView()
         }
@@ -5873,12 +5957,12 @@ public struct RuneRootView: View {
                             }
                             Text(entry.chart + " • " + entry.appVersion)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                             Text(entry.description)
                                 .font(.footnote)
                             Text(entry.updated)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                         }
                         .padding(10)
                         .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
@@ -6290,13 +6374,13 @@ public struct RuneRootView: View {
         Button(appString(.applyYAML)) {
             viewModel.requestApplySelectedResourceYAML()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(!viewModel.canApplyClusterMutations)
 
         Button("Export…") {
             viewModel.saveCurrentResourceYAML()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
 
         Button("Delete", role: .destructive) {
             viewModel.requestDeleteSelectedResource()
@@ -6325,7 +6409,7 @@ public struct RuneRootView: View {
                         Button(eventGoToResourceButtonTitle(for: event)) {
                             viewModel.openEventSource(event)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                         .help("Switches section and selects the involved object when it appears in the list.")
                     },
                     content: {
@@ -6426,7 +6510,7 @@ public struct RuneRootView: View {
                                 genericResourceManifestTab = .yaml
                                 yamlManifestIsEditing = resolvedManifestInlineEditorImplementation.supportsInlineEditing
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                             .disabled(!viewModel.canApplyClusterMutations)
                             .help("Switches to YAML and enables inline editing for this ConfigMap.")
                         }
@@ -6698,6 +6782,8 @@ public struct RuneRootView: View {
             onClose: { isYAMLEditorSheetPresented = false },
             notice: viewModel.state.activeNotice,
             onDismissNotice: { viewModel.state.clearError() },
+            onOpenSavedFolder: viewModel.openSavedLogFolder,
+            onOpenSavedFile: viewModel.openSavedLogFile,
             documentState: yamlManifestDocumentState,
             editorRestorationRequest: viewModel.state.resourceYAMLEditorRestorationRequest,
             onEditorEdit: { yaml, presentation in
@@ -6815,7 +6901,7 @@ public struct RuneRootView: View {
                 if let result = viewModel.state.lastExecResult, result.podName == pod.name {
                     Text("Exit code: \(result.exitCode)")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(result.exitCode == 0 ? Color.secondary : Color.red)
+                        .foregroundStyle(result.exitCode == 0 ? RuneTextStyle.secondary : .danger)
                 }
             }
 
@@ -6823,7 +6909,7 @@ public struct RuneRootView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(result.command.joined(separator: " "))
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
 
                     InspectorReadOnlyTextSurface(
                         text: execOutputText(for: result),
@@ -6833,7 +6919,7 @@ public struct RuneRootView: View {
                 }
             } else {
                 Text("Run a command to see stdout/stderr here.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
         }
     }
@@ -6879,7 +6965,7 @@ public struct RuneRootView: View {
 
             if matchingSessions.isEmpty {
                 Text("No port-forward sessions for this \(targetKind.title.lowercased()).")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             } else {
                 HStack {
                     Text(matchingSessions.contains(where: \.isActiveOrStarting) ? "Port forwards for this \(targetKind.title.lowercased())" : "Recent port forwards for this \(targetKind.title.lowercased())")
@@ -7326,12 +7412,12 @@ public struct RuneRootView: View {
 
             Text("\(session.contextName) • \(session.namespace) • \(session.address)")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             if !session.lastMessage.isEmpty {
                 Text(session.lastMessage)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .textSelection(.enabled)
             }
 
@@ -7733,10 +7819,12 @@ public struct RuneRootView: View {
     }
 
     private var availableKeyboardPanes: [RuneRootKeyboardPane] {
+        // The installed AppKit monitor retains its original view value. Read the
+        // current preference so changes made in Settings apply without a restart.
         RuneRootKeyboardPaneNavigation.availablePanes(
             sidebarVisible: viewModel.isSidebarVisible,
             detailVisible: viewModel.isDetailPaneVisible,
-            skipsClusterPane: skipClusterOnTabNavigationFromSections
+            skipsClusterPane: UserDefaults.standard.bool(forKey: RuneSettingsKeys.skipClusterOnTabNavigationFromSections)
         )
     }
 
@@ -8981,7 +9069,7 @@ public struct RuneRootView: View {
             role: .status,
             systemImage: "exclamationmark.triangle.fill",
             tint: .red,
-            foregroundColor: .red,
+            foregroundColor: RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette),
             fill: Color.red.opacity(0.16),
             helpText: "Production context active",
             accessibilityLabel: "Production context active"
@@ -9036,7 +9124,7 @@ public struct RuneRootView: View {
     private var overviewStatusBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: viewModel.isProductionContext ? "exclamationmark.shield.fill" : "checkmark.shield.fill")
-                .foregroundStyle(viewModel.isProductionContext ? .red : .green)
+                .foregroundStyle(viewModel.isProductionContext ? RuneTextStyle.danger : .success)
             Text(viewModel.isProductionContext ? "Production context active" : "Non-production context")
                 .font(.subheadline.weight(.semibold))
             Spacer()
@@ -9053,7 +9141,7 @@ public struct RuneRootView: View {
                 .font(.caption.weight(.bold))
                 .padding(.horizontal, 8)
                 .frame(height: 28)
-                .background((viewModel.state.isReadOnlyMode ? Color.orange : Color.green).opacity(0.24), in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                .background((viewModel.state.isReadOnlyMode ? RuneSemanticColorRole.warning : .success).color(in: activeAppearanceTheme.palette).opacity(0.14), in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
         }
         .padding(12)
         .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
@@ -9064,13 +9152,13 @@ public struct RuneRootView: View {
         if viewModel.state.isManualNamespaceMode {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "square.and.pencil")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.runeWarning)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Manual namespace mode")
                         .font(.subheadline.weight(.semibold))
                     Text(viewModel.state.namespaceAccessWarning ?? "You cannot list namespaces, but you can work in a namespace manually.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -9078,7 +9166,7 @@ public struct RuneRootView: View {
                     manualNamespaceInput = viewModel.state.selectedNamespace
                     isManualNamespaceSheetPresented = true
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
             }
             .padding(12)
             .background(panelFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.groupedContentCornerRadius, style: .continuous))
@@ -9102,11 +9190,11 @@ public struct RuneRootView: View {
                     if viewModel.state.authDoctorChecks.isEmpty, !viewModel.state.isRunningAuthDoctor {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "checkmark.shield")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                                 .frame(width: 16)
                             Text("Run Auth Doctor to check kubeconfig, context auth, namespace access, logs, and RBAC before troubleshooting workloads.")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
@@ -9167,7 +9255,7 @@ public struct RuneRootView: View {
             .disabled(viewModel.state.isRunningAuthDoctor)
             .help("Run kubeconfig, auth, RBAC, logs, exec, and port-forward checks.")
 
-            Menu {
+            RuneToolbarMenu {
                 Button("Save Bundle") {
                     viewModel.saveSupportBundle()
                 }
@@ -9181,7 +9269,6 @@ public struct RuneRootView: View {
                 }
             } label: {
                 Label("Save Bundle", systemImage: "square.and.arrow.down")
-                    .runeMinimumInteractiveTarget()
             }
             .help("Save Auth Doctor diagnostics and support data.")
 
@@ -9196,7 +9283,7 @@ public struct RuneRootView: View {
             .disabled(viewModel.state.isRunningAuthDoctor || viewModel.state.authDoctorChecks.isEmpty)
             .help("Clear Auth Doctor results.")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .controlSize(.small)
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -9206,7 +9293,7 @@ public struct RuneRootView: View {
 
         return HStack(alignment: .top, spacing: 8) {
             Image(systemName: summary.hasFailures ? "chart.bar.xaxis.ascending.badge.exclamationmark" : "chart.bar.xaxis.ascending")
-                .foregroundStyle(summary.hasFailures ? .orange : .secondary)
+                .foregroundStyle(summary.hasFailures ? RuneTextStyle.warning : .secondary)
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -9214,24 +9301,24 @@ public struct RuneRootView: View {
                     .font(.caption.weight(.semibold))
                 Text("\(summary.requestCountText) • \(summary.outcomeText)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("\(summary.transferText) • \(summary.retainedText)")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.runeTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if !summary.endpointHighlights.isEmpty {
                     Text("Retained endpoint highlights")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .padding(.top, 3)
 
                     ForEach(summary.endpointHighlights) { endpoint in
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
                             Image(systemName: endpoint.hasIssues ? "exclamationmark.triangle.fill" : "clock")
                                 .font(.caption2)
-                                .foregroundStyle(endpoint.hasIssues ? .orange : .secondary)
+                                .foregroundStyle(endpoint.hasIssues ? RuneTextStyle.warning : .secondary)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("\(endpoint.method) \(endpoint.apiPath)")
                                     .font(.caption2.monospaced())
@@ -9240,7 +9327,7 @@ public struct RuneRootView: View {
                                     .help("\(endpoint.method) \(endpoint.apiPath)")
                                 Text("\(endpoint.outcomeText) • \(endpoint.maxDurationText)")
                                     .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(.runeTertiary)
                             }
                         }
                     }
@@ -9254,7 +9341,7 @@ public struct RuneRootView: View {
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .controlSize(.small)
             .disabled(viewModel.isRefreshingKubernetesRequestMetricsSummary)
             .help("Refresh API request metrics")
@@ -9272,7 +9359,7 @@ public struct RuneRootView: View {
                     .font(.caption.weight(.semibold))
                 Text(check.message)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -9284,7 +9371,7 @@ public struct RuneRootView: View {
                 } label: {
                     Label(action.title, systemImage: action.systemImage)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .controlSize(.small)
                 .help(action.help)
             }
@@ -9364,7 +9451,7 @@ public struct RuneRootView: View {
             Text(text)
             if !checks.isEmpty {
                 Text(detail)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
         }
         .font(.caption.weight(.semibold))
@@ -9384,10 +9471,10 @@ public struct RuneRootView: View {
 
     private func authDoctorColor(for status: RuneHealthCheckStatus) -> Color {
         switch status {
-        case .running: return .blue
-        case .passed: return .green
-        case .warning: return .orange
-        case .failed: return .red
+        case .running: return RuneSemanticColorRole.info.color(in: activeAppearanceTheme.palette)
+        case .passed: return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette)
+        case .warning: return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette)
+        case .failed: return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
         }
     }
 
@@ -9405,11 +9492,11 @@ public struct RuneRootView: View {
     private var snapshotFreshnessColor: Color {
         switch viewModel.state.snapshotFreshness.status {
         case .idle: return .secondary
-        case .refreshing: return .blue
-        case .reconnecting: return .blue
-        case .live: return .green
-        case .stale: return .orange
-        case .failed: return .red
+        case .refreshing: return RuneSemanticColorRole.info.color(in: activeAppearanceTheme.palette)
+        case .reconnecting: return RuneSemanticColorRole.info.color(in: activeAppearanceTheme.palette)
+        case .live: return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette)
+        case .stale: return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette)
+        case .failed: return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
         }
     }
 
@@ -9580,9 +9667,9 @@ public struct RuneRootView: View {
 
     private func deploymentReplicaStatusColor(_ deployment: DeploymentSummary) -> Color {
         if deployment.desiredReplicas == 0 { return .secondary }
-        if deployment.readyReplicas >= deployment.desiredReplicas { return .green }
-        if deployment.readyReplicas > 0 { return .orange }
-        return .red
+        if deployment.readyReplicas >= deployment.desiredReplicas { return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette) }
+        if deployment.readyReplicas > 0 { return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette) }
+        return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
     }
 
     private func deploymentReplicaStatusText(_ deployment: DeploymentSummary) -> String {
@@ -9735,13 +9822,13 @@ public struct RuneRootView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "clock.arrow.circlepath")
                                     .frame(width: 16)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.runeSecondary)
                                 Text(showsHistoricalDeploymentReplicaSets ? "Hide history" : "Show history")
                                     .font(.caption.weight(.semibold))
                                 if historicalReplicaSetCount > 0 {
                                     Text("(\(historicalReplicaSetCount))")
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(.runeSecondary)
                                 }
                                 Spacer(minLength: 0)
                             }
@@ -9800,16 +9887,16 @@ public struct RuneRootView: View {
         Button("Restart Rollout") {
             viewModel.requestRolloutRestartSelectedDeployment()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(!viewModel.canApplyClusterMutations)
 
         Button(appString(.applyYAML)) {
             viewModel.requestApplySelectedResourceYAML()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(!viewModel.canApplyClusterMutations)
 
-        Menu {
+        RuneToolbarMenu {
             Button("Export Pod Logs ZIP") {
                 viewModel.saveDeploymentPodLogsZip()
             }
@@ -9822,13 +9909,13 @@ public struct RuneRootView: View {
         } label: {
             Label("Export Pod Logs ZIP", systemImage: "archivebox")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(viewModel.state.isLoadingLogs)
 
         Button("Export Pod YAML ZIP") {
             viewModel.saveDeploymentPodYAMLZip()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .disabled(viewModel.state.isLoadingResourceDetails)
 
         Button("Delete", role: .destructive) {
@@ -9909,20 +9996,20 @@ public struct RuneRootView: View {
 
     private func statusColor(for status: String) -> Color {
         switch status.lowercased() {
-        case "running": return .green
-        case "pending": return .orange
-        case "failed": return .red
-        case "succeeded": return .blue
+        case "running": return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette)
+        case "pending": return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette)
+        case "failed": return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
+        case "succeeded": return RuneSemanticColorRole.info.color(in: activeAppearanceTheme.palette)
         default: return .gray
         }
     }
 
     private func portForwardStatusColor(_ status: PortForwardStatus) -> Color {
         switch status {
-        case .starting: return .orange
-        case .active: return .green
+        case .starting: return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette)
+        case .active: return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette)
         case .stopped: return .secondary
-        case .failed: return .red
+        case .failed: return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
         }
     }
 

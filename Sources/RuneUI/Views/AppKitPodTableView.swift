@@ -1403,6 +1403,15 @@ func applySynchronizedResourceColumnResize(
 }
 
 fileprivate struct RuneAppKitResourceTableTheme {
+    private static let nativeSelectedRowFill = NSColor(name: nil, dynamicProvider: { appearance in
+        var color = NSColor.controlBackgroundColor
+        appearance.performAsCurrentDrawingAppearance {
+            color = RuneThemeContrast.RGB(.controlAccentColor)
+                .over(RuneThemeContrast.RGB(.controlBackgroundColor), opacity: 0.11).nsColor
+        }
+        return color
+    })
+
     let headerFill: NSColor
     let headerText: NSColor
     let headerDivider: NSColor
@@ -1415,13 +1424,15 @@ fileprivate struct RuneAppKitResourceTableTheme {
     static func resolved(_ theme: RuneResolvedTheme) -> RuneAppKitResourceTableTheme {
         if theme.isNative {
             return RuneAppKitResourceTableTheme(
-                headerFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42),
+                headerFill: .controlBackgroundColor,
                 headerText: .headerTextColor,
                 headerDivider: NSColor.separatorColor.withAlphaComponent(0.24),
                 columnDivider: NSColor.gridColor.withAlphaComponent(0.28),
                 columnDividerResizable: NSColor.gridColor.withAlphaComponent(0.48),
-                rowFill: NSColor.controlBackgroundColor.withAlphaComponent(0.42),
-                selectedRowFill: NSColor.controlAccentColor.withAlphaComponent(0.11),
+                // Use the same opaque surfaces as the cell contrast calculation.
+                // Vibrancy behind a translucent row otherwise changes its contrast.
+                rowFill: .controlBackgroundColor,
+                selectedRowFill: nativeSelectedRowFill,
                 rowStroke: NSColor.separatorColor.withAlphaComponent(0.20)
             )
         }
@@ -1462,13 +1473,13 @@ fileprivate struct RuneAppKitResourceTableTheme {
     ) -> RuneAppKitResourceTableTheme {
         let strokeColor = NSColor.runeHex(stroke)
         return RuneAppKitResourceTableTheme(
-            headerFill: NSColor.runeHex(row).withAlphaComponent(0.62),
-            headerText: NSColor.runeHex(text).withAlphaComponent(0.92),
+            headerFill: NSColor.runeHex(row),
+            headerText: NSColor.runeHex(text),
             headerDivider: strokeColor.withAlphaComponent(0.40),
             columnDivider: strokeColor.withAlphaComponent(0.32),
             columnDividerResizable: strokeColor.withAlphaComponent(0.56),
-            rowFill: NSColor.runeHex(row).withAlphaComponent(0.62),
-            selectedRowFill: NSColor.runeHex(selected).withAlphaComponent(selectedAlpha),
+            rowFill: NSColor.runeHex(row),
+            selectedRowFill: RuneThemeContrast.RGB(NSColor.runeHex(selected)).over(RuneThemeContrast.RGB(NSColor.runeHex(row)), opacity: Double(selectedAlpha)).nsColor,
             rowStroke: strokeColor.withAlphaComponent(0.30)
         )
     }
@@ -1483,6 +1494,8 @@ fileprivate extension RuneResolvedTheme {
             appKitPalette.accent,
             appKitPalette.stroke,
             appKitPalette.row,
+            appKitPalette.success, appKitPalette.warning, appKitPalette.danger, appKitPalette.info,
+            palette.map { RuneThemeColorParser.rgbaHex(NSColor($0.secondaryText)) ?? "" } ?? "",
             String(Double(appKitPalette.selectedAlpha))
         ].joined(separator: "|")
     }
@@ -1506,6 +1519,25 @@ func resolvedRuneResourceTableTheme(for view: NSView) -> RuneResolvedTheme {
         candidate = current.superview
     }
     return RuneAppearanceTheme.native.resolvedTheme
+}
+
+/// All resource families share these cells; resolve their ink against both row states.
+@MainActor
+func runeResourceCellColor(_ requested: NSColor, theme: RuneResolvedTheme, tintOpacity: Double = 0) -> NSColor {
+    let palette = theme.palette
+    let color: NSColor
+    if requested == .labelColor { color = palette.map { NSColor($0.foreground) } ?? requested }
+    else if requested == .secondaryLabelColor { color = palette.map { NSColor($0.secondaryText) } ?? requested }
+    else if requested == .systemGreen { color = palette.map { NSColor($0.success) } ?? requested }
+    else if requested == .systemOrange || requested == .systemYellow { color = palette.map { NSColor($0.warning) } ?? requested }
+    else if requested == .systemRed { color = palette.map { NSColor($0.danger) } ?? requested }
+    else if requested == .systemBlue { color = palette.map { NSColor($0.info) } ?? requested }
+    else { color = requested }
+    let row = RuneThemeContrast.RGB(palette.map { NSColor($0.row) } ?? .controlBackgroundColor)
+    let accent = RuneThemeContrast.RGB(palette.map { NSColor($0.accentFill) } ?? .controlAccentColor)
+    let selected = accent.over(row, opacity: Double(theme.appKitPalette?.selectedAlpha ?? 0.11))
+    let backgrounds = [row, selected].map { RuneThemeContrast.RGB(requested).over($0, opacity: tintOpacity).nsColor }
+    return RuneThemeContrast.readable(color, over: backgrounds)
 }
 
 struct AppKitPodTableView: NSViewRepresentable {
@@ -5136,6 +5168,9 @@ final class RuneAppKitResourceTableView: NSTableView {
             guard resolvedTheme.resourceTableRenderSignature
                     != oldValue.resourceTableRenderSignature else { return }
             resourceTableTheme = RuneAppKitResourceTableTheme.resolved(resolvedTheme)
+            // Colors are stored on AppKit cells; repainting the row alone leaves
+            // stale ink when switching between themes with the same appearance.
+            reloadData()
         }
     }
     fileprivate var resourceTableTheme = RuneAppKitResourceTableTheme.resolved(
@@ -5762,6 +5797,7 @@ final class RuneAppKitResourceListScrollView: NSScrollView {
 
 private final class RuneAppKitCenteredLabelCell: NSView {
     private let label = NSTextField(labelWithString: "")
+    private var requestedTextColor: NSColor = .labelColor
     private var leadingConstraint: NSLayoutConstraint!
     private var trailingConstraint: NSLayoutConstraint!
 
@@ -5788,6 +5824,22 @@ private final class RuneAppKitCenteredLabelCell: NSView {
         ])
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshTextColor()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshTextColor()
+    }
+
+    private func refreshTextColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            label.textColor = runeResourceCellColor(requestedTextColor, theme: resolvedRuneResourceTableTheme(for: self))
+        }
+    }
+
     func configure(
         text: String,
         font: NSFont,
@@ -5799,7 +5851,8 @@ private final class RuneAppKitCenteredLabelCell: NSView {
         label.stringValue = text
         label.font = font
         label.alignment = alignment
-        label.textColor = textColor
+        requestedTextColor = textColor
+        refreshTextColor()
         label.lineBreakMode = lineBreakMode
         label.toolTip = tooltip
         leadingConstraint.constant = alignment == .left
@@ -5845,6 +5898,7 @@ private final class RuneAppKitPillCell: NSView {
 
 private final class RuneAppKitFavoriteButtonCell: NSView {
     private let button = NSButton()
+    private var requestedTint: NSColor = .secondaryLabelColor
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -5864,11 +5918,28 @@ private final class RuneAppKitFavoriteButtonCell: NSView {
         button.target = target
         button.action = action
         button.tag = row
-        button.contentTintColor = isFavorite ? .systemYellow : .secondaryLabelColor
+        requestedTint = isFavorite ? .systemYellow : .secondaryLabelColor
+        refreshTint()
         button.toolTip = isFavorite ? "Remove favorite" : "Favorite resource"
         button.setAccessibilityLabel(isFavorite ? "Remove Favorite" : "Favorite Resource")
         button.setAccessibilityValue(isFavorite ? "Selected" : "Not selected")
         button.setAccessibilityHelp(button.toolTip)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshTint()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshTint()
+    }
+
+    private func refreshTint() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            button.contentTintColor = runeResourceCellColor(requestedTint, theme: resolvedRuneResourceTableTheme(for: self))
+        }
     }
 
     private func configureButtonLayout() {
@@ -5961,19 +6032,31 @@ private final class RuneAppKitResourceStatusPillView: NSView {
 
     func configure(text: String, color: NSColor) {
         label.stringValue = text
-        label.textColor = color
         self.color = color
-        layer?.backgroundColor = color.withAlphaComponent(0.22).cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            label.textColor = runeResourceCellColor(color, theme: resolvedRuneResourceTableTheme(for: self), tintOpacity: 0.12)
+            layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
+        }
     }
 
     required init?(coder: NSCoder) {
         nil
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configure(text: label.stringValue, color: color)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        configure(text: label.stringValue, color: color)
+    }
+
     override func layout() {
         super.layout()
         layer?.cornerRadius = bounds.height / 2
-        layer?.backgroundColor = color.withAlphaComponent(0.22).cgColor
+        layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
     }
 }
 

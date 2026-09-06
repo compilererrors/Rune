@@ -37,22 +37,22 @@ struct OverviewRecentEventsPanelView: View {
                     } label: {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: event.type.lowercased() == "warning" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                .foregroundStyle(event.type.lowercased() == "warning" ? .orange : .green)
+                                .foregroundStyle(event.type.lowercased() == "warning" ? RuneTextStyle.warning : .success)
                                 .frame(width: 16)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 if let ts = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !ts.isEmpty {
                                     Text(ts)
                                         .font(.caption2.monospaced())
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(.runeTertiary)
                                 }
                                 Text(event.reason + " - " + event.objectName)
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(.runePrimary)
                                     .multilineTextAlignment(.leading)
                                 Text(event.message)
                                     .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.runeSecondary)
                                     .multilineTextAlignment(.leading)
                                     .lineLimit(2)
                             }
@@ -61,7 +61,7 @@ struct OverviewRecentEventsPanelView: View {
 
                             Image(systemName: "chevron.right")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.runeTertiary)
                                 .padding(.top, 2)
                         }
                         .padding(.vertical, 4)

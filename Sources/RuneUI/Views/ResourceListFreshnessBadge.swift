@@ -13,7 +13,6 @@ struct ResourceListFreshnessBadge: View {
                 for: freshness.status,
                 palette: runeThemePalette
             ),
-            foregroundColor: .primary,
             helpText: freshness.message,
             accessibilityLabel: "Resource list status: \(ResourceListFreshnessPresentation.text(for: freshness.status))"
         )

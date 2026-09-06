@@ -96,10 +96,8 @@ struct ResourceLogsToolbar: View {
             }
             .controlSize(toolbarControlSize)
 
-            LogToolbarScrollRow {
-                toolbarActions
-            }
-            .controlSize(toolbarControlSize)
+            toolbarActions
+                .controlSize(toolbarControlSize)
         }
     }
 
@@ -110,10 +108,8 @@ struct ResourceLogsToolbar: View {
             }
             .controlSize(toolbarControlSize)
 
-            LogToolbarScrollRow {
-                toolbarActions
-            }
-            .controlSize(toolbarControlSize)
+            toolbarActions
+                .controlSize(toolbarControlSize)
         }
     }
 
@@ -196,8 +192,7 @@ struct ResourceLogsToolbar: View {
                 isStreamPaused: isStreamPaused
             )
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
+        .buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))
         .help("\(statusText). \(tailActionHelp)")
         .accessibilityLabel(tailActionTitle)
         .accessibilityValue(statusText)
@@ -232,118 +227,134 @@ struct ResourceLogsToolbar: View {
     }
 
     private var toolbarActions: some View {
-        LogToolbarGroup(spacing: 6) {
-            tailControl
-
-            Button(action: onReload) {
-                Label(t(.reload), systemImage: "arrow.clockwise")
+        ViewThatFits(in: .horizontal) {
+            LogToolbarGroup {
+                playbackActions
+                exportActions
             }
-            .buttonStyle(.bordered)
-            .logToolbarButtonFrame()
-            .help(t(.reloadLogsHelp))
-
-            Toggle(isOn: $includePreviousLogs) {
-                toolbarIconLabel(t(.previous), systemImage: "clock.arrow.circlepath", help: t(.previousLogsHelp))
+            VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorWrappedActionRowSpacing) {
+                LogToolbarScrollRow {
+                    LogToolbarGroup { playbackActions }
+                }
+                LogToolbarScrollRow {
+                    LogToolbarGroup { exportActions }
+                }
             }
-            .toggleStyle(.button)
-            .logToolbarIconButtonFrame()
-            .help(t(.previousLogsHelp))
-            .accessibilityLabel(t(.previous))
+        }
+    }
 
-            Button(action: onSave) {
-                Label(t(.saveLogs), systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.borderedProminent)
-            .logToolbarButtonFrame(width: 114)
-            .help(t(.saveCurrentLogsHelp))
+    @ViewBuilder
+    private var playbackActions: some View {
+        tailControl
 
-            Button(action: onSaveToExportFolder) {
-                toolbarIconLabel(t(.quickSaveLogs), systemImage: "folder.badge.plus", help: t(.quickSaveLogsHelp))
+        Button(action: onReload) {
+            Label(t(.reload), systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(RuneToolbarButtonStyle())
+        .logToolbarButtonFrame()
+        .help(t(.reloadLogsHelp))
+
+        Toggle(isOn: $includePreviousLogs) {
+            toolbarIconLabel(t(.previous), systemImage: "clock.arrow.circlepath", help: t(.previousLogsHelp))
+        }
+        .toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))
+        .logToolbarIconButtonFrame()
+        .help(t(.previousLogsHelp))
+        .accessibilityLabel(t(.previous))
+    }
+
+    @ViewBuilder
+    private var exportActions: some View {
+        Button(action: onSave) {
+            Label(t(.saveLogs), systemImage: "square.and.arrow.down")
+        }
+        .buttonStyle(RuneToolbarButtonStyle())
+        .logToolbarButtonFrame()
+        .help(t(.saveCurrentLogsHelp))
+
+        Button(action: onSaveToExportFolder) {
+            toolbarIconLabel(t(.quickSaveLogs), systemImage: "folder.badge.plus", help: t(.quickSaveLogsHelp))
+        }
+        .buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))
+        .logToolbarIconButtonFrame()
+        .help(t(.quickSaveLogsHelp))
+        .accessibilityLabel(t(.quickSaveLogs))
+        .accessibilityIdentifier("log-quick-save")
+
+        RuneToolbarMenu {
+            Button(action: onCopySelection) {
+                Label(t(.copySelection), systemImage: "doc.on.doc")
             }
-            .buttonStyle(.bordered)
-            .logToolbarIconButtonFrame()
-            .help(t(.quickSaveLogsHelp))
-            .accessibilityLabel(t(.quickSaveLogs))
-            .accessibilityIdentifier("log-quick-save")
+            Button(action: onCopyAll) {
+                Label(t(.copyAll), systemImage: "doc.on.clipboard")
+            }
+
+            Divider()
 
             Menu {
-                Button(action: onCopySelection) {
-                    Label(t(.copySelection), systemImage: "doc.on.doc")
+                Button(action: onSaveToExportFolder) {
+                    Label("Save to Export Folder", systemImage: "folder")
                 }
-                Button(action: onCopyAll) {
-                    Label(t(.copyAll), systemImage: "doc.on.clipboard")
-                }
-
-                Divider()
-
-                Menu {
-                    Button(action: onSaveToExportFolder) {
-                        Label("Save to Export Folder", systemImage: "folder")
-                    }
-                    Button(action: onSaveAndOpen) {
-                        Label("Save and Open", systemImage: "arrow.up.right.square")
-                    }
-                } label: {
-                    Label("Current Logs", systemImage: "doc.text")
-                }
-
-                Divider()
-
-                Menu {
-                    Button {
-                        onSaveVisibleZip(visibleLogText)
-                    } label: {
-                        Label("Save As...", systemImage: "doc.zipper")
-                    }
-                    Button {
-                        onSaveVisibleZipToExportFolder(visibleLogText)
-                    } label: {
-                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
-                    }
-                    Button {
-                        onSaveVisibleZipAndOpen(visibleLogText)
-                    } label: {
-                        Label("Save and Open", systemImage: "archivebox")
-                    }
-                } label: {
-                    Label(t(.exportVisibleResultsZip), systemImage: "doc.zipper")
-                }
-
-                Menu {
-                    Button(action: onSaveFullZip) {
-                        Label("Save As...", systemImage: "archivebox")
-                    }
-                    Button(action: onSaveFullZipToExportFolder) {
-                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
-                    }
-                    Button(action: onSaveFullZipAndOpen) {
-                        Label("Save and Open", systemImage: "archivebox")
-                    }
-                } label: {
-                    Label(t(.exportFullUnfilteredZip), systemImage: "archivebox")
-                }
-
-                Menu {
-                    Button(action: onSaveAllPodsZip) {
-                        Label("Save As...", systemImage: "shippingbox")
-                    }
-                    Button(action: onSaveAllPodsZipToExportFolder) {
-                        Label("Save to Export Folder", systemImage: "folder.badge.plus")
-                    }
-                    Button(action: onSaveAllPodsZipAndOpen) {
-                        Label("Save and Open", systemImage: "archivebox")
-                    }
-                } label: {
-                    Label(t(.exportAllPodsFullZip), systemImage: "shippingbox")
+                Button(action: onSaveAndOpen) {
+                    Label("Save and Open", systemImage: "arrow.up.right.square")
                 }
             } label: {
-                Label(t(.more), systemImage: "ellipsis.circle")
+                Label("Current Logs", systemImage: "doc.text")
             }
-            .buttonStyle(.bordered)
-            .logToolbarButtonFrame(width: 96)
-            .help(t(.copyAndExportLogOutputHelp))
+
+            Divider()
+
+            Menu {
+                Button {
+                    onSaveVisibleZip(visibleLogText)
+                } label: {
+                    Label("Save As...", systemImage: "doc.zipper")
+                }
+                Button {
+                    onSaveVisibleZipToExportFolder(visibleLogText)
+                } label: {
+                    Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                }
+                Button {
+                    onSaveVisibleZipAndOpen(visibleLogText)
+                } label: {
+                    Label("Save and Open", systemImage: "archivebox")
+                }
+            } label: {
+                Label(t(.exportVisibleResultsZip), systemImage: "doc.zipper")
+            }
+
+            Menu {
+                Button(action: onSaveFullZip) {
+                    Label("Save As...", systemImage: "archivebox")
+                }
+                Button(action: onSaveFullZipToExportFolder) {
+                    Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                }
+                Button(action: onSaveFullZipAndOpen) {
+                    Label("Save and Open", systemImage: "archivebox")
+                }
+            } label: {
+                Label(t(.exportFullUnfilteredZip), systemImage: "archivebox")
+            }
+
+            Menu {
+                Button(action: onSaveAllPodsZip) {
+                    Label("Save As...", systemImage: "shippingbox")
+                }
+                Button(action: onSaveAllPodsZipToExportFolder) {
+                    Label("Save to Export Folder", systemImage: "folder.badge.plus")
+                }
+                Button(action: onSaveAllPodsZipAndOpen) {
+                    Label("Save and Open", systemImage: "archivebox")
+                }
+            } label: {
+                Label(t(.exportAllPodsFullZip), systemImage: "shippingbox")
+            }
+        } label: {
+            Label(t(.more), systemImage: "ellipsis.circle")
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .help(t(.copyAndExportLogOutputHelp))
     }
 
     private var language: RuneLanguage {
@@ -362,34 +373,13 @@ struct ResourceLogsToolbar: View {
 }
 
 private extension View {
-    func logToolbarButtonFrame(width: CGFloat? = nil) -> some View {
-        runeInterfaceFont(relativeSize: -1, weight: .semibold)
-            .labelStyle(.titleAndIcon)
-            .lineLimit(1)
-            .frame(
-                minWidth: width,
-                idealWidth: width,
-                maxWidth: width,
-                minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                alignment: .center
-            )
+    func logToolbarButtonFrame() -> some View {
+        labelStyle(.titleAndIcon)
             .fixedSize(horizontal: true, vertical: false)
     }
 
-    func logToolbarIconButtonFrame(
-        width: CGFloat = RuneUILayoutMetrics.borderedIconButtonWidth
-    ) -> some View {
-        runeInterfaceFont(relativeSize: -1, weight: .semibold)
-            .labelStyle(.iconOnly)
-            .frame(
-                minWidth: width,
-                idealWidth: width,
-                maxWidth: width,
-                minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                idealHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
-                alignment: .center
-            )
+    func logToolbarIconButtonFrame() -> some View {
+        labelStyle(.iconOnly)
             .fixedSize(horizontal: true, vertical: false)
     }
 }
@@ -691,23 +681,18 @@ private struct LogToolbarStatusIndicator: View {
     let statusText: String
     let isTailModeEnabled: Bool
     let isStreamPaused: Bool
-    @State private var isHovered = false
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(statusColor.opacity(isHovered ? 0.28 : 0.18))
-                .frame(width: RuneUILayoutMetrics.iconButtonSize, height: RuneUILayoutMetrics.iconButtonSize)
-
-            Image(systemName: isTailModeEnabled && !isStreamPaused ? "pause.fill" : "play.fill")
-                .runeInterfaceFont(relativeSize: -3, weight: .bold)
-                .foregroundStyle(statusColor)
-        }
-        .frame(width: RuneUILayoutMetrics.borderedIconButtonWidth, height: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
-        .contentShape(Rectangle())
-        .onHover { isHovered = $0 }
-        .fixedSize(horizontal: true, vertical: true)
+        Image(systemName: isTailModeEnabled && !isStreamPaused ? "pause.fill" : "play.fill")
+            .foregroundStyle(statusColor)
+            .overlay(alignment: .topTrailing) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 4, height: 4)
+                    .offset(x: 5, y: -3)
+                    .accessibilityHidden(true)
+            }
     }
 
     private var statusColor: Color {
@@ -1599,8 +1584,8 @@ struct ResourceLogsSearchBar: View {
                 .runeTextInputCursor()
 
                 ViewThatFits(in: .horizontal) {
-                    regularSearchAccessories
-                    compactSearchAccessories
+                    searchAccessories(compact: false)
+                    searchAccessories(compact: true)
                 }
                 .layoutPriority(2)
             }
@@ -1632,131 +1617,31 @@ struct ResourceLogsSearchBar: View {
         .accessibilityIdentifier("resource-log-search-chrome")
     }
 
-    private var regularSearchAccessories: some View {
-        HStack(spacing: 2) {
-            clearButton
-            RuneMatchCaseButton(isSelected: $matchCase, help: matchCaseHelp)
-
-            Rectangle()
-                .fill(runeThemePalette?.divider ?? Color(nsColor: .separatorColor).opacity(0.35))
-                .frame(width: 1, height: 16)
-                .padding(.horizontal, 2)
-
-            matchControls(statusWidth: ResourceLogsLayoutMetrics.searchMatchStatusWidth)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var compactSearchAccessories: some View {
-        HStack(spacing: 0) {
-            matchStatusButton(width: ResourceLogsLayoutMetrics.compactSearchMatchStatusWidth)
-
-            Menu {
-                Button("Clear search", systemImage: "xmark.circle") {
-                    query = ""
-                }
-                .disabled(normalizedQuery.isEmpty)
-
-                Button(matchCase ? "Disable Match Case" : "Enable Match Case", systemImage: "textformat") {
-                    matchCase.toggle()
-                }
-
-                Divider()
-
-                Button("Previous match", systemImage: "chevron.up") {
-                    selectPreviousMatch()
-                }
-                .disabled(searchSummary?.hasMatches != true)
-
-                Button("Next match", systemImage: "chevron.down") {
-                    selectNextMatch()
-                }
-                .disabled(searchSummary?.hasMatches != true)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
-                    .frame(
-                        width: RuneUILayoutMetrics.iconButtonSize,
-                        height: RuneUILayoutMetrics.iconButtonSize
-                    )
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize(horizontal: true, vertical: false)
-            .help("Log search options")
-            .accessibilityLabel("Log search options")
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityIdentifier("resource-log-search-compact-controls")
-    }
-
-    private var clearButton: some View {
-        RuneIconButton(
-            "Clear log search",
-            systemImage: "xmark.circle.fill",
-            isDisabled: normalizedQuery.isEmpty
-        ) {
-            query = ""
-        }
-        .opacity(normalizedQuery.isEmpty ? 0 : 1)
-        .allowsHitTesting(!normalizedQuery.isEmpty)
-        .accessibilityHidden(normalizedQuery.isEmpty)
-    }
-
-    private func matchControls(statusWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            matchStatusButton(width: statusWidth)
-
-            RuneIconButton(
-                "Previous match",
-                systemImage: "chevron.up",
-                isDisabled: searchSummary?.matchRanges.isEmpty != false
-            ) {
-                selectPreviousMatch()
-            }
-
-            RuneIconButton(
-                "Next match",
-                systemImage: "chevron.down",
-                isDisabled: searchSummary?.matchRanges.isEmpty != false
-            ) {
-                selectNextMatch()
+    private func searchAccessories(compact: Bool) -> some View {
+        ResourceLogSearchAccessories(
+            compact: compact,
+            hasQuery: !normalizedQuery.isEmpty,
+            matchCase: matchCase,
+            hasMatches: searchSummary?.hasMatches == true,
+            status: matchStatusText,
+            statusLabel: matchStatusAccessibilityLabel,
+            statusColor: matchStatusColor,
+            matchCaseHelp: matchCaseHelp
+        ) { action in
+            switch action {
+            case .clear: query = ""
+            case .matchCase: matchCase.toggle()
+            case .previous: selectPreviousMatch()
+            case .next: selectNextMatch()
+            case .jump:
+                if let searchSummary { prepareJumpPopover(for: searchSummary) }
             }
         }
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("resource-log-search-match-controls")
-    }
-
-    private func matchStatusButton(width: CGFloat) -> some View {
-        Button {
-            guard let searchSummary else { return }
-            prepareJumpPopover(for: searchSummary)
-        } label: {
-            Text(matchStatusText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(matchStatusColor)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .frame(
-                    width: width,
-                    height: RuneUILayoutMetrics.iconButtonSize,
-                    alignment: .trailing
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(searchSummary?.hasMatches != true)
+        .frame(width: compact ? ResourceLogSearchAccessories.compactWidth : ResourceLogSearchAccessories.regularWidth,
+               height: RuneUILayoutMetrics.iconButtonSize)
         .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
-            if jumpMatchCount > 0 {
-                jumpToMatchPopover(matchCount: jumpMatchCount)
-            }
+            if jumpMatchCount > 0 { jumpToMatchPopover(matchCount: jumpMatchCount) }
         }
-        .help("Go to match number")
-        .accessibilityLabel(matchStatusAccessibilityLabel)
-        .accessibilityIdentifier("resource-log-search-match-status")
     }
 
     private func selectPreviousMatch() {
@@ -1824,7 +1709,7 @@ struct ResourceLogsSearchBar: View {
 
                 Text("of \(matchCount)")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
             }
 

@@ -11,7 +11,7 @@ struct WorkloadReplicaScaleControlsView: View {
         RuneAdaptiveFormRow {
             Text(label)
                 .runeInterfaceFont(weight: .medium)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
             Stepper(value: $replicas, in: 0...500) {
                 Text("\(replicas)")
                     .monospacedDigit()
@@ -26,12 +26,12 @@ struct WorkloadReplicaScaleControlsView: View {
                     Button("Scale") {
                         action()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 } else {
                     Button("Scale") {
                         action()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                 }
             }
             .disabled(!canMutate || !isDirty)

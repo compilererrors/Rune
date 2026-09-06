@@ -153,7 +153,7 @@ final class RuneLocalizationTests: XCTestCase {
 
         XCTAssertTrue(source.contains("settingsControlRow(\n                    title: settingsString(.language)"))
         XCTAssertTrue(source.contains("detail: settingsString(.settingsLanguageDetail)"))
-        XCTAssertTrue(source.contains("Picker(\"Language\", selection: $interfaceLanguageRaw)"))
+        XCTAssertTrue(source.contains("RuneToolbarPicker(title: \"Language\", selection: $interfaceLanguageRaw,"))
         XCTAssertTrue(source.contains(".id(interfaceLanguageRaw)"))
         XCTAssertTrue(source.contains("PreferencesPane.general.title(settingsString)"))
         XCTAssertTrue(source.contains("title: settingsString(.settingsGeneral)"))
@@ -169,7 +169,7 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(source.contains("anchor: .topLeading"))
         XCTAssertTrue(source.contains("width: RuneSettingsMetrics.compactMenuControlWidth"))
         XCTAssertTrue(source.contains("alignment: .trailing"))
-        XCTAssertTrue(source.contains(".pickerStyle(.menu)"))
+        XCTAssertTrue(source.contains("options: RuneLanguage.allCases.map { ($0.rawValue, $0.displayName) }"))
         XCTAssertFalse(source.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(source.contains("dynamicTypeSize.isAccessibilitySize"))
         XCTAssertFalse(source.contains("languagePickerWidth"))

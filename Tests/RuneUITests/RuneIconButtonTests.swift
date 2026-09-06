@@ -43,7 +43,7 @@ final class RuneIconButtonTests: XCTestCase {
 
         XCTAssertEqual(
             borderedHost.fittingSize.width,
-            RuneUILayoutMetrics.borderedIconButtonWidth,
+            RuneUILayoutMetrics.inspectorToolbarControlMinHeight,
             accuracy: 0.5
         )
         XCTAssertGreaterThanOrEqual(
@@ -72,8 +72,7 @@ final class RuneIconButtonTests: XCTestCase {
         XCTAssertTrue(source.contains("runeThemePalette?.mutedText"))
         XCTAssertTrue(source.contains("runeThemePalette?.secondaryText"))
         XCTAssertTrue(source.contains("struct RuneBorderedIconButton: View"))
-        XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
-        XCTAssertTrue(source.contains("width: RuneUILayoutMetrics.borderedIconButtonWidth"))
+        XCTAssertTrue(source.contains(".buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))"))
     }
 
     func testIconButtonAdoptionStaysSelectiveAndComponentScoped() throws {

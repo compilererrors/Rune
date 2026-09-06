@@ -259,19 +259,19 @@ struct TerminalShellPanelView: View {
             if let activeTabLabel {
                 Text(activeTabLabel)
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
                     .help(activeTabLabel)
             } else {
                 Text(isComposingNewSession ? "New shell tab" : "No active shell tab")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
         }
     }
 
     private var exportMenu: some View {
-        Menu {
+        RuneToolbarMenu {
             Button("Save Active Transcript") {
                 onSaveActiveTranscript()
             }
@@ -305,11 +305,7 @@ struct TerminalShellPanelView: View {
             .disabled(!canSaveAllTranscripts)
         } label: {
             Label("Export", systemImage: "square.and.arrow.down")
-                .runeMinimumInteractiveTarget()
         }
-        .menuStyle(.button)
-        .controlSize(.small)
-        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
         .help("Export terminal transcripts")
     }
 
@@ -325,7 +321,7 @@ struct TerminalShellPanelView: View {
                 HStack(spacing: 10) {
                     Label("Container", systemImage: "shippingbox")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .frame(width: 116, alignment: .leading)
 
                     Picker("Container", selection: $selectedTerminalContainerName) {
@@ -372,7 +368,7 @@ struct TerminalShellPanelView: View {
                 if terminalInput.isEmpty {
                     Text("Type a shell command and press Return")
                         .font(.system(size: terminalFontSize, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.runeTertiary)
                         .padding(.leading, 8)
                         .allowsHitTesting(false)
                 }
@@ -418,7 +414,7 @@ struct TerminalShellPanelView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color.accentColor.opacity(0.14), in: Capsule())
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(.runeAccent)
     }
 
     private func syncShellPodSelectionToActiveSession() {
@@ -609,7 +605,7 @@ struct TerminalMultilinePasteNotice: View {
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(.runeAccent)
             .frame(height: 18, alignment: .leading)
             .accessibilityLabel("Multiline paste staged. Press Return again to send.")
         }
@@ -650,6 +646,7 @@ enum TerminalPromptPalette {
 }
 
 struct TerminalPromptTextEditor: NSViewRepresentable {
+    @Environment(\.runeThemePalette) private var palette
     @Binding var text: String
     let fontSize: CGFloat
     let isEnabled: Bool
@@ -746,10 +743,11 @@ struct TerminalPromptTextEditor: NSViewRepresentable {
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         let promptFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        let inputTextColor = isEnabled ? TerminalPromptPalette.inputTextColor : TerminalPromptPalette.disabledInputTextColor
+        let inputTextColor = palette.map { NSColor(isEnabled ? $0.foreground : $0.mutedText) }
+            ?? RuneThemeContrast.nativeInk(isEnabled ? TerminalPromptPalette.inputTextColor : TerminalPromptPalette.disabledInputTextColor)
         textView.font = promptFont
         textView.textColor = inputTextColor
-        textView.insertionPointColor = TerminalPromptPalette.insertionPointColor
+        textView.insertionPointColor = palette.map { NSColor($0.accent) } ?? TerminalPromptPalette.insertionPointColor
         textView.selectedTextAttributes = [
             .backgroundColor: TerminalPromptPalette.selectionBackgroundColor,
             .foregroundColor: TerminalPromptPalette.selectedInputTextColor

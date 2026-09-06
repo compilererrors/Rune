@@ -154,8 +154,8 @@ final class RunePreferencesLayoutTests: XCTestCase {
             to: "private var themesSettingsForm"
         ))
 
-        XCTAssertTrue(general.contains("Picker(\"Language\", selection: $interfaceLanguageRaw)"))
-        XCTAssertTrue(general.contains(".pickerStyle(.menu)"))
+        XCTAssertTrue(general.contains("RuneToolbarPicker(title: \"Language\", selection: $interfaceLanguageRaw,"))
+        XCTAssertTrue(general.contains("options: RuneLanguage.allCases.map"))
         XCTAssertTrue(general.contains("width: RuneSettingsMetrics.compactMenuControlWidth"))
         XCTAssertTrue(general.contains("alignment: .trailing"))
     }

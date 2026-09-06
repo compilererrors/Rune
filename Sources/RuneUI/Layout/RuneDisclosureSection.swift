@@ -65,7 +65,7 @@ struct RuneDisclosureRow<Label: View>: View {
             HStack(alignment: .center, spacing: RuneDisclosureMetrics.headerSpacing) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: RuneDisclosureMetrics.chevronGlyphSize, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .frame(
                         width: RuneDisclosureMetrics.chevronLayoutWidth,
                         height: RuneDisclosureMetrics.headerMinimumHeight

@@ -67,10 +67,10 @@ final class TerminalPromptRenderingTests: XCTestCase {
                     XCTAssertEqual(textView.isEditable, isEnabled, caseName)
                     XCTAssertTrue(textView.isSelectable, caseName)
 
-                    let expectedTextColor = isEnabled
-                        ? TerminalPromptPalette.inputTextColor
-                        : TerminalPromptPalette.disabledInputTextColor
-                    XCTAssertEqual(textView.textColor, expectedTextColor, caseName)
+                    let textColor = try XCTUnwrap(textView.textColor)
+                    textView.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(textColor, over: .textBackgroundColor), 4.5, caseName)
+                    }
                     XCTAssertEqual(
                         textView.selectedTextAttributes[.foregroundColor] as? NSColor,
                         TerminalPromptPalette.selectedInputTextColor,

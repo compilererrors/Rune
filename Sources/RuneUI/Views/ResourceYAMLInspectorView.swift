@@ -160,12 +160,12 @@ struct ResourceYAMLInspectorPane: View {
                     Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
                         isInlineEditing.toggle()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .disabled(yamlText.isEmpty)
                 }
 
                 Button("\(t(.edit))...", action: onOpenEditor)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .disabled(yamlText.isEmpty)
             } secondaryActions: {
                 ManifestYAMLActionMenus(
@@ -311,7 +311,7 @@ struct ManifestInlineNote<Accessory: View>: View {
         HStack(alignment: .center, spacing: 8) {
             Text(text)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .help(text)
@@ -333,24 +333,11 @@ struct ManifestManagedFieldsToggle: View {
     var body: some View {
         Toggle(isOn: $hidesManagedFields) {
             Label(t(.hideManaged), systemImage: "eye.slash")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .toggleStyle(.checkbox)
-        .controlSize(.small)
+        .toggleStyle(RuneToolbarToggleStyle())
         .disabled(isDisabled)
         .help(isDisabled ? "Managed fields are shown while editing so line numbers and validation ranges stay exact." : "Hide Kubernetes metadata.managedFields in this read-only view.")
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.62))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-        }
         .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -388,6 +375,8 @@ struct ResourceYAMLEditorSheetView: View {
     let onClose: () -> Void
     var notice: RuneUserNotice? = nil
     var onDismissNotice: () -> Void = {}
+    var onOpenSavedFolder: ((URL) -> Void)? = nil
+    var onOpenSavedFile: ((URL) -> Void)? = nil
     var documentState: ManifestDocumentState? = nil
     var editorRestorationRequest: ResourceYAMLEditorRestorationRequest?
     var onEditorEdit: ((String, ResourceYAMLEditorPresentation?) -> Void)?
@@ -423,19 +412,24 @@ struct ResourceYAMLEditorSheetView: View {
                         .accessibilityAddTraits(.isHeader)
                     Text(resourceReference)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
                 Spacer()
                 Button(action: onClose) {
                     RuneDialogButtonLabel("Close")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .controlSize(.regular)
                 .keyboardShortcut(.cancelAction)
             }
 
             if let notice {
-                RuneNoticeBanner(notice: notice, onDismiss: onDismissNotice)
+                RuneNoticeBanner(
+                    notice: notice,
+                    onOpenFolder: onOpenSavedFolder,
+                    onOpenFile: onOpenSavedFile,
+                    onDismiss: onDismissNotice
+                )
                     .accessibilityIdentifier("rune.yaml-editor.notice")
             }
 
@@ -451,7 +445,7 @@ struct ResourceYAMLEditorSheetView: View {
                 Button(action: onDryRun) {
                     Label("Dry Run", systemImage: "checkmark.shield")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .disabled(!canDryRun || isRunningDryRun)
                 .help(
                     isRunningDryRun
@@ -518,7 +512,7 @@ struct ResourceYAMLEditorSheetView: View {
 
             Text("Dry Run sends this draft to Kubernetes for validation but never applies it. Apply YAML can write only after confirmation.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(RuneUILayoutMetrics.dialogContentPadding)
@@ -638,7 +632,7 @@ struct YAMLValidationSummaryView: View {
 
             Text(summaryTitle)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             Spacer(minLength: 0)
 
@@ -676,10 +670,10 @@ struct YAMLValidationSummaryView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(issue.message)
                                 .font(.caption)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.runePrimary)
                             Text(locationText(for: issue))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                         }
 
                         Spacer(minLength: 0)
@@ -693,7 +687,7 @@ struct YAMLValidationSummaryView: View {
             if expandedListMaxHeight == nil, issues.count > maxVisibleIssues {
                 Text("\(issues.count - maxVisibleIssues) more issues not shown")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
         }
         .padding(.top, 2)

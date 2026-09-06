@@ -3,6 +3,22 @@ import XCTest
 @testable import RuneUI
 
 final class KubeConfigImportTransactionTests: XCTestCase {
+    func testDuplicatePoliciesPreserveExplicitProviderOrigin() throws {
+        let origin = KubeConfigImportOrigin(source: .guidedCLI, provider: .azure)
+        let transaction = makeTransaction()
+        let sourced = KubeConfigImportTransaction(
+            payloads: transaction.payloads.map { .init(raw: $0.raw, sourceName: $0.sourceName, sourceURL: $0.sourceURL, origin: origin) },
+            logLabel: "synthetic origin",
+            existingNames: KubeConfigNameRegistry(),
+            validator: KubeConfigImportValidator(),
+            resolver: KubeConfigDuplicateResolver()
+        )
+        for choice in KubeConfigDuplicateHandlingChoice.allCases {
+            let resolution = try sourced.resolvingDuplicates(choice: choice, resolver: KubeConfigDuplicateResolver(), validator: KubeConfigImportValidator())
+            XCTAssertTrue(resolution.payloads.allSatisfy { $0.origin == origin })
+        }
+    }
+
     func testCopyPolicyResolvesCrossFileConflictsAndProjectsEveryReview() throws {
         let transaction = makeTransaction()
 

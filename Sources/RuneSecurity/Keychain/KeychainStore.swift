@@ -21,17 +21,30 @@ public enum KeychainError: LocalizedError, Sendable {
 
 public final class KeychainStore: SecretStore {
     private let service: String
+    private let useDataProtectionKeychain: Bool
 
-    public init(service: String = RuneApplicationIdentifiers.keychainService) {
+    public init(service: String = RuneApplicationIdentifiers.keychainService, useDataProtectionKeychain: Bool = false) {
         self.service = service
+        self.useDataProtectionKeychain = useDataProtectionKeychain
     }
 
-    public func set(_ value: Data, for key: String) throws {
-        let identityQuery: [CFString: Any] = [
+    private func identityQuery(for key: String) -> [CFString: Any] {
+        var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: key
         ]
+        // macOS ignores accessibility classes in the legacy file-based keychain. Keep that
+        // backend for existing profiles until migration; new account records explicitly use DP.
+        if useDataProtectionKeychain {
+            query[kSecUseDataProtectionKeychain] = true
+            query[kSecAttrSynchronizable] = false
+        }
+        return query
+    }
+
+    public func set(_ value: Data, for key: String) throws {
+        let identityQuery = identityQuery(for: key)
         let update: [CFString: Any] = [
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecValueData: value
@@ -53,13 +66,9 @@ public final class KeychainStore: SecretStore {
     }
 
     public func get(for key: String) throws -> Data? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: key,
-            kSecMatchLimit: kSecMatchLimitOne,
-            kSecReturnData: true
-        ]
+        var query = identityQuery(for: key)
+        query[kSecMatchLimit] = kSecMatchLimitOne
+        query[kSecReturnData] = true
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -75,11 +84,7 @@ public final class KeychainStore: SecretStore {
     }
 
     public func delete(for key: String) throws {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: key
-        ]
+        let query = identityQuery(for: key)
 
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {

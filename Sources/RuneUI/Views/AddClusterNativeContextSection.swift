@@ -17,7 +17,7 @@ struct AddClusterNativeContextSection: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Imported context")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             if options.isEmpty {
                 Label {
@@ -36,7 +36,7 @@ struct AddClusterNativeContextSection: View {
                     }
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(9)
                 .background(RuneSurfaceBackground(kind: .inset))
@@ -75,7 +75,7 @@ struct AddClusterNativeContextSection: View {
                     }
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(profileAccessibilityLabel)
             }

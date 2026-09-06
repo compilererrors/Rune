@@ -87,7 +87,7 @@ struct DeploymentRolloutHistoryTable: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Rollout revisions")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             ForEach(rows) { row in
                 compactRow(row)
@@ -104,7 +104,7 @@ struct DeploymentRolloutHistoryTable: View {
             )
             Text("ReplicaSet")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(
                     minWidth: DeploymentRolloutHistoryLayoutMetrics.replicaSetMinimumWidth,
                     maxWidth: .infinity,
@@ -112,7 +112,7 @@ struct DeploymentRolloutHistoryTable: View {
                 )
             Text("Change Cause")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(width: DeploymentRolloutHistoryLayoutMetrics.changeCauseWidth, alignment: .leading)
         }
         .padding(.bottom, 6)
@@ -138,7 +138,7 @@ struct DeploymentRolloutHistoryTable: View {
                 )
             Text(row.changeCause.isEmpty ? "-" : row.changeCause)
                 .font(.caption)
-                .foregroundStyle(row.changeCause.isEmpty ? Color.secondary.opacity(0.55) : Color.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -168,12 +168,12 @@ struct DeploymentRolloutHistoryTable: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(width: 76, alignment: .leading)
 
             Text(value)
                 .font(.caption.weight(weight))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(title == "Change Cause" ? 2 : 1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -189,7 +189,7 @@ struct DeploymentRolloutHistoryTable: View {
     ) -> some View {
         Text(text)
             .font(.caption.monospacedDigit().weight(weight))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.runeSecondary)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)

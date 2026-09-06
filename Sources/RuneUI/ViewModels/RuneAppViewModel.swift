@@ -1171,7 +1171,8 @@ public final class RuneAppViewModel: ObservableObject {
 
     private static let productionContextNameMarkers = ["prod", "production", "live", "critical"]
 
-    @Published public private(set) var state: RuneAppState
+    // The state instance never changes. Its own notifications are forwarded below.
+    public let state: RuneAppState
     @Published public var selectedLogPreset: PodLogPreset = .recentLines
     @Published public var includePreviousLogs: Bool = false
     @Published public var selectedLogContainer: String = ""
@@ -1249,8 +1250,14 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public private(set) var isRunningNativeCloudClusterImport = false
     @Published public private(set) var nativeKubernetesAuthStatus: String?
     @Published public private(set) var isConnectingNativeKubernetesAuth = false
-    @Published public var pendingWriteAction: PendingWriteAction? {
-        didSet {
+    // These dialog values need object notifications, not individual publishers.
+    // Keep reads direct while retaining will-change delivery before every mutation.
+    private var pendingWriteActionValue: PendingWriteAction?
+    public var pendingWriteAction: PendingWriteAction? {
+        get { pendingWriteActionValue }
+        set {
+            objectWillChange.send()
+            pendingWriteActionValue = newValue
             let appState = state
             if let pendingWriteAction,
                let context = appState.selectedContext {
@@ -1285,7 +1292,14 @@ public final class RuneAppViewModel: ObservableObject {
             }
         }
     }
-    @Published public private(set) var pendingProductionDestructiveConfirmation: PendingWriteAction?
+    private var pendingProductionDestructiveConfirmationValue: PendingWriteAction?
+    public private(set) var pendingProductionDestructiveConfirmation: PendingWriteAction? {
+        get { pendingProductionDestructiveConfirmationValue }
+        set {
+            objectWillChange.send()
+            pendingProductionDestructiveConfirmationValue = newValue
+        }
+    }
     private var pendingWriteScopeSnapshot: PendingWriteScopeSnapshot?
     private var nextPendingWriteScopeID: UInt64 = 0
     private var pendingProductionDestructiveConfirmationScopeID: UInt64?
@@ -1366,6 +1380,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let store: ResourceStore
     private let exporter: FileExporting
     private let configuredExporter: ConfiguredExporting
+    private var exportErrorNoticeID: UUID?
     private let supportBundleBuilder: any SupportBundleBuilding
     private let contextPreferences: ContextPreferencesStoring
     private let savedWorkspaceStore: SavedWorkspaceStoring
@@ -1377,7 +1392,13 @@ public final class RuneAppViewModel: ObservableObject {
     private let kubeConfigDuplicateResolver = KubeConfigDuplicateResolver()
     private let cloudKubeConfigImporter: CloudKubeConfigImporting
     private let azureCLISignInRunner: AzureCLISignInRunning
-    private let nativeCloudClusterImporter: any NativeCloudClusterImporting
+    private var nativeCloudClusterImporterStorage: (any NativeCloudClusterImporting)?
+    private var nativeCloudClusterImporter: any NativeCloudClusterImporting {
+        if let nativeCloudClusterImporterStorage { return nativeCloudClusterImporterStorage }
+        let importer = NativeCloudClusterImporter()
+        nativeCloudClusterImporterStorage = importer
+        return importer
+    }
     private let nativeAuthConfigurator: any KubernetesNativeAuthConfiguring
     private let helmCommandRunner: HelmCommandRunning
     private let kubeContextList: KubeContextListing
@@ -1564,7 +1585,7 @@ public final class RuneAppViewModel: ObservableObject {
         azureCLISignInRunner: AzureCLISignInRunning = AzureCLISignInRunner(
             runner: RuneCloudKubeConfigCommandRunner()
         ),
-        nativeCloudClusterImporter: any NativeCloudClusterImporting = NativeCloudClusterImporter(),
+        nativeCloudClusterImporter: (any NativeCloudClusterImporting)? = nil,
         nativeAuthConfigurator: any KubernetesNativeAuthConfiguring = DefaultKubernetesNativeCredentialProvider.shared,
         helmCommandRunner: HelmCommandRunning = ProcessHelmCommandRunner(),
         kubeContextList: KubeContextListing? = nil,
@@ -1600,7 +1621,7 @@ public final class RuneAppViewModel: ObservableObject {
         self.kubeConfigContextRemover = kubeConfigContextRemover
         self.cloudKubeConfigImporter = cloudKubeConfigImporter
         self.azureCLISignInRunner = azureCLISignInRunner
-        self.nativeCloudClusterImporter = nativeCloudClusterImporter
+        self.nativeCloudClusterImporterStorage = nativeCloudClusterImporter
         self.nativeAuthConfigurator = nativeAuthConfigurator
         self.helmCommandRunner = helmCommandRunner
         self.kubeContextList = kubeContextList ?? { sources in
@@ -1707,55 +1728,53 @@ public final class RuneAppViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        let lastAppStateSelectionChanges: [AnyPublisher<Void, Never>] = [
-            state.$selectedContext.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedNamespace.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedSection.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedWorkloadKind.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedPod.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedDeployment.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedService.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedEvent.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedStatefulSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedDaemonSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedJob.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedCronJob.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedReplicaSet.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedPersistentVolumeClaim.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedPersistentVolume.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedStorageClass.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedHorizontalPodAutoscaler.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedNetworkPolicy.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedEndpoint.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedIngress.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedConfigMap.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedSecret.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedNode.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedHelmRelease.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedOperatorResource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$selectedRBACResource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$isHelmAllNamespaces.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $podSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $podSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $deploymentSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $deploymentSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $serviceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $serviceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $genericResourceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $genericResourceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $helmReleaseSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $helmReleaseSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $eventSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $eventSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $operatorResourceSortColumn.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $operatorResourceSortAscending.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $operatorResourceFocus.dropFirst().map { _ in () }.eraseToAnyPublisher()
-        ]
-        Publishers.MergeMany(lastAppStateSelectionChanges)
-            .sink { [weak self] in
-                self?.scheduleLastAppStatePersistence()
-            }
-            .store(in: &cancellables)
+        func persistOnChange<Value>(_ publisher: Published<Value>.Publisher) {
+            publisher.dropFirst()
+                .sink { [weak self] _ in self?.scheduleLastAppStatePersistence() }
+                .store(in: &cancellables)
+        }
+        persistOnChange(state.$selectedContext)
+        persistOnChange(state.$selectedNamespace)
+        persistOnChange(state.$selectedSection)
+        persistOnChange(state.$selectedWorkloadKind)
+        persistOnChange(state.$selectedPod)
+        persistOnChange(state.$selectedDeployment)
+        persistOnChange(state.$selectedService)
+        persistOnChange(state.$selectedEvent)
+        persistOnChange(state.$selectedStatefulSet)
+        persistOnChange(state.$selectedDaemonSet)
+        persistOnChange(state.$selectedJob)
+        persistOnChange(state.$selectedCronJob)
+        persistOnChange(state.$selectedReplicaSet)
+        persistOnChange(state.$selectedPersistentVolumeClaim)
+        persistOnChange(state.$selectedPersistentVolume)
+        persistOnChange(state.$selectedStorageClass)
+        persistOnChange(state.$selectedHorizontalPodAutoscaler)
+        persistOnChange(state.$selectedNetworkPolicy)
+        persistOnChange(state.$selectedEndpoint)
+        persistOnChange(state.$selectedIngress)
+        persistOnChange(state.$selectedConfigMap)
+        persistOnChange(state.$selectedSecret)
+        persistOnChange(state.$selectedNode)
+        persistOnChange(state.$selectedHelmRelease)
+        persistOnChange(state.$selectedOperatorResource)
+        persistOnChange(state.$selectedRBACResource)
+        persistOnChange(state.$isHelmAllNamespaces)
+        persistOnChange($podSortColumn)
+        persistOnChange($podSortAscending)
+        persistOnChange($deploymentSortColumn)
+        persistOnChange($deploymentSortAscending)
+        persistOnChange($serviceSortColumn)
+        persistOnChange($serviceSortAscending)
+        persistOnChange($genericResourceSortColumn)
+        persistOnChange($genericResourceSortAscending)
+        persistOnChange($helmReleaseSortColumn)
+        persistOnChange($helmReleaseSortAscending)
+        persistOnChange($eventSortColumn)
+        persistOnChange($eventSortAscending)
+        persistOnChange($operatorResourceSortColumn)
+        persistOnChange($operatorResourceSortAscending)
+        persistOnChange($operatorResourceFocus)
 
         state.$resourceYAML
             .sink { [weak self] yaml in
@@ -1785,33 +1804,31 @@ public final class RuneAppViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        let resourceProjectionInvalidations: [AnyPublisher<Void, Never>] = [
-            state.$pods.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$deployments.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$services.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$statefulSets.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$daemonSets.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$jobs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$cronJobs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$replicaSets.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$persistentVolumeClaims.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$persistentVolumes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$storageClasses.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$horizontalPodAutoscalers.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$networkPolicies.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$endpoints.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$ingresses.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$configMaps.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$secrets.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$nodes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$favoriteResourceIDs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            state.$resourceSearchQuery.dropFirst().map { _ in () }.eraseToAnyPublisher()
-        ]
-        Publishers.MergeMany(resourceProjectionInvalidations)
-            .sink { [weak self] in
-                self?.invalidateVisibleResourceCaches()
-            }
-            .store(in: &cancellables)
+        func invalidateProjectionOnChange<Value>(_ publisher: Published<Value>.Publisher) {
+            publisher.dropFirst()
+                .sink { [weak self] _ in self?.invalidateVisibleResourceCaches() }
+                .store(in: &cancellables)
+        }
+        invalidateProjectionOnChange(state.$pods)
+        invalidateProjectionOnChange(state.$deployments)
+        invalidateProjectionOnChange(state.$services)
+        invalidateProjectionOnChange(state.$statefulSets)
+        invalidateProjectionOnChange(state.$daemonSets)
+        invalidateProjectionOnChange(state.$jobs)
+        invalidateProjectionOnChange(state.$cronJobs)
+        invalidateProjectionOnChange(state.$replicaSets)
+        invalidateProjectionOnChange(state.$persistentVolumeClaims)
+        invalidateProjectionOnChange(state.$persistentVolumes)
+        invalidateProjectionOnChange(state.$storageClasses)
+        invalidateProjectionOnChange(state.$horizontalPodAutoscalers)
+        invalidateProjectionOnChange(state.$networkPolicies)
+        invalidateProjectionOnChange(state.$endpoints)
+        invalidateProjectionOnChange(state.$ingresses)
+        invalidateProjectionOnChange(state.$configMaps)
+        invalidateProjectionOnChange(state.$secrets)
+        invalidateProjectionOnChange(state.$nodes)
+        invalidateProjectionOnChange(state.$favoriteResourceIDs)
+        invalidateProjectionOnChange(state.$resourceSearchQuery)
 
         Publishers.CombineLatest3(
             state.$kubeConfigSources,
@@ -3593,7 +3610,8 @@ public final class RuneAppViewModel: ObservableObject {
                 let raw = try ManualTokenKubeConfigBuilder.buildYAML(for: request)
                 try await importKubeConfigPayloads(
                     [(raw: raw, sourceName: "manual-token-kubeconfig.yaml", sourceURL: nil)],
-                    logLabel: "importManualTokenKubeConfig"
+                    logLabel: "importManualTokenKubeConfig",
+                    origin: .init(source: .advancedStaticCredential)
                 )
             } catch {
                 pendingKubeConfigSourceAccess.releaseAll()
@@ -3701,6 +3719,7 @@ public final class RuneAppViewModel: ObservableObject {
                 try await self.importKubeConfigPayloads(
                     payloads,
                     logLabel: "runCloudKubeConfigImport",
+                    origin: .init(source: .guidedCLI, provider: CloudAccountProvider.allCases.first { $0.clusterProvider == request.provider }),
                     temporaryDirectories: temporaryDirectory.map { [$0] } ?? []
                 )
                 try Task.checkCancellation()
@@ -3981,7 +4000,8 @@ public final class RuneAppViewModel: ObservableObject {
                 }
                 try await self.importKubeConfigPayloads(
                     [(raw: result.rawKubeConfig, sourceName: result.sourceName, sourceURL: nil)],
-                    logLabel: "runNativeCloudClusterImport"
+                    logLabel: "runNativeCloudClusterImport",
+                    origin: .init(source: .advancedStaticCredential, provider: CloudAccountProvider.allCases.first { $0.clusterProvider == provider })
                 )
                 try Task.checkCancellation()
                 self.pendingNativeCloudCredential = credential
@@ -4470,6 +4490,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func importKubeConfigPayloads(
         _ payloads: [(raw: String, sourceName: String, sourceURL: URL?)],
         logLabel: String,
+        origin: KubeConfigImportOrigin = .init(),
         securityScopedURLs: [URL] = [],
         temporaryDirectories: [URL] = []
     ) async throws {
@@ -4488,7 +4509,8 @@ public final class RuneAppViewModel: ObservableObject {
                 KubeConfigImportTransaction.Payload(
                     raw: $0.raw,
                     sourceName: $0.sourceName,
-                    sourceURL: $0.sourceURL
+                    sourceURL: $0.sourceURL,
+                    origin: origin
                 )
             },
             logLabel: logLabel,
@@ -4593,10 +4615,11 @@ public final class RuneAppViewModel: ObservableObject {
                    ) {
                     return
                 }
-                let sources = try self.publishKubeConfigImport(
+                let publication = try self.publishKubeConfigImport(
                     resolution,
                     logLabel: transaction.logLabel
                 )
+                let sources = publication.sources
                 guard self.pendingKubeConfigImport?.id == transaction.id else { return }
                 let pendingNativeCredential = self.pendingNativeCloudCredential
                 self.pendingKubeConfigImport = nil
@@ -4630,10 +4653,12 @@ public final class RuneAppViewModel: ObservableObject {
                     }
                 }
                 do {
-                    try await self.activateCommittedKubeConfigImport(
-                        sources: sources,
-                        preferredContextName: resolution.preferredContextName
-                    )
+                    if !resolution.contextNamesForPreferences.isEmpty {
+                        try await self.activateCommittedKubeConfigImport(
+                            sources: sources,
+                            preferredContextName: resolution.preferredContextName
+                        )
+                    }
                 } catch {
                     if Self.isBenignCancellationError(error) {
                         self.diagnostics.trace("kubeconfig.import", "activation superseded by a newer cluster reload")
@@ -4647,6 +4672,14 @@ public final class RuneAppViewModel: ObservableObject {
                 }
                 if let nativeCredentialBindingError {
                     self.state.setError(nativeCredentialBindingError)
+                }
+                if publication.reusedCount > 0 {
+                    self.state.setInfoNotice(
+                        title: "Connections reused",
+                        message: publication.reusedCount == 1
+                            ? "Reused an unchanged imported configuration."
+                            : "Reused \(publication.reusedCount) unchanged imported configurations."
+                    )
                 }
             } catch {
                 guard self.pendingKubeConfigImport?.id == transaction.id else { return }
@@ -4786,7 +4819,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func publishKubeConfigImport(
         _ resolution: KubeConfigImportTransaction.Resolution,
         logLabel: String
-    ) throws -> [KubeConfigSource] {
+    ) throws -> (sources: [KubeConfigSource], reusedCount: Int) {
         defer {
             pendingKubeConfigSourceAccess.releaseAll()
             removePendingKubeConfigTemporaryDirectories()
@@ -4794,20 +4827,27 @@ public final class RuneAppViewModel: ObservableObject {
         let payloads = resolution.payloads
         let reviews = resolution.reviews
 
-        let importedFiles = try kubeConfigImportStore.saveImportedKubeConfigs(payloads.map { payload in
+        let includedPayloads = zip(payloads, reviews).compactMap { payload, review in
+            review.contexts.isEmpty ? nil : payload
+        }
+        let publication = try kubeConfigImportStore.publishImportedKubeConfigs(includedPayloads.map { payload in
             KubeConfigImportStorePayload(
                 raw: payload.raw,
                 sourceName: payload.sourceName,
-                sourceURL: payload.sourceURL
+                sourceURL: payload.sourceURL,
+                origin: payload.origin
             )
-        })
+        }, reusing: state.kubeConfigSources.map(\.url))
+        let importedFiles = publication.urls
         let bookmarkPlacement: KubeConfigBookmarkPlacement = resolution.sourcePlacement == .prependNewestFirst
             ? .prependNewestFirst
             : .append
         do {
-            try bookmarkManager.addKubeConfigs(urls: importedFiles, placement: bookmarkPlacement)
+            if !importedFiles.isEmpty {
+                try bookmarkManager.addKubeConfigs(urls: importedFiles, placement: bookmarkPlacement)
+            }
         } catch {
-            try? kubeConfigImportStore.removeImportedKubeConfigs(at: importedFiles)
+            try? kubeConfigImportStore.removeImportedKubeConfigs(at: publication.createdURLs)
             throw error
         }
 
@@ -4817,6 +4857,8 @@ public final class RuneAppViewModel: ObservableObject {
             from: reviews,
             contextNames: resolution.contextNamesForPreferences
         )
+
+        guard !importedFiles.isEmpty else { return (state.kubeConfigSources, 0) }
 
         let importedSources = importedFiles.map(KubeConfigSource.init(url:))
         sessionImportedKubeConfigSourcePaths.formUnion(
@@ -4841,7 +4883,7 @@ public final class RuneAppViewModel: ObservableObject {
         latestKubeConfigSourceFingerprint = kubeConfigSourceFingerprint(for: sources)
         startKubeConfigSourceSync()
         diagnostics.log("\(logLabel) loaded payloads count=\(importedFiles.count), sources count=\(sources.count)")
-        return sources
+        return (sources, publication.reusedCount)
     }
 
     private func removePendingKubeConfigTemporaryDirectories() {
@@ -8257,9 +8299,11 @@ public final class RuneAppViewModel: ObservableObject {
                 kind: .plainText,
                 openAfterSave: openAfterSave
             )
+            clearRecoveredExportError()
             state.setInfoNotice(
                 title: "Logs saved",
-                message: "Saved \(savedURL.lastPathComponent) to the default export folder."
+                message: "Saved \(savedURL.lastPathComponent) to the default export folder.",
+                savedFileURL: savedURL
             )
         } catch {
             setExportErrorUnlessCancelled(error)
@@ -8270,6 +8314,22 @@ public final class RuneAppViewModel: ObservableObject {
         let data: Data
         let suggestedName: String
         let allowedFileTypes: [String]
+    }
+
+    public func openSavedLogFile(_ url: URL) {
+        do {
+            try configuredExporter.openSavedFile(url, kind: .plainText)
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
+    }
+
+    public func openSavedLogFolder(_ url: URL) {
+        do {
+            try configuredExporter.openSavedFolder(for: url)
+        } catch {
+            setExportErrorUnlessCancelled(error)
+        }
     }
 
     private func currentLogsExportPayload(timestamp: String) -> LogExportPayload? {
@@ -8325,9 +8385,11 @@ public final class RuneAppViewModel: ObservableObject {
                 kind: .plainText,
                 openAfterSave: openAfterSave
             )
+            clearRecoveredExportError()
             state.setInfoNotice(
                 title: "Transcript saved",
-                message: "Saved \(savedURL.lastPathComponent) to the default export folder."
+                message: "Saved \(savedURL.lastPathComponent) to the default export folder.",
+                savedFileURL: savedURL
             )
         } catch {
             setExportErrorUnlessCancelled(error)
@@ -15091,6 +15153,14 @@ public final class RuneAppViewModel: ObservableObject {
     private func setExportErrorUnlessCancelled(_ error: Error) {
         guard !Self.isUserCancelledExport(error) else { return }
         state.setError(error)
+        exportErrorNoticeID = state.activeNotice?.id
+    }
+
+    private func clearRecoveredExportError() {
+        if let exportErrorNoticeID, state.activeNotice?.id == exportErrorNoticeID {
+            state.clearError()
+        }
+        exportErrorNoticeID = nil
     }
 
     private static func isUserCancelledExport(_ error: Error) -> Bool {
@@ -17216,12 +17286,21 @@ public final class RuneAppViewModel: ObservableObject {
             let rhsNamespace = rhs.involvedNamespace ?? ""
             selectedOrder = caseInsensitiveComparison(lhsNamespace, rhsNamespace)
         case .lastSeen:
-            let lhsTimestamp = lhs.lastTimestamp ?? ""
-            let rhsTimestamp = rhs.lastTimestamp ?? ""
-            selectedOrder = standardComparison(lhsTimestamp, rhsTimestamp)
+            return comparePodsOptionalMetric(
+                ascending: ascending,
+                lhsValue: resourceTimestamp(lhs.lastTimestamp),
+                rhsValue: resourceTimestamp(rhs.lastTimestamp),
+                tieBreak: identityOrder
+            )
         }
 
         return orderedBefore(selectedOrder, ascending: ascending, tieBreak: identityOrder)
+    }
+
+    private func resourceTimestamp(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value))
+            ?? (try? Date.ISO8601FormatStyle().parse(value))
     }
 
     private func numericPrefixOrder(_ lhs: String, _ rhs: String) -> ComparisonResult? {
@@ -17266,7 +17345,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func caseInsensitiveComparison(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        let comparison = lhs.localizedCaseInsensitiveCompare(rhs)
+        let comparison = lhs.localizedStandardCompare(rhs)
         guard comparison == .orderedSame else { return comparison }
         return deterministicStringComparison(lhs, rhs)
     }

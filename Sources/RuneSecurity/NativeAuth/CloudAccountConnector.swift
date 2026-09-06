@@ -78,7 +78,7 @@ public enum CloudAccountHealth: String, Codable, Sendable {
     case providerUnavailable
 }
 
-/// Account metadata is deliberately separate from credentials. Connectors own secret persistence.
+/// Account metadata is deliberately separate from credentials.
 public struct CloudAccountRecord: Codable, Equatable, Sendable {
     public let id: CloudAccountID
     public let provider: CloudAccountProvider
@@ -129,6 +129,18 @@ public struct CloudAccountRecord: Codable, Equatable, Sendable {
             credentialGeneration: credentialGeneration,
             localLabel: localLabel,
             health: health,
+            lastSuccessfulSync: lastSuccessfulSync,
+            discoverableClusterCount: discoverableClusterCount
+        )
+    }
+
+    func updatingCredentials(from refreshed: Self) -> Self {
+        Self(
+            id: id,
+            provider: provider,
+            credentialGeneration: refreshed.credentialGeneration,
+            localLabel: localLabel,
+            health: refreshed.health,
             lastSuccessfulSync: lastSuccessfulSync,
             discoverableClusterCount: discoverableClusterCount
         )
@@ -478,16 +490,32 @@ public struct CloudClusterDiscoveryPage: Sendable, Equatable {
     }
 }
 
+/// Verified authorization output remains in memory until the coordinator accepts its operation
+/// and credential generations. Connectors must not persist this output themselves.
+public struct CloudAccountAuthorizationResult: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public let account: CloudAccountRecord
+    public let credentials: CloudAccountCredentials
+
+    public init(account: CloudAccountRecord, credentials: CloudAccountCredentials) {
+        self.account = account
+        self.credentials = credentials
+    }
+
+    public var description: String { "CloudAccountAuthorizationResult(provider: \(account.provider.rawValue), <redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["provider": account.provider.rawValue, "credentials": "<redacted>"]) }
+}
+
 public protocol CloudAccountConnector: Sendable {
     var provider: CloudAccountProvider { get }
 
-    func connect(_ request: CloudAccountConnectRequest) async throws -> CloudAccountRecord
-    func refresh(_ request: CloudAccountBoundRequest) async throws -> CloudAccountRecord
+    func connect(_ request: CloudAccountConnectRequest) async throws -> CloudAccountAuthorizationResult
+    func refresh(_ request: CloudAccountBoundRequest) async throws -> CloudAccountAuthorizationResult
     func discoveryScopes(_ request: CloudAccountPageRequest) async throws -> CloudDiscoveryScopePage
     func discoverClusters(_ request: CloudAccountPageRequest) async throws -> CloudClusterDiscoveryPage
 
-    /// Removes local secrets for exactly this account and credential generation. Provider-side
-    /// consent revocation is a separate, optional action and must not block local cleanup.
+    /// Clears in-memory sessions for exactly this generation. The coordinator removes persisted
+    /// secrets first. Provider-side consent revocation is separate and must not block cleanup.
     func disconnect(_ request: CloudAccountBoundRequest) async throws
     func diagnostics(_ request: CloudAccountBoundRequest) async -> [CloudAccountDiagnostic]
 }
@@ -583,7 +611,7 @@ public actor CloudAccountCoordinator {
     private struct ConnectOperation {
         let id: CloudAccountOperationID
         let generation: CloudAccountGeneration
-        let task: Task<CloudAccountRecord, Error>
+        let task: Task<CloudAccountAuthorizationResult, Error>
     }
 
     private struct RefreshOperation {
@@ -604,12 +632,14 @@ public actor CloudAccountCoordinator {
     private let limits: CloudAccountDiscoveryLimits
     private let now: @Sendable () -> Date
     private let retrySleep: RetrySleep
+    private let accountStore: (any CloudAccountStoring)?
     private var accounts: [CloudAccountID: CloudAccountRecord] = [:]
     private var connectGenerations: [CloudAccountProvider: UInt64] = [:]
     private var accountOperationGenerations: [CloudAccountID: UInt64] = [:]
     private var connectOperations: [CloudAccountProvider: ConnectOperation] = [:]
     private var refreshOperations: [CloudAccountID: RefreshOperation] = [:]
     private var discoveryOperations: [CloudAccountID: DiscoveryOperation] = [:]
+    private var synchronizationRequests: [CloudAccountID: CloudAccountOperationID] = [:]
     private var diagnosticOperations: [CloudAccountID: CloudAccountOperationID] = [:]
 
     public init(
@@ -624,6 +654,29 @@ public actor CloudAccountCoordinator {
         self.limits = limits
         self.now = now
         self.retrySleep = retrySleep
+        self.accountStore = nil
+    }
+
+    /// Restores only accounts whose metadata and credentials were committed together. Production
+    /// connectors can read this store; the non-persistent initializer is useful for fixtures.
+    public init(
+        connectors: [any CloudAccountConnector],
+        restoringFrom accountStore: any CloudAccountStoring,
+        limits: CloudAccountDiscoveryLimits = CloudAccountDiscoveryLimits(),
+        now: @escaping @Sendable () -> Date = Date.init,
+        retrySleep: @escaping RetrySleep = CloudAccountCoordinator.defaultRetrySleep
+    ) throws {
+        let restored = try accountStore.accounts()
+        guard Set(restored.map(\.id)).count == restored.count,
+              restored.allSatisfy({ $0.credentialGeneration.rawValue > 0 && Self.normalizedLocalLabel($0.localLabel) != nil }) else {
+            throw CloudAccountStoreError.corruptedStore
+        }
+        self.connectors = connectors.reduce(into: [:]) { $0[$1.provider] = $1 }
+        self.limits = limits
+        self.now = now
+        self.retrySleep = retrySleep
+        self.accountStore = accountStore
+        self.accounts = Dictionary(uniqueKeysWithValues: restored.map { ($0.id, $0) })
     }
 
     public func connectedAccounts() -> [CloudAccountRecord] {
@@ -639,10 +692,27 @@ public actor CloudAccountCoordinator {
         accounts[id]
     }
 
+    /// Resolves only the currently accepted credential generation. Callers near expiry share
+    /// one refresh exchange, then read the newly committed credentials from Keychain.
+    public func credentials(accountID: CloudAccountID, refreshBeforeExpiry: TimeInterval = 60) async throws -> CloudAccountCredentials {
+        try Task.checkCancellation()
+        guard let accountStore else { throw CloudAccountStoreError.storageUnavailable }
+        guard let account = accounts[accountID] else { throw CloudAccountCoordinatorError.accountNotFound }
+        let credentials = try accountStore.credentials(for: account)
+        let leeway = refreshBeforeExpiry.isFinite ? max(0, min(refreshBeforeExpiry, 300)) : 60
+        if refreshOperations[accountID] != nil || credentials.expiresAt.map({ $0 <= now().addingTimeInterval(leeway) }) == true {
+            let refreshed = try await refresh(accountID: accountID)
+            try Task.checkCancellation()
+            return try accountStore.credentials(for: refreshed)
+        }
+        return credentials
+    }
+
     public func connect(
         provider: CloudAccountProvider,
         localLabel: String = ""
     ) async throws -> CloudAccountRecord {
+        try Task.checkCancellation()
         guard let connector = connectors[provider] else {
             throw CloudAccountCoordinatorError.connectorUnavailable(provider)
         }
@@ -661,7 +731,12 @@ public actor CloudAccountCoordinator {
         connectOperations[provider] = ConnectOperation(id: id, generation: generation, task: task)
 
         do {
-            let result = try await task.value
+            let authorization = try await task.value
+            let result = authorization.account
+            if Task.isCancelled {
+                try? await discardSupersededConnection(result, connector: connector, operationGeneration: generation)
+                throw CancellationError()
+            }
             guard let current = connectOperations[provider],
                   current.id == id,
                   current.generation == generation else {
@@ -671,6 +746,7 @@ public actor CloudAccountCoordinator {
             connectOperations.removeValue(forKey: provider)
             guard result.provider == provider,
                   result.credentialGeneration.rawValue > 0,
+                  authorization.credentials.expiresAt.map({ $0 > now() }) ?? true,
                   let connectorLabel = Self.normalizedLocalLabel(result.localLabel),
                   accounts[result.id].map({ existing in
                       existing.provider == provider
@@ -679,12 +755,24 @@ public actor CloudAccountCoordinator {
                 try? await discardSupersededConnection(result, connector: connector, operationGeneration: generation)
                 throw CloudAccountCoordinatorError.invalidConnectorResult
             }
+            let existing = accounts[result.id]
+            let accepted = (existing?.updatingCredentials(from: result) ?? result).updatingLocalLabel(
+                normalizedLabel.isEmpty ? (existing?.localLabel ?? connectorLabel) : normalizedLabel
+            )
+            do {
+                try accountStore?.save(
+                    account: accepted,
+                    credentials: authorization.credentials,
+                    replacing: accounts[result.id]?.credentialGeneration
+                )
+            } catch {
+                try? await discardSupersededConnection(result, connector: connector, operationGeneration: generation)
+                throw error
+            }
             refreshOperations.removeValue(forKey: result.id)?.task.cancel()
             discoveryOperations.removeValue(forKey: result.id)?.task.cancel()
+            synchronizationRequests.removeValue(forKey: result.id)
             diagnosticOperations.removeValue(forKey: result.id)
-            let accepted = result.updatingLocalLabel(
-                normalizedLabel.isEmpty ? connectorLabel : normalizedLabel
-            )
             accounts[result.id] = accepted
             accountOperationGenerations[result.id] = 0
             return accepted
@@ -710,32 +798,55 @@ public actor CloudAccountCoordinator {
             throw CloudAccountCoordinatorError.invalidLocalLabel
         }
         let updated = account.updatingLocalLabel(label)
+        try accountStore?.updateMetadata(updated)
         accounts[accountID] = updated
         return updated
     }
 
     public func refresh(accountID: CloudAccountID) async throws -> CloudAccountRecord {
+        try Task.checkCancellation()
+        if let active = refreshOperations[accountID] {
+            let result = try await active.task.value
+            try Task.checkCancellation()
+            return result
+        }
         guard let account = accounts[accountID] else {
             throw CloudAccountCoordinatorError.accountNotFound
         }
         guard let connector = connectors[account.provider] else {
             throw CloudAccountCoordinatorError.connectorUnavailable(account.provider)
         }
-        refreshOperations[accountID]?.task.cancel()
-        discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
+        if let discovery = discoveryOperations.removeValue(forKey: accountID) {
+            synchronizationRequests.removeValue(forKey: accountID)
+            discovery.task.cancel()
+        }
         let generation = nextAccountOperationGeneration(for: accountID)
         let id = CloudAccountOperationID()
-        let request = boundRequest(id: id, generation: generation, account: account)
-        let task = Task { try await connector.refresh(request) }
+        let task = Task {
+            try await self.performRefresh(connector: connector, account: account, generation: generation, id: id)
+        }
         refreshOperations[accountID] = RefreshOperation(
             id: id,
             generation: generation,
             credentialGeneration: account.credentialGeneration,
             task: task
         )
+        let result = try await task.value
+        try Task.checkCancellation()
+        return result
+    }
 
+    private func performRefresh(
+        connector: any CloudAccountConnector,
+        account: CloudAccountRecord,
+        generation: CloudAccountGeneration,
+        id: CloudAccountOperationID
+    ) async throws -> CloudAccountRecord {
+        let accountID = account.id
+        let request = boundRequest(id: id, generation: generation, account: account)
         do {
-            let result = try await task.value
+            let authorization = try await connector.refresh(request)
+            let result = authorization.account
             guard let current = refreshOperations[accountID],
                   current.id == id,
                   current.generation == generation,
@@ -748,11 +859,13 @@ public actor CloudAccountCoordinator {
             refreshOperations.removeValue(forKey: accountID)
             guard result.id == accountID,
                   result.provider == account.provider,
+                  authorization.credentials.expiresAt.map({ $0 > now() }) ?? true,
                   result.credentialGeneration > account.credentialGeneration else {
                 throw CloudAccountCoordinatorError.invalidConnectorResult
             }
             discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
-            let accepted = result.updatingLocalLabel(latestAccount.localLabel)
+            let accepted = latestAccount.updatingCredentials(from: result)
+            try accountStore?.save(account: accepted, credentials: authorization.credentials, replacing: account.credentialGeneration)
             accounts[accountID] = accepted
             return accepted
         } catch {
@@ -767,6 +880,25 @@ public actor CloudAccountCoordinator {
         accountID: CloudAccountID,
         selectedScopeIDs: Set<CloudDiscoveryScopeID> = []
     ) async throws -> CloudAccountDiscoverySnapshot {
+        try Task.checkCancellation()
+        let synchronizationID = CloudAccountOperationID()
+        synchronizationRequests[accountID] = synchronizationID
+        discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
+        defer {
+            if synchronizationRequests[accountID] == synchronizationID {
+                synchronizationRequests.removeValue(forKey: accountID)
+            }
+        }
+        if accountStore != nil { _ = try await credentials(accountID: accountID) }
+        // Discovery must use the rotated credentials, not cancel a refresh-token exchange that
+        // may already have consumed the old refresh token at the provider.
+        while refreshOperations[accountID] != nil {
+            _ = try await refresh(accountID: accountID)
+            try Task.checkCancellation()
+        }
+        guard synchronizationRequests[accountID] == synchronizationID else {
+            throw CloudAccountCoordinatorError.superseded
+        }
         guard let account = accounts[accountID] else {
             throw CloudAccountCoordinatorError.accountNotFound
         }
@@ -774,7 +906,6 @@ public actor CloudAccountCoordinator {
             throw CloudAccountCoordinatorError.connectorUnavailable(account.provider)
         }
         discoveryOperations[accountID]?.task.cancel()
-        refreshOperations.removeValue(forKey: accountID)?.task.cancel()
         let generation = nextAccountOperationGeneration(for: accountID)
         let id = CloudAccountOperationID()
         let limits = self.limits
@@ -809,10 +940,12 @@ public actor CloudAccountCoordinator {
                 throw CloudAccountCoordinatorError.superseded
             }
             discoveryOperations.removeValue(forKey: accountID)
-            accounts[accountID] = latestAccount.updatingAfterSync(
+            let updated = latestAccount.updatingAfterSync(
                 clusterCount: result.candidates.count,
                 at: result.isPartial ? latestAccount.lastSuccessfulSync : now()
             )
+            try accountStore?.updateMetadata(updated)
+            accounts[accountID] = updated
             return result
         } catch {
             if discoveryOperations[accountID]?.id == id {
@@ -823,6 +956,7 @@ public actor CloudAccountCoordinator {
     }
 
     public func cancelSynchronization(accountID: CloudAccountID) {
+        synchronizationRequests.removeValue(forKey: accountID)
         guard let operation = discoveryOperations.removeValue(forKey: accountID) else { return }
         _ = nextAccountOperationGeneration(for: accountID)
         operation.task.cancel()
@@ -865,11 +999,14 @@ public actor CloudAccountCoordinator {
         guard let account = accounts[accountID] else {
             throw CloudAccountCoordinatorError.accountNotFound
         }
-        guard let connector = connectors[account.provider] else {
+        let connector = connectors[account.provider]
+        guard connector != nil || accountStore != nil else {
             throw CloudAccountCoordinatorError.connectorUnavailable(account.provider)
         }
+        cancelConnection(provider: account.provider)
         refreshOperations.removeValue(forKey: accountID)?.task.cancel()
         discoveryOperations.removeValue(forKey: accountID)?.task.cancel()
+        synchronizationRequests.removeValue(forKey: accountID)
         diagnosticOperations.removeValue(forKey: accountID)
         let generation = nextAccountOperationGeneration(for: accountID)
         let request = boundRequest(
@@ -877,8 +1014,17 @@ public actor CloudAccountCoordinator {
             generation: generation,
             account: account
         )
+        if let accountStore {
+            // Local deletion is authoritative even when the provider is unavailable or its
+            // connector has been disabled. A late refresh cannot pass the acceptance guard.
+            try accountStore.remove(accountID: accountID, provider: account.provider, generation: account.credentialGeneration)
+            accounts.removeValue(forKey: accountID)
+            accountOperationGenerations.removeValue(forKey: accountID)
+            try? await connector?.disconnect(request)
+            return
+        }
         do {
-            try await connector.disconnect(request)
+            try await connector?.disconnect(request)
             guard accounts[accountID]?.credentialGeneration == account.credentialGeneration,
                   accountOperationGenerations[accountID] == generation.rawValue else {
                 throw CloudAccountCoordinatorError.superseded

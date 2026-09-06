@@ -26,13 +26,15 @@ final class RuneThemeInfrastructureTests: XCTestCase {
         let syntax = try XCTUnwrap(theme.syntaxPalette)
 
         XCTAssertEqual(appKit.window, "#16131c")
-        XCTAssertEqual(appKit.success, "#7ee6a8")
-        XCTAssertEqual(appKit.warning, "#ffd166")
-        XCTAssertEqual(appKit.danger, "#ff7a9a")
-        XCTAssertEqual(appKit.info, "#8bd3ff")
-        XCTAssertEqual(syntax.key, appKit.info)
-        XCTAssertEqual(syntax.string, appKit.success)
-        XCTAssertEqual(syntax.number, appKit.warning)
+        let palette = try XCTUnwrap(theme.palette)
+        let pairs = [(appKit.success, palette.success), (appKit.warning, palette.warning),
+                     (appKit.danger, palette.danger), (appKit.info, palette.info)]
+        for (hex, color) in pairs {
+            XCTAssertEqual(RuneThemeColorParser.rgbaHex(.runeHex(hex)), RuneThemeColorParser.rgbaHex(NSColor(color)))
+        }
+        for hex in [syntax.key, syntax.string, syntax.number] {
+            XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(hex), over: NSColor(palette.editor)), 4.5)
+        }
     }
 
     func testSharedSurfacesConsumeEnvironmentResolvedTheme() throws {

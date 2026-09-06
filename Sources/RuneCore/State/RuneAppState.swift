@@ -1597,10 +1597,10 @@ public final class RuneAppState: ObservableObject {
         logNotice("notice \(activeNotice?.severity.rawValue ?? "unknown"): \(message)")
     }
 
-    public func setInfoNotice(title: String, message: String) {
+    public func setInfoNotice(title: String, message: String, savedFileURL: URL? = nil) {
         guard lastError == nil,
               activeNotice == nil || activeNotice?.severity == .info else { return }
-        activeNotice = RuneUserNotice(severity: .info, title: title, message: message)
+        activeNotice = RuneUserNotice(severity: .info, title: title, message: message, savedFileURL: savedFileURL)
     }
 
     public func clearError() {

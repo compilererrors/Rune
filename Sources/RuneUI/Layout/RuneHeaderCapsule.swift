@@ -84,14 +84,14 @@ struct RuneHeaderCapsule: View {
             } else if let systemImage {
                 Image(systemName: systemImage)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(tint ?? foregroundColor ?? Color.secondary)
+                    .foregroundStyle(tint ?? foregroundColor ?? runeThemePalette?.secondaryText ?? Color.secondary)
                     .frame(width: symbolWidth)
                     .accessibilityHidden(true)
             }
 
             Text(text)
                 .font(.caption.weight(role.fontWeight))
-                .foregroundStyle(foregroundColor ?? Color.secondary)
+                .foregroundStyle(foregroundColor ?? runeThemePalette?.secondaryText ?? Color.secondary)
                 .lineLimit(1)
                 .truncationMode(role.prefersMiddleTruncation ? .middle : .tail)
                 .fixedSize(horizontal: false, vertical: true)

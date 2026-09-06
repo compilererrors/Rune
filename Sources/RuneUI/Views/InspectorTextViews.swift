@@ -17,8 +17,7 @@ struct InspectorTextSurface<Content: View>: View {
                     alignment: .topLeading
                 )
                 .background {
-                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                        .fill(.thinMaterial)
+                    RuneSurfaceBackground(kind: .editor)
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)

@@ -126,7 +126,7 @@ struct InspectorFindBar: View {
     private var searchField: some View {
         RuneInspectorControlGridRow {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         } content: {
             TextField(placeholder, text: $query)
                 .textFieldStyle(.roundedBorder)
@@ -152,7 +152,7 @@ struct InspectorFindBar: View {
             } label: {
                 Text(statusText)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
                     .runeMinimumInteractiveTarget(minWidth: 74, alignment: .trailing)
             }
@@ -212,7 +212,7 @@ struct InspectorFindBar: View {
 
                 Text("of \(searchIndex?.ranges.count ?? 0)")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
             }
 

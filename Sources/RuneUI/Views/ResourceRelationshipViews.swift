@@ -31,7 +31,7 @@ struct ResourceRelationshipSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             if usesBoundedInnerScroll {
                 ScrollView(.vertical) {
@@ -122,20 +122,20 @@ struct ResourceRelationshipLinkButton: View {
             HStack(spacing: 8) {
                 Image(systemName: symbol)
                     .frame(width: 16)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
                     Text(subtitle)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.runeTertiary)
             }
             .frame(maxWidth: .infinity, minHeight: Self.minimumHeight, alignment: .leading)
             .contentShape(Rectangle())
@@ -156,13 +156,13 @@ struct ResourceRelationshipEmptyRow: View {
         HStack(spacing: 8) {
             Image(systemName: "tray")
                 .frame(width: 16)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.caption.weight(.semibold))
                 Text(subtitle)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)

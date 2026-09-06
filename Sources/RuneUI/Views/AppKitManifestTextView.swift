@@ -300,7 +300,7 @@ final class YAMLLineNumberGutterOverlayView: NSView {
 
         let attributes: [NSAttributedString.Key: Any] = [
             .font: metrics.numberFont,
-            .foregroundColor: NSColor.tertiaryLabelColor
+            .foregroundColor: textView.lineNumberTextColor
         ]
         for label in visibleLineNumberLabels() {
             let text = "\(label.number)" as NSString
@@ -311,7 +311,7 @@ final class YAMLLineNumberGutterOverlayView: NSView {
     }
 
     var gutterBackgroundColor: NSColor {
-        NSColor.controlBackgroundColor
+        textView?.lineNumberBackgroundColor ?? .controlBackgroundColor
     }
 
     func visibleLineNumberLabels() -> [(number: Int, y: CGFloat)] {
@@ -385,8 +385,10 @@ private final class PlainManifestTextView: NSTextView {
     private var documentLineMetricsCache: (revision: Int, metrics: DocumentLineMetrics)?
     private var documentSizeCache: (key: DocumentSizeCacheKey, size: NSSize)?
     private var showsLineNumbers = false
-    private var manifestThemeID = RuneSettingsKeys.appearanceThemeDefault
+    private var manifestTheme = RuneAppearanceTheme.native.resolvedTheme
     private var manifestPalette = ManifestPalette.resolved(RuneAppearanceTheme.native.resolvedTheme)
+    var lineNumberTextColor: NSColor { manifestPalette.comment }
+    var lineNumberBackgroundColor: NSColor { manifestPalette.background }
     private var searchHighlightRanges: [NSRange] = []
     private var activeSearchHighlightRange: NSRange?
     private var lastAppliedSearchKey = ""
@@ -417,13 +419,15 @@ private final class PlainManifestTextView: NSTextView {
         let fontSizeChanged = self.configuredFontSize != fontSize
         let issuesChanged = self.externalValidationIssues != externalValidationIssues
         let lineNumbersChanged = self.showsLineNumbers != showsLineNumbers
-        let themeChanged = self.manifestThemeID != manifestTheme.id
+        var nextPalette = ManifestPalette.resolved(manifestTheme)
+        effectiveAppearance.performAsCurrentDrawingAppearance { nextPalette = ManifestPalette.resolved(manifestTheme) }
+        let themeChanged = self.manifestTheme.id != manifestTheme.id || nextPalette != manifestPalette
         self.contentStyle = contentStyle
         self.configuredFontSize = fontSize
         self.externalValidationIssues = externalValidationIssues
         self.showsLineNumbers = showsLineNumbers
-        self.manifestThemeID = manifestTheme.id
-        manifestPalette = ManifestPalette.resolved(manifestTheme)
+        self.manifestTheme = manifestTheme
+        manifestPalette = nextPalette
 
         if self.isEditable != isEditable {
             self.isEditable = isEditable
@@ -451,6 +455,17 @@ private final class PlainManifestTextView: NSTextView {
             refreshLayout()
         } else {
             refreshViewportGeometry()
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        guard manifestTheme.isNative else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            manifestPalette = ManifestPalette.resolved(manifestTheme)
+            applyThemeConfiguration()
+            applyFontConfiguration()
+            refreshLayout()
         }
     }
 
@@ -656,7 +671,9 @@ private final class PlainManifestTextView: NSTextView {
         if contentStyle == .ansiLogs {
             storage.setAttributedString(ResourceLogANSIFormatter.attributedString(
                 from: representedText,
-                font: currentBaseFont
+                font: currentBaseFont,
+                foreground: manifestPalette.foreground,
+                backgrounds: manifestPalette.textBackgrounds
             ))
             activeValidationIssues = []
             updateDocumentSize()
@@ -1413,7 +1430,13 @@ private final class PlainManifestTextView: NSTextView {
     }
 }
 
-private struct ManifestPalette {
+private struct ManifestPalette: Equatable {
+    let background: NSColor
+    var textBackgrounds: [NSColor] {
+        let base = RuneThemeContrast.RGB(background)
+        return [base.nsColor, RuneThemeContrast.RGB(selection).over(base).nsColor,
+                RuneThemeContrast.RGB(searchMatchBackground).over(base).nsColor]
+    }
     let foreground: NSColor
     let accent: NSColor
     let selection: NSColor
@@ -1446,6 +1469,7 @@ private struct ManifestPalette {
             return native
         }
         return themed(
+            background: theme.palette.map { NSColor($0.editor) } ?? .textBackgroundColor,
             foreground: appKit.foreground,
             accent: appKit.accent,
             key: syntax.key,
@@ -1464,7 +1488,7 @@ private struct ManifestPalette {
 
     private static func selectionAlpha(for theme: RuneResolvedTheme, fallback: CGFloat) -> CGFloat {
         switch theme.builtin {
-        case .contrastDark: return 0.30
+        case .contrastDark: return 0.24
         case .contrastLight: return 0.20
         case .paper, .daylight: return 0.18
         case .aurora, .graphiteBlue, .emberGlass, .mossTerminal, .fjord: return 0.24
@@ -1473,34 +1497,42 @@ private struct ManifestPalette {
         }
     }
 
-    private static let native = ManifestPalette(
-        foreground: .labelColor,
+    private static var native: ManifestPalette {
+        let base = RuneThemeContrast.RGB(NSColor.textBackgroundColor)
+        let surfaces = [base.nsColor, RuneThemeContrast.RGB(NSColor.controlAccentColor).over(base, opacity: 0.24).nsColor,
+                        RuneThemeContrast.RGB(NSColor.systemOrange).over(base, opacity: 0.18).nsColor]
+        func ink(_ color: NSColor) -> NSColor { RuneThemeContrast.readable(color, over: surfaces) }
+        return ManifestPalette(
+        background: .textBackgroundColor,
+        foreground: ink(.labelColor),
         accent: .controlAccentColor,
         selection: NSColor.controlAccentColor.withAlphaComponent(0.22),
-        searchMatchBackground: NSColor.findHighlightColor.withAlphaComponent(0.58),
+        searchMatchBackground: NSColor.systemOrange.withAlphaComponent(0.18),
         searchMatchUnderline: NSColor.systemOrange,
-        activeSearchMatchBackground: NSColor.controlAccentColor.withAlphaComponent(0.48),
+        activeSearchMatchBackground: NSColor.controlAccentColor.withAlphaComponent(0.24),
         activeSearchMatchUnderline: NSColor.controlAccentColor,
-        key: NSColor.systemBlue.withAlphaComponent(0.95),
-        string: NSColor.systemGreen.withAlphaComponent(0.9),
-        number: NSColor.systemOrange.withAlphaComponent(0.95),
-        boolean: NSColor.systemPurple.withAlphaComponent(0.95),
-        comment: NSColor.secondaryLabelColor.withAlphaComponent(0.85),
-        directive: NSColor.systemPink.withAlphaComponent(0.95),
-        anchor: NSColor.systemTeal.withAlphaComponent(0.95),
+        key: ink(.systemBlue),
+        string: ink(.systemGreen),
+        number: ink(.systemOrange),
+        boolean: ink(.systemPurple),
+        comment: ink(.secondaryLabelColor),
+        directive: ink(.systemPink),
+        anchor: ink(.systemTeal),
         indentGuide: NSColor.separatorColor.withAlphaComponent(0.28),
-        tabMarkerText: NSColor.systemRed.withAlphaComponent(0.95),
+        tabMarkerText: ink(.systemRed),
         tabMarkerBackground: NSColor.systemRed.withAlphaComponent(0.14),
         errorUnderline: .systemRed,
         errorBackground: NSColor.systemRed.withAlphaComponent(0.12),
         warningUnderline: .systemOrange,
         warningBackground: NSColor.systemOrange.withAlphaComponent(0.1),
-        describeKey: NSColor.systemCyan.withAlphaComponent(0.9),
-        describeSection: NSColor.controlAccentColor.withAlphaComponent(0.95),
-        describeColon: NSColor.secondaryLabelColor.withAlphaComponent(0.8)
+        describeKey: ink(.systemCyan),
+        describeSection: ink(.controlAccentColor),
+        describeColon: ink(.secondaryLabelColor)
     )
+    }
 
     private static func themed(
+        background: NSColor,
         foreground: String,
         accent: String,
         key: String,
@@ -1519,30 +1551,31 @@ private struct ManifestPalette {
         let dangerColor = NSColor.runeHex(danger)
         let warningColor = NSColor.runeHex(warning)
         return ManifestPalette(
+            background: background,
             foreground: NSColor.runeHex(foreground),
             accent: accentColor,
             selection: accentColor.withAlphaComponent(selectionAlpha),
-            searchMatchBackground: warningColor.withAlphaComponent(usesLightBackground ? 0.30 : 0.38),
+            searchMatchBackground: warningColor.withAlphaComponent(0.18),
             searchMatchUnderline: warningColor.withAlphaComponent(0.98),
-            activeSearchMatchBackground: accentColor.withAlphaComponent(usesLightBackground ? 0.38 : 0.52),
+            activeSearchMatchBackground: accentColor.withAlphaComponent(0.24),
             activeSearchMatchUnderline: accentColor,
             key: NSColor.runeHex(key),
             string: NSColor.runeHex(string),
             number: NSColor.runeHex(number),
             boolean: NSColor.runeHex(boolean),
-            comment: NSColor.runeHex(comment).withAlphaComponent(0.9),
+            comment: NSColor.runeHex(comment),
             directive: NSColor.runeHex(directive),
             anchor: NSColor.runeHex(anchor),
             indentGuide: NSColor.runeHex(comment).withAlphaComponent(0.32),
-            tabMarkerText: dangerColor.withAlphaComponent(0.95),
+            tabMarkerText: dangerColor,
             tabMarkerBackground: dangerColor.withAlphaComponent(0.15),
             errorUnderline: dangerColor,
             errorBackground: dangerColor.withAlphaComponent(0.12),
             warningUnderline: warningColor,
             warningBackground: warningColor.withAlphaComponent(0.12),
             describeKey: NSColor.runeHex(key),
-            describeSection: accentColor.withAlphaComponent(0.96),
-            describeColon: NSColor.runeHex(comment).withAlphaComponent(0.82)
+            describeSection: accentColor,
+            describeColon: NSColor.runeHex(comment)
         )
     }
 

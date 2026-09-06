@@ -13,7 +13,7 @@ private enum SmokeAXError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .invalidArguments:
-            return "usage: rune-ui-smoke-ax <pid> <focus|log-search|enable-skip-cluster|skip-cluster-nav|compare|yaml-dialog|import-kubeconfig>"
+            return "usage: rune-ui-smoke-ax <pid> <focus|log-search|log-export|settings-sort|enable-skip-cluster|skip-cluster-nav|compare|write-dialog|yaml-dialog|import-kubeconfig|reimport-kubeconfig>"
         case let .applicationUnavailable(pid):
             return "Rune process is unavailable: \(pid)"
         case let .elementMissing(identifier):
@@ -459,12 +459,13 @@ private func assertLogSearch(processID: pid_t) throws {
     application.activate()
 
     let root = AXUIElementCreateApplication(processID)
-    guard let searchChrome = waitForElement(
+    // AppKit can flatten the SwiftUI container around native accessories. The
+    // input identifier and the same focus/frame/navigation checks still apply.
+    let searchChrome = waitForElement(
         in: root,
-        identifier: "resource-log-search-chrome"
-    ) else {
-        throw SmokeAXError.elementMissing("resource-log-search-chrome")
-    }
+        identifier: "resource-log-search-chrome",
+        timeout: 1
+    ) ?? root
     guard let field = waitForElement(
         in: searchChrome,
         identifier: "resource-log-search-input",
@@ -687,7 +688,16 @@ private func assertSkipClusterNavigation(processID: pid_t) throws {
     try postKey(48, to: processID) // Tab: Sections -> content when cluster is skipped.
     try postKey(124, to: processID) // Right: Pods -> Deployments.
     guard waitForSelectedChoice(in: root, label: "Deployments", timeout: 4) != nil else {
-        throw SmokeAXError.assertion("Tab from Sections did not skip Cluster and reach the middle panel")
+        let choices = ["Pods", "Deployments", "Services", "Workloads", "Networking"].map { label in
+            guard let element = findLabeledElement(in: root, label: label) else { return "\(label)=missing" }
+            return "\(label)=\(stringAttribute(element, kAXRoleAttribute) ?? "unknown")/selected:\(isSelected(element))"
+        }.joined(separator: ", ")
+        let focus = attribute(root, kAXFocusedUIElementAttribute).flatMap { value -> String? in
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            let element = unsafeBitCast(value, to: AXUIElement.self)
+            return "\(stringAttribute(element, kAXRoleAttribute) ?? "unknown")/\(accessibilityLabel(of: element))"
+        } ?? "none"
+        throw SmokeAXError.assertion("Tab from Sections did not skip Cluster and reach the middle panel; \(choices); focus=\(focus)")
     }
 
     try postKey(123, to: processID) // Restore Pods.
@@ -789,6 +799,77 @@ private func findEditableYAMLTextArea(in root: AXUIElement) -> AXUIElement? {
     }
 }
 
+private func assertWriteDialog(processID: pid_t) throws {
+    let root = try activateApplication(processID: processID)
+    // Restrict this check to the disposable Docker fixture. Never accept the
+    // final destructive action; only review its production gate and cancel it.
+    func contextMenu() throws -> AXUIElement {
+        guard let menu = waitForLabeledElement(in: root, label: "fake-orbit-mesh", role: kAXMenuButtonRole as String, timeout: 3) else {
+            throw SmokeAXError.elementMissing("Synthetic fixture context menu")
+        }
+        return menu
+    }
+    func chooseContextAction(_ title: String) throws {
+        try performPress(try contextMenu(), operation: "open synthetic context menu")
+        guard let item = waitForLabeledElement(in: root, label: title, role: kAXMenuItemRole as String, timeout: 3) else {
+            throw SmokeAXError.elementMissing(title)
+        }
+        try performPress(item, operation: title)
+    }
+    func selectInspectorTab(_ title: String) throws {
+        guard let tab = waitForLabeledElement(in: root, label: title, role: kAXRadioButtonRole as String, timeout: 3) else {
+            throw SmokeAXError.elementMissing("Selected fixture pod \(title) tab")
+        }
+        try performPress(tab, operation: "select fixture pod \(title)")
+    }
+    try selectInspectorTab("Overview")
+    try chooseContextAction("Mark as Production")
+    var needsRestore = true
+    defer {
+        if needsRestore {
+            try? postKey(53, to: processID)
+            try? chooseContextAction("Unmark Production")
+            try? selectInspectorTab("Logs")
+        }
+    }
+    guard waitForLabeledElement(in: root, label: "Production context active", timeout: 3) != nil else {
+        throw SmokeAXError.assertion("Mark as Production did not activate the fixture's production state")
+    }
+    guard let delete = waitForLabeledElement(in: root, label: "Delete", role: kAXButtonRole as String, timeout: 3) else {
+        throw SmokeAXError.elementMissing("Selected fixture pod Delete button")
+    }
+    try performPress(delete, operation: "open synthetic pod write review")
+    guard let review = waitForLabeledElement(in: root, label: "Review Production Action", role: kAXButtonRole as String, timeout: 3) else {
+        let actual = findElement(in: root, identifier: "rune.write-review.confirm").map(accessibilityLabel(of:)) ?? "missing"
+        throw SmokeAXError.assertion("The synthetic write review must expose its first production confirmation; actual=\(actual)")
+    }
+    guard waitForLabeledElement(in: root, label: "Destructive production actions require a second confirmation", contains: true, timeout: 3) != nil else {
+        throw SmokeAXError.assertion("The synthetic write review must explain its second production confirmation")
+    }
+    guard let target = waitForElement(in: root, identifier: "rune.write-review.target", timeout: 3),
+          waitForLabeledElement(in: target, label: "fake-orbit-mesh", contains: true, timeout: 3) != nil else {
+        throw SmokeAXError.assertion("The synthetic write review must show the exact fixture context in its target")
+    }
+    try performPress(review, operation: "review first production confirmation without executing the write")
+    guard waitForLabeledElement(in: root, label: "Final confirmation required", contains: true, timeout: 3) != nil,
+          findElement(in: root, identifier: "rune.write-review.confirm") != nil,
+          let cancel = findButton(in: root, label: "Cancel") else {
+        throw SmokeAXError.assertion("The write sheet did not update to its final confirmation stage")
+    }
+    try performPress(cancel, operation: "cancel synthetic production action")
+    let deadline = Date().addingTimeInterval(3)
+    while findElement(in: root, identifier: "rune.write-review.confirm") != nil && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+    }
+    guard findElement(in: root, identifier: "rune.write-review.confirm") == nil else {
+        throw SmokeAXError.assertion("Cancel did not dismiss the write review")
+    }
+    try chooseContextAction("Unmark Production")
+    try selectInspectorTab("Logs")
+    needsRestore = false
+    print("write-dialog-e2e passed production-review=updated final-action=cancelled")
+}
+
 private func assertYAMLDialog(processID: pid_t) throws {
     let root = try activateApplication(processID: processID)
     guard let editButton = waitForElement(
@@ -804,7 +885,7 @@ private func assertYAMLDialog(processID: pid_t) throws {
           findEditableYAMLTextArea(in: root) != nil,
           waitForLabeledElement(
               in: root,
-              label: "Close dismisses this sheet only.",
+              label: "Apply YAML can write only after confirmation.",
               contains: true,
               timeout: 3
           ) != nil
@@ -825,7 +906,30 @@ private func assertYAMLDialog(processID: pid_t) throws {
     print("yaml-dialog-e2e passed")
 }
 
-private func assertKubeconfigImport(processID: pid_t) throws {
+private func importedFixtureSnapshot() throws -> [String: Data] {
+    guard let path = ProcessInfo.processInfo.environment["RUNE_UI_SMOKE_IMPORT_ROOT"],
+          path.hasPrefix("/tmp/") || path.hasPrefix("/private/tmp/"),
+          let enumerator = FileManager.default.enumerator(atPath: path) else {
+        throw SmokeAXError.assertion("Reimport E2E requires the isolated temporary import folder")
+    }
+    var snapshot: [String: Data] = [:]
+    while let relativePath = enumerator.nextObject() as? String {
+        guard snapshot.count < 32 else { throw SmokeAXError.assertion("Unexpected fixture import size") }
+        let url = URL(fileURLWithPath: path).appendingPathComponent(relativePath)
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isSymbolicLink != true else { throw SmokeAXError.assertion("Unexpected fixture symlink") }
+        if values.isRegularFile == true {
+            guard (values.fileSize ?? Int.max) < 1_048_576 else { throw SmokeAXError.assertion("Unexpected fixture file size") }
+            snapshot[relativePath] = try Data(contentsOf: url)
+        }
+    }
+    guard snapshot.keys.contains(where: { $0.hasSuffix("/.rune-import.json") }) else {
+        throw SmokeAXError.assertion("The first import has no ownership record")
+    }
+    return snapshot
+}
+
+private func assertKubeconfigImport(processID: pid_t, reimport: Bool = false) throws {
     guard let path = ProcessInfo.processInfo.environment["RUNE_UI_SMOKE_IMPORT_KUBECONFIG"],
           !path.isEmpty
     else {
@@ -841,6 +945,7 @@ private func assertKubeconfigImport(processID: pid_t) throws {
     guard requiredMarkers.allSatisfy(raw.contains) else {
         throw SmokeAXError.assertion("Import E2E refused a kubeconfig that was not the two local fake clusters")
     }
+    let originalSnapshot = reimport ? try importedFixtureSnapshot() : nil
 
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
@@ -853,6 +958,7 @@ private func assertKubeconfigImport(processID: pid_t) throws {
     do {
         root = try activateApplication(processID: processID)
     } catch let SmokeAXError.elementMissing(identifier) where identifier == "Rune application window" {
+        guard !reimport else { throw SmokeAXError.elementMissing(identifier) }
         try assertKubeconfigImportWithNativeMenu(processID: processID)
         return
     } catch {
@@ -906,6 +1012,18 @@ private func assertKubeconfigImport(processID: pid_t) throws {
     ) != nil else {
         throw SmokeAXError.elementMissing("rune.kubeconfig-import.review")
     }
+    if reimport {
+        guard let update = waitForLabeledElement(in: root, label: "Update existing", role: kAXRadioButtonRole as String, timeout: 5) else {
+            throw SmokeAXError.elementMissing("Update existing duplicate policy")
+        }
+        try performPress(update, operation: "choose Update existing for unchanged owned configuration")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let status = findElement(in: root, identifier: "rune.kubeconfig-import.status"),
+               accessibilityLabel(of: status) == "2 contexts ready to confirm" { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
     guard findElement(in: root, identifier: "rune.kubeconfig-import.context.fake-orbit-mesh") != nil,
           findElement(in: root, identifier: "rune.kubeconfig-import.context.fake-lattice-spark") != nil,
           let status = findElement(in: root, identifier: "rune.kubeconfig-import.status"),
@@ -946,7 +1064,207 @@ private func assertKubeconfigImport(processID: pid_t) throws {
         throw SmokeAXError.assertion("Imported contexts disappeared during kubeconfig source synchronization")
     }
 
-    print("import-kubeconfig-e2e passed route=\(importRoute) contexts=2 source=app-owned")
+    if let originalSnapshot {
+        guard try importedFixtureSnapshot() == originalSnapshot else {
+            throw SmokeAXError.assertion("Reimport created another copy or changed the original ownership revision")
+        }
+        guard waitForLabeledElement(in: root, label: "Connections reused", timeout: 8) != nil else {
+            throw SmokeAXError.elementMissing("Connections reused notice")
+        }
+        print("reimport-kubeconfig-e2e passed contexts=2 copies=1 ownership=unchanged")
+    } else {
+        print("import-kubeconfig-e2e passed route=\(importRoute) contexts=2 source=app-owned")
+    }
+}
+
+private func assertLogExport(processID: pid_t) throws {
+    let root = try activateApplication(processID: processID)
+    guard let path = ProcessInfo.processInfo.environment["RUNE_UI_SMOKE_EXPORT_DIRECTORY"] else {
+        throw SmokeAXError.assertion("RUNE_UI_SMOKE_EXPORT_DIRECTORY must name the isolated test export folder")
+    }
+    let directory = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
+    guard directory.path.hasPrefix("/private/tmp/") || directory.path.hasPrefix("/tmp/") else {
+        throw SmokeAXError.assertion("Log export smoke requires a temporary export folder")
+    }
+    func files() throws -> Set<URL> {
+        Set(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))
+    }
+    func control(_ id: String) throws -> AXUIElement {
+        guard let element = waitForElement(in: root, identifier: id, timeout: 5),
+              stringAttribute(element, kAXRoleAttribute) == (kAXButtonRole as String),
+              boolAttribute(element, kAXEnabledAttribute) else {
+            throw SmokeAXError.assertion("Expected an enabled accessible button: \(id)")
+        }
+        return element
+    }
+    let marker = ProcessInfo.processInfo.environment["RUNE_UI_SMOKE_LOG_MARKER"] ?? "tick"
+    let initialPlayback = try control("log-tail-playback")
+    if accessibilityLabel(of: initialPlayback) != "Tail" {
+        _ = AXUIElementPerformAction(initialPlayback, kAXShowMenuAction as CFString)
+        guard let stop = waitForLabeledElement(in: root, label: "Stop Tail", role: kAXMenuItemRole as String) else {
+            throw SmokeAXError.assertion("Could not reset playback through its Stop Tail menu")
+        }
+        try performPress(stop, operation: "stop tail before playback regression")
+        guard waitForLabeledElement(in: root, label: "Tail", role: kAXButtonRole as String) != nil else {
+            throw SmokeAXError.assertion("Stop Tail did not restore the Tail action")
+        }
+    }
+    for (before, after) in [("Tail", "Pause"), ("Pause", "Resume"), ("Resume", "Pause")] {
+        let playback = try control("log-tail-playback")
+        guard accessibilityLabel(of: playback) == before else {
+            throw SmokeAXError.assertion("Expected playback action \(before), got \(accessibilityLabel(of: playback))")
+        }
+        try performPress(playback, operation: "activate \(before)")
+        guard waitForLabeledElement(in: root, label: after, role: kAXButtonRole as String, timeout: 5) != nil else {
+            throw SmokeAXError.assertion("Playback did not expose \(after)")
+        }
+    }
+    // Pause before exporting so the saved-file assertion has a stable source.
+    try performPress(try control("log-tail-playback"), operation: "pause log stream")
+    guard waitForLabeledElement(in: root, label: "Resume", role: kAXButtonRole as String) != nil else {
+        throw SmokeAXError.assertion("Log stream did not pause")
+    }
+    let quickSave = try control("log-quick-save")
+    guard let save = findButton(in: root, label: "Save Logs"),
+          let quickFrame = frame(of: quickSave), let saveFrame = frame(of: save),
+          abs(quickFrame.origin.y - saveFrame.origin.y) < 1,
+          abs(quickFrame.size.height - saveFrame.size.height) < 1,
+          quickFrame.origin.x >= saveFrame.origin.x + saveFrame.size.width - 1,
+          quickFrame.size.width < saveFrame.size.width,
+          applicationWindows(root).contains(where: { window in
+              guard let windowFrame = frame(of: window) else { return false }
+              return CGRect(origin: windowFrame.origin, size: windowFrame.size)
+                  .contains(CGRect(origin: quickFrame.origin, size: quickFrame.size))
+          }) else {
+        throw SmokeAXError.assertion("Quick Save must remain visible beside Save Logs with the same control height")
+    }
+    let original = try files()
+    try performPress(quickSave, operation: "quick save logs")
+    guard let folderAction = waitForElement(in: root, identifier: "saved-log-open-folder", timeout: 10),
+          let fileAction = findElement(in: root, identifier: "saved-log-open-file") else {
+        throw SmokeAXError.assertion("Quick Save did not show both saved-file toast actions")
+    }
+    let created = try files().subtracting(original)
+    guard created.count == 1, let saved = created.first,
+          let contents = try? String(contentsOf: saved, encoding: .utf8),
+          contents.contains(marker) else {
+        throw SmokeAXError.assertion("One click must create exactly one nonempty synthetic log containing the fixture marker")
+    }
+    func waitForOpenedURL(_ url: URL, bundleIdentifier: String) -> Bool {
+        let deadline = Date().addingTimeInterval(15)
+        repeat {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier) {
+                let appRoot = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetMessagingTimeout(appRoot, 0.5)
+                for window in applicationWindows(appRoot) {
+                    if stringAttribute(window, kAXTitleAttribute)?.contains(url.lastPathComponent) == true { return true }
+                    if firstElement(in: window, limit: 100, matching: { element in
+                        if let document = stringAttribute(element, kAXDocumentAttribute),
+                           let actual = URL(string: document),
+                           actual.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path { return true }
+                        return stringAttribute(element, kAXTitleAttribute) == url.lastPathComponent
+                    }) != nil { return true }
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.10)
+        } while Date() < deadline
+        return false
+    }
+    try performPress(folderAction, operation: "open saved folder")
+    guard waitForOpenedURL(directory, bundleIdentifier: "com.apple.finder") else {
+        throw SmokeAXError.assertion("Open Folder did not reveal the saved export folder in Finder")
+    }
+    _ = try activateApplication(processID: processID)
+    guard let openerURL = NSWorkspace.shared.urlForApplication(toOpen: saved),
+          let openerID = Bundle(url: openerURL)?.bundleIdentifier else {
+        throw SmokeAXError.assertion("No system default opener for the exported log")
+    }
+    try performPress(fileAction, operation: "open saved log file")
+    guard waitForOpenedURL(saved, bundleIdentifier: openerID) else {
+        throw SmokeAXError.assertion("Open File did not expose the saved log in its default application")
+    }
+    guard try files() == original.union(created) else {
+        throw SmokeAXError.assertion("Opening the saved file/folder must not export another file")
+    }
+    _ = try activateApplication(processID: processID)
+    print("log-export-e2e passed playback=start/pause/resume quick-save=1 toast=folder/file duplicate-exports=0 geometry=visible/equal-height")
+}
+
+private func assertSettingsAndSort(processID: pid_t) throws {
+    let root = try activateApplication(processID: processID)
+    func pressChoice(_ label: String, role: String) throws {
+        guard let choice = waitForLabeledElement(in: root, label: label, role: role) else {
+            throw SmokeAXError.elementMissing(label)
+        }
+        try performPress(choice, operation: "select \(label)")
+        if role == (kAXMenuItemRole as String) {
+            let deadline = Date().addingTimeInterval(3)
+            while findLabeledElement(in: root, label: label, role: role) != nil, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            guard findLabeledElement(in: root, label: label, role: role) == nil else {
+                throw SmokeAXError.assertion("Menu did not close after selecting \(label)")
+            }
+        }
+    }
+    func sortMenu() throws -> AXUIElement {
+        guard let menu = waitForElement(in: root, identifier: "resource-sort-menu") else {
+            throw SmokeAXError.elementMissing("resource-sort-menu")
+        }
+        return menu
+    }
+    func expectSort(_ value: String) throws {
+        let deadline = Date().addingTimeInterval(3)
+        repeat {
+            if let menu = findElement(in: root, identifier: "resource-sort-menu"),
+               stringAttribute(menu, kAXValueAttribute) == value { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
+        throw SmokeAXError.assertion("Resource sort did not become \(value)")
+    }
+    try performPress(try sortMenu(), operation: "open sort menu")
+    try pressChoice("Age", role: kAXMenuItemRole as String)
+    guard waitForLabeledElement(in: root, label: "Age, ", role: kAXMenuButtonRole as String, contains: true) != nil else {
+        throw SmokeAXError.assertion("Age sort did not become active")
+    }
+    try performPress(try sortMenu(), operation: "choose initial date order")
+    try pressChoice("Newest First", role: kAXMenuItemRole as String)
+    try expectSort("Age, Newest First")
+    try performPress(try sortMenu(), operation: "open sort order")
+    try pressChoice("Oldest First", role: kAXMenuItemRole as String)
+    try expectSort("Age, Oldest First")
+    guard let ageHeader = findButton(in: root, label: "Age"),
+          stringAttribute(ageHeader, kAXValueAttribute) == "Sorted descending" else {
+        throw SmokeAXError.assertion("Age table header and sort menu disagree")
+    }
+    try performPress(try sortMenu(), operation: "reopen sort column")
+    try pressChoice("Age", role: kAXMenuItemRole as String)
+    try expectSort("Age, Oldest First")
+    guard let settings = findElement(in: root, identifier: "rune.settings.open") else {
+        throw SmokeAXError.elementMissing("rune.settings.open")
+    }
+    try performPress(settings, operation: "open Settings")
+    for pane in ["General", "Key Bindings", "Logs", "Safety", "Diagnostics", "Performance", "Themes"] {
+        try pressChoice(pane, role: kAXButtonRole as String)
+        guard waitForLabeledElement(in: root, label: pane, role: kAXWindowRole as String) != nil else {
+            throw SmokeAXError.assertion("Settings pane did not open: \(pane)")
+        }
+    }
+    for title in ["Aurora", "Graphite Blue", "Ember Glass", "Moss Terminal", "Fjord", "Paper", "Daylight", "Contrast Dark", "Contrast Light", "Native"] {
+        if let card = findButton(in: root, label: title) {
+            try performPress(card, operation: "select theme \(title)")
+        } else {
+            try pressChoice("More Themes", role: kAXMenuButtonRole as String)
+            try pressChoice(title, role: kAXMenuItemRole as String)
+        }
+        guard waitForLabeledElement(in: root, label: "Current: \(title)", role: kAXStaticTextRole as String) != nil else {
+            throw SmokeAXError.assertion("Theme did not apply: \(title)")
+        }
+        guard let card = findButton(in: root, label: title), isSelected(card) else {
+            throw SmokeAXError.assertion("Theme selection is not accessible: \(title)")
+        }
+    }
+    print("settings-sort-e2e passed settings-panes=7 themes=10 age=newest/oldest header=synchronized reselect=preserves-order")
 }
 
 do {
@@ -961,6 +1279,12 @@ do {
         print("focus passed")
     case "log-search":
         try assertLogSearch(processID: processID)
+    case "write-dialog":
+        try assertWriteDialog(processID: processID)
+    case "log-export":
+        try assertLogExport(processID: processID)
+    case "settings-sort":
+        try assertSettingsAndSort(processID: processID)
     case "open-command-palette":
         try openCommandPalette(processID: processID)
     case "enable-skip-cluster":
@@ -973,6 +1297,8 @@ do {
         try assertYAMLDialog(processID: processID)
     case "import-kubeconfig":
         try assertKubeconfigImport(processID: processID)
+    case "reimport-kubeconfig":
+        try assertKubeconfigImport(processID: processID, reimport: true)
     default:
         throw SmokeAXError.invalidArguments
     }

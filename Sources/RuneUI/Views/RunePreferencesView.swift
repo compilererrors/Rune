@@ -36,7 +36,7 @@ private struct SettingsHelpButton: View {
         .popover(isPresented: $isPopoverPresented, arrowEdge: .top) {
             Text(text)
                 .font(.footnote)
-                .foregroundStyle(.primary)
+                .foregroundStyle(.runePrimary)
                 .frame(width: 280, alignment: .leading)
                 .padding(10)
                 .runePointerCursor()
@@ -57,7 +57,7 @@ enum RuneSettingsMetrics {
     static let rowControlColumnWidth: CGFloat = 260
     static let rowLabelMinWidth: CGFloat = 240
     static let stackedRowSpacing: CGFloat = 8
-    static let compactControlHeight: CGFloat = 32
+    static let compactControlHeight: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlMinHeight
     static let compactMenuControlWidth: CGFloat = 190
 }
 
@@ -210,42 +210,28 @@ struct RuneSettingsMenuLabel: View {
         HStack(spacing: 9) {
             Image(systemName: systemImage)
                 .runeInterfaceFont(weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .runeInterfaceFont(weight: .medium)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.runePrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
                 if let subtitle {
                     Text(subtitle)
                         .runeInterfaceFont(relativeSize: -2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
             }
 
             Spacer(minLength: 8)
-
-            Image(systemName: "chevron.up.chevron.down")
-                .runeInterfaceFont(relativeSize: -3, weight: .bold)
-                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
         .frame(minHeight: RuneSettingsMetrics.compactControlHeight)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .help(resolvedHelpText)
     }
 
@@ -254,13 +240,24 @@ struct RuneSettingsMenuLabel: View {
     }
 }
 
-private struct RuneThemeSelectorCard: View {
+struct RuneThemeSelectorCard: View {
     let theme: RuneResolvedTheme
     let isSelected: Bool
     let action: () -> Void
 
     private var presentation: RuneThemePresentation { RuneThemePresentation(theme: theme) }
     private var palette: RuneThemePalette { presentation.palette }
+    private var cardBackground: Color {
+        RuneThemeContrast.RGB(NSColor(palette.accentFill))
+            .over(RuneThemeContrast.RGB(NSColor(palette.inset)), opacity: isSelected ? 0.18 : 0).color
+    }
+    private var iconBackground: Color {
+        RuneThemeContrast.RGB(NSColor(palette.accentFill))
+            .over(RuneThemeContrast.RGB(NSColor(cardBackground)), opacity: 0.13).color
+    }
+    private func accentInk(over background: Color) -> Color {
+        Color(nsColor: RuneThemeContrast.readable(NSColor(palette.accentFill), over: [NSColor(background)]))
+    }
 
     var body: some View {
         Button(action: action) {
@@ -268,9 +265,9 @@ private struct RuneThemeSelectorCard: View {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: presentation.appearanceSymbol)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(palette.accent)
+                        .foregroundStyle(accentInk(over: iconBackground))
                         .frame(width: 26, height: 26)
-                        .background(palette.accent.opacity(0.13), in: Circle())
+                        .background(iconBackground, in: Circle())
                         .help(presentation.appearanceTitle)
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -290,7 +287,7 @@ private struct RuneThemeSelectorCard: View {
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(palette.accent)
+                            .foregroundStyle(accentInk(over: cardBackground))
                     }
                 }
 
@@ -300,7 +297,7 @@ private struct RuneThemeSelectorCard: View {
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(isSelected ? palette.selectionFill : palette.inset.opacity(0.82))
+                    .fill(cardBackground)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -323,7 +320,7 @@ private struct RuneThemeSelectorCard: View {
         HStack(spacing: 6) {
             swatch(palette.window)
             swatch(palette.panel)
-            swatch(palette.accent)
+            swatch(palette.accentFill)
             swatch(palette.success)
             swatch(palette.warning)
             swatch(palette.danger)
@@ -359,13 +356,13 @@ struct RuneSettingsIntegerLimitEditor: View {
                     .runeInterfaceFont(weight: .semibold)
                 Text(detail)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } control: {
             HStack(spacing: 8) {
                 TextField(placeholder, value: normalizedBinding, format: .number)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(RuneControlTextFieldStyle())
                     .runeInterfaceFont(design: .monospaced)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 76)
@@ -373,7 +370,7 @@ struct RuneSettingsIntegerLimitEditor: View {
 
                 Text(valueSuffix)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
@@ -385,7 +382,7 @@ struct RuneSettingsIntegerLimitEditor: View {
                 Button("Reset") {
                     value.wrappedValue = defaultValue
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .help("Restore \(title) to \(defaultValue) \(valueSuffix).")
             }
         }
@@ -604,7 +601,7 @@ public struct RunePreferencesView: View {
                     Button(settingsString(.settingsClearCachedClusterData), role: .destructive) {
                         clearDiskCaches()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                 }
             }
 
@@ -626,13 +623,13 @@ public struct RunePreferencesView: View {
 
                         Text("\(Int(clampedTerminalFontSize.rounded())) pt")
                             .font(.footnote.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .frame(width: 38, alignment: .trailing)
 
                         Button(settingsString(.settingsReset)) {
                             terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(RuneToolbarButtonStyle())
                     }
                 }
 
@@ -650,11 +647,11 @@ public struct RunePreferencesView: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "bolt")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .frame(width: 18, height: 18)
                         Text(settingsString(.settingsSimpleModeManagedFieldsNote))
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -688,15 +685,8 @@ public struct RunePreferencesView: View {
                     title: settingsString(.language),
                     detail: settingsString(.settingsLanguageDetail)
                 ) {
-                    Picker("Language", selection: $interfaceLanguageRaw) {
-                        ForEach(RuneLanguage.allCases) { language in
-                            Text(language.displayName).tag(language.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .runeInterfaceFont(weight: .medium)
-                    .runeInterfaceControlSize()
+                    RuneToolbarPicker(title: "Language", selection: $interfaceLanguageRaw,
+                                      options: RuneLanguage.allCases.map { ($0.rawValue, $0.displayName) })
                     .frame(
                         width: RuneSettingsMetrics.compactMenuControlWidth,
                         alignment: .trailing
@@ -759,11 +749,11 @@ public struct RunePreferencesView: View {
                             .runeInterfaceFont(weight: .semibold)
                         Text("Create or add compatible theme files, then reload.")
                             .runeInterfaceFont(relativeSize: -1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(displayThemesDirectoryPath)
                             .runeInterfaceFont(relativeSize: -2, design: .monospaced)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.runeTertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
@@ -814,7 +804,7 @@ public struct RunePreferencesView: View {
     }
 
     private var themeOverflowMenu: some View {
-        Menu {
+        RuneToolbarMenu(fillsWidth: true) {
             if olderAppearanceThemes.isEmpty {
                 Text("No More Themes")
             } else {
@@ -833,7 +823,6 @@ public struct RunePreferencesView: View {
             )
             .frame(width: RuneSettingsMetrics.compactMenuControlWidth)
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("More Themes")
     }
 
@@ -872,7 +861,7 @@ public struct RunePreferencesView: View {
             Label("New Theme", systemImage: "doc.badge.plus")
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .accessibilityLabel("Create theme template")
         .help("Create a starter theme JSON file. Existing template files are left untouched.")
     }
@@ -884,7 +873,7 @@ public struct RunePreferencesView: View {
             Label("Open Folder", systemImage: "folder")
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help("Open Rune's custom theme folder.")
     }
 
@@ -894,12 +883,12 @@ public struct RunePreferencesView: View {
         } label: {
             Label("Reload", systemImage: "arrow.clockwise")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help("Reload custom theme files from disk.")
     }
 
     private var customThemeMoreMenu: some View {
-        Menu {
+        RuneToolbarMenu {
             Button {
                 openThemesFolder()
             } label: {
@@ -914,7 +903,7 @@ public struct RunePreferencesView: View {
         } label: {
             Label("More", systemImage: "ellipsis.circle")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .accessibilityLabel("More custom theme actions")
     }
 
@@ -1005,7 +994,7 @@ public struct RunePreferencesView: View {
                     Button("Reset to Default") {
                         resetKeyBindingShortcuts()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                 }
             }
 
@@ -1025,18 +1014,18 @@ public struct RunePreferencesView: View {
                                 .font(.subheadline.weight(.semibold))
                             Text(action.detail)
                                 .font(.footnote)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             HStack(spacing: 8) {
                                 Text("Current: \(shortcut(for: action).displayValue)")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.runeSecondary)
 
                                 if let conflict = conflictingAction(for: action) {
                                     Text("Conflicts with \(conflict.title)")
                                         .font(.caption)
-                                        .foregroundStyle(.red)
+                                        .foregroundStyle(.runeDanger)
                                 }
                             }
                         }
@@ -1062,13 +1051,8 @@ public struct RunePreferencesView: View {
                                 .controlSize(.small)
                                 .help("Require Shift for this action")
 
-                            Picker("Key", selection: shortcutKeyBinding(for: action)) {
-                                ForEach(Self.availableShortcutKeys, id: \.self) { key in
-                                    Text(Self.displayShortcutKey(key)).tag(key)
-                                }
-                            }
-                            .runeInterfaceFont(weight: .medium)
-                            .runeInterfaceControlSize()
+                            RuneToolbarPicker(title: "Key", selection: shortcutKeyBinding(for: action),
+                                              options: Self.availableShortcutKeys.map { ($0, Self.displayShortcutKey($0)) })
                             .frame(width: 96)
                         }
                     }
@@ -1230,7 +1214,7 @@ public struct RunePreferencesView: View {
                             .font(.subheadline.weight(.semibold))
                         Text(DebugTraceWriter.logFileURL.path)
                             .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .lineLimit(2)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
@@ -1324,20 +1308,13 @@ public struct RunePreferencesView: View {
             )
         } control: {
             HStack(spacing: 8) {
-                Picker("Type", selection: mode) {
-                    ForEach(RuneCustomLogPresetMode.allCases, id: \.rawValue) { mode in
-                        Text(mode == .lines ? "Lines" : "Time").tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .runeInterfaceFont(weight: .medium)
-                .runeInterfaceControlSize()
+                RuneToolbarPicker(title: "Type", selection: mode,
+                                  options: RuneCustomLogPresetMode.allCases.map { ($0, $0 == .lines ? "Lines" : "Time") })
                 .frame(width: 80)
 
                 if mode.wrappedValue == .lines {
                     TextField("5000", text: lines)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .font(.body.monospacedDigit())
                         .multilineTextAlignment(.trailing)
                         .frame(width: 72)
@@ -1345,23 +1322,16 @@ public struct RunePreferencesView: View {
 
                     Text("lines")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 } else {
                     TextField("15", text: timeValue)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .font(.body.monospacedDigit())
                         .multilineTextAlignment(.trailing)
                         .frame(width: 54)
 
-                    Picker("Unit", selection: unit) {
-                        ForEach(RuneCustomLogPresetTimeUnit.allCases, id: \.rawValue) { unit in
-                            Text(unit.title).tag(unit)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .runeInterfaceFont(weight: .medium)
-                    .runeInterfaceControlSize()
+                    RuneToolbarPicker(title: "Unit", selection: unit,
+                                      options: RuneCustomLogPresetTimeUnit.allCases.map { ($0, $0.title) })
                     .frame(maxWidth: 104)
                 }
             }
@@ -1413,7 +1383,7 @@ public struct RunePreferencesView: View {
     }
 
     private var exportFolderMenu: some View {
-        Menu {
+        RuneToolbarMenu(fillsWidth: true) {
             Button {
                 chooseExportFolder()
             } label: {
@@ -1432,7 +1402,6 @@ public struct RunePreferencesView: View {
                 systemImage: "folder"
             )
         }
-        .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .accessibilityLabel("Default export folder")
         .accessibilityValue(exportFolderDisplayName.isEmpty ? "Not configured" : exportFolderDisplayName)
@@ -1465,7 +1434,7 @@ public struct RunePreferencesView: View {
         let selectedBundleIdentifier = exportOpenerBundleIdentifier(for: recommendation.kind)
         let detected = detectedExportOpener(for: recommendation.kind)
 
-        Menu {
+        RuneToolbarMenu(fillsWidth: true) {
             Button {
                 setExportOpenerBundleIdentifier("", for: recommendation.kind)
             } label: {
@@ -1501,7 +1470,6 @@ public struct RunePreferencesView: View {
                 systemImage: recommendation.kind == .plainText ? "doc.text" : "archivebox"
             )
         }
-        .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .accessibilityLabel(recommendation.kind == .plainText ? "Text export opener" : "Archive export opener")
         .accessibilityValue(exportOpenerDisplayName(for: recommendation))
@@ -1620,7 +1588,7 @@ public struct RunePreferencesView: View {
                         .runeInterfaceFont(relativeSize: 4, weight: .semibold)
                     Text(subtitle)
                         .runeInterfaceFont(relativeSize: -1)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 content()
@@ -1639,7 +1607,7 @@ public struct RunePreferencesView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
                 .runeInterfaceFont(weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.sectionSpacing) {
                 content()
@@ -1678,6 +1646,8 @@ public struct RunePreferencesView: View {
         @ViewBuilder control: () -> Control
     ) -> some View {
         RuneSettingsAdaptiveRow(label: label, control: control)
+            .controlSize(.regular)
+            .buttonStyle(RuneToolbarButtonStyle())
     }
 
     @ViewBuilder
@@ -1689,7 +1659,7 @@ public struct RunePreferencesView: View {
             if let detail {
                 Text(detail)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1719,7 +1689,7 @@ public struct RunePreferencesView: View {
     }
 
     private var debugTraceManagementMenu: some View {
-        Menu {
+        RuneToolbarMenu(fillsWidth: true) {
             Button {
                 revealDebugTraceLogInFinder()
             } label: {
@@ -1737,7 +1707,6 @@ public struct RunePreferencesView: View {
                 systemImage: "doc.text.magnifyingglass"
             )
         }
-        .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .accessibilityLabel("Manage debug trace log")
     }

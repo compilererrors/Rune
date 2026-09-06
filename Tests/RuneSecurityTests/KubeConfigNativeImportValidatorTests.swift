@@ -4,8 +4,11 @@ import XCTest
 final class KubeConfigNativeImportValidatorTests: XCTestCase {
     func testSupportedNativeExecProfilesDoNotReportMissingExecutables() {
         let validator = KubeConfigImportValidator(
-            fileExists: { _ in false },
-            executableSearchPaths: []
+            fileExists: { _ in
+                XCTFail("Native authentication must not probe external executables.")
+                return false
+            },
+            executableSearchPaths: ["/synthetic/bin"]
         )
 
         for raw in [eksKubeconfig, aksKubeconfig, gkeKubeconfig] {
@@ -16,7 +19,10 @@ final class KubeConfigNativeImportValidatorTests: XCTestCase {
 
     func testUnsupportedExecProfileStillReportsMissingExecutable() {
         let validator = KubeConfigImportValidator(
-            fileExists: { _ in false },
+            fileExists: { _ in
+                XCTFail("An explicitly empty search path must not fall back to the process PATH.")
+                return false
+            },
             executableSearchPaths: []
         )
         let review = validator.validate(raw: kubeconfig(
@@ -25,6 +31,17 @@ final class KubeConfigNativeImportValidatorTests: XCTestCase {
         ))
 
         XCTAssertTrue(review.issues.contains { $0.id == "missing-exec-plugin-synthetic-context" })
+    }
+
+    func testExplicitAndAbsoluteExternalCommandsStillUseFileAvailability() {
+        for (command, paths) in [("synthetic-auth-helper", ["/synthetic/bin"]), ("/synthetic/bin/synthetic-auth-helper", [])] {
+            let validator = KubeConfigImportValidator(
+                fileExists: { $0 == "/synthetic/bin/synthetic-auth-helper" },
+                executableSearchPaths: paths
+            )
+            let review = validator.validate(raw: kubeconfig(command: command, arguments: []))
+            XCTAssertFalse(review.issues.contains { $0.id.hasPrefix("missing-exec-plugin-") })
+        }
     }
 
     private var eksKubeconfig: String {

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 enum ResourceLogANSIFormatter {
-    static func attributedString(from text: String, font: NSFont) -> NSAttributedString {
+    static func attributedString(from text: String, font: NSFont, foreground: NSColor = .labelColor, backgrounds: [NSColor] = []) -> NSAttributedString {
         let output = NSMutableAttributedString()
         var attributes = baseAttributes(font: font)
         var index = text.startIndex
@@ -32,6 +32,13 @@ enum ResourceLogANSIFormatter {
             index = nextEscape
         }
 
+        var colors: [(NSRange, NSColor)] = []
+        output.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: output.length)) { value, range, _ in
+            guard let source = value as? NSColor else { return }
+            let color = source == .labelColor ? foreground : source
+            colors.append((range, backgrounds.isEmpty ? color : RuneThemeContrast.readable(color, over: backgrounds)))
+        }
+        for (range, color) in colors { output.addAttribute(.foregroundColor, value: color, range: range) }
         return output
     }
 

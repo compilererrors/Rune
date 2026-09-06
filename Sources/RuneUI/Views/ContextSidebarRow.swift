@@ -69,7 +69,7 @@ struct ContextSidebarRow: View {
         if let iconName {
             Image(systemName: iconName)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .foregroundStyle(isSelected ? RuneTextStyle.accent : .secondary)
                 .frame(width: 14, height: 14)
         } else {
             Circle()
@@ -86,7 +86,7 @@ struct ContextSidebarRow: View {
             if let secondaryLine {
                 Text(secondaryLine)
                     .font(.system(size: max(9, interfaceFontSize - 2)))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
             }
         }

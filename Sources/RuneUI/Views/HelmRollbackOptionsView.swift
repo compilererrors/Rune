@@ -9,7 +9,7 @@ struct HelmRollbackOptionsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Rollback options")
                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
             RuneAdaptiveFormRow {
                 Toggle("Wait", isOn: $wait)
                     .toggleStyle(.checkbox)
@@ -17,7 +17,7 @@ struct HelmRollbackOptionsView: View {
                     .toggleStyle(.checkbox)
                 HStack(spacing: RuneUILayoutMetrics.dialogControlSpacing) {
                     Text("Timeout")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                     TextField("5m", text: $timeout)
                         .textFieldStyle(.roundedBorder)
                         .runeTextInputCursor()

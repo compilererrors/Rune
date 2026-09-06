@@ -163,7 +163,7 @@ struct KubeConfigImportReviewPanel: View {
             Spacer(minLength: 0)
             Text(statusText)
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .accessibilityLabel(statusText)
                 .accessibilityIdentifier("rune.kubeconfig-import.status")
@@ -193,7 +193,7 @@ struct KubeConfigImportReviewPanel: View {
                 RuneDialogButtonLabel(isCommitInProgress ? "Importing…" : "Import")
             }
             .accessibilityIdentifier("rune.kubeconfig-import.confirm")
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             .keyboardShortcut(.defaultAction)
             .disabled(!canConfirm || isCommitInProgress)
         }
@@ -204,7 +204,7 @@ struct KubeConfigImportReviewPanel: View {
         if let sourceName = review.sourceName, !sourceName.isEmpty {
             Label(sourceName, systemImage: "doc.text.magnifyingglass")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(sourceName)
         }
@@ -215,7 +215,7 @@ struct KubeConfigImportReviewPanel: View {
         if review.contexts.isEmpty {
             Text("No contexts were found in the selected kubeconfig.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
@@ -226,7 +226,7 @@ struct KubeConfigImportReviewPanel: View {
                             .help(context.name)
                         Text(contextDetailText(context))
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .lineLimit(2)
                             .help(contextDetailText(context))
                     }
@@ -237,7 +237,7 @@ struct KubeConfigImportReviewPanel: View {
                 if review.contexts.count > 3 {
                     Text("\(review.contexts.count - 3) more contexts")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
             }
         }
@@ -253,7 +253,7 @@ struct KubeConfigImportReviewPanel: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(context.name)
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                                 .lineLimit(1)
                                 .help(context.name)
                             HStack(spacing: 6) {
@@ -310,7 +310,7 @@ struct KubeConfigImportReviewPanel: View {
                     if review.contexts.count > 3 {
                         Text("\(review.contexts.count - 3) more contexts can keep generated metadata during import.")
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                     }
                 }
             } label: {
@@ -340,7 +340,7 @@ struct KubeConfigImportReviewPanel: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Duplicate handling requires an explicit choice before saving:")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Picker("Duplicate handling", selection: $duplicateHandlingChoice) {
@@ -385,7 +385,7 @@ struct KubeConfigImportReviewPanel: View {
             } label: {
                 Label("Run Auth Doctor", systemImage: "stethoscope")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .controlSize(.small)
         }
     }
@@ -395,12 +395,12 @@ struct KubeConfigImportReviewPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Contexts (\(review.contexts.count))")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             if review.contexts.isEmpty {
                 Text("No contexts found.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             } else {
                 reviewDetailViewport(maxHeight: 120) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -412,7 +412,7 @@ struct KubeConfigImportReviewPanel: View {
                                     .help(context.name)
                                 Text(contextDetailText(context))
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.runeSecondary)
                                     .lineLimit(2)
                                     .help(contextDetailText(context))
                             }
@@ -429,7 +429,7 @@ struct KubeConfigImportReviewPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Issues (\(review.issues.count))")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             if review.issues.isEmpty {
                 Label("No issues found.", systemImage: "checkmark.circle.fill")
@@ -456,12 +456,12 @@ struct KubeConfigImportReviewPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Redacted kubeconfig")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             reviewDetailViewport(maxHeight: 180) {
                 Text(review.redactedPreview.isEmpty ? "No redacted preview is available." : review.redactedPreview)
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

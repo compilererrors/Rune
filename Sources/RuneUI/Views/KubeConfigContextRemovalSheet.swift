@@ -37,7 +37,7 @@ struct KubeConfigContextRemovalSheet: View {
                                     .runeInterfaceFont(weight: .semibold)
                                 Text("Only local kubeconfig entries are removed. Workloads, cloud resources, and Kubernetes API objects are never changed.")
                                     .runeInterfaceFont(relativeSize: -1)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.runeSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -46,7 +46,7 @@ struct KubeConfigContextRemovalSheet: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(affectedFilesTitle)
                                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                             ForEach(Array(preview.affectedSourceDisplayNames.enumerated()), id: \.offset) { _, name in
                                 Text(name)
                                     .runeInterfaceFont(relativeSize: -1, design: .monospaced)
@@ -76,7 +76,7 @@ struct KubeConfigContextRemovalSheet: View {
                 Button(action: onCancel) {
                     RuneDialogButtonLabel("Cancel")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .keyboardShortcut(.cancelAction)
                 .disabled(isRemoving)
 
@@ -89,7 +89,7 @@ struct KubeConfigContextRemovalSheet: View {
                         RuneDialogButtonLabel(isRemoving ? "Removing…" : "Remove Local Config")
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .keyboardShortcut(.defaultAction)
                 .disabled(isRemoving)
                 .accessibilityIdentifier("rune.context-removal.confirm")
@@ -118,7 +118,7 @@ struct KubeConfigContextRemovalSheet: View {
                     .accessibilityAddTraits(.isHeader)
                 Text(preview.contextName)
                     .runeInterfaceFont(relativeSize: -1, design: .monospaced)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(preview.contextName)
@@ -138,14 +138,14 @@ struct KubeConfigContextRemovalSheet: View {
     private func safetyRow(_ title: String, detail: String, systemImage: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: systemImage)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(width: 18, height: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 Text(detail)
                     .runeInterfaceFont(relativeSize: -1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

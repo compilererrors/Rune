@@ -4,7 +4,7 @@ import RuneCore
 enum TerminalActionLayoutMetrics {
     static let buttonWidth: CGFloat = 112
     static let spacing: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlSpacing
-    static let compactMinimumHeight: CGFloat = RuneUILayoutMetrics.iconButtonSize
+    static let compactMinimumHeight: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlMinHeight
     static let regularMinimumHeight: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlMinHeight
     static let accessibilityMinimumHeight: CGFloat = RuneAdaptiveToolbarMetrics.accessibilityMinimumRowHeight
 }
@@ -71,7 +71,7 @@ struct TerminalActionButtonLabel: View {
         } else if usesUniformWidth {
             label
                 .frame(
-                    maxWidth: .infinity,
+                    minWidth: TerminalActionLayoutMetrics.buttonWidth - 2 * RuneUILayoutMetrics.inspectorControlContentInset,
                     minHeight: density.labelMinimumHeight
                 )
         } else {
@@ -82,7 +82,6 @@ struct TerminalActionButtonLabel: View {
     private var label: some View {
         Label(title, systemImage: systemImage)
             .lineLimit(1)
-            .minimumScaleFactor(0.82)
     }
 }
 
@@ -100,7 +99,7 @@ private struct TerminalActionControlModifier: ViewModifier {
         } else if usesUniformWidth {
             content
                 .controlSize(density.controlSize)
-                .frame(width: TerminalActionLayoutMetrics.buttonWidth)
+                .frame(minWidth: TerminalActionLayoutMetrics.buttonWidth)
                 .frame(minHeight: density.minimumHeight)
         } else {
             content
@@ -166,7 +165,7 @@ struct TerminalSessionControlRow: View {
                     density: .compact
                 )
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .terminalActionControl(.compact)
             .disabled(isPrimaryActionDisabled)
             .help(primaryActionTitle)
@@ -179,7 +178,7 @@ struct TerminalSessionControlRow: View {
                     density: .compact
                 )
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .terminalActionControl(.compact)
             .disabled(isClearDisabled)
             .help("Clear active terminal output")

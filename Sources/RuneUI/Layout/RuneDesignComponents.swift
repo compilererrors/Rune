@@ -24,15 +24,15 @@ enum RuneSurfaceKind {
         if let palette = theme.palette {
             switch self {
             case .panel:
-                return palette.panel.opacity(0.92)
+                return palette.panel
             case .inset:
-                return palette.inset.opacity(0.92)
+                return palette.inset
             case .editor:
-                return palette.editor.opacity(0.96)
+                return palette.editor
             case let .listRow(isSelected):
                 return isSelected ? palette.rowSelected.opacity(0.72) : palette.row.opacity(0.62)
             case let .sidebarSelection(isSelected):
-                return isSelected ? palette.accent.opacity(0.18) : Color.clear
+                return isSelected ? palette.selectionFill : Color.clear
             }
         }
 
@@ -213,7 +213,6 @@ struct RuneIconButton: View {
         }
         .contentShape(Rectangle())
         .disabled(isDisabled)
-        .opacity(isDisabled ? 0.52 : 1)
         .help(helpText)
         .accessibilityLabel(accessibilityLabel)
         .modifier(RuneIconButtonSelectionAccessibilityModifier(isSelected: isSelected))
@@ -260,14 +259,10 @@ struct RuneBorderedIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .frame(maxWidth: .infinity)
+                .runeInterfaceFont(relativeSize: -1, weight: .medium)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .frame(width: RuneUILayoutMetrics.borderedIconButtonWidth)
-        .frame(minHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight)
+        .buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))
         .contentShape(Rectangle())
         .disabled(isDisabled)
         .help(helpText)
@@ -325,7 +320,7 @@ struct RuneBulkSelectionBar<Actions: View>: View {
             regularControls
             compactControls
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .runeInterfaceFont(relativeSize: -1, weight: .semibold)
         .controlSize(usesRegularControls ? .regular : .small)
         .frame(
@@ -638,6 +633,8 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
 
 struct RuneNoticeBanner: View {
     let notice: RuneUserNotice
+    var onOpenFolder: ((URL) -> Void)? = nil
+    var onOpenFile: ((URL) -> Void)? = nil
     let onDismiss: () -> Void
     @Environment(\.runeThemePalette) private var runeThemePalette
 
@@ -652,12 +649,28 @@ struct RuneNoticeBanner: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(notice.title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.runePrimary)
                 Text(notice.message)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+
+                if let savedFileURL = notice.savedFileURL,
+                   onOpenFolder != nil || onOpenFile != nil {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            savedFileActions(for: savedFileURL)
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            savedFileActions(for: savedFileURL)
+                        }
+                    }
+                    .buttonStyle(RuneToolbarButtonStyle())
+                    .controlSize(.small)
+                    .runeInterfaceFont(relativeSize: -1)
+                    .padding(.top, 5)
+                }
             }
 
             Spacer(minLength: 8)
@@ -681,6 +694,30 @@ struct RuneNoticeBanner: View {
                 .strokeBorder(tint.opacity(0.28), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func savedFileActions(for savedFileURL: URL) -> some View {
+        if let onOpenFolder {
+            Button {
+                onOpenFolder(savedFileURL)
+            } label: {
+                Label("Open Folder", systemImage: "folder")
+                    .fixedSize()
+            }
+            .help("Open the folder containing the saved log file.")
+            .accessibilityIdentifier("saved-log-open-folder")
+        }
+        if let onOpenFile {
+            Button {
+                onOpenFile(savedFileURL)
+            } label: {
+                Label("Open File", systemImage: "doc.text")
+                    .fixedSize()
+            }
+            .help("Open the saved log file in its default application.")
+            .accessibilityIdentifier("saved-log-open-file")
+        }
     }
 
     private var symbolName: String {
@@ -742,11 +779,11 @@ struct RuneInspectorInfoRow<Value: View>: View {
     private var label: some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .frame(width: 14, alignment: .center)
             Text(title)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
     }
 }
@@ -767,6 +804,7 @@ struct RuneInspectorActionRow<Content: View>: View {
         }
         .runeInterfaceFont(relativeSize: -1, weight: .medium)
         .controlSize(.regular)
+        .buttonStyle(RuneToolbarButtonStyle())
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

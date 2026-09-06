@@ -20,14 +20,12 @@ Open it with:
 open dist/Rune.app
 ```
 
-## App Store release metadata
+## Process UI checks
 
-App Store releases use `packaging/build-app-store.sh`, which reads
-`BUNDLE_IDENTIFIER`, `MARKETING_VERSION` and `BUNDLE_VERSION` exclusively from
-`.local/signing.env`. Edit that local file to change release metadata; do not
-override these values in the environment or derive them from an existing app.
-Missing metadata stops the release. Local development and smoke-test builds
-continue to use `build-macos-app.sh` separately.
+The process UI helper `rune-ui-smoke-ax.swift` also checks changes to Settings
+without restarting the app (`enable-skip-cluster`, then `skip-cluster-nav`).
+Its `write-dialog` check requires the disposable `fake-orbit-mesh` context,
+reviews the first production confirmation, and cancels the final action.
 
 ## Selected release KPIs
 

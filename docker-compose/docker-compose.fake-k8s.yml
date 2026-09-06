@@ -4,7 +4,9 @@ services:
   orbit-k3s:
     image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-orbit-k3s
+    hostname: rune-fake-orbit
     privileged: true
+    # Each kubelet gets its own pod hierarchy within the shared host namespace.
     cgroup: host
     security_opt:
       - seccomp:unconfined
@@ -17,11 +19,17 @@ services:
       - -ec
     command:
       - |
+          mkdir -p /sys/fs/cgroup/rune-fake-orbit
+          echo '+cpu +cpuset +io +memory +pids' > /sys/fs/cgroup/rune-fake-orbit/cgroup.subtree_control
+          mkdir -p /sys/fs/cgroup/rune-fake-orbit/k3s
           /bin/k3s server \
             --disable=traefik \
             --disable=servicelb \
             --tls-san=127.0.0.1 \
             --kubelet-arg=cgroup-driver=cgroupfs \
+            --kubelet-arg=cgroup-root=/rune-fake-orbit \
+            --kubelet-arg=kubelet-cgroups=/rune-fake-orbit/k3s \
+            --kubelet-arg=runtime-cgroups=/rune-fake-orbit/k3s \
             --kubelet-arg=fail-swap-on=false \
             --write-kubeconfig=/output/orbit-internal.yaml \
             --write-kubeconfig-mode=644 &
@@ -113,7 +121,9 @@ services:
   lattice-k3s:
     image: "${RUNE_K3S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"
     container_name: rune-fake-lattice-k3s
+    hostname: rune-fake-lattice
     privileged: true
+    # Each kubelet gets its own pod hierarchy within the shared host namespace.
     cgroup: host
     security_opt:
       - seccomp:unconfined
@@ -126,11 +136,17 @@ services:
       - -ec
     command:
       - |
+          mkdir -p /sys/fs/cgroup/rune-fake-lattice
+          echo '+cpu +cpuset +io +memory +pids' > /sys/fs/cgroup/rune-fake-lattice/cgroup.subtree_control
+          mkdir -p /sys/fs/cgroup/rune-fake-lattice/k3s
           /bin/k3s server \
             --disable=traefik \
             --disable=servicelb \
             --tls-san=127.0.0.1 \
             --kubelet-arg=cgroup-driver=cgroupfs \
+            --kubelet-arg=cgroup-root=/rune-fake-lattice \
+            --kubelet-arg=kubelet-cgroups=/rune-fake-lattice/k3s \
+            --kubelet-arg=runtime-cgroups=/rune-fake-lattice/k3s \
             --kubelet-arg=fail-swap-on=false \
             --write-kubeconfig=/output/lattice-internal.yaml \
             --write-kubeconfig-mode=644 &

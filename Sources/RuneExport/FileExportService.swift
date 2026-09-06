@@ -78,12 +78,31 @@ public protocol ConfiguredExporting {
         kind: ConfiguredExportFileKind,
         openAfterSave: Bool
     ) throws -> URL
+
+    @MainActor
+    func openSavedFile(_ url: URL, kind: ConfiguredExportFileKind) throws
+
+    @MainActor
+    func openSavedFolder(for url: URL) throws
+}
+
+public extension ConfiguredExporting {
+    @MainActor
+    func openSavedFile(_ url: URL, kind: ConfiguredExportFileKind) throws {
+        throw FileExportError.savedExportUnavailable
+    }
+
+    @MainActor
+    func openSavedFolder(for url: URL) throws {
+        throw FileExportError.savedExportUnavailable
+    }
 }
 
 public enum FileExportError: LocalizedError, Equatable {
     case userCancelled
     case missingConfiguredExportFolder
     case exportFolderUnavailable
+    case savedExportUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -93,6 +112,8 @@ public enum FileExportError: LocalizedError, Equatable {
             return "No export folder is configured. Choose an export folder in Settings > Logs."
         case .exportFolderUnavailable:
             return "Rune could not access the configured export folder. Choose the folder again in Settings."
+        case .savedExportUnavailable:
+            return "Rune could not access the saved export. The file or its folder may have been moved or removed."
         }
     }
 }
@@ -234,6 +255,8 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
     private let resolver: ExportDestinationResolving
     private let opener: ExportFileOpening
     private let securityScopedAccess: any SecurityScopedResourceAccessing
+    @MainActor private var savedExportFolders: [URL: URL] = [:]
+    @MainActor private var savedFileURLs: Set<URL> = []
 
     public init(
         resolver: ExportDestinationResolving = UserDefaultsExportDestinationResolver(),
@@ -273,6 +296,8 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
                 : suggestedName
         )
         try data.write(to: destination, options: .atomic)
+        savedExportFolders[destination.deletingLastPathComponent().standardizedFileURL] = folderURL
+        savedFileURLs.insert(destination.standardizedFileURL)
 
         if openAfterSave {
             try opener.open(destination, preferredApplicationBundleIdentifier: resolver.preferredOpenerBundleIdentifier(for: kind))
@@ -283,6 +308,47 @@ public final class ConfiguredFolderExporter: ConfiguredExporting {
         }
 
         return destination
+    }
+
+    @MainActor
+    public func openSavedFile(_ url: URL, kind: ConfiguredExportFileKind) throws {
+        try openSavedExport(url, kind: kind)
+    }
+
+    @MainActor
+    public func openSavedFolder(for url: URL) throws {
+        try openSavedExport(url, kind: nil)
+    }
+
+    @MainActor
+    private func openSavedExport(_ url: URL, kind: ConfiguredExportFileKind?) throws {
+        guard url.isFileURL,
+              savedFileURLs.contains(url.standardizedFileURL),
+              let folderURL = savedExportFolders[url.deletingLastPathComponent().standardizedFileURL]
+        else { throw FileExportError.savedExportUnavailable }
+
+        let didStartSecurityScope = securityScopedAccess.startAccessing(folderURL)
+        var shouldStopSecurityScope = didStartSecurityScope
+        defer {
+            if shouldStopSecurityScope {
+                securityScopedAccess.stopAccessing(folderURL)
+            }
+        }
+
+        let targetURL = kind == nil ? folderURL : url
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: targetURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue == (kind == nil)
+        else { throw FileExportError.savedExportUnavailable }
+
+        try opener.open(
+            targetURL,
+            preferredApplicationBundleIdentifier: kind.flatMap { resolver.preferredOpenerBundleIdentifier(for: $0) }
+        )
+        if didStartSecurityScope {
+            shouldStopSecurityScope = false
+            securityScopedAccess.stopAccessingAfterOpenHandoff(folderURL)
+        }
     }
 
     private func uniqueDestinationURL(in folderURL: URL, suggestedName: String) -> URL {

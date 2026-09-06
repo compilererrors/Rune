@@ -303,6 +303,196 @@ final class ConfiguredExportServiceTests: XCTestCase {
         XCTAssertTrue(opener.opened.isEmpty)
     }
 
+    func testSavedExportActionsKeepOriginalFolderAfterDestinationChangesOrIsCleared() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let alternateFolderURL = try makeTemporaryDirectory()
+        let resolver = MutableExportDestinationResolver(
+            folderURL: folderURL,
+            textOpenerBundleIdentifier: "com.example.TextViewer"
+        )
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(resolver: resolver, opener: opener, securityScopedAccess: securityScope)
+        try Data("existing".utf8).write(to: folderURL.appendingPathComponent("synthetic.log"))
+
+        let savedURL = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+
+        for nextFolder in [alternateFolderURL, nil] {
+            resolver.folderURL = nextFolder
+            try exporter.openSavedFile(savedURL, kind: .plainText)
+            try exporter.openSavedFolder(for: savedURL)
+        }
+
+        XCTAssertEqual(savedURL.lastPathComponent, "synthetic-2.log")
+        XCTAssertEqual(opener.opened, [
+            .init(url: savedURL, bundleIdentifier: "com.example.TextViewer"),
+            .init(url: folderURL, bundleIdentifier: nil),
+            .init(url: savedURL, bundleIdentifier: "com.example.TextViewer"),
+            .init(url: folderURL, bundleIdentifier: nil)
+        ])
+        XCTAssertEqual(resolver.folderResolutionCount, 1)
+        XCTAssertEqual(securityScope.started, Array(repeating: folderURL, count: 5))
+        XCTAssertEqual(securityScope.stopped, [folderURL])
+        XCTAssertEqual(securityScope.stoppedAfterOpenHandoff, Array(repeating: folderURL, count: 4))
+    }
+
+    func testSavedExportActionsDoNotStopScopeWhenAccessWasNotStarted() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: false)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+        let savedURL = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+
+        try exporter.openSavedFile(savedURL, kind: .plainText)
+        try exporter.openSavedFolder(for: savedURL)
+
+        XCTAssertEqual(opener.opened, [
+            .init(url: savedURL, bundleIdentifier: nil),
+            .init(url: folderURL, bundleIdentifier: nil)
+        ])
+        XCTAssertEqual(securityScope.started, Array(repeating: folderURL, count: 3))
+        XCTAssertTrue(securityScope.stopped.isEmpty)
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
+    func testSavedExportActionsStopScopeIfOpeningFails() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: ThrowingExportFileOpener(error: RecordingExportError.openFailed),
+            securityScopedAccess: securityScope
+        )
+        let savedURL = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+
+        XCTAssertThrowsError(try exporter.openSavedFile(savedURL, kind: .plainText)) {
+            XCTAssertEqual($0 as? RecordingExportError, .openFailed)
+        }
+        XCTAssertThrowsError(try exporter.openSavedFolder(for: savedURL)) {
+            XCTAssertEqual($0 as? RecordingExportError, .openFailed)
+        }
+
+        XCTAssertEqual(securityScope.started, Array(repeating: folderURL, count: 3))
+        XCTAssertEqual(securityScope.stopped, Array(repeating: folderURL, count: 3))
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
+    func testSavedExportActionsRejectUnrecognizedAndNonFileURLsWithoutOpening() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+        _ = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+        let unrelatedURL = folderURL.appendingPathComponent("unrelated.log")
+        try Data("unrelated synthetic file\n".utf8).write(to: unrelatedURL)
+
+        for url in [unrelatedURL, try XCTUnwrap(URL(string: "https://example.invalid/synthetic.log"))] {
+            XCTAssertThrowsError(try exporter.openSavedFile(url, kind: .plainText)) {
+                XCTAssertEqual($0 as? FileExportError, .savedExportUnavailable)
+            }
+            XCTAssertThrowsError(try exporter.openSavedFolder(for: url)) {
+                XCTAssertEqual($0 as? FileExportError, .savedExportUnavailable)
+            }
+        }
+
+        XCTAssertTrue(opener.opened.isEmpty)
+        XCTAssertEqual(securityScope.started, [folderURL])
+        XCTAssertEqual(securityScope.stopped, [folderURL])
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
+    func testSavedExportFolderStillOpensWhenSavedFileWasRemoved() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+        let savedURL = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+        try FileManager.default.removeItem(at: savedURL)
+
+        XCTAssertThrowsError(try exporter.openSavedFile(savedURL, kind: .plainText)) {
+            XCTAssertEqual($0 as? FileExportError, .savedExportUnavailable)
+        }
+        try exporter.openSavedFolder(for: savedURL)
+
+        XCTAssertEqual(opener.opened, [.init(url: folderURL, bundleIdentifier: nil)])
+        XCTAssertEqual(securityScope.started, Array(repeating: folderURL, count: 3))
+        XCTAssertEqual(securityScope.stopped, Array(repeating: folderURL, count: 2))
+        XCTAssertEqual(securityScope.stoppedAfterOpenHandoff, [folderURL])
+    }
+
+    func testSavedExportActionsStopScopeWhenOriginalFolderWasRemoved() throws {
+        let folderURL = try makeTemporaryDirectory()
+        let opener = RecordingExportFileOpener()
+        let securityScope = RecordingSecurityScopedResourceAccess(startsAccessing: true)
+        let exporter = ConfiguredFolderExporter(
+            resolver: StaticExportDestinationResolver(folderURL: folderURL),
+            opener: opener,
+            securityScopedAccess: securityScope
+        )
+        let savedURL = try exporter.save(
+            data: Data("synthetic log line\n".utf8),
+            suggestedName: "synthetic.log",
+            allowedFileTypes: ["log"],
+            kind: .plainText,
+            openAfterSave: false
+        )
+        try FileManager.default.removeItem(at: folderURL)
+
+        XCTAssertThrowsError(try exporter.openSavedFile(savedURL, kind: .plainText)) {
+            XCTAssertEqual($0 as? FileExportError, .savedExportUnavailable)
+        }
+        XCTAssertThrowsError(try exporter.openSavedFolder(for: savedURL)) {
+            XCTAssertEqual($0 as? FileExportError, .savedExportUnavailable)
+        }
+
+        XCTAssertTrue(opener.opened.isEmpty)
+        XCTAssertEqual(securityScope.started, Array(repeating: folderURL, count: 3))
+        XCTAssertEqual(securityScope.stopped, Array(repeating: folderURL, count: 3))
+        XCTAssertTrue(securityScope.stoppedAfterOpenHandoff.isEmpty)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RuneConfiguredExportServiceTests-\(UUID().uuidString)", isDirectory: true)
@@ -328,6 +518,27 @@ private struct StaticExportDestinationResolver: ExportDestinationResolving {
         case .archive:
             return archiveOpenerBundleIdentifier
         }
+    }
+}
+
+private final class MutableExportDestinationResolver: ExportDestinationResolving {
+    var folderURL: URL?
+    let textOpenerBundleIdentifier: String?
+    var usesPrivacySafeFilenames = false
+    private(set) var folderResolutionCount = 0
+
+    init(folderURL: URL?, textOpenerBundleIdentifier: String? = nil) {
+        self.folderURL = folderURL
+        self.textOpenerBundleIdentifier = textOpenerBundleIdentifier
+    }
+
+    func exportFolderURL() throws -> URL? {
+        folderResolutionCount += 1
+        return folderURL
+    }
+
+    func preferredOpenerBundleIdentifier(for kind: ConfiguredExportFileKind) -> String? {
+        kind == .plainText ? textOpenerBundleIdentifier : nil
     }
 }
 

@@ -36,7 +36,12 @@ public enum KubeConfigImportMaterializationError: Error, LocalizedError, Sendabl
 struct KubeConfigImportMaterializer {
     static let maximumReferenceBytes = 16 * 1_024 * 1_024
 
-    private typealias YAMLMapping = [AnyHashable: Any]
+    fileprivate typealias YAMLMapping = [AnyHashable: Any]
+
+    struct ParsedDocument {
+        let raw: String
+        fileprivate let root: YAMLMapping
+    }
 
     private enum ReferenceKind: String {
         case certificateAuthority = "certificate-authority"
@@ -68,6 +73,10 @@ struct KubeConfigImportMaterializer {
     }
 
     func materialize(raw: String, sourceURL: URL?, importDirectory: URL) throws -> String {
+        try materialize(document: parse(raw), sourceURL: sourceURL, importDirectory: importDirectory)
+    }
+
+    func parse(_ raw: String) throws -> ParsedDocument {
         var documents: [Any] = []
         do {
             var sequence = try load_all(yaml: raw)
@@ -85,13 +94,19 @@ struct KubeConfigImportMaterializer {
         guard documents.count == 1 else {
             throw KubeConfigImportMaterializationError.multipleDocuments
         }
-        guard var root = documents[0] as? YAMLMapping else {
+        guard let root = documents[0] as? YAMLMapping else {
             throw KubeConfigImportMaterializationError.malformedKubeConfig
         }
+        return ParsedDocument(raw: raw, root: root)
+    }
 
+    func materialize(document: ParsedDocument, sourceURL: URL?, importDirectory: URL) throws -> String {
+        var root = document.root
         let sourceDirectory = sourceURL?.standardizedFileURL.deletingLastPathComponent()
         let assetsDirectory = importDirectory.appendingPathComponent("assets", isDirectory: true)
         var copiedAssets: [String: String] = [:]
+        var referenceAssets: [String: String] = [:]
+        var absoluteCommands: [String: String] = [:]
         var assetIndex = 0
         var changed = false
 
@@ -108,6 +123,7 @@ struct KubeConfigImportMaterializer {
                     sourceDirectory: sourceDirectory,
                     assetsDirectory: assetsDirectory,
                     copiedAssets: &copiedAssets,
+                    referenceAssets: &referenceAssets,
                     assetIndex: &assetIndex
                 ) {
                     cluster[AnyHashable("certificate-authority")] = rewritten
@@ -140,6 +156,7 @@ struct KubeConfigImportMaterializer {
                         sourceDirectory: sourceDirectory,
                         assetsDirectory: assetsDirectory,
                         copiedAssets: &copiedAssets,
+                        referenceAssets: &referenceAssets,
                         assetIndex: &assetIndex
                     ) {
                         user[AnyHashable(key)] = rewritten
@@ -155,10 +172,10 @@ struct KubeConfigImportMaterializer {
                             reference: ReferenceKind.execCommand.rawValue
                         )
                     }
-                    exec[AnyHashable("command")] = sourceDirectory
-                        .appendingPathComponent(command)
-                        .standardizedFileURL
-                        .path
+                    let absolute = absoluteCommands[command] ?? sourceDirectory
+                        .appendingPathComponent(command).standardizedFileURL.path
+                    absoluteCommands[command] = absolute
+                    exec[AnyHashable("command")] = absolute
                     user[AnyHashable("exec")] = exec
                     changed = true
                 }
@@ -169,7 +186,7 @@ struct KubeConfigImportMaterializer {
             root[AnyHashable("users")] = users
         }
 
-        guard changed else { return raw }
+        guard changed else { return document.raw }
         do {
             return try dump(
                 object: root,
@@ -190,6 +207,7 @@ struct KubeConfigImportMaterializer {
         sourceDirectory: URL?,
         assetsDirectory: URL,
         copiedAssets: inout [String: String],
+        referenceAssets: inout [String: String],
         assetIndex: inout Int
     ) throws -> String? {
         guard let value = mapping[AnyHashable(key)] else { return nil }
@@ -199,6 +217,9 @@ struct KubeConfigImportMaterializer {
         guard !rawReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw KubeConfigImportMaterializationError.emptyReference(reference: kind.rawValue)
         }
+        // Each source is already copied once per document. Avoid resolving that
+        // same spelling again for every cluster/user, while still deduplicating aliases.
+        if let existing = referenceAssets[rawReference] { return existing }
         let expanded = expandedDataPath(rawReference)
         let source: URL
         if NSString(string: expanded).isAbsolutePath {
@@ -215,6 +236,7 @@ struct KubeConfigImportMaterializer {
                 .resolvingSymlinksInPath()
         }
         if let existing = copiedAssets[source.path] {
+            referenceAssets[rawReference] = existing
             return existing
         }
         let relativeAsset = try copyReference(
@@ -224,6 +246,7 @@ struct KubeConfigImportMaterializer {
             assetsDirectory: assetsDirectory
         )
         copiedAssets[source.path] = relativeAsset
+        referenceAssets[rawReference] = relativeAsset
         assetIndex += 1
         return relativeAsset
     }

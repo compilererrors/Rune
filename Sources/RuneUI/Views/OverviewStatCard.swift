@@ -46,14 +46,14 @@ struct OverviewStatCard: View {
                     Spacer()
                     Image(systemName: "arrow.up.right.square")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 countContent
 
                 Text(title)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)

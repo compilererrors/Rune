@@ -105,13 +105,11 @@ public struct KubeConfigImportReview: Sendable, Equatable {
 
 public struct KubeConfigImportValidator: Sendable {
     private let fileExists: @Sendable (String) -> Bool
-    private let executableSearchPaths: [String]
+    private let executableSearchPaths: [String]?
 
     public init(
         fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) },
-        executableSearchPaths: [String] = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map(String.init)
+        executableSearchPaths: [String]? = nil
     ) {
         self.fileExists = fileExists
         self.executableSearchPaths = executableSearchPaths
@@ -198,6 +196,9 @@ public struct KubeConfigImportValidator: Sendable {
             nativelyHandledExecContexts = []
         }
 
+        // Resolve PATH once per review, and only for an external command that
+        // actually needs it. Token/certificate and native auth do not use PATH.
+        var commandSearchPaths = executableSearchPaths
         for context in parsed.contexts {
             let cluster = context.clusterName.flatMap { clustersByName[$0] }
             let user = context.userName.flatMap { usersByName[$0] }
@@ -218,8 +219,8 @@ public struct KubeConfigImportValidator: Sendable {
 
             if let user,
                let command = user.execCommand,
-               !commandExists(command),
-               !nativelyHandledExecContexts.contains(context.name) {
+               !nativelyHandledExecContexts.contains(context.name),
+               !commandExists(command, searchPaths: &commandSearchPaths) {
                 issues.append(.init(
                     id: "missing-exec-plugin-\(context.name)",
                     severity: .warning,
@@ -246,13 +247,17 @@ public struct KubeConfigImportValidator: Sendable {
         )
     }
 
-    private func commandExists(_ command: String) -> Bool {
+    private func commandExists(_ command: String, searchPaths: inout [String]?) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         if trimmed.contains("/") {
             return fileExists(NSString(string: trimmed).expandingTildeInPath)
         }
-        return executableSearchPaths.contains { directory in
+        if searchPaths == nil {
+            searchPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+                .split(separator: ":").map(String.init)
+        }
+        return (searchPaths ?? []).contains { directory in
             fileExists(URL(fileURLWithPath: directory).appendingPathComponent(trimmed).path)
         }
     }

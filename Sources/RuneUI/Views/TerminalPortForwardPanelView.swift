@@ -211,7 +211,7 @@ struct TerminalPortForwardPanelView: View {
 
             Text(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
         }
@@ -262,7 +262,7 @@ struct TerminalPortForwardPanelView: View {
                 density: .regular
             )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .terminalActionControl(.regular)
         .help(isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
         .accessibilityIdentifier("terminal-port-forward-expand")
@@ -278,7 +278,7 @@ struct TerminalPortForwardPanelView: View {
                 density: .regular
             )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .terminalActionControl(.regular)
         .disabled(selectedPod == nil)
         .help("Copy kubectl port-forward command")
@@ -323,11 +323,11 @@ struct TerminalPortForwardPanelView: View {
                     statusDot(.stopped)
                     Text("No active port-forward")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                     Spacer(minLength: 0)
                     Text("\(localPort) → \(remotePort)")
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
             }
 
@@ -354,7 +354,7 @@ struct TerminalPortForwardPanelView: View {
         HStack(spacing: 8) {
             Text(selectedPod.map(\.name) ?? "No pod selected")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
 
@@ -379,7 +379,7 @@ struct TerminalPortForwardPanelView: View {
                     Button("Clear Inactive") {
                         onClearInactivePortForwards()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                     .controlSize(.small)
                     .help("Remove stopped and failed port-forward rows from this list")
                 }
@@ -390,7 +390,7 @@ struct TerminalPortForwardPanelView: View {
                     if portForwardSessions.isEmpty {
                         Text("No port-forward sessions started yet.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.runeSecondary)
                             .frame(maxWidth: .infinity, minHeight: activeSessionListHeight - 8, alignment: .topLeading)
                     } else {
                         ForEach(portForwardSessions) { session in
@@ -404,7 +404,7 @@ struct TerminalPortForwardPanelView: View {
                                             .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
                                         Text("\(session.contextName) - \(session.namespace)")
                                             .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(.runeSecondary)
                                             .lineLimit(1)
                                             .help("\(session.contextName) - \(session.namespace)")
                                     }
@@ -463,7 +463,7 @@ struct TerminalPortForwardPanelView: View {
         } label: {
             Label("Open in Browser", systemImage: "safari")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help(session.browserURL.map { "Open \($0.absoluteString)" } ?? "Open local port-forward URL")
     }
 
@@ -473,7 +473,7 @@ struct TerminalPortForwardPanelView: View {
         } label: {
             Label("Retry", systemImage: "arrow.clockwise")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help("Try this port-forward again")
     }
 
@@ -483,7 +483,7 @@ struct TerminalPortForwardPanelView: View {
         } label: {
             Label("Clear", systemImage: "xmark.circle")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help("Remove this inactive port-forward row")
     }
 
@@ -503,7 +503,7 @@ struct TerminalPortForwardPanelView: View {
         } label: {
             Label("Copy kubectl", systemImage: "doc.on.doc")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(RuneToolbarButtonStyle())
         .help("Copy kubectl port-forward command")
     }
 

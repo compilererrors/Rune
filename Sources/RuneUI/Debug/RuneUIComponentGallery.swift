@@ -519,7 +519,7 @@ struct RuneUIComponentGallery: View {
 
             Text("Synthetic debug fixtures")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
 
             Divider()
 
@@ -539,7 +539,7 @@ struct RuneUIComponentGallery: View {
 
             Text(RuneUIComponentGalleryFixtures.longNamespace)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .lineLimit(2)
                 .truncationMode(.middle)
 
@@ -547,7 +547,7 @@ struct RuneUIComponentGallery: View {
 
             Text("Debug-only · synthetic data")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
         .padding(RuneUILayoutMetrics.sidebarPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -657,7 +657,7 @@ struct RuneUIComponentGallery: View {
             }
         } secondary: {
             Button("Primary Action") {}
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .disabled(true)
                 .help("Disabled while synthetic read-only mode is active")
         }
@@ -722,13 +722,13 @@ struct RuneUIComponentGallery: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Actions")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                 HStack(spacing: 8) {
                     Button("Validate") {}
                     Button("Apply") {}
                         .disabled(true)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
             }
         }
         .runeInsetCard(padding: 10)
@@ -757,7 +757,7 @@ struct RuneUIComponentGallery: View {
                         .font(.headline)
                     Text("Persistent labels and bounded output")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 Spacer(minLength: 8)
@@ -789,7 +789,7 @@ struct RuneUIComponentGallery: View {
                 Button(action: {}) {
                     RuneDialogButtonLabel("Continue")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
             }
         }
         .padding(RuneUILayoutMetrics.dialogContentPadding)
@@ -835,7 +835,7 @@ struct RuneUIComponentGallery: View {
                         .runeInterfaceFont(weight: .semibold)
                     Text("The explanatory detail remains visible when the control moves below the label.")
                         .runeInterfaceFont(relativeSize: -1)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
             } control: {
                 Toggle("Enabled", isOn: $isSyntheticSettingEnabled)
@@ -850,7 +850,7 @@ struct RuneUIComponentGallery: View {
                         .runeInterfaceFont(weight: .semibold)
                     Text("Primary and follow-up actions keep a visible, compact hierarchy.")
                         .runeInterfaceFont(relativeSize: -1)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
             } control: {
                 VStack(alignment: .leading, spacing: 6) {
@@ -882,7 +882,7 @@ struct RuneUIComponentGallery: View {
                         )
                     }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
             }
 
             Divider()
@@ -984,7 +984,7 @@ struct RuneUIComponentGallery: View {
             Spacer(minLength: 8)
             Text(shortcut)
                 .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
         .font(.subheadline.weight(selected ? .semibold : .regular))
         .padding(.horizontal, 8)
@@ -1000,7 +1000,7 @@ struct RuneUIComponentGallery: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
             content()
         }
         .runeInsetCard(padding: 10)
@@ -1059,7 +1059,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
                         .font(.headline)
                     Text(presentation.subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
 
                 Spacer(minLength: 8)
@@ -1074,7 +1074,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
 
             Text(presentation.note)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -1094,7 +1094,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
                         minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                     )
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
 
                 ForEach(presentation.utilityActions.prefix(2)) { action in
                     Button(action: {}) {
@@ -1104,7 +1104,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
                                 minHeight: RuneUILayoutMetrics.dialogButtonLabelMinHeight
                             )
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
                 }
             }
         }
@@ -1119,7 +1119,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
         if field.input == .sensitiveJSONFile {
             AddClusterProviderCredentialField(field: field) {
                 Button("Choose JSON…", action: {})
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RuneToolbarButtonStyle())
             }
         } else {
             AddClusterProviderCredentialTextInput(field: field, text: .constant(""))

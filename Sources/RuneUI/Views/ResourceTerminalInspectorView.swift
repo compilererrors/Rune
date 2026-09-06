@@ -301,7 +301,7 @@ struct ResourceTerminalCommonCommandRow: View {
                     Spacer(minLength: 8)
                     Image(systemName: "arrow.turn.down.left")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
                 .frame(
                     maxWidth: .infinity,
@@ -310,7 +310,7 @@ struct ResourceTerminalCommonCommandRow: View {
                 )
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .help("Insert into terminal prompt: \(command)")
             .accessibilityLabel("Insert \(command) into terminal prompt")
 
@@ -318,7 +318,7 @@ struct ResourceTerminalCommonCommandRow: View {
                 Image(systemName: "doc.on.doc")
                     .frame(width: 14)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(RuneToolbarButtonStyle())
             .help(copyHelp)
             .accessibilityLabel(copyHelp)
         }
@@ -358,27 +358,27 @@ struct ResourceTerminalDetailsView: View {
                 if let containerTitle = presentation.containerTitle {
                     Text("Container: \(containerTitle)")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
                 Text("Shell: \(presentation.shellTitle)")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                 Text("Status: \(presentation.statusTitle)")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                 if let lastExitCodeTitle = presentation.lastExitCodeTitle {
                     Text("Last exit code: \(lastExitCodeTitle)")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                 }
             } else if let selectedPod {
                 Label("Ready for \(selectedPod.namespace)/\(selectedPod.name)", systemImage: "terminal")
                     .font(.subheadline.weight(.medium))
                 Text("Start a shell session to use the terminal.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             } else {
                 Text("Select a pod in Workloads > Pods to start an interactive shell.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
             }
 
             if let active = portForwardSessions.first(where: { $0.status == .active || $0.status == .starting }) {
@@ -409,11 +409,11 @@ struct ResourceTerminalDetailsView: View {
                     .font(.headline)
                 Text("CPU/MEM chips in the top header are cluster-level overview metrics, not pod-shell metrics.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Select a command row to prefill the prompt, then edit before sending if needed.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

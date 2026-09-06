@@ -82,8 +82,8 @@ final class RuneThemeWorkflowTests: XCTestCase {
         XCTAssertEqual(themes.map(\.sourceSummary), Array(repeating: "Custom theme", count: 3))
         XCTAssertEqual(themes[0].preferredColorScheme, .dark)
         XCTAssertEqual(themes[1].preferredColorScheme, .light)
-        XCTAssertEqual(themes[0].appKitPalette?.accent, "#67b7ffff")
-        XCTAssertEqual(themes[1].syntaxPalette?.key, "#8bd3ffff")
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(try XCTUnwrap(themes[0].appKitPalette?.accent)), over: NSColor(try XCTUnwrap(themes[0].palette).panel)), 4.5)
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(try XCTUnwrap(themes[1].syntaxPalette?.key)), over: NSColor(try XCTUnwrap(themes[1].palette).editor)), 4.5)
         XCTAssertNil(themes.first?.builtin)
     }
 
@@ -206,11 +206,11 @@ final class RuneThemeWorkflowTests: XCTestCase {
         let theme = try XCTUnwrap(RuneZedThemeDecoder.decode(data: data, sourceID: "fallback").first)
 
         XCTAssertEqual(theme.id, "zed:fallback:sparse-dark")
-        XCTAssertEqual(theme.appKitPalette?.window, "#101820ff")
+        XCTAssertEqual(theme.appKitPalette?.window, "#101820")
         XCTAssertEqual(theme.appKitPalette?.foreground, "#eef4fb")
-        XCTAssertEqual(theme.appKitPalette?.accent, "#6bb7f7ff")
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(.runeHex(try XCTUnwrap(theme.appKitPalette?.accent)), over: NSColor(try XCTUnwrap(theme.palette).panel)), 4.5)
         XCTAssertEqual(theme.syntaxPalette?.key, "#8bd3ffff")
-        XCTAssertEqual(theme.syntaxPalette?.string, "#86d59a")
+        XCTAssertEqual(theme.syntaxPalette?.string, "#86d59aff")
         XCTAssertEqual(theme.sourceSummary, "Custom theme")
     }
 

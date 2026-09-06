@@ -182,13 +182,13 @@ struct RBACCanISimulatorPanel: View {
                 Button("Use Selected") {
                     viewModel.useSelectedRBACResourceForCanI()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(RuneToolbarButtonStyle())
                 .controlSize(.small)
                 .disabled(viewModel.state.selectedRBACResource == nil)
                 Button(viewModel.isRunningRBACCanI ? "Checking..." : "Check") {
                     viewModel.runRBACCanISimulator()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
                 .controlSize(.small)
                 .disabled(viewModel.isRunningRBACCanI)
             }
@@ -252,14 +252,14 @@ struct RBACCanISimulatorPanel: View {
                         .font(.caption.weight(.semibold))
                     Text(result.errorMessage ?? result.request.summary)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             Text("Runs a read-only SelfSubjectAccessReview for the selected verb, resource, and scope.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
     }
 

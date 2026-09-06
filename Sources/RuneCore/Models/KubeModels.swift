@@ -179,17 +179,20 @@ public struct RuneUserNotice: Identifiable, Hashable, Codable, Sendable {
     public let severity: RuneUserNoticeSeverity
     public let title: String
     public let message: String
+    public let savedFileURL: URL?
 
     public init(
         id: UUID = UUID(),
         severity: RuneUserNoticeSeverity,
         title: String,
-        message: String
+        message: String,
+        savedFileURL: URL? = nil
     ) {
         self.id = id
         self.severity = severity
         self.title = title
         self.message = message
+        self.savedFileURL = savedFileURL
     }
 }
 

@@ -516,6 +516,318 @@ final class CloudAccountCoordinatorTests: XCTestCase {
         }
     }
 
+    func testPersistentCoordinatorRestoresRenameSyncAndRefreshThenDisconnects() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(90), generation: 1, label: "Provider label")
+        let rotated = account(id: uuid(90), generation: 2, label: "Provider label")
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial)], refreshSteps: [.record(rotated)])
+        let fixedNow = now
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store, now: { fixedNow })
+        _ = try await coordinator.connect(provider: .azure, localLabel: "Local account")
+        _ = try await coordinator.rename(accountID: initial.id, localLabel: "Renamed account")
+        _ = try await coordinator.synchronize(accountID: initial.id)
+        XCTAssertEqual(try store.accounts().first?.lastSuccessfulSync, now)
+        _ = try await coordinator.refresh(accountID: initial.id)
+
+        let restarted = try CloudAccountCoordinator(connectors: [connector], restoringFrom: KeychainCloudAccountStore(secretStore: backing))
+        let restored = await restarted.connectedAccounts()
+        XCTAssertEqual(restored.count, 1)
+        XCTAssertEqual(restored.first?.localLabel, "Renamed account")
+        XCTAssertEqual(restored.first?.credentialGeneration, rotated.credentialGeneration)
+        XCTAssertEqual(restored.first?.lastSuccessfulSync, now)
+        try await restarted.disconnect(accountID: initial.id)
+        XCTAssertTrue(try store.accounts().isEmpty)
+        XCTAssertTrue(backing.keys.isEmpty)
+    }
+
+    func testFailedAccountCommitAndRenameDoNotPublishMemoryOnlyState() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(91), generation: 1, label: "Original")
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial), .record(initial)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        backing.failWrites(true)
+        do {
+            _ = try await coordinator.connect(provider: .azure)
+            XCTFail("A failed Keychain commit must not publish the account")
+        } catch { XCTAssertEqual(error as? CloudAccountStoreError, .storageUnavailable) }
+        let failedAccounts = await coordinator.connectedAccounts()
+        XCTAssertTrue(failedAccounts.isEmpty)
+        XCTAssertTrue(backing.keys.isEmpty)
+
+        backing.failWrites(false)
+        _ = try await coordinator.connect(provider: .azure)
+        backing.failWrites(true)
+        do {
+            _ = try await coordinator.rename(accountID: initial.id, localLabel: "Unsaved label")
+            XCTFail("A failed rename must leave the previous metadata")
+        } catch { XCTAssertEqual(error as? CloudAccountStoreError, .storageUnavailable) }
+        let unchanged = await coordinator.account(id: initial.id)
+        XCTAssertEqual(unchanged, initial)
+        XCTAssertEqual(try store.accounts(), [initial])
+    }
+
+    func testExpiringCredentialReadersShareOneRefreshAndCanceledReaderDoesNotCancelOthers() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(92), generation: 1, label: "Synthetic")
+        let rotated = account(id: uuid(92), generation: 2, label: "Synthetic")
+        try store.save(account: initial, credentials: CloudAccountCredentials(data: Data("synthetic-old".utf8), expiresAt: now.addingTimeInterval(20)))
+        let gate = SyntheticCloudGate()
+        let fresh = CloudAccountCredentials(data: Data("synthetic-rotated".utf8), expiresAt: now.addingTimeInterval(3_600))
+        let connector = SyntheticCloudAccountConnector(connectSteps: [], refreshSteps: [.gated(gate, rotated)], credentials: fresh)
+        let fixedNow = now
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store, now: { fixedNow })
+        let baseline = backing.readCount
+        let readers = (0..<8).map { _ in Task { try await coordinator.credentials(accountID: initial.id) } }
+        try await gate.waitUntilBlocked()
+        // Every reader has actually entered the coordinator and read the expired generation
+        // before the provider is released. This avoids scheduling-dependent sleep assertions.
+        try await waitForReads(backing, atLeast: baseline + readers.count)
+        readers[0].cancel()
+        await gate.open()
+        do {
+            _ = try await readers[0].value
+            XCTFail("The canceled caller should observe cancellation")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        for reader in readers.dropFirst() {
+            let result = try await reader.value
+            XCTAssertEqual(result.data, fresh.data)
+        }
+        let requests = await connector.refreshRequests()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.credentialGeneration, initial.credentialGeneration)
+        XCTAssertEqual(try store.accounts().first?.credentialGeneration, rotated.credentialGeneration)
+        let cached = try await coordinator.credentials(accountID: initial.id)
+        XCTAssertEqual(cached.data, fresh.data)
+        let requestsAfterCachedRead = await connector.refreshRequests()
+        XCTAssertEqual(requestsAfterCachedRead.count, 1)
+    }
+
+    func testDiscoveryWaitsForActiveRefreshAndUsesCommittedGeneration() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(93), generation: 1, label: "Synthetic")
+        let rotated = account(id: uuid(93), generation: 2, label: "Synthetic")
+        let gate = SyntheticCloudGate()
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial)], refreshSteps: [.gated(gate, rotated)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        _ = try await coordinator.connect(provider: .azure)
+        let refresh = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+        let baseline = backing.readCount
+        let discovery = Task { try await coordinator.synchronize(accountID: initial.id) }
+        try await waitForReads(backing, atLeast: baseline + 1)
+        let prematureRequests = await connector.scopeRequests()
+        XCTAssertTrue(prematureRequests.isEmpty)
+        await gate.open()
+        _ = try await refresh.value
+        let discovered = try await discovery.value
+        XCTAssertEqual(discovered.credentialGeneration, rotated.credentialGeneration)
+        let requests = await connector.scopeRequests()
+        XCTAssertEqual(requests.map(\.credentialGeneration), [rotated.credentialGeneration])
+    }
+
+    func testDisconnectRejectsLateRefreshWithoutPersistingItsSecrets() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(94), generation: 1, label: "Synthetic")
+        let late = account(id: uuid(94), generation: 2, label: "Late")
+        let gate = SyntheticCloudGate()
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial)], refreshSteps: [.gated(gate, late)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        _ = try await coordinator.connect(provider: .azure)
+        let refresh = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+        try await coordinator.disconnect(accountID: initial.id)
+        await gate.open()
+        do {
+            _ = try await refresh.value
+            XCTFail("Disconnect must invalidate a non-cooperative refresh")
+        } catch { XCTAssertEqual(error as? CloudAccountCoordinatorError, .superseded) }
+        XCTAssertTrue(backing.keys.isEmpty)
+        let current = await coordinator.connectedAccounts()
+        XCTAssertTrue(current.isEmpty)
+    }
+
+    func testCancelDiscoveryWhileWaitingForRefreshDoesNotCancelSharedRefresh() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(99), generation: 1, label: "Synthetic")
+        let rotated = account(id: uuid(99), generation: 2, label: "Synthetic")
+        let gate = SyntheticCloudGate()
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial)], refreshSteps: [.gated(gate, rotated)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        _ = try await coordinator.connect(provider: .azure)
+        let refresh = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+        let baseline = backing.readCount
+        let discovery = Task { try await coordinator.synchronize(accountID: initial.id) }
+        try await waitForReads(backing, atLeast: baseline + 1)
+        await coordinator.cancelSynchronization(accountID: initial.id)
+        await gate.open()
+        let accepted = try await refresh.value
+        XCTAssertEqual(accepted.credentialGeneration, rotated.credentialGeneration)
+        do {
+            _ = try await discovery.value
+            XCTFail("Canceled discovery must not start provider reads after the refresh")
+        } catch { XCTAssertEqual(error as? CloudAccountCoordinatorError, .superseded) }
+        let requests = await connector.scopeRequests()
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testCanceledConnectCallerCannotPersistNonCooperativeResult() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(100), generation: 1, label: "Synthetic")
+        let gate = SyntheticCloudGate()
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.gated(gate, initial)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        let connection = Task { try await coordinator.connect(provider: .azure) }
+        try await gate.waitUntilBlocked()
+        connection.cancel()
+        await gate.open()
+        do {
+            _ = try await connection.value
+            XCTFail("A canceled caller must not publish credentials")
+        } catch { XCTAssertEqual((error as? CloudAccountFailure)?.classification, .canceled) }
+        XCTAssertTrue(backing.keys.isEmpty)
+    }
+
+    func testFailedRefreshReleasesSharedOperationAndLeavesStoredCredentialUnchanged() async throws {
+        let store = KeychainCloudAccountStore(secretStore: CloudAccountTestSecretStore())
+        let initial = account(id: uuid(101), generation: 1, label: "Synthetic")
+        let rotated = account(id: uuid(101), generation: 2, label: "Synthetic")
+        let failure = CloudAccountFailure(stage: .accountRefresh, classification: .offline, isRetryable: true, recoveryAction: .retry)
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial)], refreshSteps: [.failure(failure), .record(rotated)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        _ = try await coordinator.connect(provider: .azure)
+        do {
+            _ = try await coordinator.refresh(accountID: initial.id)
+            XCTFail("Expected the recoverable provider failure")
+        } catch { XCTAssertEqual(error as? CloudAccountFailure, failure) }
+        XCTAssertEqual(try store.accounts(), [initial])
+        let retry = try await coordinator.refresh(accountID: initial.id)
+        XCTAssertEqual(retry.credentialGeneration, rotated.credentialGeneration)
+        XCTAssertEqual(try store.accounts(), [rotated])
+    }
+
+    func testReconnectWinsOverLateRefreshAndDisconnectCancelsPendingReconnect() async throws {
+        for disconnect in [false, true] {
+            let backing = CloudAccountTestSecretStore()
+            let store = KeychainCloudAccountStore(secretStore: backing)
+            let initial = account(id: uuid(95), generation: 1, label: "Initial")
+            let late = account(id: uuid(95), generation: 2, label: "Late")
+            let reconnected = account(id: uuid(95), generation: 3, label: "Reconnected")
+            let gate = SyntheticCloudGate()
+            let connector = SyntheticCloudAccountConnector(
+                connectSteps: disconnect ? [.record(initial), .gated(gate, reconnected)] : [.record(initial), .record(reconnected)],
+                refreshSteps: [.gated(gate, late)]
+            )
+            let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+            _ = try await coordinator.connect(provider: .azure)
+            let delayed = Task {
+                if disconnect { return try await coordinator.connect(provider: .azure) }
+                return try await coordinator.refresh(accountID: initial.id)
+            }
+            try await gate.waitUntilBlocked()
+            if disconnect {
+                try await coordinator.disconnect(accountID: initial.id)
+            } else {
+                _ = try await coordinator.connect(provider: .azure)
+            }
+            await gate.open()
+            do {
+                _ = try await delayed.value
+                XCTFail("A superseded operation must not commit its credential generation")
+            } catch { XCTAssertEqual(error as? CloudAccountCoordinatorError, .superseded) }
+            XCTAssertEqual(try store.accounts(), disconnect ? [] : [reconnected.updatingLocalLabel(initial.localLabel)])
+        }
+    }
+
+    func testFailedReconnectDoesNotCancelRefreshAndSuccessfulReconnectKeepsLocalLabel() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let initial = account(id: uuid(102), generation: 1, label: "Provider label")
+        let rotated = account(id: uuid(102), generation: 2, label: "Provider label")
+        let reconnected = account(id: uuid(102), generation: 3, label: "Different provider label")
+        let gate = SyntheticCloudGate()
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(initial), .record(reconnected), .record(reconnected)], refreshSteps: [.gated(gate, rotated)])
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store)
+        _ = try await coordinator.connect(provider: .azure, localLabel: "My synthetic account")
+        let refresh = Task { try await coordinator.refresh(accountID: initial.id) }
+        try await gate.waitUntilBlocked()
+        backing.failWrites(true)
+        do {
+            _ = try await coordinator.connect(provider: .azure)
+            XCTFail("Expected the reconnect commit to fail")
+        } catch { XCTAssertEqual(error as? CloudAccountStoreError, .storageUnavailable) }
+        backing.failWrites(false)
+        await gate.open()
+        let refreshed = try await refresh.value
+        XCTAssertEqual(refreshed.credentialGeneration, rotated.credentialGeneration)
+        let accepted = try await coordinator.connect(provider: .azure)
+        XCTAssertEqual(accepted.localLabel, "My synthetic account")
+        XCTAssertEqual(accepted.credentialGeneration, reconnected.credentialGeneration)
+        XCTAssertEqual(try store.accounts(), [accepted])
+    }
+
+    func testLocalDisconnectWorksWithProviderDisabledOrOffline() async throws {
+        for disabled in [false, true] {
+            let store = KeychainCloudAccountStore(secretStore: CloudAccountTestSecretStore())
+            let record = account(id: uuid(96), generation: 1, label: "Synthetic")
+            try store.save(account: record, credentials: CloudAccountCredentials(data: Data("synthetic-local-only".utf8)))
+            let connector = SyntheticCloudAccountConnector(connectSteps: [], disconnectFailure: CloudAccountFailure(stage: .localDisconnect, classification: .offline, isRetryable: true, recoveryAction: .retry))
+            let coordinator = try CloudAccountCoordinator(connectors: disabled ? [] : [connector], restoringFrom: store)
+            try await coordinator.disconnect(accountID: record.id)
+            XCTAssertTrue(try store.accounts().isEmpty)
+            let current = await coordinator.connectedAccounts()
+            XCTAssertTrue(current.isEmpty)
+        }
+    }
+
+    func testFailedLocalDeletionRetainsAccountAndAllowsRetry() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let record = account(id: uuid(97), generation: 1, label: "Synthetic")
+        try store.save(account: record, credentials: CloudAccountCredentials(data: Data("synthetic-local-only".utf8)))
+        let coordinator = try CloudAccountCoordinator(connectors: [], restoringFrom: store)
+        backing.failWrites(true)
+        do {
+            try await coordinator.disconnect(accountID: record.id)
+            XCTFail("A failed secret deletion must remain visible and retryable")
+        } catch { XCTAssertEqual(error as? CloudAccountStoreError, .storageUnavailable) }
+        let current = await coordinator.account(id: record.id)
+        XCTAssertEqual(current, record)
+        XCTAssertEqual(try store.accounts(), [record])
+        backing.failWrites(false)
+        try await coordinator.disconnect(accountID: record.id)
+        XCTAssertTrue(backing.keys.isEmpty)
+    }
+
+    func testExpiredAuthorizationNeverReachesPersistentStore() async throws {
+        let backing = CloudAccountTestSecretStore()
+        let store = KeychainCloudAccountStore(secretStore: backing)
+        let record = account(id: uuid(98), generation: 1, label: "Synthetic")
+        let connector = SyntheticCloudAccountConnector(connectSteps: [.record(record)], credentials: CloudAccountCredentials(data: Data("synthetic-expired".utf8), expiresAt: now.addingTimeInterval(-1)))
+        let fixedNow = now
+        let coordinator = try CloudAccountCoordinator(connectors: [connector], restoringFrom: store, now: { fixedNow })
+        do {
+            _ = try await coordinator.connect(provider: .azure)
+            XCTFail("Expired credentials must be rejected before persistence")
+        } catch { XCTAssertEqual(error as? CloudAccountCoordinatorError, .invalidConnectorResult) }
+        XCTAssertTrue(backing.keys.isEmpty)
+    }
+
+    private func waitForReads(_ store: CloudAccountTestSecretStore, atLeast count: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while store.readCount < count {
+            guard ContinuousClock.now < deadline else { throw SyntheticCloudTestError.timedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     private func account(
         id: UUID,
         generation: UInt64,
@@ -612,9 +924,12 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
     private let diagnosticScript: [CloudAccountDiagnostic]
     private var diagnosticGates: [SyntheticCloudGate]
     private var capturedConnectRequests: [CloudAccountConnectRequest] = []
+    private var capturedRefreshRequests: [CloudAccountBoundRequest] = []
     private var capturedScopeRequests: [CloudAccountPageRequest] = []
     private var capturedClusterRequests: [CloudAccountPageRequest] = []
     private var capturedDisconnectRequests: [CloudAccountBoundRequest] = []
+    private let credentials: CloudAccountCredentials
+    private let disconnectFailure: CloudAccountFailure?
 
     init(
         connectSteps: [SyntheticConnectStep],
@@ -622,7 +937,9 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
         scopeSteps: [SyntheticScopeStep] = [.page(CloudDiscoveryScopePage(scopes: []))],
         clusterSteps: [SyntheticClusterStep] = [.page(CloudClusterDiscoveryPage(candidates: []))],
         diagnostics: [CloudAccountDiagnostic] = [],
-        diagnosticGates: [SyntheticCloudGate] = []
+        diagnosticGates: [SyntheticCloudGate] = [],
+        credentials: CloudAccountCredentials = CloudAccountCredentials(data: Data("synthetic-credential".utf8)),
+        disconnectFailure: CloudAccountFailure? = nil
     ) {
         self.connectScript = connectSteps
         self.refreshScript = refreshSteps
@@ -630,32 +947,43 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
         self.clusterScript = clusterSteps
         self.diagnosticScript = diagnostics
         self.diagnosticGates = diagnosticGates
+        self.credentials = credentials
+        self.disconnectFailure = disconnectFailure
     }
 
-    func connect(_ request: CloudAccountConnectRequest) async throws -> CloudAccountRecord {
+    func connect(_ request: CloudAccountConnectRequest) async throws -> CloudAccountAuthorizationResult {
         capturedConnectRequests.append(request)
         guard !connectScript.isEmpty else { throw invalidFailure(stage: .authorization) }
         let step = connectScript.removeFirst()
         switch step {
         case .record(let account):
-            return account
+            return CloudAccountAuthorizationResult(
+                account: account, credentials: credentials
+            )
         case .gated(let gate, let account):
             await gate.block()
-            return account
+            return CloudAccountAuthorizationResult(
+                account: account, credentials: credentials
+            )
         case .failure(let failure):
             throw failure
         }
     }
 
-    func refresh(_ request: CloudAccountBoundRequest) async throws -> CloudAccountRecord {
+    func refresh(_ request: CloudAccountBoundRequest) async throws -> CloudAccountAuthorizationResult {
+        capturedRefreshRequests.append(request)
         guard !refreshScript.isEmpty else { throw invalidFailure(stage: .accountRefresh) }
         let step = refreshScript.removeFirst()
         switch step {
         case .record(let account):
-            return account
+            return CloudAccountAuthorizationResult(
+                account: account, credentials: credentials
+            )
         case .gated(let gate, let account):
             await gate.block()
-            return account
+            return CloudAccountAuthorizationResult(
+                account: account, credentials: credentials
+            )
         case .failure(let failure):
             throw failure
         }
@@ -690,6 +1018,7 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
 
     func disconnect(_ request: CloudAccountBoundRequest) async throws {
         capturedDisconnectRequests.append(request)
+        if let disconnectFailure { throw disconnectFailure }
     }
 
     func diagnostics(_ request: CloudAccountBoundRequest) async -> [CloudAccountDiagnostic] {
@@ -704,6 +1033,7 @@ private actor SyntheticCloudAccountConnector: CloudAccountConnector {
     func clusterRequests() -> [CloudAccountPageRequest] { capturedClusterRequests }
     func disconnectRequests() -> [CloudAccountBoundRequest] { capturedDisconnectRequests }
     func connectRequests() -> [CloudAccountConnectRequest] { capturedConnectRequests }
+    func refreshRequests() -> [CloudAccountBoundRequest] { capturedRefreshRequests }
 
     private func invalidFailure(stage: CloudAccountOperationStage) -> CloudAccountFailure {
         CloudAccountFailure(

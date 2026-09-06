@@ -134,7 +134,7 @@ struct FavoritePodPicker: View {
             Spacer(minLength: 0)
             Image(systemName: "chevron.up.chevron.down")
                 .runeInterfaceFont(relativeSize: -3, weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         }
         .padding(.leading, 8)
         .padding(.trailing, 7)
@@ -150,14 +150,14 @@ struct FavoritePodPicker: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
 
             if sortedPods.isEmpty {
                 Text("No pods in namespace")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.runeSecondary)
                     .padding(10)
             } else {
                 ScrollView {
@@ -192,13 +192,13 @@ struct FavoritePodPicker: View {
                 HStack(spacing: 8) {
                     Image(systemName: pod.id == selection ? "checkmark" : "circle")
                         .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                        .foregroundStyle(pod.id == selection ? Color.accentColor : Color.secondary.opacity(0.55))
+                        .foregroundStyle(pod.id == selection ? RuneTextStyle.accent : .secondary)
                         .frame(width: 14)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(rowTitle(pod))
                             .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(.runePrimary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .help(rowTitle(pod))
@@ -206,7 +206,7 @@ struct FavoritePodPicker: View {
                         if let detail = rowDetail(pod), !detail.isEmpty {
                             Text(detail)
                                 .runeInterfaceFont(relativeSize: -2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.runeSecondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .help(detail)

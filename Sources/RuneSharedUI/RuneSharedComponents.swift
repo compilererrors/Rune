@@ -2,7 +2,34 @@ import AppKit
 import RuneSharedCore
 import SwiftUI
 
+public struct RuneLargeTextColors: Sendable {
+    public var foreground: Color
+    public var secondary: Color
+    public var accent: Color
+    public var warning: Color
+
+    public init(foreground: Color = .primary, secondary: Color = .secondary,
+                accent: Color = .accentColor, warning: Color = Color(nsColor: .systemOrange)) {
+        self.foreground = foreground
+        self.secondary = secondary
+        self.accent = accent
+        self.warning = warning
+    }
+}
+
+private struct RuneLargeTextColorsKey: EnvironmentKey {
+    static let defaultValue = RuneLargeTextColors()
+}
+
+public extension EnvironmentValues {
+    var runeLargeTextColors: RuneLargeTextColors {
+        get { self[RuneLargeTextColorsKey.self] }
+        set { self[RuneLargeTextColorsKey.self] = newValue }
+    }
+}
+
 public struct RuneLargeTextSurface: View {
+    @Environment(\.runeLargeTextColors) private var colors
     private static let renderWindowStrideInLines = 8
 
     private let index: RuneLargeTextIndex
@@ -86,7 +113,7 @@ public struct RuneLargeTextSurface: View {
                     if index.lineCount == 0 {
                         Text(placeholder)
                             .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(colors.secondary)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                             .padding(.horizontal, horizontalContentInset)
                             .padding(.vertical, verticalContentInset)
@@ -380,6 +407,7 @@ private struct RuneLargeTextLineSearchMatch {
 }
 
 private struct RuneLargeTextLineRow: View {
+    @Environment(\.runeLargeTextColors) private var colors
     let line: RuneLargeTextLine
     let searchMatches: [RuneLargeTextLineSearchMatch]
     let showsLineNumbers: Bool
@@ -394,7 +422,7 @@ private struct RuneLargeTextLineRow: View {
             if showsLineNumbers {
                 Text("\(line.number)")
                     .font(.system(size: max(10, fontSize - 1), weight: .regular, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(colors.secondary)
                     .frame(width: lineNumberWidth, alignment: .trailing)
                     .textSelection(.disabled)
             }
@@ -407,7 +435,7 @@ private struct RuneLargeTextLineRow: View {
                 }
             }
             .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-            .foregroundStyle(.primary)
+            .foregroundStyle(colors.foreground)
             .textSelection(.enabled)
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -416,13 +444,13 @@ private struct RuneLargeTextLineRow: View {
         .background {
             if isActiveSearchLine {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.20 : 0.14))
+                    .fill(colors.accent.opacity(0.08))
             }
         }
         .overlay {
             if isActiveSearchLine {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(Color.accentColor.opacity(0.86), lineWidth: 1)
+                    .stroke(colors.accent.opacity(0.86), lineWidth: 1)
             }
         }
     }
@@ -442,20 +470,16 @@ private struct RuneLargeTextLineRow: View {
 
             let range = lower..<upper
             if match.isActive {
-                attributed[range].backgroundColor = Color.accentColor.opacity(
-                    colorScheme == .dark ? 0.64 : 0.42
-                )
+                attributed[range].backgroundColor = colors.accent.opacity(0.14)
                 attributed[range].underlineStyle = Text.LineStyle(
                     pattern: .solid,
-                    color: Color.accentColor
+                    color: colors.accent
                 )
             } else {
-                attributed[range].backgroundColor = Color(nsColor: .findHighlightColor).opacity(
-                    colorScheme == .dark ? 0.52 : 0.62
-                )
+                attributed[range].backgroundColor = colors.warning.opacity(0.10)
                 attributed[range].underlineStyle = Text.LineStyle(
                     pattern: .solid,
-                    color: Color(nsColor: .systemOrange)
+                    color: colors.warning
                 )
             }
         }

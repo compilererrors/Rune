@@ -328,7 +328,7 @@ struct TerminalTranscriptSearchBar: View {
     private var searchField: some View {
         RuneInspectorControlGridRow {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
         } content: {
             TextField("Find in terminal", text: $query)
                 .textFieldStyle(.roundedBorder)
@@ -351,7 +351,7 @@ struct TerminalTranscriptSearchBar: View {
         HStack(spacing: 8) {
             Text(statusText)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.runeSecondary)
                 .monospacedDigit()
                 .frame(minWidth: 56, alignment: .trailing)
 
@@ -561,6 +561,7 @@ private enum TerminalTranscriptSearchWork {
 }
 
 private struct TerminalTranscriptTextView: NSViewRepresentable {
+    @Environment(\.runeThemePalette) private var palette
     let text: String
     let fontSize: CGFloat
     let searchIndex: TerminalTranscriptSearchIndex?
@@ -618,7 +619,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.font = terminalFont
-        textView.textColor = .labelColor
+        textView.textColor = palette.map { NSColor($0.foreground) } ?? .labelColor
 
         if let container = textView.textContainer {
             container.widthTracksTextView = false
@@ -641,6 +642,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
             terminalTextView.onPasteText = onPasteText
             terminalTextView.onInputSequence = onInputSequence
         }
+        textView.textColor = palette.map { NSColor($0.foreground) } ?? .labelColor
         updateFontIfNeeded(in: textView, coordinator: context.coordinator)
 
         if let container = textView.textContainer {
