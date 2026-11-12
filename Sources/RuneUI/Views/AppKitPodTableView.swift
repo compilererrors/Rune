@@ -876,9 +876,16 @@ func applyResourceTableSelection<Row>(
     rowID: (Row) -> String,
     in tableView: NSTableView
 ) {
+    let selectedRow = selectedID.flatMap { id in
+        rows.firstIndex(where: { rowID($0) == id })
+    }
+    applyResourceTableSelection(selectedRow: selectedRow, in: tableView)
+}
+
+@MainActor
+private func applyResourceTableSelection(selectedRow: Int?, in tableView: NSTableView) {
     let previousSelectedRows = tableView.selectedRowIndexes
-    guard let selectedID,
-          let selectedRow = rows.firstIndex(where: { rowID($0) == selectedID }) else {
+    guard let selectedRow else {
         guard !previousSelectedRows.isEmpty else { return }
         let previouslyAllowedEmptySelection = tableView.allowsEmptySelection
         tableView.allowsEmptySelection = true
@@ -907,20 +914,21 @@ func applyBridgedResourceTableSelection<Row>(
     publishedSelectionRevision: UInt64? = nil,
     in tableView: NSTableView
 ) {
+    let pendingID = bridge.pendingUserSelectedID
+    let pendingRow = pendingID.flatMap { id in
+        rows.firstIndex(where: { rowID($0) == id })
+    }
     let selectedID = bridge.projectedSelectedID(
         publishedSelectedID: publishedSelectedID,
-        pendingSelectionIsAvailable: bridge.pendingUserSelectedID.map { pendingID in
-            rows.contains(where: { rowID($0) == pendingID })
-        } ?? false,
+        pendingSelectionIsAvailable: pendingRow != nil,
         applyGeneration: applyGeneration,
         publishedSelectionRevision: publishedSelectionRevision
     )
-    applyResourceTableSelection(
-        selectedID: selectedID,
-        rows: rows,
-        rowID: rowID,
-        in: tableView
-    )
+    // Projection may acknowledge and clear the pending ID; reuse its row lookup.
+    let selectedRow = selectedID == pendingID ? pendingRow : selectedID.flatMap { id in
+        rows.firstIndex(where: { rowID($0) == id })
+    }
+    applyResourceTableSelection(selectedRow: selectedRow, in: tableView)
 }
 
 struct RuneAppKitResourceTableRowSnapshot<Value: Hashable>: Hashable {

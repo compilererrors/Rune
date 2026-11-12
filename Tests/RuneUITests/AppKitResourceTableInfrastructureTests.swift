@@ -206,6 +206,45 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionBridgeKeepsFirstMatchingRowWhenIDsRepeat() {
+        var bridge = RuneAppKitResourceTableSelectionBridge()
+        let rows = ["resource-beta", "resource-alpha", "resource-beta"]
+        let dataSource = ResourceTableTestDataSource(rowCount: rows.count)
+        let tableView = makeTableView(dataSource: dataSource)
+        tableView.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        bridge.noteUserSelectedID(
+            "resource-beta",
+            publishedSelectedID: "resource-alpha",
+            staleThroughApplyGeneration: 4,
+            publishedSelectionRevision: 1
+        )
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-alpha",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 4,
+            publishedSelectionRevision: 1,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertEqual(bridge.pendingUserSelectedID, "resource-beta")
+
+        applyBridgedResourceTableSelection(
+            bridge: &bridge,
+            publishedSelectedID: "resource-beta",
+            rows: rows,
+            rowID: { $0 },
+            applyGeneration: 5,
+            publishedSelectionRevision: 2,
+            in: tableView
+        )
+        XCTAssertEqual(tableView.selectedRow, 0)
+        XCTAssertNil(bridge.pendingUserSelectedID)
+    }
+
+    @MainActor
     func testSelectionBridgeYieldsToExternalPublishedSelection() {
         var bridge = RuneAppKitResourceTableSelectionBridge()
         let rows = ["resource-alpha", "resource-beta", "resource-gamma"]

@@ -52,6 +52,12 @@ fi
 } > "$METADATA_FILE"
 
 kpi_filters=(
+  "CloudOAuthPerformanceTests/testAuthorizationRoundTripBenchmarkKPI"
+  "CloudOAuthPerformanceTests/testSheetChurnBenchmarkKPI"
+  "CloudOAuthAuthorizationCoordinatorTests/testSheetChurnUsesFreshGenerationsAndRejectsCrossSheetCallbacksKPI"
+  "RunePerformanceBenchmarksTests/testColdStartViewModelInitializationKPI"
+  "RunePerformanceBenchmarksTests/testBridgedRapidAppKitSelectionBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testKubeConfigImportTransactionResolutionMetadataProjectionBenchmarkKPI"
   "RunePerformanceBenchmarksTests/testRESTRequestMetricsRecordingBenchmarkKPI"
   "RunePerformanceBenchmarksTests/testRESTRequestMetricsRetentionChurnBenchmarkKPI"
   "RunePerformanceBenchmarksTests/testRESTRequestMetricsGroupingBenchmarkKPI"

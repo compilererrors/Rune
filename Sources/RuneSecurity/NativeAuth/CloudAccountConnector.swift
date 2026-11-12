@@ -731,7 +731,11 @@ public actor CloudAccountCoordinator {
         connectOperations[provider] = ConnectOperation(id: id, generation: generation, task: task)
 
         do {
-            let authorization = try await task.value
+            let authorization = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
             let result = authorization.account
             if Task.isCancelled {
                 try? await discardSupersededConnection(result, connector: connector, operationGeneration: generation)
@@ -929,7 +933,12 @@ public actor CloudAccountCoordinator {
         )
 
         do {
-            let result = try await task.value
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            try Task.checkCancellation()
             guard let current = discoveryOperations[accountID],
                   current.id == id,
                   current.generation == generation,
@@ -1076,6 +1085,13 @@ public actor CloudAccountCoordinator {
         operationGeneration: CloudAccountGeneration
     ) async throws {
         guard account.provider == connector.provider else { return }
+        // A duplicate late result can reference the session already accepted by another
+        // connection. Generation-scoped cleanup would also disconnect that active session.
+        if let accepted = accounts[account.id],
+           accepted.provider == account.provider,
+           accepted.credentialGeneration == account.credentialGeneration {
+            return
+        }
         try await connector.disconnect(CloudAccountBoundRequest(
             operationID: CloudAccountOperationID(),
             operationGeneration: operationGeneration,

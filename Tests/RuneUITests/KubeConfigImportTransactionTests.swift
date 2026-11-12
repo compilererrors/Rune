@@ -199,6 +199,145 @@ final class KubeConfigImportTransactionTests: XCTestCase {
         XCTAssertEqual(aggregate.duplicateHandlingChoices, KubeConfigDuplicateHandlingChoice.allCases)
     }
 
+    func testDuplicatePoliciesReserveDefinitionsNotReferencedByEarlierContexts() throws {
+        let firstRaw = """
+        apiVersion: v1
+        kind: Config
+        current-context: synthetic-context
+        clusters:
+        - name: synthetic-cluster
+          cluster:
+            server: https://first.example.invalid
+        - name: reserved-cluster
+          cluster:
+            server: https://unused.example.invalid
+        contexts:
+        - name: synthetic-context
+          context:
+            cluster: synthetic-cluster
+            user: synthetic-user
+        users:
+        - name: synthetic-user
+          user:
+            token: synthetic-token
+        - name: reserved-user
+          user:
+            token: synthetic-unused-token
+        """
+        let transaction = KubeConfigImportTransaction(
+            payloads: [
+                .init(raw: firstRaw, sourceName: "first.yaml", sourceURL: nil),
+                .init(
+                    raw: partialCollisionKubeConfig(clusterName: "reserved-cluster", userName: "reserved-user"),
+                    sourceName: "second.yaml",
+                    sourceURL: nil
+                ),
+            ],
+            logLabel: "syntheticUnusedDefinitions",
+            existingNames: KubeConfigNameRegistry(),
+            validator: KubeConfigImportValidator(),
+            resolver: KubeConfigDuplicateResolver()
+        )
+
+        let skipped = try transaction.resolvingDuplicates(
+            choice: .skipDuplicate,
+            resolver: KubeConfigDuplicateResolver(),
+            validator: KubeConfigImportValidator()
+        )
+        XCTAssertFalse(skipped.reviews[1].isValid)
+        XCTAssertTrue(skipped.reviews[1].issues.contains { $0.id == "skip-duplicate-dependent-name-conflict" })
+
+        let resolution = try transaction.resolvingDuplicates(
+            choice: .importAsCopy,
+            resolver: KubeConfigDuplicateResolver(),
+            validator: KubeConfigImportValidator()
+        )
+
+        XCTAssertTrue(resolution.reviews.allSatisfy(\.isValid))
+        XCTAssertEqual(resolution.reviews[1].contexts.first?.clusterName, "reserved-cluster-copy-2")
+        XCTAssertEqual(resolution.reviews[1].contexts.first?.userName, "reserved-user-copy-2")
+        XCTAssertEqual(resolution.reviews[1].contexts.first?.serverHost, "incoming.example.invalid")
+        XCTAssertTrue(resolution.reviews[1].hasDuplicateConflicts)
+        XCTAssertEqual(resolution.contextNamesForPreferences, ["synthetic-context", "incoming-context"])
+    }
+
+    func testResolutionPreservesErrorsForPayloadsThatFailedNamePreflight() {
+        let fixtures: [(String, KubeConfigDuplicateResolutionError)] = [
+            ("clusters: [", .malformedKubeConfig),
+            ("{}\n---\n{}", .multipleDocuments),
+        ]
+        for (raw, expectedError) in fixtures {
+            let transaction = KubeConfigImportTransaction(
+                payloads: [
+                    .init(raw: kubeConfig(server: "first.example.invalid"), sourceName: "first.yaml", sourceURL: nil),
+                    .init(raw: raw, sourceName: "invalid.yaml", sourceURL: nil),
+                ],
+                logLabel: "syntheticInvalidDefinitions",
+                existingNames: KubeConfigNameRegistry(),
+                validator: KubeConfigImportValidator(),
+                resolver: KubeConfigDuplicateResolver()
+            )
+
+            XCTAssertEqual(transaction.reviews.count, 2)
+            for choice in KubeConfigDuplicateHandlingChoice.allCases {
+                XCTAssertThrowsError(try transaction.resolvingDuplicates(
+                    choice: choice,
+                    resolver: KubeConfigDuplicateResolver(),
+                    validator: KubeConfigImportValidator()
+                )) { error in
+                    XCTAssertEqual(error as? KubeConfigDuplicateResolutionError, expectedError)
+                }
+            }
+        }
+    }
+
+    func testChangingDuplicatePolicyDoesNotCarryForwardResolvedNames() throws {
+        let transaction = makeTransaction()
+        let originalReviews = transaction.reviews
+        let choices: [KubeConfigDuplicateHandlingChoice] = [
+            .importAsCopy, .skipDuplicate, .importAsCopy, .updateExisting, .importAsCopy,
+        ]
+
+        for choice in choices {
+            let resolution = try transaction.resolvingDuplicates(
+                choice: choice,
+                resolver: KubeConfigDuplicateResolver(),
+                validator: KubeConfigImportValidator()
+            )
+
+            let expectedNames: Set<String> = choice == .importAsCopy
+                ? ["synthetic-context", "synthetic-context-copy-2"]
+                : ["synthetic-context"]
+            XCTAssertEqual(resolution.contextNamesForPreferences, expectedNames)
+            XCTAssertEqual(Set(resolution.reviews.flatMap(\.contexts).map(\.name)), expectedNames)
+            XCTAssertTrue(resolution.reviews.allSatisfy(\.isValid))
+            XCTAssertEqual(transaction.reviews, originalReviews)
+        }
+    }
+
+    func testResolutionRevalidatesExecutableAvailabilityAfterPreflight() throws {
+        let raw = kubeConfig(server: "first.example.invalid").replacingOccurrences(
+            of: "token: synthetic-token",
+            with: "exec:\n      command: synthetic-auth-plugin"
+        )
+        let transaction = KubeConfigImportTransaction(
+            payloads: [.init(raw: raw, sourceName: "synthetic.yaml", sourceURL: nil)],
+            logLabel: "syntheticExecutableAvailability",
+            existingNames: KubeConfigNameRegistry(),
+            validator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"]),
+            resolver: KubeConfigDuplicateResolver()
+        )
+        XCTAssertFalse(transaction.reviews.flatMap(\.issues).contains { $0.id.hasPrefix("missing-exec-plugin-") })
+
+        let resolution = try transaction.resolvingDuplicates(
+            choice: .importAsCopy,
+            resolver: KubeConfigDuplicateResolver(),
+            validator: KubeConfigImportValidator(fileExists: { _ in false }, executableSearchPaths: ["/synthetic/bin"])
+        )
+
+        XCTAssertTrue(resolution.reviews.flatMap(\.issues).contains { $0.id == "missing-exec-plugin-synthetic-context" })
+    }
+
     private func makeTransaction() -> KubeConfigImportTransaction {
         let resolver = KubeConfigDuplicateResolver()
         return KubeConfigImportTransaction(

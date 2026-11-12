@@ -4945,6 +4945,32 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         XCTAssertEqual(aggregate.sourceName, "40 kubeconfig files")
         XCTAssertTrue(resolution.reviews.allSatisfy { $0.isValid })
         XCTAssertFalse(aggregate.redactedPreview.contains("synthetic-token"))
+        var benchmarkSamples: [Double] = []
+        benchmarkSamples.reserveCapacity(7)
+        for _ in 0..<7 {
+            let started = ContinuousClock.now
+            try autoreleasepool {
+                let sampledResolution = try transaction.resolvingDuplicates(
+                    choice: .importAsCopy,
+                    resolver: resolver,
+                    validator: validator
+                )
+                _ = KubeConfigImportReviewAggregator.aggregate(sampledResolution.reviews)
+            }
+            benchmarkSamples.append(seconds(started.duration(to: .now)))
+        }
+        #if DEBUG
+        let benchmarkConfiguration = "debug"
+        #else
+        let benchmarkConfiguration = "release"
+        #endif
+        let benchmarkData = try JSONSerialization.data(withJSONObject: [
+            "name": "import_metadata_projection",
+            "samples_seconds": benchmarkSamples,
+            "iterations": 1,
+            "configuration": benchmarkConfiguration,
+        ], options: [.sortedKeys])
+        print("RUNE_BENCHMARK \(String(decoding: benchmarkData, as: UTF8.self))")
         #if DEBUG
         let maximumProjectionSeconds = 0.18
         #else

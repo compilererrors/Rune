@@ -1405,8 +1405,20 @@ public final class RuneAppViewModel: ObservableObject {
     private let helmReleaseList: HelmReleaseListing
     private let operatorResourceList: OperatorResourceListing
     private let replicaSetList: ReplicaSetListing
-    private let overviewSnapshotPersistence: any OverviewSnapshotCacheStoring
-    private let namespaceListPersistence: NamespaceListPersisting
+    private var overviewSnapshotPersistenceStorage: (any OverviewSnapshotCacheStoring)?
+    private var overviewSnapshotPersistence: any OverviewSnapshotCacheStoring {
+        if let overviewSnapshotPersistenceStorage { return overviewSnapshotPersistenceStorage }
+        let persistence = JSONOverviewSnapshotCacheStore()
+        overviewSnapshotPersistenceStorage = persistence
+        return persistence
+    }
+    private var namespaceListPersistenceStorage: (any NamespaceListPersisting)?
+    private var namespaceListPersistence: any NamespaceListPersisting {
+        if let namespaceListPersistenceStorage { return namespaceListPersistenceStorage }
+        let persistence = JSONNamespaceListPersistenceStore()
+        namespaceListPersistenceStorage = persistence
+        return persistence
+    }
     private let portForwardBrowserOpener: PortForwardBrowserOpening
     private let diagnostics: DiagnosticsRecorder
     private let rbacCanICheck: RBACCanIChecking
@@ -1417,7 +1429,7 @@ public final class RuneAppViewModel: ObservableObject {
     private let snapshotRefreshConcurrencyLimiter = SnapshotRefreshConcurrencyLimiter(limit: 6)
     private let terminalShellCommand = ["sh"]
 
-    private var cancellables: Set<AnyCancellable> = []
+    private var cancellables: [AnyCancellable] = []
     private var hasBootstrapped = false
     private var bootstrapTask: Task<Void, Never>?
     private var kubeConfigSourceSyncTask: Task<Void, Never>?
@@ -1592,8 +1604,8 @@ public final class RuneAppViewModel: ObservableObject {
         helmReleaseList: HelmReleaseListing? = nil,
         operatorResourceList: OperatorResourceListing? = nil,
         replicaSetList: ReplicaSetListing? = nil,
-        overviewSnapshotPersistence: any OverviewSnapshotCacheStoring = JSONOverviewSnapshotCacheStore(),
-        namespaceListPersistence: NamespaceListPersisting = JSONNamespaceListPersistenceStore(),
+        overviewSnapshotPersistence: (any OverviewSnapshotCacheStoring)? = nil,
+        namespaceListPersistence: (any NamespaceListPersisting)? = nil,
         portForwardBrowserOpener: PortForwardBrowserOpening = WorkspacePortForwardBrowserOpener(),
         diagnostics: DiagnosticsRecorder = DiagnosticsRecorder(),
         rbacCanICheck: RBACCanIChecking? = nil,
@@ -1649,8 +1661,8 @@ public final class RuneAppViewModel: ObservableObject {
                 namespace: namespace
             )
         }
-        self.overviewSnapshotPersistence = overviewSnapshotPersistence
-        self.namespaceListPersistence = namespaceListPersistence
+        self.overviewSnapshotPersistenceStorage = overviewSnapshotPersistence
+        self.namespaceListPersistenceStorage = namespaceListPersistence
         self.portForwardBrowserOpener = portForwardBrowserOpener
         self.diagnostics = diagnostics
         self.portForwardStart = portForwardStart
@@ -1693,6 +1705,9 @@ public final class RuneAppViewModel: ObservableObject {
         self.state.setManualProductionContextIDs(contextPreferences.loadManualProductionContextIDs())
         self.hiddenOperatorPrinterColumnFamilies = contextPreferences.loadHiddenOperatorPrinterColumnFamilies()
         self.savedWorkspaces = savedWorkspaceStore.loadSavedWorkspaces()
+
+        // Each subscription is unique and lives for the entire ViewModel lifetime.
+        cancellables.reserveCapacity(80)
 
         state.objectWillChange
             .sink { [weak self] _ in

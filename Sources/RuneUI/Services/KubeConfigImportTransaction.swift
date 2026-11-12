@@ -39,6 +39,7 @@ struct KubeConfigImportTransaction {
     let logLabel: String
     let id = UUID()
     private let existingNames: KubeConfigNameRegistry
+    private let originalNameRegistries: [KubeConfigNameRegistry?]
 
     init(
         payloads: [Payload],
@@ -52,9 +53,13 @@ struct KubeConfigImportTransaction {
         self.existingNames = existingNames
 
         var seenNames = existingNames
+        var originalNameRegistries: [KubeConfigNameRegistry?] = []
+        originalNameRegistries.reserveCapacity(payloads.count)
         reviews = payloads.map { payload in
             let review = validator.validate(raw: payload.raw, sourceName: payload.sourceName)
-            guard let names = try? resolver.names(in: payload.raw) else { return review }
+            let names = try? resolver.names(in: payload.raw)
+            originalNameRegistries.append(names)
+            guard let names else { return review }
             let conflicts = Self.conflicts(in: names, comparedWith: seenNames)
             seenNames.formUnion(names)
             guard !conflicts.isEmpty else { return review }
@@ -66,6 +71,7 @@ struct KubeConfigImportTransaction {
                 hasDuplicateConflicts: true
             )
         }
+        self.originalNameRegistries = originalNameRegistries
     }
 
     func resolvingDuplicates(
@@ -81,12 +87,16 @@ struct KubeConfigImportTransaction {
         resolvedPayloads.reserveCapacity(payloads.count)
         resolvedReviews.reserveCapacity(payloads.count)
 
-        for (payload, originalReview) in zip(payloads, reviews) {
-            let originalNames = try resolver.names(in: payload.raw)
-            let crossSourceConflicts = Self.conflicts(in: originalNames, comparedWith: seenNames)
+        for (index, (payload, originalReview)) in zip(payloads, reviews).enumerated() {
+            // Payloads are immutable; preflight has already parsed all defined names,
+            // including clusters and users that no context currently references.
+            // Reparse failures so resolution preserves the resolver's error behavior.
+            let originalNames = try originalNameRegistries[index] ?? resolver.names(in: payload.raw)
             let hadDuplicateConflicts = originalReview.hasDuplicateConflicts
                 || !originalReview.duplicateHandlingChoices.isEmpty
-                || !crossSourceConflicts.isEmpty
+                || !originalNames.contextNames.isDisjoint(with: seenNames.contextNames)
+                || !originalNames.clusterNames.isDisjoint(with: seenNames.clusterNames)
+                || !originalNames.userNames.isDisjoint(with: seenNames.userNames)
             let duplicateResolution = try resolver.resolve(
                 raw: payload.raw,
                 choice: choice,

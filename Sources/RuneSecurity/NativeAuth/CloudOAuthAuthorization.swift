@@ -158,7 +158,7 @@ public struct CloudOAuthAuthorizationConfiguration: Sendable, Equatable {
     }
 }
 
-public struct CloudOAuthAuthorizationAttempt: Sendable, Equatable {
+public struct CloudOAuthAuthorizationAttempt: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public let id: CloudOAuthAttemptID
     public let sheetID: CloudOAuthSheetID
     public let provider: CloudAccountProvider
@@ -166,6 +166,15 @@ public struct CloudOAuthAuthorizationAttempt: Sendable, Equatable {
     public let authorizationURL: URL
     public let callbackScheme: String
     public let expiresAt: Date
+
+    // The browser URL contains state and nonce; keep it out of diagnostics and reflection.
+    public var description: String {
+        "CloudOAuthAuthorizationAttempt(provider: \(provider.rawValue), authorization: <redacted>)"
+    }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror {
+        Mirror(self, children: ["provider": provider.rawValue, "authorization": "<redacted>"])
+    }
 
     public init(
         id: CloudOAuthAttemptID,
@@ -188,7 +197,7 @@ public struct CloudOAuthAuthorizationAttempt: Sendable, Equatable {
 
 /// One-time secret material for the token exchange. It is intentionally not Codable and its
 /// description never includes the authorization code, PKCE verifier, or nonce.
-public struct CloudOAuthCodeExchange: Sendable, CustomStringConvertible {
+public struct CloudOAuthCodeExchange: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public let attemptID: CloudOAuthAttemptID
     public let provider: CloudAccountProvider
     public let generation: CloudAccountGeneration
@@ -202,6 +211,10 @@ public struct CloudOAuthCodeExchange: Sendable, CustomStringConvertible {
     public var description: String {
         "CloudOAuthCodeExchange(provider: \(provider.rawValue), secrets: <redacted>)"
     }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror {
+        Mirror(self, children: ["provider": provider.rawValue, "secrets": "<redacted>"])
+    }
 }
 
 public enum CloudOAuthAuthorizationError: Error, LocalizedError, Equatable, Sendable {
@@ -209,6 +222,7 @@ public enum CloudOAuthAuthorizationError: Error, LocalizedError, Equatable, Send
     case invalidAuthorizationEndpoint
     case invalidRedirectURI
     case secureRandomUnavailable
+    case tooManyActiveAttempts
     case attemptNotFound
     case superseded
     case expired
@@ -226,6 +240,8 @@ public enum CloudOAuthAuthorizationError: Error, LocalizedError, Equatable, Send
             return "The account authorization callback URI is not allowed."
         case .secureRandomUnavailable:
             return "Rune could not create secure account authorization state."
+        case .tooManyActiveAttempts:
+            return "Finish or cancel another account sign-in, then try again."
         case .attemptNotFound:
             return "The account authorization attempt is no longer active."
         case .superseded:
@@ -258,12 +274,15 @@ public actor CloudOAuthAuthorizationCoordinator {
     private let now: @Sendable () -> Date
     private let randomBytes: RandomBytes
     private let lifetime: TimeInterval
+    private let maximumActiveAttempts: Int
     private var activeAttempts: [CloudOAuthSheetID: ActiveAttempt] = [:]
     private var expirationTasks: [CloudOAuthSheetID: Task<Void, Never>] = [:]
-    private var generations: [CloudOAuthSheetID: UInt64] = [:]
+    // A global generation avoids retaining a tombstone for every closed sheet.
+    private var lastGeneration: UInt64 = 0
 
     public init(
         lifetime: TimeInterval = 600,
+        maximumActiveAttempts: Int = 16,
         now: @escaping @Sendable () -> Date = Date.init,
         randomBytes: @escaping RandomBytes = CloudOAuthAuthorizationCoordinator.secureRandomBytes
     ) {
@@ -274,15 +293,26 @@ public actor CloudOAuthAuthorizationCoordinator {
         }
         self.now = now
         self.randomBytes = randomBytes
+        self.maximumActiveAttempts = max(1, min(maximumActiveAttempts, 64))
+    }
+
+    deinit {
+        for task in expirationTasks.values { task.cancel() }
     }
 
     public func begin(
         sheetID: CloudOAuthSheetID,
         configuration: CloudOAuthAuthorizationConfiguration
     ) throws -> CloudOAuthAuthorizationAttempt {
+        try Task.checkCancellation()
+        expireAttempts()
+        guard activeAttempts[sheetID] != nil || activeAttempts.count < maximumActiveAttempts else {
+            throw CloudOAuthAuthorizationError.tooManyActiveAttempts
+        }
         activeAttempts.removeValue(forKey: sheetID)
         expirationTasks.removeValue(forKey: sheetID)?.cancel()
-        let generation = nextGeneration(for: sheetID)
+        lastGeneration &+= 1
+        let generation = CloudAccountGeneration(rawValue: lastGeneration)
         let attemptID = CloudOAuthAttemptID()
         let codeVerifier = try randomURLSafeValue(byteCount: 32)
         let state = try randomURLSafeValue(byteCount: 32)
@@ -324,7 +354,6 @@ public actor CloudOAuthAuthorizationCoordinator {
     }
 
     public func cancel(sheetID: CloudOAuthSheetID) {
-        _ = nextGeneration(for: sheetID)
         activeAttempts.removeValue(forKey: sheetID)
         expirationTasks.removeValue(forKey: sheetID)?.cancel()
     }
@@ -339,8 +368,7 @@ public actor CloudOAuthAuthorizationCoordinator {
             throw CloudOAuthAuthorizationError.attemptNotFound
         }
         guard attempt.publicValue.id == attemptID,
-              attempt.publicValue.generation == generation,
-              generations[sheetID] == generation.rawValue else {
+              attempt.publicValue.generation == generation else {
             throw CloudOAuthAuthorizationError.superseded
         }
         activeAttempts.removeValue(forKey: sheetID)
@@ -348,7 +376,9 @@ public actor CloudOAuthAuthorizationCoordinator {
         guard now() < attempt.publicValue.expiresAt else {
             throw CloudOAuthAuthorizationError.expired
         }
-        guard Self.matchesCallbackBase(callbackURL, expected: attempt.redirectURI),
+        // Bound the complete encoded URL before URLComponents decodes and retains query values.
+        guard callbackURL.absoluteString.utf8.count <= 65_536,
+              Self.matchesCallbackBase(callbackURL, expected: attempt.redirectURI),
               let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
               components.fragment == nil else {
             throw CloudOAuthAuthorizationError.invalidCallback
@@ -401,12 +431,6 @@ public actor CloudOAuthAuthorizationCoordinator {
             return false
         }
         return true
-    }
-
-    private func nextGeneration(for sheetID: CloudOAuthSheetID) -> CloudAccountGeneration {
-        let generation = generations[sheetID, default: 0] &+ 1
-        generations[sheetID] = generation
-        return CloudAccountGeneration(rawValue: generation)
     }
 
     private func randomURLSafeValue(byteCount: Int) throws -> String {

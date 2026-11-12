@@ -100,6 +100,85 @@ final class CloudOAuthAuthorizationCoordinatorTests: XCTestCase {
         XCTAssertEqual(exchange.authorizationCode, "current-code")
     }
 
+    func testAuthorizationSecretsAreRedactedFromDebugOutputAndReflection() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator()
+        let sheetID = CloudOAuthSheetID(rawValue: uuid(6))
+        let attempt = try await coordinator.begin(sheetID: sheetID, configuration: configuration())
+        let query = try queryValues(attempt.authorizationURL)
+        let state = try XCTUnwrap(query["state"])
+        let nonce = try XCTUnwrap(query["nonce"])
+        let exchange = try await coordinator.consumeCallback(
+            callbackURL(code: "synthetic-private-authorization-code", state: state),
+            sheetID: sheetID,
+            attemptID: attempt.id,
+            generation: attempt.generation
+        )
+
+        for value: Any in [attempt, exchange] {
+            var dumped = ""
+            dump(value, to: &dumped)
+            let mirrorValues = Mirror(reflecting: value).children.map { String(reflecting: $0.value) }
+            let outputs = [String(describing: value), String(reflecting: value), dumped] + mirrorValues
+            for output in outputs {
+                for secret in [state, nonce, exchange.authorizationCode, exchange.codeVerifier] {
+                    XCTAssertFalse(output.contains(secret), "Authorization diagnostics must redact secret material")
+                }
+            }
+        }
+        // Redaction must preserve the values needed by the browser and token exchange.
+        XCTAssertEqual(exchange.nonce, nonce)
+        XCTAssertEqual(exchange.authorizationCode, "synthetic-private-authorization-code")
+    }
+
+    func testOversizedCallbackIsRejectedAndConsumesOnlyItsAttempt() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator()
+        let sheetID = CloudOAuthSheetID(rawValue: uuid(7))
+        let otherSheetID = CloudOAuthSheetID(rawValue: uuid(8))
+        let attempt = try await coordinator.begin(sheetID: sheetID, configuration: configuration())
+        _ = try await coordinator.begin(sheetID: otherSheetID, configuration: configuration())
+        let state = try XCTUnwrap(try queryValues(attempt.authorizationURL)["state"])
+        var callback = URLComponents(url: try callbackURL(code: "synthetic-code", state: state), resolvingAgainstBaseURL: false)!
+        // Every individual parameter is within the existing limit; the complete input is not.
+        callback.queryItems! += ["scope", "session_state", "authuser", "prompt"].map {
+            URLQueryItem(name: $0, value: String(repeating: "x", count: 16_384))
+        }
+        do {
+            _ = try await coordinator.consumeCallback(
+                try XCTUnwrap(callback.url),
+                sheetID: sheetID,
+                attemptID: attempt.id,
+                generation: attempt.generation
+            )
+            XCTFail("Expected an oversized callback to be rejected")
+        } catch {
+            XCTAssertEqual(error as? CloudOAuthAuthorizationError, .invalidCallback)
+        }
+        let active = await coordinator.hasActiveAttempt(sheetID: sheetID)
+        let otherActive = await coordinator.hasActiveAttempt(sheetID: otherSheetID)
+        XCTAssertFalse(active)
+        XCTAssertTrue(otherActive)
+        await coordinator.cancel(sheetID: otherSheetID)
+    }
+
+    func testCallbackBoundPreservesMaximumLengthEncodedAuthorizationCode() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator()
+        let sheetID = CloudOAuthSheetID(rawValue: uuid(9))
+        let attempt = try await coordinator.begin(sheetID: sheetID, configuration: configuration())
+        let state = try XCTUnwrap(try queryValues(attempt.authorizationURL)["state"])
+        let code = String(repeating: "+", count: 16_384)
+        // Percent encoding expands the code to three times its decoded byte count.
+        let callback = try XCTUnwrap(URL(string:
+            "rune-synthetic://oauth/callback?code=\(String(repeating: "%2B", count: 16_384))&state=\(state)"
+        ))
+        let exchange = try await coordinator.consumeCallback(
+            callback,
+            sheetID: sheetID,
+            attemptID: attempt.id,
+            generation: attempt.generation
+        )
+        XCTAssertEqual(exchange.authorizationCode, code)
+    }
+
     func testCancelInvalidatesCallbackAcrossSheetReopen() async throws {
         let random = SyntheticOAuthRandomBytes()
         let coordinator = CloudOAuthAuthorizationCoordinator(
@@ -266,6 +345,109 @@ final class CloudOAuthAuthorizationCoordinatorTests: XCTestCase {
         )) { error in
             XCTAssertEqual(error as? CloudOAuthAuthorizationError, .invalidConfiguration)
         }
+    }
+
+    func testActiveAttemptLimitPreservesOtherSheetsAndAllowsReplacementAndReleasedSlots() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator(maximumActiveAttempts: 2)
+        let firstSheet = CloudOAuthSheetID(rawValue: uuid(10))
+        let secondSheet = CloudOAuthSheetID(rawValue: uuid(11))
+        let thirdSheet = CloudOAuthSheetID(rawValue: uuid(12))
+        let configuration = try configuration()
+        let first = try await coordinator.begin(sheetID: firstSheet, configuration: configuration)
+        _ = try await coordinator.begin(sheetID: secondSheet, configuration: configuration)
+        do {
+            _ = try await coordinator.begin(sheetID: thirdSheet, configuration: configuration)
+            XCTFail("Concurrent authorization must remain bounded")
+        } catch {
+            XCTAssertEqual(error as? CloudOAuthAuthorizationError, .tooManyActiveAttempts)
+        }
+        let replacement = try await coordinator.begin(sheetID: firstSheet, configuration: configuration)
+        XCTAssertGreaterThan(replacement.generation, first.generation)
+        let secondActive = await coordinator.hasActiveAttempt(sheetID: secondSheet)
+        XCTAssertTrue(secondActive)
+        let state = try XCTUnwrap(try queryValues(replacement.authorizationURL)["state"])
+        _ = try await coordinator.consumeCallback(
+            callbackURL(code: "synthetic-code", state: state), sheetID: firstSheet,
+            attemptID: replacement.id, generation: replacement.generation
+        )
+        _ = try await coordinator.begin(sheetID: thirdSheet, configuration: configuration)
+        await coordinator.cancel(sheetID: secondSheet)
+        _ = try await coordinator.begin(sheetID: firstSheet, configuration: configuration)
+        await coordinator.cancel(sheetID: thirdSheet)
+        await coordinator.cancel(sheetID: firstSheet)
+    }
+
+    func testExpiredAttemptsReleaseCapacityBeforeNextBegin() async throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = SyntheticOAuthClock(start)
+        let coordinator = CloudOAuthAuthorizationCoordinator(
+            lifetime: 30, maximumActiveAttempts: 1, now: { clock.now() }
+        )
+        let expiredSheet = CloudOAuthSheetID(rawValue: uuid(13))
+        let currentSheet = CloudOAuthSheetID(rawValue: uuid(14))
+        _ = try await coordinator.begin(sheetID: expiredSheet, configuration: configuration())
+        clock.set(start.addingTimeInterval(31))
+        _ = try await coordinator.begin(sheetID: currentSheet, configuration: configuration())
+        let expiredActive = await coordinator.hasActiveAttempt(sheetID: expiredSheet)
+        let currentActive = await coordinator.hasActiveAttempt(sheetID: currentSheet)
+        XCTAssertFalse(expiredActive)
+        XCTAssertTrue(currentActive)
+        await coordinator.cancel(sheetID: currentSheet)
+    }
+
+    func testCanceledCallerCannotReplaceActiveAttempt() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator()
+        let sheetID = CloudOAuthSheetID(rawValue: uuid(15))
+        let configuration = try configuration()
+        let current = try await coordinator.begin(sheetID: sheetID, configuration: configuration)
+        let canceled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await coordinator.begin(sheetID: sheetID, configuration: configuration)
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+        let rejected = await canceled.value
+        XCTAssertTrue(rejected)
+        let state = try XCTUnwrap(try queryValues(current.authorizationURL)["state"])
+        let exchange = try await coordinator.consumeCallback(
+            callbackURL(code: "synthetic-code", state: state), sheetID: sheetID,
+            attemptID: current.id, generation: current.generation
+        )
+        XCTAssertEqual(exchange.authorizationCode, "synthetic-code")
+    }
+
+    func testSheetChurnUsesFreshGenerationsAndRejectsCrossSheetCallbacksKPI() async throws {
+        let coordinator = CloudOAuthAuthorizationCoordinator(maximumActiveAttempts: 1)
+        let configuration = try configuration()
+        let originalSheet = CloudOAuthSheetID()
+        let original = try await coordinator.begin(sheetID: originalSheet, configuration: configuration)
+        let originalState = try XCTUnwrap(try queryValues(original.authorizationURL)["state"])
+        let staleCallback = try callbackURL(code: "stale-synthetic-code", state: originalState)
+        await coordinator.cancel(sheetID: originalSheet)
+        var previousGeneration = original.generation
+        var rejectedCount = 0
+        for _ in 0..<128 {
+            let sheetID = CloudOAuthSheetID()
+            let current = try await coordinator.begin(sheetID: sheetID, configuration: configuration)
+            XCTAssertGreaterThan(current.generation, previousGeneration)
+            previousGeneration = current.generation
+            do {
+                _ = try await coordinator.consumeCallback(
+                    staleCallback, sheetID: sheetID, attemptID: original.id, generation: original.generation
+                )
+            } catch CloudOAuthAuthorizationError.superseded {
+                rejectedCount += 1
+            }
+            let active = await coordinator.hasActiveAttempt(sheetID: sheetID)
+            XCTAssertTrue(active)
+            await coordinator.cancel(sheetID: sheetID)
+        }
+        XCTAssertEqual(rejectedCount, 128, "KPI: 128/128 stale cross-sheet callbacks must be rejected")
     }
 
     private func configuration() throws -> CloudOAuthAuthorizationConfiguration {
